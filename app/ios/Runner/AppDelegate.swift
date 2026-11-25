@@ -86,7 +86,9 @@ final class PrismHardwarePlugin: NSObject {
 
     var spatialAvailable = false
     if #available(iOS 15.0, *) {
-      spatialAvailable = AVAudioSession.sharedInstance().isSpatialAudioEnabled
+      spatialAvailable = AVAudioSession.sharedInstance().currentRoute.outputs.contains {
+        $0.isSpatialAudioEnabled
+      }
     }
 
     return [

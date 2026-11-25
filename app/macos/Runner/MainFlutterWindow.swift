@@ -6,9 +6,23 @@ import IOKit.pwr_mgt
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
-    let windowFrame = self.frame
+    let desiredSize = NSSize(width: 1280, height: 820)
+    var windowFrame = self.frame
+    if windowFrame.width < 1000 || windowFrame.height < 680 {
+      windowFrame.size = desiredSize
+    }
     self.contentViewController = flutterViewController
     self.setFrame(windowFrame, display: true)
+    self.minSize = NSSize(width: 860, height: 580)
+    self.center()
+
+    // Full-bleed Apple TV+ / SenPlayer native dark window chrome
+    self.styleMask.insert(.fullSizeContentView)
+    self.titlebarAppearsTransparent = true
+    self.titleVisibility = .hidden
+    self.isMovableByWindowBackground = true
+    self.appearance = NSAppearance(named: .darkAqua)
+    self.backgroundColor = NSColor(calibratedRed: 0.043, green: 0.043, blue: 0.051, alpha: 1.0)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     VedroHardwarePlugin.register(with: flutterViewController.engine.binaryMessenger)

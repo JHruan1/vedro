@@ -4,8 +4,9 @@ import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, required this.appState});
+  const SettingsScreen({super.key, required this.appState, this.topInset = 0});
   final VedroAppState appState;
+  final double topInset;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -35,164 +36,64 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     return Scaffold(
       backgroundColor: VedroTheme.canvas,
-      appBar: AppBar(title: const Text('设置')),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 680),
-          child: ListView(
-            padding: EdgeInsets.fromLTRB(20, 8, 20, wide ? 44 : 108),
-            children: [
-              const _SectionLabel('服务器'),
-              _GroupedCard(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                caps?.serverName ?? widget.appState.connectedUrl ?? '未连接',
-                                style: const TextStyle(
-                                  color: VedroTheme.fg,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                [
-                                  widget.appState.username ?? '-',
-                                  caps?.dialect ?? '-',
-                                  'v${widget.appState.core.coreVersion}',
-                                ].join(' · '),
-                                style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
-                              ),
-                            ],
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: widget.appState.logout,
-                          child: const Text(
-                            '退出登录',
-                            style: TextStyle(color: VedroTheme.danger, fontSize: 13.5),
-                          ),
-                        ),
-                      ],
+      appBar: !wide ? AppBar(title: const Text('设置')) : null,
+      body: Padding(
+        padding: EdgeInsets.only(top: widget.topInset),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 680),
+            child: ListView(
+              padding: EdgeInsets.fromLTRB(20, wide ? 20 : 8, 20, wide ? 52 : 112),
+              children: [
+                if (wide)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      '设置',
+                      style: TextStyle(
+                        color: VedroTheme.fg,
+                        fontSize: 26,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.5,
+                      ),
                     ),
                   ),
-                ],
-              ),
-
-              const _SectionLabel('视频与 HDR'),
-              _GroupedCard(
-                children: [
-                  _DropdownRow(
-                    title: '硬件解码',
-                    value: (s['hwdec'] ?? 'auto_zero_copy').toString(),
-                    items: const {
-                      'auto_zero_copy': '零拷贝硬解',
-                      'auto_copy': 'Copy-Back 硬解',
-                      'software': '软件解码',
-                    },
-                    onChanged: (v) => _updateSetting('hwdec', v),
-                  ),
-                  _SwitchRow(
-                    title: '优先原生杜比视界',
-                    subtitle: '支持原生显示的屏幕直出，否则自动 Tone-Mapping',
-                    value: s['prefer_native_dolby_vision'] != false,
-                    onChanged: (v) => _updateSetting('prefer_native_dolby_vision', v),
-                  ),
-                  _DropdownRow(
-                    title: '色调映射',
-                    value: (s['tone_mapping'] ?? 'bt2446a').toString(),
-                    items: const {
-                      'bt2446a': 'BT.2446a',
-                      'spline': 'Spline',
-                      'st2094_40': 'ST.2094-40',
-                      'reinhard': 'Reinhard',
-                      'clip': 'Clip',
-                    },
-                    onChanged: (v) => _updateSetting('tone_mapping', v),
-                  ),
-                  _SwitchRow(
-                    title: '去色带 (Deband)',
-                    value: s['deband'] == true,
-                    onChanged: (v) => _updateSetting('deband', v),
-                  ),
-                ],
-              ),
-
-              const _SectionLabel('音频'),
-              _GroupedCard(
-                children: [
-                  _DropdownRow(
-                    title: '输出模式',
-                    value: (s['audio_mode'] ?? 'auto').toString(),
-                    items: const {
-                      'auto': '自动',
-                      'passthrough_bitstream': '源码直通',
-                      'spatial_audio': '系统空间音频',
-                      'headphone_binaural': '耳机空间化',
-                      'pcm_stereo': '32-bit PCM',
-                    },
-                    onChanged: (v) => _updateSetting('audio_mode', v),
-                  ),
-                  _SwitchRow(
-                    title: '夜间模式 (DRC)',
-                    value: s['night_mode'] == true,
-                    onChanged: (v) => _updateSetting('night_mode', v),
-                  ),
-                  _SwitchRow(
-                    title: '人声增强',
-                    value: s['dialogue_boost'] == true,
-                    onChanged: (v) => _updateSetting('dialogue_boost', v),
-                  ),
-                ],
-              ),
-
-              if (widget.appState.isAdmin && caps?.isEmbyGo == true) ...[
-                const _SectionLabel('媒体库管理'),
+                const _SectionLabel('服务器'),
                 _GroupedCard(
                   children: [
                     Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      child: Row(
                         children: [
-                          if (admin == null)
-                            const Text(
-                              '正在同步服务器状态...',
-                              style: TextStyle(color: VedroTheme.fg3, fontSize: 13),
-                            )
-                          else ...[
-                            _InfoLine('版本', '${admin['status']?['version'] ?? '-'}'),
-                            _InfoLine(
-                              '索引',
-                              '${admin['status']?['items'] ?? 0} 条目 · ${admin['status']?['files'] ?? 0} 文件 · ${admin['status']?['subtitle_files'] ?? 0} 字幕',
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  caps?.serverName ?? widget.appState.connectedUrl ?? '未连接',
+                                  style: const TextStyle(
+                                    color: VedroTheme.fg,
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  [
+                                    widget.appState.username ?? '-',
+                                    caps?.dialect ?? '-',
+                                    'v${widget.appState.core.coreVersion}',
+                                  ].join(' · '),
+                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
+                                ),
+                              ],
                             ),
-                            _InfoLine(
-                              '媒体',
-                              '${admin['counts']?['MovieCount'] ?? 0} 电影 · ${admin['counts']?['SeriesCount'] ?? 0} 剧集 · ${admin['counts']?['EpisodeCount'] ?? 0} 分集',
-                            ),
-                            _InfoLine(
-                              '在线会话',
-                              '${(admin['playing_sessions'] as List?)?.length ?? 0}',
-                            ),
-                          ],
-                          const SizedBox(height: 12),
-                          SizedBox(
-                            height: 36,
-                            child: OutlinedButton(
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: VedroTheme.fg,
-                                side: const BorderSide(color: VedroTheme.lineStrong, width: 0.8),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                              ),
-                              onPressed: widget.appState.triggerLibraryRefresh,
-                              child: const Text('刷新媒体库', style: TextStyle(fontSize: 13)),
+                          ),
+                          TextButton(
+                            onPressed: widget.appState.logout,
+                            child: const Text(
+                              '退出登录',
+                              style: TextStyle(color: VedroTheme.danger, fontSize: 13.5),
                             ),
                           ),
                         ],
@@ -200,8 +101,121 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ],
                 ),
+                const _SectionLabel('视频与 HDR'),
+                _GroupedCard(
+                  children: [
+                    _DropdownRow(
+                      title: '硬件解码',
+                      value: (s['hwdec'] ?? 'auto_zero_copy').toString(),
+                      items: const {
+                        'auto_zero_copy': '零拷贝硬解',
+                        'auto_copy': 'Copy-Back 硬解',
+                        'software': '软件解码',
+                      },
+                      onChanged: (v) => _updateSetting('hwdec', v),
+                    ),
+                    _SwitchRow(
+                      title: '优先原生杜比视界',
+                      subtitle: '支持原生显示的屏幕直出，否则自动 Tone-Mapping',
+                      value: s['prefer_native_dolby_vision'] != false,
+                      onChanged: (v) => _updateSetting('prefer_native_dolby_vision', v),
+                    ),
+                    _DropdownRow(
+                      title: '色调映射',
+                      value: (s['tone_mapping'] ?? 'bt2446a').toString(),
+                      items: const {
+                        'bt2446a': 'BT.2446a',
+                        'spline': 'Spline',
+                        'st2094_40': 'ST.2094-40',
+                        'reinhard': 'Reinhard',
+                        'clip': 'Clip',
+                      },
+                      onChanged: (v) => _updateSetting('tone_mapping', v),
+                    ),
+                    _SwitchRow(
+                      title: '去色带 (Deband)',
+                      value: s['deband'] == true,
+                      onChanged: (v) => _updateSetting('deband', v),
+                    ),
+                  ],
+                ),
+                const _SectionLabel('音频'),
+                _GroupedCard(
+                  children: [
+                    _DropdownRow(
+                      title: '输出模式',
+                      value: (s['audio_mode'] ?? 'auto').toString(),
+                      items: const {
+                        'auto': '自动',
+                        'passthrough_bitstream': '源码直通',
+                        'spatial_audio': '系统空间音频',
+                        'headphone_binaural': '耳机空间化',
+                        'pcm_stereo': '32-bit PCM',
+                      },
+                      onChanged: (v) => _updateSetting('audio_mode', v),
+                    ),
+                    _SwitchRow(
+                      title: '夜间模式 (DRC)',
+                      value: s['night_mode'] == true,
+                      onChanged: (v) => _updateSetting('night_mode', v),
+                    ),
+                    _SwitchRow(
+                      title: '人声增强',
+                      value: s['dialogue_boost'] == true,
+                      onChanged: (v) => _updateSetting('dialogue_boost', v),
+                    ),
+                  ],
+                ),
+                if (widget.appState.isAdmin && caps?.isEmbyGo == true) ...[
+                  const _SectionLabel('媒体库管理'),
+                  _GroupedCard(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (admin == null)
+                              const Text(
+                                '正在同步服务器状态…',
+                                style: TextStyle(color: VedroTheme.fg3, fontSize: 13),
+                              )
+                            else ...[
+                              _InfoLine('版本', '${admin['status']?['version'] ?? '-'}'),
+                              _InfoLine(
+                                '索引',
+                                '${admin['status']?['items'] ?? 0} 条目 · ${admin['status']?['files'] ?? 0} 文件 · ${admin['status']?['subtitle_files'] ?? 0} 字幕',
+                              ),
+                              _InfoLine(
+                                '媒体',
+                                '${admin['counts']?['MovieCount'] ?? 0} 电影 · ${admin['counts']?['SeriesCount'] ?? 0} 剧集 · ${admin['counts']?['EpisodeCount'] ?? 0} 分集',
+                              ),
+                              _InfoLine(
+                                '在线会话',
+                                '${(admin['playing_sessions'] as List?)?.length ?? 0}',
+                              ),
+                            ],
+                            const SizedBox(height: 12),
+                            SizedBox(
+                              height: 36,
+                              child: OutlinedButton(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: VedroTheme.fg,
+                                  side: const BorderSide(color: VedroTheme.lineStrong, width: 0.8),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                onPressed: widget.appState.triggerLibraryRefresh,
+                                child: const Text('刷新媒体库', style: TextStyle(fontSize: 13)),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -239,7 +253,7 @@ class _GroupedCard extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: VedroTheme.surface,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: VedroTheme.line, width: 0.7),
       ),
       clipBehavior: Clip.antiAlias,

@@ -83,6 +83,9 @@ pub struct StreamProxy {
     config: StreamProxyConfig,
     cache: ChunkCache,
     streams: Arc<DashMap<String, Arc<RegisteredStream>>>,
+    image_upstream_base: RwLock<Option<String>>,
+    image_upstream_headers: RwLock<HeaderMap>,
+    image_cache: DashMap<String, (String, Bytes)>,
     active_conns: Arc<AtomicUsize>,
     total_upstream_bytes: Arc<AtomicU64>,
     total_served_bytes: Arc<AtomicU64>,
@@ -124,6 +127,9 @@ impl StreamProxy {
             config,
             cache,
             streams: Arc::new(DashMap::new()),
+            image_upstream_base: RwLock::new(None),
+            image_upstream_headers: RwLock::new(HeaderMap::new()),
+            image_cache: DashMap::new(),
             active_conns: Arc::new(AtomicUsize::new(0)),
             total_upstream_bytes: Arc::new(AtomicU64::new(0)),
             total_served_bytes: Arc::new(AtomicU64::new(0)),
@@ -178,7 +184,19 @@ impl StreamProxy {
     ) -> std::io::Result<()> {
         let client = build_proxy_http_client(proxy_url, accept_invalid_certs)?;
         *self.http.write() = client;
+        self.image_cache.clear();
         Ok(())
+    }
+
+    /// Configure upstream server base URL + auth headers for local RAM-cached artwork proxying (`/img/...`).
+    pub fn set_image_upstream(&self, base_url: String, headers: HeaderMap) {
+        let normalized = base_url.trim_end_matches('/').to_string();
+        let changed = self.image_upstream_base.read().as_deref() != Some(normalized.as_str());
+        *self.image_upstream_base.write() = Some(normalized);
+        *self.image_upstream_headers.write() = headers;
+        if changed {
+            self.image_cache.clear();
+        }
     }
 
     /// Register an upstream media stream and return the local loopback URL for the player.
@@ -292,6 +310,9 @@ impl StreamProxy {
         req: Request<Incoming>,
     ) -> std::result::Result<Response<Full<Bytes>>, hyper::Error> {
         let path = req.uri().path();
+        if let Some(img_rel) = path.strip_prefix("/img/") {
+            return Ok(self.handle_image_request(img_rel, req.uri().query()).await);
+        }
         let Some(stream_id) = path.strip_prefix("/stream/") else {
             return Ok(simple_response(StatusCode::NOT_FOUND, "not found"));
         };
@@ -378,6 +399,65 @@ impl StreamProxy {
             }
             Err(status) => Ok(simple_response(status, "upstream range fetch failed")),
         }
+    }
+
+    async fn handle_image_request(
+        &self,
+        rel_path: &str,
+        query: Option<&str>,
+    ) -> Response<Full<Bytes>> {
+        let cache_key = match query {
+            Some(q) if !q.is_empty() => format!("{rel_path}?{q}"),
+            _ => rel_path.to_string(),
+        };
+        if let Some(hit) = self.image_cache.get(&cache_key) {
+            let (ct, body) = hit.value();
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, ct.as_str())
+                .header(header::CONTENT_LENGTH, body.len())
+                .header(header::CACHE_CONTROL, "public, max-age=86400, immutable")
+                .body(Full::new(body.clone()))
+                .unwrap();
+        }
+
+        let Some(base) = self.image_upstream_base.read().clone() else {
+            return simple_response(StatusCode::SERVICE_UNAVAILABLE, "no image upstream");
+        };
+        let url = format!("{base}/{cache_key}");
+        let hdrs = self.image_upstream_headers.read().clone();
+        let client = self.http.read().clone();
+
+        let Ok(resp) = client.get(&url).headers(hdrs).send().await else {
+            return simple_response(StatusCode::BAD_GATEWAY, "image upstream unreachable");
+        };
+        let status =
+            StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let ct = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("image/jpeg")
+            .to_string();
+        let Ok(bytes) = resp.bytes().await else {
+            return simple_response(StatusCode::BAD_GATEWAY, "failed to read image body");
+        };
+
+        if status == StatusCode::OK && bytes.len() <= 4 * 1024 * 1024 {
+            if self.image_cache.len() >= 360 {
+                self.image_cache.clear();
+            }
+            self.image_cache
+                .insert(cache_key, (ct.clone(), bytes.clone()));
+        }
+
+        Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, ct)
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .header(header::CACHE_CONTROL, "public, max-age=86400")
+            .body(Full::new(bytes))
+            .unwrap()
     }
 
     async fn ensure_size(&self, entry: &Arc<RegisteredStream>) -> Option<u64> {

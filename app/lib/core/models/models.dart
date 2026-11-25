@@ -1,5 +1,70 @@
 // Core data models mirroring `core/vedro-protocol`, `core/vedro-stream`, and `core/vedro-playback`.
 
+const int kEmbyTicksPerSecond = 10000000;
+
+/// Deterministic low-chroma hue pair matching embygo Web's `GeneratedArt`,
+/// so an item without cover art gets a calm, permanent two-tone gradient.
+(double, double) deterministicHues(String seed) {
+  final s = seed.isEmpty ? '?' : seed;
+  var hash = 0;
+  for (var i = 0; i < s.length; i++) {
+    hash = ((hash * 31) + s.codeUnitAt(i)) & 0xFFFFFFFF;
+  }
+  return ((hash % 360).toDouble(), ((hash >> 9) % 360).toDouble());
+}
+
+/// Clean display initials for missing artwork (2 CJK chars or 2 latin/number tokens).
+String artworkInitials(String? name) {
+  final trimmed = (name ?? '?').trim();
+  if (trimmed.isEmpty) return '?';
+  if (RegExp(r'[\u3400-\u9FFF]').hasMatch(trimmed)) {
+    return trimmed.length > 2 ? trimmed.substring(0, 2) : trimmed;
+  }
+  final words = trimmed.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).take(2).toList();
+  final buf = StringBuffer();
+  for (var i = 0; i < words.length; i++) {
+    final w = words[i];
+    if (i > 0 && RegExp(r'^\d+$').hasMatch(w)) {
+      buf.write(w);
+    } else if (w.isNotEmpty) {
+      buf.write(w[0]);
+    }
+  }
+  final out = buf.toString().toUpperCase();
+  return out.isEmpty ? '?' : out;
+}
+
+String fmtDurationTicks(int? ticks) {
+  if (ticks == null || ticks <= 0) return '';
+  final minutes = (ticks / kEmbyTicksPerSecond / 60).round();
+  if (minutes <= 0) return '';
+  if (minutes < 60) return '$minutes 分钟';
+  final h = minutes ~/ 60;
+  final m = minutes % 60;
+  return m > 0 ? '$h 小时 $m 分' : '$h 小时';
+}
+
+String fmtFileSize(int? bytes) {
+  if (bytes == null || bytes <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  var value = bytes.toDouble();
+  var unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return '${value < 10 && unit > 0 ? value.toStringAsFixed(1) : value.round()} ${units[unit]}';
+}
+
+class ResolvedArt {
+  const ResolvedArt({required this.url, required this.isPoster});
+  final String url;
+
+  /// True when only a 2:3 portrait poster exists for a 16:9 slot —
+  /// callers render it with a blurred ambient backdrop + framed poster instead of cropping.
+  final bool isPoster;
+}
+
 class ServerCapabilitiesModel {
   ServerCapabilitiesModel({
     required this.dialect,
@@ -53,6 +118,7 @@ class SavedServerProfile {
     this.username,
     this.accessToken,
     this.isAdmin = false,
+    this.lastConnectedAt = 0,
   });
 
   final String id;
@@ -63,6 +129,7 @@ class SavedServerProfile {
   final String? username;
   final String? accessToken;
   final bool isAdmin;
+  final int lastConnectedAt;
 
   factory SavedServerProfile.fromJson(Map<String, dynamic> j) => SavedServerProfile(
         id: (j['id'] ?? '').toString(),
@@ -73,6 +140,66 @@ class SavedServerProfile {
         username: j['username']?.toString(),
         accessToken: j['access_token']?.toString(),
         isAdmin: j['is_admin'] == true,
+        lastConnectedAt: (j['last_connected_at'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class MediaStreamModel {
+  MediaStreamModel({
+    required this.index,
+    required this.type,
+    this.codec,
+    this.language,
+    this.title,
+    this.displayTitle,
+    this.isDefault = false,
+    this.isForced = false,
+    this.isExternal = false,
+    this.channels,
+    this.channelLayout,
+    this.width,
+    this.height,
+  });
+
+  final int index;
+  final String type;
+  final String? codec;
+  final String? language;
+  final String? title;
+  final String? displayTitle;
+  final bool isDefault;
+  final bool isForced;
+  final bool isExternal;
+  final int? channels;
+  final String? channelLayout;
+  final int? width;
+  final int? height;
+
+  String get label {
+    if (displayTitle != null && displayTitle!.trim().isNotEmpty) return displayTitle!.trim();
+    final parts = <String>[
+      if (title != null && title!.trim().isNotEmpty) title!.trim(),
+      if (language != null && language!.trim().isNotEmpty) language!.trim().toUpperCase(),
+      if (codec != null && codec!.trim().isNotEmpty) codec!.trim().toUpperCase(),
+      if (channelLayout != null && channelLayout!.trim().isNotEmpty) channelLayout!.trim(),
+    ];
+    return parts.isEmpty ? '#$index' : parts.join(' · ');
+  }
+
+  factory MediaStreamModel.fromJson(Map<String, dynamic> j) => MediaStreamModel(
+        index: (j['Index'] as num?)?.toInt() ?? 0,
+        type: (j['Type'] ?? '').toString(),
+        codec: j['Codec']?.toString(),
+        language: j['Language']?.toString(),
+        title: j['Title']?.toString(),
+        displayTitle: j['DisplayTitle']?.toString(),
+        isDefault: j['IsDefault'] == true,
+        isForced: j['IsForced'] == true,
+        isExternal: j['IsExternal'] == true,
+        channels: (j['Channels'] as num?)?.toInt(),
+        channelLayout: j['ChannelLayout']?.toString(),
+        width: (j['Width'] as num?)?.toInt(),
+        height: (j['Height'] as num?)?.toInt(),
       );
 }
 
@@ -86,6 +213,7 @@ class MediaSourceModel {
     this.runTimeTicks,
     this.directStreamUrl,
     this.supportsDirectPlay = true,
+    this.mediaStreams = const [],
   });
 
   final String id;
@@ -96,6 +224,30 @@ class MediaSourceModel {
   final int? runTimeTicks;
   final String? directStreamUrl;
   final bool supportsDirectPlay;
+  final List<MediaStreamModel> mediaStreams;
+
+  List<MediaStreamModel> get audioStreams =>
+      mediaStreams.where((s) => s.type.toLowerCase() == 'audio').toList();
+
+  List<MediaStreamModel> get subtitleStreams =>
+      mediaStreams.where((s) => s.type.toLowerCase() == 'subtitle').toList();
+
+  List<String> get factChips {
+    final chips = <String>[];
+    if (name != null) {
+      for (final seg in name!.split(' · ')) {
+        final t = seg.trim();
+        if (t.isNotEmpty && t != 'Preferred') chips.add(t);
+      }
+    }
+    if (container != null && container!.isNotEmpty) {
+      final c = container!.toUpperCase();
+      if (!chips.contains(c)) chips.add(c);
+    }
+    final sz = fmtFileSize(size);
+    if (sz.isNotEmpty) chips.add(sz);
+    return chips;
+  }
 
   String get displayLabel {
     final parts = <String>[];
@@ -104,14 +256,12 @@ class MediaSourceModel {
     } else if (container != null) {
       parts.add(container!.toUpperCase());
     }
-    if (size != null && size! > 0) {
-      final gb = size! / (1024 * 1024 * 1024);
-      parts.add(gb >= 1.0 ? '${gb.toStringAsFixed(2)} GB' : '${(size! / (1024 * 1024)).toStringAsFixed(0)} MB');
-    }
+    final sz = fmtFileSize(size);
+    if (sz.isNotEmpty) parts.add(sz);
     if (bitrate != null && bitrate! > 0) {
       parts.add('${(bitrate! / 1000000).toStringAsFixed(1)} Mbps');
     }
-    return parts.join(' • ');
+    return parts.join(' · ');
   }
 
   factory MediaSourceModel.fromJson(Map<String, dynamic> j) => MediaSourceModel(
@@ -123,6 +273,44 @@ class MediaSourceModel {
         runTimeTicks: (j['RunTimeTicks'] as num?)?.toInt(),
         directStreamUrl: j['DirectStreamUrl']?.toString(),
         supportsDirectPlay: j['SupportsDirectPlay'] != false,
+        mediaStreams: ((j['MediaStreams'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(MediaStreamModel.fromJson)
+            .toList(),
+      );
+}
+
+class MediaSegmentModel {
+  MediaSegmentModel({
+    required this.type,
+    required this.startTicks,
+    required this.endTicks,
+  });
+
+  final String type; // Intro, Outro, Recap, Preview
+  final int startTicks;
+  final int endTicks;
+
+  double get startSecs => startTicks / kEmbyTicksPerSecond;
+  double get endSecs => endTicks / kEmbyTicksPerSecond;
+
+  String get buttonLabel {
+    switch (type.toLowerCase()) {
+      case 'intro':
+        return '跳过片头';
+      case 'outro':
+        return '跳过片尾';
+      case 'recap':
+        return '跳过前情';
+      default:
+        return '跳过片段';
+    }
+  }
+
+  factory MediaSegmentModel.fromJson(Map<String, dynamic> j) => MediaSegmentModel(
+        type: (j['Type'] ?? 'Intro').toString(),
+        startTicks: (j['StartTicks'] as num?)?.toInt() ?? 0,
+        endTicks: (j['EndTicks'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -155,6 +343,7 @@ class MediaItemModel {
     required this.id,
     required this.name,
     required this.type,
+    this.originalTitle,
     this.collectionType,
     this.overview,
     this.productionYear,
@@ -163,16 +352,33 @@ class MediaItemModel {
     this.runTimeTicks,
     this.seriesId,
     this.seriesName,
+    this.seasonId,
+    this.seasonName,
     this.parentIndexNumber,
     this.indexNumber,
     this.indexNumberEnd,
+    this.childCount,
+    this.recursiveItemCount,
+    this.mediaSourceCount,
+    this.sourceFolderCount,
     this.played = false,
     this.playedPercentage,
     this.playbackPositionTicks = 0,
     this.unplayedItemCount,
     this.isFavorite = false,
     this.primaryImageTag,
+    this.thumbImageTag,
+    this.logoImageTag,
     this.backdropImageTag,
+    this.seriesPrimaryImageTag,
+    this.parentPrimaryImageItemId,
+    this.parentPrimaryImageTag,
+    this.parentThumbItemId,
+    this.parentThumbImageTag,
+    this.parentLogoItemId,
+    this.parentLogoImageTag,
+    this.parentBackdropItemId,
+    this.parentBackdropImageTag,
     this.genres = const [],
     this.tags = const [],
     this.people = const [],
@@ -183,6 +389,7 @@ class MediaItemModel {
   final String id;
   final String name;
   final String type;
+  final String? originalTitle;
   final String? collectionType;
   final String? overview;
   final int? productionYear;
@@ -191,16 +398,33 @@ class MediaItemModel {
   final int? runTimeTicks;
   final String? seriesId;
   final String? seriesName;
+  final String? seasonId;
+  final String? seasonName;
   final int? parentIndexNumber;
   final int? indexNumber;
   final int? indexNumberEnd;
+  final int? childCount;
+  final int? recursiveItemCount;
+  final int? mediaSourceCount;
+  final int? sourceFolderCount;
   final bool played;
   final double? playedPercentage;
   final int playbackPositionTicks;
   final int? unplayedItemCount;
   final bool isFavorite;
   final String? primaryImageTag;
+  final String? thumbImageTag;
+  final String? logoImageTag;
   final String? backdropImageTag;
+  final String? seriesPrimaryImageTag;
+  final String? parentPrimaryImageItemId;
+  final String? parentPrimaryImageTag;
+  final String? parentThumbItemId;
+  final String? parentThumbImageTag;
+  final String? parentLogoItemId;
+  final String? parentLogoImageTag;
+  final String? parentBackdropItemId;
+  final String? parentBackdropImageTag;
   final List<String> genres;
   final List<String> tags;
   final List<PersonCreditModel> people;
@@ -209,6 +433,36 @@ class MediaItemModel {
 
   bool get isPlayable => type == 'Movie' || type == 'Episode' || type == 'Video';
   bool get isSeries => type == 'Series';
+  bool get isFolderish => type == 'Series' || type == 'Season';
+  int get versionCount => mediaSourceCount ?? mediaSources.length;
+
+  /// Localises scraper fallback `"Episode 3"` into `"第 3 集"` just like embygo Web.
+  String get displayName {
+    final m = RegExp(r'^Episode (\d+)$').firstMatch(name);
+    return m != null ? '第 ${m.group(1)} 集' : name;
+  }
+
+  String get cardTitle => type == 'Episode' ? (seriesName ?? displayName) : name;
+
+  String get cardSubtitle {
+    switch (type) {
+      case 'Episode':
+        return [if (episodeCode != null) episodeCode!, displayName].join(' · ');
+      case 'Season':
+        return seriesName ?? '';
+      case 'Series':
+        return [
+          if (productionYear != null) '$productionYear',
+          if (childCount != null && childCount! > 0) '$childCount 季',
+          if (recursiveItemCount != null && recursiveItemCount! > 0) '$recursiveItemCount 集',
+        ].join(' · ');
+      default:
+        return [
+          if (productionYear != null) '$productionYear',
+          if (communityRating != null) '★ ${communityRating!.toStringAsFixed(1)}',
+        ].join(' · ');
+    }
+  }
 
   String? get episodeCode {
     if (type != 'Episode') return null;
@@ -222,13 +476,27 @@ class MediaItemModel {
   }
 
   double get resumeProgress {
-    if (playedPercentage != null && playedPercentage! > 0) {
+    if (played) return 0.0;
+    if (playedPercentage != null && playedPercentage! > 0.5 && playedPercentage! < 99) {
       return (playedPercentage! / 100.0).clamp(0.0, 1.0);
     }
     if (runTimeTicks != null && runTimeTicks! > 0 && playbackPositionTicks > 0) {
-      return (playbackPositionTicks / runTimeTicks!).clamp(0.0, 1.0);
+      final p = (playbackPositionTicks / runTimeTicks!).clamp(0.0, 1.0);
+      return p > 0.005 && p < 0.99 ? p : 0.0;
     }
     return 0.0;
+  }
+
+  String get remainingText {
+    if (playbackPositionTicks <= 0) return '';
+    if (runTimeTicks == null || runTimeTicks! <= 0) {
+      final watched = fmtDurationTicks(playbackPositionTicks);
+      return watched.isNotEmpty ? '已看 $watched' : '';
+    }
+    final left = runTimeTicks! - playbackPositionTicks;
+    if (left <= 60 * kEmbyTicksPerSecond) return '即将看完';
+    final text = fmtDurationTicks(left);
+    return text.isNotEmpty ? '剩余 $text' : '';
   }
 
   List<String> get inferredBadges {
@@ -246,7 +514,7 @@ class MediaItemModel {
     if (hay.contains('truehd') && !badges.contains('Dolby Atmos')) badges.add('TrueHD');
     if (hay.contains('dts:x') || hay.contains('dts-x')) badges.add('DTS:X');
     if (hay.contains('remux')) badges.add('REMUX');
-    if (mediaSources.length > 1) badges.add('${mediaSources.length} 版本');
+    if (versionCount > 1) badges.add('$versionCount 版本');
     return badges;
   }
 
@@ -254,6 +522,7 @@ class MediaItemModel {
     final userData = (j['UserData'] as Map<String, dynamic>?) ?? const {};
     final imageTags = (j['ImageTags'] as Map<String, dynamic>?) ?? const {};
     final backdrops = (j['BackdropImageTags'] as List<dynamic>?) ?? const [];
+    final parentBackdrops = (j['ParentBackdropImageTags'] as List<dynamic>?) ?? const [];
     final sources = ((j['MediaSources'] as List<dynamic>?) ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(MediaSourceModel.fromJson)
@@ -267,6 +536,7 @@ class MediaItemModel {
       id: (j['Id'] ?? '').toString(),
       name: (j['Name'] ?? '').toString(),
       type: (j['Type'] ?? 'Movie').toString(),
+      originalTitle: j['OriginalTitle']?.toString(),
       collectionType: j['CollectionType']?.toString(),
       overview: j['Overview']?.toString(),
       productionYear: (j['ProductionYear'] as num?)?.toInt(),
@@ -275,16 +545,34 @@ class MediaItemModel {
       runTimeTicks: (j['RunTimeTicks'] as num?)?.toInt(),
       seriesId: j['SeriesId']?.toString(),
       seriesName: j['SeriesName']?.toString(),
-      parentIndexNumber: (j['ParentIndexNumber'] as num?)?.toInt(),
+      seasonId: j['SeasonId']?.toString(),
+      seasonName: j['SeasonName']?.toString(),
+      parentIndexNumber:
+          (j['ParentIndexNumber'] as num?)?.toInt() ?? (j['SeasonNumber'] as num?)?.toInt(),
       indexNumber: (j['IndexNumber'] as num?)?.toInt(),
       indexNumberEnd: (j['IndexNumberEnd'] as num?)?.toInt(),
+      childCount: (j['ChildCount'] as num?)?.toInt(),
+      recursiveItemCount: (j['RecursiveItemCount'] as num?)?.toInt(),
+      mediaSourceCount: (j['MediaSourceCount'] as num?)?.toInt(),
+      sourceFolderCount: (j['SourceFolderCount'] as num?)?.toInt(),
       played: userData['Played'] == true,
       playedPercentage: (userData['PlayedPercentage'] as num?)?.toDouble(),
       playbackPositionTicks: (userData['PlaybackPositionTicks'] as num?)?.toInt() ?? 0,
       unplayedItemCount: (userData['UnplayedItemCount'] as num?)?.toInt(),
       isFavorite: userData['IsFavorite'] == true,
-      primaryImageTag: imageTags['Primary']?.toString() ?? j['SeriesPrimaryImageTag']?.toString(),
+      primaryImageTag: imageTags['Primary']?.toString(),
+      thumbImageTag: imageTags['Thumb']?.toString(),
+      logoImageTag: imageTags['Logo']?.toString(),
       backdropImageTag: backdrops.isNotEmpty ? backdrops.first.toString() : null,
+      seriesPrimaryImageTag: j['SeriesPrimaryImageTag']?.toString(),
+      parentPrimaryImageItemId: j['ParentPrimaryImageItemId']?.toString(),
+      parentPrimaryImageTag: j['ParentPrimaryImageTag']?.toString(),
+      parentThumbItemId: j['ParentThumbItemId']?.toString(),
+      parentThumbImageTag: j['ParentThumbImageTag']?.toString(),
+      parentLogoItemId: j['ParentLogoItemId']?.toString(),
+      parentLogoImageTag: j['ParentLogoImageTag']?.toString(),
+      parentBackdropItemId: j['ParentBackdropItemId']?.toString(),
+      parentBackdropImageTag: parentBackdrops.isNotEmpty ? parentBackdrops.first.toString() : null,
       genres: ((j['Genres'] as List<dynamic>?) ?? const []).map((e) => e.toString()).toList(),
       tags: ((j['Tags'] as List<dynamic>?) ?? const []).map((e) => e.toString()).toList(),
       people: people,

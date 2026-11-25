@@ -315,11 +315,14 @@ impl EmbyClient {
     // Discovery, Health & Authentication
     // -------------------------------------------------------------------------
 
-    /// Probe `GET /System/Info/Public` and detect server dialect (`embygo` / `Emby` / `Jellyfin`).
+    /// Probe `GET /System/Info/Public` and detect server dialect (`embygo` / `Emby` / `Jellyfin`)
+    /// in a single concurrent round-trip so login never feels stalled.
     pub async fn probe_server(&self) -> Result<(PublicSystemInfo, ServerCapabilities)> {
-        let resp = self
-            .send_raw(Method::GET, "System/Info/Public", &[], None)
-            .await?;
+        let (pub_res, embygo_res) = tokio::join!(
+            self.send_raw(Method::GET, "System/Info/Public", &[], None),
+            self.send_raw(Method::GET, "emby-compat/status", &[], None),
+        );
+        let resp = pub_res?;
         let server_hdr = resp
             .headers()
             .get("Server")
@@ -333,15 +336,11 @@ impl EmbyClient {
         let bytes = resp.bytes().await?;
         let info: PublicSystemInfo = serde_json::from_slice(&bytes)?;
 
-        // Also check `/emby-compat/status` existence (401/403/200 indicates embygo; 404 indicates Emby/Jellyfin).
-        let is_embygo_hint = match self
-            .send_raw(Method::GET, "emby-compat/status", &[], None)
-            .await
-        {
-            Ok(_) => true,
-            Err(ProtocolError::Unauthorized(_)) | Err(ProtocolError::Forbidden(_)) => true,
-            Err(_) => false,
-        };
+        // 401/403/200 on `/emby-compat/status` indicates embygo; 404 indicates Emby/Jellyfin.
+        let is_embygo_hint = matches!(
+            embygo_res,
+            Ok(_) | Err(ProtocolError::Unauthorized(_)) | Err(ProtocolError::Forbidden(_))
+        );
 
         let caps = ServerCapabilities::detect(
             &info,
@@ -386,14 +385,18 @@ impl EmbyClient {
 
         self.set_credentials(resp.access_token.clone(), resp.user.id.clone());
 
-        // Post-login: register capabilities & inspect embygo admin status if available
-        let _ = self
-            .report_capabilities(&ClientCapabilitiesPayload::default())
-            .await;
-        if let Ok(status) = self.embygo_status().await {
-            let mut st = self.state.write();
-            st.capabilities.mark_embygo(status.version);
-        }
+        // Post-login bookkeeping runs in background so authentication returns immediately.
+        let bg = self.clone();
+        tokio::spawn(async move {
+            let payload = ClientCapabilitiesPayload::default();
+            let (caps_res, status_res) =
+                tokio::join!(bg.report_capabilities(&payload), bg.embygo_status(),);
+            let _ = caps_res;
+            if let Ok(status) = status_res {
+                let mut st = bg.state.write();
+                st.capabilities.mark_embygo(status.version);
+            }
+        });
         Ok(resp)
     }
 

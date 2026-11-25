@@ -528,6 +528,8 @@ pub struct BaseItemDto {
     #[serde(default)]
     pub parent_index_number: Option<i32>,
     #[serde(default)]
+    pub season_number: Option<i32>,
+    #[serde(default)]
     pub index_number: Option<i32>,
     #[serde(default)]
     pub index_number_end: Option<i32>,
@@ -561,7 +563,19 @@ pub struct BaseItemDto {
     pub image_tags: HashMap<String, String>,
     #[serde(default)]
     pub backdrop_image_tags: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_string_or_int")]
+    pub parent_primary_image_item_id: Option<String>,
     #[serde(default)]
+    pub parent_primary_image_tag: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_string_or_int")]
+    pub parent_thumb_item_id: Option<String>,
+    #[serde(default)]
+    pub parent_thumb_image_tag: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_string_or_int")]
+    pub parent_logo_item_id: Option<String>,
+    #[serde(default)]
+    pub parent_logo_image_tag: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_string_or_int")]
     pub parent_backdrop_item_id: Option<String>,
     #[serde(default)]
     pub parent_backdrop_image_tags: Vec<String>,

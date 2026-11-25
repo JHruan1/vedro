@@ -15,14 +15,18 @@ class VedroBrandMark extends StatelessWidget {
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: VedroTheme.surface2,
-        borderRadius: BorderRadius.circular(size * 0.26),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF23252C), Color(0xFF141519)],
+        ),
+        borderRadius: BorderRadius.circular(size * 0.27),
         border: Border.all(color: VedroTheme.lineStrong, width: 0.8),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x66000000),
-            blurRadius: 20,
-            offset: Offset(0, 8),
+            color: Color(0x70000000),
+            blurRadius: 24,
+            offset: Offset(0, 10),
           ),
         ],
       ),
@@ -31,17 +35,61 @@ class VedroBrandMark extends StatelessWidget {
   }
 }
 
+/// Subtle breathing aperture mark used during silent startup / auto-restore.
+class BreathingBrandMark extends StatefulWidget {
+  const BreathingBrandMark({super.key, this.size = 48});
+  final double size;
+
+  @override
+  State<BreathingBrandMark> createState() => _BreathingBrandMarkState();
+}
+
+class _BreathingBrandMarkState extends State<BreathingBrandMark>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, child) {
+        final v = Curves.easeInOutSine.transform(_ctrl.value);
+        return Opacity(
+          opacity: 0.55 + 0.45 * v,
+          child: Transform.scale(scale: 0.96 + 0.05 * v, child: child),
+        );
+      },
+      child: VedroBrandMark(size: widget.size),
+    );
+  }
+}
+
 class _VedroMarkPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final cx = size.width * 0.5;
+    final cx = size.width * 0.52;
     final cy = size.height * 0.5;
-    final r = size.width * 0.22;
+    final r = size.width * 0.21;
 
     final playPath = Path()
-      ..moveTo(cx - r * 0.62, cy - r * 0.92)
-      ..lineTo(cx + r * 0.98, cy)
-      ..lineTo(cx - r * 0.62, cy + r * 0.92)
+      ..moveTo(cx - r * 0.72, cy - r * 0.92)
+      ..lineTo(cx + r * 0.92, cy)
+      ..lineTo(cx - r * 0.72, cy + r * 0.92)
       ..close();
 
     final paint = Paint()
@@ -62,8 +110,9 @@ class GlassSurface extends StatelessWidget {
     required this.child,
     this.borderRadius = 14,
     this.padding,
-    this.blur = 28,
+    this.blur = 26,
     this.color = VedroTheme.glass,
+    this.borderColor = VedroTheme.lineStrong,
   });
 
   final Widget child;
@@ -71,6 +120,7 @@ class GlassSurface extends StatelessWidget {
   final EdgeInsetsGeometry? padding;
   final double blur;
   final Color color;
+  final Color borderColor;
 
   @override
   Widget build(BuildContext context) {
@@ -83,7 +133,7 @@ class GlassSurface extends StatelessWidget {
           decoration: BoxDecoration(
             color: color,
             borderRadius: BorderRadius.circular(borderRadius),
-            border: Border.all(color: VedroTheme.lineStrong, width: 0.6),
+            border: Border.all(color: borderColor, width: 0.7),
           ),
           child: child,
         ),
@@ -92,24 +142,26 @@ class GlassSurface extends StatelessWidget {
   }
 }
 
-/// Tactile Apple-style spring press + subtle desktop hover lift.
+/// Tactile Apple-style damped press + desktop hover lift with hover-state callback.
 class PressableScale extends StatefulWidget {
   const PressableScale({
     super.key,
     required this.child,
     this.onTap,
     this.onLongPress,
-    this.hoverScale = 1.03,
+    this.onSecondaryTap,
+    this.onHoverChanged,
+    this.hoverScale = 1.028,
     this.pressScale = 0.965,
-    this.borderRadius = 10,
   });
 
   final Widget child;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
+  final VoidCallback? onSecondaryTap;
+  final ValueChanged<bool>? onHoverChanged;
   final double hoverScale;
   final double pressScale;
-  final double borderRadius;
 
   @override
   State<PressableScale> createState() => _PressableScaleState();
@@ -119,6 +171,12 @@ class _PressableScaleState extends State<PressableScale> {
   bool _hovering = false;
   bool _pressing = false;
 
+  void _setHover(bool v) {
+    if (_hovering == v) return;
+    setState(() => _hovering = v);
+    widget.onHoverChanged?.call(v);
+  }
+
   @override
   Widget build(BuildContext context) {
     final targetScale = _pressing
@@ -127,11 +185,11 @@ class _PressableScaleState extends State<PressableScale> {
 
     return MouseRegion(
       cursor: widget.onTap != null ? SystemMouseCursors.click : MouseCursor.defer,
-      onEnter: (_) => setState(() => _hovering = true),
-      onExit: (_) => setState(() {
-        _hovering = false;
-        _pressing = false;
-      }),
+      onEnter: (_) => _setHover(true),
+      onExit: (_) {
+        _setHover(false);
+        if (_pressing) setState(() => _pressing = false);
+      },
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTapDown: (_) => setState(() => _pressing = true),
@@ -139,10 +197,11 @@ class _PressableScaleState extends State<PressableScale> {
         onTapCancel: () => setState(() => _pressing = false),
         onTap: widget.onTap,
         onLongPress: widget.onLongPress,
+        onSecondaryTap: widget.onSecondaryTap,
         child: AnimatedScale(
           scale: targetScale,
-          duration: Duration(milliseconds: _pressing ? 110 : 220),
-          curve: Curves.easeOutCubic,
+          duration: Duration(milliseconds: _pressing ? 110 : 240),
+          curve: _pressing ? Curves.easeOutQuad : VedroTheme.springCurve,
           child: widget.child,
         ),
       ),
@@ -150,8 +209,8 @@ class _PressableScaleState extends State<PressableScale> {
   }
 }
 
-/// Apple TV+ style monochrome hairline technical spec marks (`4K`, `DV`, `ATMOS`, `HDR`).
-/// Restrained and quiet — used only on Detail & Player HUD, never cluttering posters.
+/// Apple TV+ style monochrome hairline technical spec marks (`4K`, `DOLBY VISION`, `DOLBY ATMOS`).
+/// Quiet and restrained — used only on Detail & Player HUD, never cluttering posters.
 class SpecGlyphRow extends StatelessWidget {
   const SpecGlyphRow({super.key, required this.specs});
   final List<String> specs;
@@ -165,19 +224,20 @@ class SpecGlyphRow extends StatelessWidget {
       crossAxisAlignment: WrapCrossAlignment.center,
       children: specs.map((s) {
         return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 6.5, vertical: 2.5),
           decoration: BoxDecoration(
             color: const Color(0x14FFFFFF),
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: const Color(0x30FFFFFF), width: 0.7),
+            borderRadius: BorderRadius.circular(5),
+            border: Border.all(color: const Color(0x36FFFFFF), width: 0.7),
           ),
           child: Text(
             _compactLabel(s),
             style: const TextStyle(
-              color: VedroTheme.fg,
-              fontSize: 10,
+              color: Color(0xD9FFFFFF),
+              fontSize: 10.5,
               fontWeight: FontWeight.w600,
-              letterSpacing: 0.4,
+              letterSpacing: 0.35,
+              fontFeatures: [FontFeature.tabularFigures()],
             ),
           ),
         );
@@ -190,6 +250,67 @@ class SpecGlyphRow extends StatelessWidget {
     if (lower.contains('dolby vision') || lower == 'dovi') return 'DOLBY VISION';
     if (lower.contains('atmos')) return 'DOLBY ATMOS';
     return raw.toUpperCase();
+  }
+}
+
+/// Apple-style horizontal segmented pill control (for Seasons / Filters).
+class VedroSegmentedControl<T> extends StatelessWidget {
+  const VedroSegmentedControl({
+    super.key,
+    required this.items,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final List<(T value, String label)> items;
+  final T selected;
+  final ValueChanged<T> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Container(
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: VedroTheme.surface,
+          borderRadius: BorderRadius.circular(11),
+          border: Border.all(color: VedroTheme.line, width: 0.8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: items.map((entry) {
+            final (val, label) = entry;
+            final active = val == selected;
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => onSelected(val),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                curve: VedroTheme.easeOut,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                decoration: BoxDecoration(
+                  color: active ? VedroTheme.surface3 : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: active ? VedroTheme.lineStrong : Colors.transparent,
+                    width: 0.6,
+                  ),
+                ),
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: active ? VedroTheme.fg : VedroTheme.fg2,
+                    fontSize: 13,
+                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ),
+    );
   }
 }
 
@@ -211,10 +332,10 @@ Future<T?> showGlassSheet<T>({
           child: ConstrainedBox(
             constraints: BoxConstraints(
               maxWidth: 520,
-              maxHeight: MediaQuery.sizeOf(ctx).height * 0.75,
+              maxHeight: MediaQuery.sizeOf(ctx).height * 0.78,
             ),
             child: GlassSurface(
-              borderRadius: 20,
+              borderRadius: 22,
               color: VedroTheme.glassStrong,
               child: Column(
                 mainAxisSize: MainAxisSize.min,

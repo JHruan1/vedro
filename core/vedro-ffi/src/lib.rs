@@ -259,10 +259,13 @@ impl VedroRuntime {
                 )
                 .map_err(|e| e.to_string())?;
                 let (info, caps) = client.probe_server().await.map_err(|e| e.to_string())?;
+                self.proxy
+                    .set_image_upstream(client.base_url().to_string(), client.auth_headers());
                 *self.client.lock() = Some(client);
                 Ok(json!({
                     "info": info,
                     "capabilities": caps,
+                    "proxy_addr": self.proxy.listen_addr().to_string(),
                 }))
             }
 
@@ -303,10 +306,13 @@ impl VedroRuntime {
                     is_admin,
                     last_connected_at: chrono::Utc::now().timestamp(),
                 });
+                self.proxy
+                    .set_image_upstream(client.base_url().to_string(), client.auth_headers());
                 self.start_websocket(client.clone());
                 Ok(json!({
                     "auth": auth,
                     "capabilities": caps,
+                    "proxy_addr": self.proxy.listen_addr().to_string(),
                 }))
             }
 
@@ -341,12 +347,15 @@ impl VedroRuntime {
                 let (info, caps) = client.probe_server().await.map_err(|e| e.to_string())?;
                 client.set_credentials(token, user_id);
                 let user = client.current_user().await.map_err(|e| e.to_string())?;
+                self.proxy
+                    .set_image_upstream(client.base_url().to_string(), client.auth_headers());
                 *self.client.lock() = Some(client.clone());
                 self.start_websocket(client);
                 Ok(json!({
                     "info": info,
                     "capabilities": caps,
                     "user": user,
+                    "proxy_addr": self.proxy.listen_addr().to_string(),
                 }))
             }
 
@@ -364,31 +373,53 @@ impl VedroRuntime {
 
             "get_home" => {
                 let client = self.require_client()?;
-                let (views_r, resume_r, next_up_r, popular_r, suggestions_r) = tokio::join!(
+                let fav_query = ItemsQuery {
+                    filters: Some("IsFavorite".to_string()),
+                    recursive: Some(true),
+                    limit: Some(16),
+                    ..Default::default()
+                };
+                let (views_r, resume_r, next_up_r, popular_r, suggestions_r, favorites_r) = tokio::join!(
                     client.views(),
                     client.resume(20, None),
                     client.next_up(20, None),
                     client.popular(10),
                     client.suggestions(16),
+                    client.items(&fav_query),
                 );
                 let views = views_r.map_err(|e| e.to_string())?;
                 let resume = resume_r.unwrap_or_default();
                 let next_up = next_up_r.unwrap_or_default();
                 let popular = popular_r.unwrap_or_default();
                 let suggestions = suggestions_r.unwrap_or_default();
+                let favorites = favorites_r.unwrap_or_default();
 
-                // Fetch Latest for up to 6 libraries in parallel
-                let mut latest_by_library = Vec::new();
-                for lib in views.items.iter().take(6) {
-                    if let Ok(items) = client.latest(Some(&lib.id), 16).await {
-                        if !items.is_empty() {
-                            latest_by_library.push(json!({
-                                "library": lib,
-                                "items": items,
-                            }));
-                        }
+                // Truly fetch Latest for up to 8 libraries concurrently in one round-trip
+                let mut join_set = tokio::task::JoinSet::new();
+                for (idx, lib) in views.items.iter().take(8).cloned().enumerate() {
+                    let c = client.clone();
+                    join_set.spawn(async move {
+                        let items = c.latest(Some(&lib.id), 18).await.unwrap_or_default();
+                        (idx, lib, items)
+                    });
+                }
+                let mut fetched_latest = Vec::new();
+                while let Some(res) = join_set.join_next().await {
+                    if let Ok(tuple) = res {
+                        fetched_latest.push(tuple);
                     }
                 }
+                fetched_latest.sort_by_key(|(idx, _, _)| *idx);
+                let latest_by_library: Vec<Value> = fetched_latest
+                    .into_iter()
+                    .filter(|(_, _, items)| !items.is_empty())
+                    .map(|(_, lib, items)| {
+                        json!({
+                            "library": lib,
+                            "items": items,
+                        })
+                    })
+                    .collect();
 
                 Ok(json!({
                     "capabilities": client.capabilities(),
@@ -397,6 +428,7 @@ impl VedroRuntime {
                     "resume": resume.items,
                     "next_up": next_up.items,
                     "suggestions": suggestions.items,
+                    "favorites": favorites.items,
                     "latest_by_library": latest_by_library,
                 }))
             }
@@ -411,9 +443,14 @@ impl VedroRuntime {
             "get_item" => {
                 let client = self.require_client()?;
                 let id = str_param(&params, "item_id")?;
-                let item = client.item(&id).await.map_err(|e| e.to_string())?;
-                let similar = client.similar(&id, 12).await.unwrap_or_default();
-                let segments = client.media_segments(&id).await.unwrap_or_default();
+                let (item_r, similar_r, segments_r) = tokio::join!(
+                    client.item(&id),
+                    client.similar(&id, 12),
+                    client.media_segments(&id),
+                );
+                let item = item_r.map_err(|e| e.to_string())?;
+                let similar = similar_r.unwrap_or_default();
+                let segments = segments_r.unwrap_or_default();
                 Ok(json!({
                     "item": item,
                     "similar": similar.items,

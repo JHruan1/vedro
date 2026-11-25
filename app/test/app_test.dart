@@ -9,7 +9,7 @@ import 'package:vedro/main.dart';
 
 class _MockVedroCore implements VedroCoreClient {
   @override
-  String get coreVersion => '0.1.1-test';
+  String get coreVersion => '0.1.2-test';
 
   @override
   Future<dynamic> invoke(String method, [Map<String, dynamic> params = const {}]) async {
@@ -92,6 +92,7 @@ class _MockVedroCore implements VedroCoreClient {
           'resume': <dynamic>[],
           'next_up': <dynamic>[],
           'suggestions': <dynamic>[],
+          'favorites': <dynamic>[],
           'latest_by_library': <dynamic>[],
         };
       default:
@@ -107,7 +108,7 @@ class _MockVedroCore implements VedroCoreClient {
 }
 
 void main() {
-  test('MediaItemModel infers 4K, Dolby Vision, Dolby Atmos, REMUX specs', () {
+  test('MediaItemModel infers specs and deterministic GeneratedArt helpers', () {
     final item = MediaItemModel.fromJson({
       'Id': '100',
       'Name': 'Interstellar',
@@ -121,9 +122,12 @@ void main() {
       ],
     });
     expect(item.inferredBadges, containsAll(['4K', 'Dolby Vision', 'Dolby Atmos', 'REMUX']));
+    expect(artworkInitials('沙丘2'), equals('沙丘'));
+    expect(artworkInitials('Episode 101'), equals('E101'));
+    expect(deterministicHues('abc'), equals(deterministicHues('abc')));
   });
 
-  testWidgets('ServerConnectScreen is clean and logs into home screen', (tester) async {
+  testWidgets('Clean login transitions immediately to cinema Home with GeneratedArt fallback', (tester) async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('com.vedro.player/hardware'),
       (call) async => <String, dynamic>{
@@ -141,7 +145,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Vedro'), findsOneWidget);
-    // Ensure login stays restrained with zero marketing buzzword badges
     expect(find.text('Rust Core'), findsNothing);
     expect(find.text('embygo DirectPlay'), findsNothing);
 
@@ -149,10 +152,11 @@ void main() {
     await tester.enterText(find.byType(TextField).at(2), 'secret');
     await tester.tap(find.text('登录'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 320));
+    await tester.pump(const Duration(milliseconds: 450));
 
     expect(find.text('My EmbyGo'), findsOneWidget);
     expect(find.text('Dune: Part Two'), findsOneWidget);
+    expect(find.text('媒体库'), findsWidgets);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();

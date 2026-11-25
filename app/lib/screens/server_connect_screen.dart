@@ -27,6 +27,10 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
     super.initState();
     _proxyCtrl.text = widget.appState.customProxyUrl;
     _acceptInvalidCerts = widget.appState.acceptInvalidCerts;
+    if (widget.appState.savedServers.isNotEmpty) {
+      _urlCtrl.text = widget.appState.savedServers.first.url;
+      _userCtrl.text = widget.appState.savedServers.first.username ?? '';
+    }
     widget.appState.discoverLanServers();
   }
 
@@ -40,6 +44,7 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
   }
 
   Future<void> _submit() async {
+    if (widget.appState.isBusy) return;
     try {
       await widget.appState.login(
         _urlCtrl.text,
@@ -49,12 +54,15 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
         acceptInvalidTls: _acceptInvalidCerts,
       );
     } catch (_) {
-      // Error surfaced via appState.errorMessage
+      // Error surfaced cleanly via appState.errorMessage
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final busy = widget.appState.isBusy;
+    final stageText = widget.appState.loginStage ?? '登录中…';
+
     return Scaffold(
       backgroundColor: VedroTheme.canvas,
       body: SafeArea(
@@ -62,19 +70,19 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
           child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 376),
+              constraints: const BoxConstraints(maxWidth: 380),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Center(child: VedroBrandMark(size: 50)),
+                  const Center(child: VedroBrandMark(size: 52)),
                   const SizedBox(height: 16),
                   const Text(
                     'Vedro',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: VedroTheme.fg,
-                      fontSize: 24,
+                      fontSize: 25,
                       fontWeight: FontWeight.w600,
                       letterSpacing: -0.6,
                     ),
@@ -84,7 +92,7 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
                     Container(
                       decoration: BoxDecoration(
                         color: VedroTheme.surface,
-                        borderRadius: BorderRadius.circular(14),
+                        borderRadius: BorderRadius.circular(16),
                         border: Border.all(color: VedroTheme.line, width: 0.8),
                       ),
                       clipBehavior: Clip.antiAlias,
@@ -94,6 +102,7 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
                             if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16),
                             _SavedServerRow(
                               profile: widget.appState.savedServers[i],
+                              disabled: busy,
                               onTap: () => widget.appState.restoreSavedServer(
                                 widget.appState.savedServers[i],
                               ),
@@ -137,17 +146,25 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
                     const SizedBox(height: 16),
                   ],
                   Container(
-                    padding: const EdgeInsets.all(20),
+                    padding: const EdgeInsets.all(22),
                     decoration: BoxDecoration(
                       color: VedroTheme.surface,
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(18),
                       border: Border.all(color: VedroTheme.line, width: 0.8),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x5A000000),
+                          blurRadius: 32,
+                          offset: Offset(0, 14),
+                        ),
+                      ],
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         TextField(
                           controller: _urlCtrl,
+                          enabled: !busy,
                           keyboardType: TextInputType.url,
                           textInputAction: TextInputAction.next,
                           style: const TextStyle(fontSize: 14, color: VedroTheme.fg),
@@ -159,6 +176,7 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
                         const SizedBox(height: 12),
                         TextField(
                           controller: _userCtrl,
+                          enabled: !busy,
                           textInputAction: TextInputAction.next,
                           style: const TextStyle(fontSize: 14, color: VedroTheme.fg),
                           decoration: const InputDecoration(
@@ -168,6 +186,7 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
                         const SizedBox(height: 12),
                         TextField(
                           controller: _passCtrl,
+                          enabled: !busy,
                           obscureText: _obscure,
                           textInputAction: TextInputAction.done,
                           style: const TextStyle(fontSize: 14, color: VedroTheme.fg),
@@ -184,43 +203,65 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
                           ),
                           onSubmitted: (_) => _submit(),
                         ),
-                        if (widget.appState.errorMessage != null) ...[
-                          const SizedBox(height: 12),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                            decoration: BoxDecoration(
-                              color: VedroTheme.danger.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                color: VedroTheme.danger.withValues(alpha: 0.28),
-                                width: 0.8,
-                              ),
-                            ),
-                            child: SelectableText(
-                              widget.appState.errorMessage!,
-                              style: const TextStyle(
-                                color: VedroTheme.danger,
-                                fontSize: 12,
-                                height: 1.4,
-                              ),
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 16),
+                        AnimatedSize(
+                          duration: const Duration(milliseconds: 200),
+                          curve: Curves.easeOutCubic,
+                          child: widget.appState.errorMessage != null
+                              ? Container(
+                                  margin: const EdgeInsets.only(top: 12),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                  decoration: BoxDecoration(
+                                    color: VedroTheme.danger.withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                      color: VedroTheme.danger.withValues(alpha: 0.28),
+                                      width: 0.8,
+                                    ),
+                                  ),
+                                  child: SelectableText(
+                                    widget.appState.errorMessage!,
+                                    style: const TextStyle(
+                                      color: VedroTheme.danger,
+                                      fontSize: 12.5,
+                                      height: 1.45,
+                                    ),
+                                  ),
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                        const SizedBox(height: 18),
                         SizedBox(
                           height: 44,
                           child: FilledButton(
-                            onPressed: widget.appState.isBusy ? null : _submit,
-                            child: widget.appState.isBusy
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white,
-                                    ),
-                                  )
-                                : const Text('登录'),
+                            onPressed: busy ? null : _submit,
+                            child: AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 160),
+                              child: busy
+                                  ? Row(
+                                      key: ValueKey(stageText),
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        const SizedBox(
+                                          width: 15,
+                                          height: 15,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 10),
+                                        Text(
+                                          stageText,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    )
+                                  : const Text('登录', key: ValueKey('idle')),
+                            ),
                           ),
                         ),
                       ],
@@ -245,7 +286,9 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
                             ),
                             const SizedBox(width: 4),
                             Icon(
-                              _showAdvanced ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                              _showAdvanced
+                                  ? Icons.keyboard_arrow_up_rounded
+                                  : Icons.keyboard_arrow_down_rounded,
                               size: 16,
                               color: VedroTheme.fg3,
                             ),
@@ -271,6 +314,7 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
                               children: [
                                 TextField(
                                   controller: _proxyCtrl,
+                                  enabled: !busy,
                                   style: const TextStyle(fontSize: 13.5, color: VedroTheme.fg),
                                   decoration: InputDecoration(
                                     labelText: '代理地址（留空自动跟随系统）',
@@ -290,7 +334,9 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
                                     ),
                                     Switch(
                                       value: _acceptInvalidCerts,
-                                      onChanged: (v) => setState(() => _acceptInvalidCerts = v),
+                                      onChanged: busy
+                                          ? null
+                                          : (v) => setState(() => _acceptInvalidCerts = v),
                                     ),
                                   ],
                                 ),
@@ -310,24 +356,30 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
 }
 
 class _SavedServerRow extends StatelessWidget {
-  const _SavedServerRow({required this.profile, required this.onTap});
+  const _SavedServerRow({
+    required this.profile,
+    required this.disabled,
+    required this.onTap,
+  });
+
   final SavedServerProfile profile;
+  final bool disabled;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      onTap: onTap,
+      onTap: disabled ? null : onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
         child: Row(
           children: [
             Container(
-              width: 32,
-              height: 32,
+              width: 34,
+              height: 34,
               decoration: BoxDecoration(
                 color: VedroTheme.surface2,
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(9),
                 border: Border.all(color: VedroTheme.line, width: 0.6),
               ),
               child: const Icon(Icons.dns_outlined, size: 16, color: VedroTheme.fg2),

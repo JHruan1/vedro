@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../core/models/models.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
+import '../widgets/vedro_artwork.dart';
 
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key, required this.appState, required this.onItemTap});
@@ -35,7 +36,7 @@ class _SearchScreenState extends State<SearchScreen> {
       setState(() => _hints = []);
       return;
     }
-    _debounce = Timer(const Duration(milliseconds: 240), () => _runSearch(val.trim()));
+    _debounce = Timer(const Duration(milliseconds: 220), () => _runSearch(val.trim()));
   }
 
   Future<void> _runSearch(String term) async {
@@ -102,7 +103,7 @@ class _SearchScreenState extends State<SearchScreen> {
                     ),
                   )
                 : ListView.separated(
-                    padding: EdgeInsets.fromLTRB(20, 4, 20, wide ? 36 : 104),
+                    padding: EdgeInsets.fromLTRB(20, 4, 20, wide ? 36 : 108),
                     itemCount: _hints.length,
                     separatorBuilder: (_, __) => const Divider(height: 1),
                     itemBuilder: (_, idx) {
@@ -121,37 +122,31 @@ class _SearchScreenState extends State<SearchScreen> {
                       ].join(' · ');
 
                       return InkWell(
-                        onTap: type == 'Person'
-                            ? null
-                            : () => widget.onItemTap(MediaItemModel(id: id, name: name, type: type)),
+                        onTap: () => widget.onItemTap(MediaItemModel(
+                          id: id,
+                          name: name,
+                          type: type,
+                          primaryImageTag: imgTag,
+                        )),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(vertical: 10),
                           child: Row(
                             children: [
                               Container(
-                                width: 40,
-                                height: 56,
+                                width: 42,
+                                height: 60,
                                 decoration: BoxDecoration(
-                                  color: VedroTheme.surface2,
-                                  borderRadius: BorderRadius.circular(6),
+                                  borderRadius: BorderRadius.circular(7),
                                   border: Border.all(color: VedroTheme.line, width: 0.6),
                                 ),
                                 clipBehavior: Clip.antiAlias,
-                                child: thumbUrl.isNotEmpty
-                                    ? Image.network(
-                                        thumbUrl,
-                                        fit: BoxFit.cover,
-                                        errorBuilder: (_, __, ___) => Icon(
-                                          type == 'Person' ? Icons.person_outline : Icons.movie_outlined,
-                                          size: 18,
-                                          color: VedroTheme.fg3,
-                                        ),
-                                      )
-                                    : Icon(
-                                        type == 'Person' ? Icons.person_outline : Icons.movie_outlined,
-                                        size: 18,
-                                        color: VedroTheme.fg3,
-                                      ),
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    GeneratedArt(seed: id, label: name),
+                                    if (thumbUrl.isNotEmpty) FadeNetworkImage(url: thumbUrl),
+                                  ],
+                                ),
                               ),
                               const SizedBox(width: 14),
                               Expanded(
@@ -180,8 +175,7 @@ class _SearchScreenState extends State<SearchScreen> {
                                   ],
                                 ),
                               ),
-                              if (type != 'Person')
-                                const Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
+                              const Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
                             ],
                           ),
                         ),

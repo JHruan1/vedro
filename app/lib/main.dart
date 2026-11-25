@@ -7,6 +7,7 @@ import 'core/theme/vedro_theme.dart';
 import 'screens/server_connect_screen.dart';
 import 'screens/shell_screen.dart';
 import 'state/app_state.dart';
+import 'widgets/vedro_ui.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -59,18 +60,25 @@ class _VedroAppState extends State<VedroApp> {
         listenable: _appState,
         builder: (context, _) {
           final Widget child;
-          if (!_appState.isInitialized) {
-            child = const Scaffold(
-              key: ValueKey('splash'),
+          if (!_appState.isInitialized || _appState.isAutoRestoring) {
+            child = Scaffold(
+              key: const ValueKey('splash'),
               backgroundColor: VedroTheme.canvas,
               body: Center(
-                child: SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: VedroTheme.fg2,
-                  ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const BreathingBrandMark(size: 50),
+                    const SizedBox(height: 18),
+                    Text(
+                      _appState.isAutoRestoring ? '正在恢复会话…' : 'Vedro',
+                      style: const TextStyle(
+                        color: VedroTheme.fg2,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             );
@@ -86,7 +94,7 @@ class _VedroAppState extends State<VedroApp> {
             );
           }
           return AnimatedSwitcher(
-            duration: const Duration(milliseconds: 280),
+            duration: const Duration(milliseconds: 300),
             switchInCurve: Curves.easeOutCubic,
             switchOutCurve: Curves.easeInCubic,
             child: child,

@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -10,26 +13,33 @@ import '../core/platform/native_playback_channel.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/nerd_stats_hud.dart';
+import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
 
-/// Apple TV+ / Infuse style native cinema player with full touch & keyboard gestures:
-/// - Single tap: toggle auto-hiding frosted HUD
-/// - Double tap left / right / center: -10s / +10s / play-pause
-/// - Horizontal drag: precision scrub with live frosted time & delta HUD
-/// - Left vertical drag: smooth screen brightness dimmer HUD
-/// - Right vertical drag: smooth volume HUD
-/// - Long press: 2.0× speed boost with floating pill
+/// SenPlayer / Infuse / Forward caliber native GPU cinema player:
+/// - Zero-transcode DirectPlay of 4K Remux, Dolby Vision, Dolby Atmos, PGS/ASS subtitles
+/// - Full touch gestures: horizontal precision scrub HUD, left brightness, right volume,
+///   double-tap ±10s with haptic, long-press 2.0× pill
+/// - Mouse-wheel volume + full keyboard shortcuts (Space, ←/→, ↑/↓, [/], I, N, Esc)
+/// - Skip Intro / Outro frosted button driven by media segments
+/// - Slide-out frosted Episode Drawer + Next Episode quick switcher
+/// - Video Aspect / Fill mode switcher (适应 / 填充 / 16:9 / 21:9 / 4:3)
+/// - Live Subtitle Style Customizer (font scale, vertical offset, sync delay)
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({
     super.key,
     required this.item,
     required this.appState,
     this.mediaSourceId,
+    this.playlistEpisodes,
+    this.segments,
   });
 
   final MediaItemModel item;
   final VedroAppState appState;
   final String? mediaSourceId;
+  final List<MediaItemModel>? playlistEpisodes;
+  final List<MediaSegmentModel>? segments;
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -39,6 +49,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late final Player _player;
   late final VideoController _videoController;
 
+  late MediaItemModel _currentItem;
+  late List<MediaSegmentModel> _segments;
+
   PreparedPlaybackModel? _prepared;
   Map<String, dynamic> _stats = {};
   bool _loading = true;
@@ -46,6 +59,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   bool _controlsVisible = true;
   bool _showStats = false;
+  bool _showEpisodeDrawer = false;
   bool _paused = false;
   double _positionSecs = 0;
   double _durationSecs = 0;
@@ -55,16 +69,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double _volume = 100.0;
   double _brightness = 1.0;
   double _subDelaySecs = 0.0;
+  double _subScale = 1.0;
+  int _subPos = 96;
+  String _aspectMode = 'fit'; // fit | fill | 16:9 | 21:9 | 4:3
   String _toneMapping = 'bt.2446a';
   String _audioMode = 'auto';
   bool _nightMode = false;
   bool _dialogueBoost = false;
 
-  // Interactive gesture HUD state
+  // Gesture HUD state
   bool _scrubbing = false;
   double _scrubStartSecs = 0;
   double _scrubTargetSecs = 0;
-  String? _gestureMode; // 'brightness' | 'volume' | 'seek_feedback'
+  String? _gestureMode;
   String _seekFeedbackText = '';
   Offset _lastTapDownPos = Offset.zero;
 
@@ -76,9 +93,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Timer? _ticketRefreshTimer;
   final _focusNode = FocusNode();
 
+  List<MediaItemModel> get _episodes => widget.playlistEpisodes ?? const [];
+
+  int get _currentEpisodeIndex => _episodes.indexWhere((e) => e.id == _currentItem.id);
+
+  MediaItemModel? get _nextEpisode {
+    final idx = _currentEpisodeIndex;
+    if (idx >= 0 && idx + 1 < _episodes.length) return _episodes[idx + 1];
+    return null;
+  }
+
+  MediaSegmentModel? get _activeSegment {
+    for (final seg in _segments) {
+      if (_positionSecs >= seg.startSecs && _positionSecs < seg.endSecs - 1.0) {
+        return seg;
+      }
+    }
+    return null;
+  }
+
   @override
   void initState() {
     super.initState();
+    _currentItem = widget.item;
+    _segments = widget.segments ?? const [];
     NativePlaybackChannel.setKeepScreenOn(true);
 
     _player = Player(
@@ -142,9 +180,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   void _scheduleHideControls() {
     _hideControlsTimer?.cancel();
-    if (_paused || _loading) return;
+    if (_paused || _loading || _showEpisodeDrawer) return;
     _hideControlsTimer = Timer(const Duration(milliseconds: 3500), () {
-      if (mounted && !_paused && !_scrubbing) {
+      if (mounted && !_paused && !_scrubbing && !_showEpisodeDrawer) {
         setState(() => _controlsVisible = false);
       }
     });
@@ -185,6 +223,32 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return null;
   }
 
+  Future<void> _switchEpisode(MediaItemModel ep) async {
+    await _reportStoppedAndCleanup();
+    setState(() {
+      _currentItem = ep;
+      _segments = const [];
+      _showEpisodeDrawer = false;
+      _positionSecs = 0;
+      _durationSecs = 0;
+    });
+    // Fetch segments for the new episode in background
+    unawaited(() async {
+      try {
+        final res = await widget.appState.core.invoke('get_item', {'item_id': ep.id})
+            as Map<String, dynamic>;
+        final segs = ((res['segments'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(MediaSegmentModel.fromJson)
+            .toList();
+        if (mounted && _currentItem.id == ep.id) {
+          setState(() => _segments = segs);
+        }
+      } catch (_) {}
+    }());
+    await _startPlayback(null);
+  }
+
   Future<void> _startPlayback(String? sourceId) async {
     setState(() {
       _loading = true;
@@ -192,7 +256,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     });
     try {
       final prepRaw = await widget.appState.core.invoke('prepare_playback', {
-        'item_id': widget.item.id,
+        'item_id': _currentItem.id,
         if (sourceId != null) 'media_source_id': sourceId,
         'inspect_header': true,
       }) as Map<String, dynamic>;
@@ -210,8 +274,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       await _applyMpvProperty('hdr-compute-peak', 'yes');
       await _applyMpvProperty('tone-mapping', _toneMapping);
 
-      final startDur = widget.item.playbackPositionTicks > 0
-          ? Duration(microseconds: widget.item.playbackPositionTicks ~/ 10)
+      final startDur = _currentItem.playbackPositionTicks > 0
+          ? Duration(microseconds: _currentItem.playbackPositionTicks ~/ 10)
           : null;
 
       await _player.open(
@@ -233,8 +297,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
 
       await widget.appState.core.invoke('report_playback_start', {
-        'position_ticks': widget.item.playbackPositionTicks,
-        if (widget.item.runTimeTicks != null) 'run_time_ticks': widget.item.runTimeTicks,
+        'position_ticks': _currentItem.playbackPositionTicks,
+        if (_currentItem.runTimeTicks != null) 'run_time_ticks': _currentItem.runTimeTicks,
         'is_paused': false,
       });
 
@@ -341,6 +405,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _seekBy(double delta, {bool showHud = false}) async {
     await _seekTo(_positionSecs + delta);
     if (showHud) {
+      HapticFeedback.selectionClick();
       final sign = delta >= 0 ? '+' : '';
       _flashGestureHud('seek_feedback', text: '$sign${delta.round()}s');
     }
@@ -350,6 +415,32 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final clamped = s.clamp(0.25, 4.0);
     await _player.setRate(clamped);
     if (mounted) setState(() => _speed = clamped);
+  }
+
+  Future<void> _applyAspectMode(String mode) async {
+    setState(() => _aspectMode = mode);
+    switch (mode) {
+      case 'fill':
+        await _applyMpvProperty('video-aspect-override', '-1');
+        await _applyMpvProperty('panscan', '1.0');
+        break;
+      case '16:9':
+        await _applyMpvProperty('panscan', '0.0');
+        await _applyMpvProperty('video-aspect-override', '16:9');
+        break;
+      case '21:9':
+        await _applyMpvProperty('panscan', '0.0');
+        await _applyMpvProperty('video-aspect-override', '21:9');
+        break;
+      case '4:3':
+        await _applyMpvProperty('panscan', '0.0');
+        await _applyMpvProperty('video-aspect-override', '4:3');
+        break;
+      default:
+        await _applyMpvProperty('panscan', '0.0');
+        await _applyMpvProperty('video-aspect-override', '-1');
+        break;
+    }
   }
 
   void _handleDoubleTap(double width) {
@@ -369,7 +460,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (key == LogicalKeyboardKey.space) {
       _togglePause();
     } else if (key == LogicalKeyboardKey.escape) {
-      Navigator.of(context).pop();
+      if (_showEpisodeDrawer) {
+        setState(() => _showEpisodeDrawer = false);
+      } else {
+        Navigator.of(context).pop();
+      }
     } else if (key == LogicalKeyboardKey.arrowRight) {
       _seekBy(10, showHud: true);
     } else if (key == LogicalKeyboardKey.arrowLeft) {
@@ -384,6 +479,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _flashGestureHud('volume');
     } else if (key == LogicalKeyboardKey.keyI) {
       setState(() => _showStats = !_showStats);
+    } else if (key == LogicalKeyboardKey.keyN && _nextEpisode != null) {
+      _switchEpisode(_nextEpisode!);
     } else if (key == LogicalKeyboardKey.bracketRight) {
       _setSpeed(_speed + 0.25);
     } else if (key == LogicalKeyboardKey.bracketLeft) {
@@ -394,6 +491,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
+    final seg = _activeSegment;
     final specs = <String>[
       if (_prepared?.dolbyVisionLabel != null) _prepared!.dolbyVisionLabel!,
       if (_prepared?.spatialAudioLabel != null) _prepared!.spatialAudioLabel!,
@@ -405,136 +503,213 @@ class _PlayerScreenState extends State<PlayerScreen> {
       onKeyEvent: _handleKey,
       child: Scaffold(
         backgroundColor: Colors.black,
-        body: MouseRegion(
-          onHover: (_) {
-            if (!_controlsVisible) _revealControls();
+        body: Listener(
+          onPointerSignal: (event) {
+            if (event is PointerScrollEvent && !_showEpisodeDrawer) {
+              final delta = event.scrollDelta.dy > 0 ? -4.0 : 4.0;
+              setState(() => _volume = (_volume + delta).clamp(0.0, 150.0));
+              _player.setVolume(_volume);
+              _flashGestureHud('volume');
+            }
           },
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTapDown: (d) => _lastTapDownPos = d.localPosition,
-            onTap: () {
-              if (_controlsVisible) {
+          child: MouseRegion(
+            onHover: (_) {
+              if (!_controlsVisible) _revealControls();
+            },
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapDown: (d) => _lastTapDownPos = d.localPosition,
+              onTap: () {
+                if (_showEpisodeDrawer) {
+                  setState(() => _showEpisodeDrawer = false);
+                  _scheduleHideControls();
+                  return;
+                }
+                if (_controlsVisible) {
+                  _hideControlsTimer?.cancel();
+                  setState(() => _controlsVisible = false);
+                } else {
+                  _revealControls();
+                }
+              },
+              onDoubleTap: () => _handleDoubleTap(size.width),
+              onLongPressStart: (_) {
+                HapticFeedback.mediumImpact();
+                _preBoostSpeed = _speed;
+                setState(() => _isSpeedBoost = true);
+                _setSpeed(2.0);
+              },
+              onLongPressEnd: (_) {
+                setState(() => _isSpeedBoost = false);
+                _setSpeed(_preBoostSpeed);
+              },
+              onHorizontalDragStart: (_) {
+                if (_durationSecs <= 0 || _showEpisodeDrawer) return;
                 _hideControlsTimer?.cancel();
-                setState(() => _controlsVisible = false);
-              } else {
-                _revealControls();
-              }
-            },
-            onDoubleTap: () => _handleDoubleTap(size.width),
-            onLongPressStart: (_) {
-              _preBoostSpeed = _speed;
-              setState(() => _isSpeedBoost = true);
-              _setSpeed(2.0);
-            },
-            onLongPressEnd: (_) {
-              setState(() => _isSpeedBoost = false);
-              _setSpeed(_preBoostSpeed);
-            },
-            onHorizontalDragStart: (_) {
-              if (_durationSecs <= 0) return;
-              _hideControlsTimer?.cancel();
-              setState(() {
-                _scrubbing = true;
-                _scrubStartSecs = _positionSecs;
-                _scrubTargetSecs = _positionSecs;
-              });
-            },
-            onHorizontalDragUpdate: (d) {
-              if (!_scrubbing) return;
-              final deltaSecs = (d.delta.dx / size.width) * 180.0;
-              setState(() {
-                _scrubTargetSecs = (_scrubTargetSecs + deltaSecs).clamp(0.0, _durationSecs);
-              });
-            },
-            onHorizontalDragEnd: (_) {
-              if (!_scrubbing) return;
-              final target = _scrubTargetSecs;
-              setState(() => _scrubbing = false);
-              _seekTo(target);
-              _scheduleHideControls();
-            },
-            onVerticalDragUpdate: (d) {
-              final delta = -d.delta.dy / (size.height * 0.55);
-              if (_lastTapDownPos.dx < size.width * 0.5) {
-                setState(() => _brightness = (_brightness + delta).clamp(0.15, 1.0));
-                _flashGestureHud('brightness');
-              } else {
-                setState(() => _volume = (_volume + delta * 100).clamp(0.0, 150.0));
-                _player.setVolume(_volume);
-                _flashGestureHud('volume');
-              }
-            },
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Video(
-                  controller: _videoController,
-                  controls: NoVideoControls,
-                  fill: Colors.black,
-                ),
-
-                // Smooth software brightness dimmer overlay (left-side vertical swipe)
-                if (_brightness < 0.99)
-                  IgnorePointer(
-                    child: Container(
-                      color: Colors.black.withValues(alpha: (1.0 - _brightness).clamp(0.0, 0.85)),
-                    ),
+                setState(() {
+                  _scrubbing = true;
+                  _scrubStartSecs = _positionSecs;
+                  _scrubTargetSecs = _positionSecs;
+                });
+              },
+              onHorizontalDragUpdate: (d) {
+                if (!_scrubbing) return;
+                final deltaSecs = (d.delta.dx / size.width) * 180.0;
+                setState(() {
+                  _scrubTargetSecs = (_scrubTargetSecs + deltaSecs).clamp(0.0, _durationSecs);
+                });
+              },
+              onHorizontalDragEnd: (_) {
+                if (!_scrubbing) return;
+                final target = _scrubTargetSecs;
+                setState(() => _scrubbing = false);
+                _seekTo(target);
+                _scheduleHideControls();
+              },
+              onVerticalDragUpdate: (d) {
+                if (_showEpisodeDrawer) return;
+                final delta = -d.delta.dy / (size.height * 0.55);
+                if (_lastTapDownPos.dx < size.width * 0.5) {
+                  setState(() => _brightness = (_brightness + delta).clamp(0.15, 1.0));
+                  _flashGestureHud('brightness');
+                } else {
+                  setState(() => _volume = (_volume + delta * 100).clamp(0.0, 150.0));
+                  _player.setVolume(_volume);
+                  _flashGestureHud('volume');
+                }
+              },
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Video(
+                    controller: _videoController,
+                    controls: NoVideoControls,
+                    fill: Colors.black,
                   ),
 
-                if (_loading)
-                  const Center(
-                    child: SizedBox(
-                      width: 28,
-                      height: 28,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.2,
-                        color: VedroTheme.fg,
+                  if (_brightness < 0.99)
+                    IgnorePointer(
+                      child: Container(
+                        color: Colors.black.withValues(alpha: (1.0 - _brightness).clamp(0.0, 0.85)),
                       ),
                     ),
-                  ),
 
-                if (_error != null)
-                  Positioned(
-                    bottom: 116,
-                    left: 24,
-                    right: 24,
-                    child: Center(
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 520),
-                        child: GlassSurface(
-                          borderRadius: 12,
-                          color: const Color(0xD8241214),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          child: Text(
-                            _error!,
-                            style: const TextStyle(color: VedroTheme.danger, fontSize: 13),
+                  if (_loading)
+                    const Center(
+                      child: SizedBox(
+                        width: 28,
+                        height: 28,
+                        child: CircularProgressIndicator(strokeWidth: 2.2, color: VedroTheme.fg),
+                      ),
+                    ),
+
+                  if (_error != null)
+                    Positioned(
+                      bottom: 120,
+                      left: 24,
+                      right: 24,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 520),
+                          child: GlassSurface(
+                            borderRadius: 12,
+                            color: const Color(0xD8241214),
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            child: Text(
+                              _error!,
+                              style: const TextStyle(color: VedroTheme.danger, fontSize: 13),
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
 
-                // Long-press 2× speed pill
-                if (_isSpeedBoost)
-                  Positioned(
-                    top: 44,
-                    left: 0,
-                    right: 0,
-                    child: Center(
+                  // Skip Intro / Outro floating frosted button
+                  if (seg != null && !_showEpisodeDrawer)
+                    Positioned(
+                      right: 24,
+                      bottom: _controlsVisible ? 132 : 34,
+                      child: PressableScale(
+                        onTap: () => _seekTo(seg.endSecs),
+                        hoverScale: 1.04,
+                        pressScale: 0.94,
+                        child: GlassSurface(
+                          borderRadius: 12,
+                          blur: 24,
+                          color: const Color(0xCC181920),
+                          borderColor: const Color(0x45FFFFFF),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                seg.buttonLabel,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              const Icon(Icons.skip_next_rounded, size: 18, color: Colors.white),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  if (_isSpeedBoost)
+                    Positioned(
+                      top: 44,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: GlassSurface(
+                          borderRadius: 20,
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.fast_forward_rounded, size: 15, color: VedroTheme.fg),
+                              SizedBox(width: 6),
+                              Text(
+                                '2.0×',
+                                style: TextStyle(
+                                  color: VedroTheme.fg,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  fontFeatures: [FontFeature.tabularFigures()],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  if (_scrubbing)
+                    Center(
                       child: GlassSurface(
-                        borderRadius: 20,
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                        child: const Row(
+                        borderRadius: 16,
+                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+                        child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.fast_forward_rounded, size: 15, color: VedroTheme.fg),
-                            SizedBox(width: 6),
                             Text(
-                              '2.0×',
-                              style: TextStyle(
+                              '${_fmtTime(_scrubTargetSecs)} / ${_fmtTime(_durationSecs)}',
+                              style: const TextStyle(
                                 color: VedroTheme.fg,
-                                fontSize: 13,
+                                fontSize: 18,
                                 fontWeight: FontWeight.w600,
+                                fontFeatures: [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _fmtDelta(_scrubTargetSecs - _scrubStartSecs),
+                              style: const TextStyle(
+                                color: VedroTheme.fg2,
+                                fontSize: 12.5,
                                 fontFeatures: [FontFeature.tabularFigures()],
                               ),
                             ),
@@ -542,33 +717,258 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         ),
                       ),
                     ),
-                  ),
 
-                // Precision scrub HUD
-                if (_scrubbing)
-                  Center(
-                    child: GlassSurface(
-                      borderRadius: 16,
-                      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
+                  if (!_scrubbing && _gestureMode != null)
+                    Center(
+                      child: GlassSurface(
+                        borderRadius: 16,
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                        child: _buildGestureHudContent(),
+                      ),
+                    ),
+
+                  if (_showStats)
+                    Positioned(
+                      top: 84,
+                      left: 24,
+                      child: NerdStatsHud(stats: _stats),
+                    ),
+
+                  // Auto-hiding Apple TV+ / SenPlayer frosted chrome
+                  IgnorePointer(
+                    ignoring: !_controlsVisible || _showEpisodeDrawer,
+                    child: AnimatedOpacity(
+                      opacity: (_controlsVisible && !_showEpisodeDrawer) ? 1.0 : 0.0,
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeOutCubic,
+                      child: Stack(
                         children: [
-                          Text(
-                            '${_fmtTime(_scrubTargetSecs)} / ${_fmtTime(_durationSecs)}',
-                            style: const TextStyle(
-                              color: VedroTheme.fg,
-                              fontSize: 18,
-                              fontWeight: FontWeight.w600,
-                              fontFeatures: [FontFeature.tabularFigures()],
+                          // Top bar
+                          Positioned(
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            child: Container(
+                              padding: EdgeInsets.fromLTRB(
+                                !kIsWeb && Platform.isMacOS ? 82 : 20,
+                                MediaQuery.paddingOf(context).top + 12,
+                                20,
+                                24,
+                              ),
+                              decoration: const BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: [Color(0xB8000000), Colors.transparent],
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  PressableScale(
+                                    onTap: () => Navigator.of(context).pop(),
+                                    child: GlassSurface(
+                                      borderRadius: 20,
+                                      blur: 18,
+                                      color: const Color(0x55141417),
+                                      padding: const EdgeInsets.all(9),
+                                      child: const Icon(
+                                        Icons.arrow_back_ios_new_rounded,
+                                        size: 16,
+                                        color: VedroTheme.fg,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 14),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          _currentItem.seriesName != null
+                                              ? '${_currentItem.seriesName} ${_currentItem.episodeCode ?? ''} · ${_currentItem.displayName}'
+                                              : _currentItem.displayName,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: VedroTheme.fg,
+                                            fontSize: 15.5,
+                                            fontWeight: FontWeight.w600,
+                                            letterSpacing: -0.2,
+                                          ),
+                                        ),
+                                        if (specs.isNotEmpty) ...[
+                                          const SizedBox(height: 4),
+                                          SpecGlyphRow(specs: specs),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                  if (_episodes.length > 1) ...[
+                                    _ChromeIconButton(
+                                      icon: Icons.video_library_outlined,
+                                      tooltip: '选集',
+                                      onTap: () => setState(() => _showEpisodeDrawer = true),
+                                    ),
+                                    const SizedBox(width: 4),
+                                  ],
+                                  _ChromeIconButton(
+                                    icon: Icons.aspect_ratio_rounded,
+                                    tooltip: '画面比例',
+                                    onTap: _openAspectSheet,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  _ChromeIconButton(
+                                    icon: Icons.info_outline_rounded,
+                                    active: _showStats,
+                                    tooltip: '播放信息 (I)',
+                                    onTap: () => setState(() => _showStats = !_showStats),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  _ChromeIconButton(
+                                    icon: Icons.picture_in_picture_alt_rounded,
+                                    tooltip: '画中画',
+                                    onTap: NativePlaybackChannel.enterPictureInPicture,
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            _fmtDelta(_scrubTargetSecs - _scrubStartSecs),
-                            style: const TextStyle(
-                              color: VedroTheme.fg2,
-                              fontSize: 12.5,
-                              fontFeatures: [FontFeature.tabularFigures()],
+
+                          // Floating frosted bottom deck
+                          Positioned(
+                            left: 20,
+                            right: 20,
+                            bottom: MediaQuery.paddingOf(context).bottom + 18,
+                            child: Center(
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(maxWidth: 860),
+                                child: GlassSurface(
+                                  borderRadius: 20,
+                                  blur: 28,
+                                  color: const Color(0xBA141417),
+                                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          SizedBox(
+                                            width: 58,
+                                            child: Text(
+                                              _fmtTime(_scrubbing ? _scrubTargetSecs : _positionSecs),
+                                              style: const TextStyle(
+                                                color: VedroTheme.fg2,
+                                                fontSize: 12,
+                                                fontFeatures: [FontFeature.tabularFigures()],
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            child: Slider(
+                                              value: (_scrubbing ? _scrubTargetSecs : _positionSecs)
+                                                  .clamp(0.0, _durationSecs > 0 ? _durationSecs : 1.0),
+                                              max: _durationSecs > 0 ? _durationSecs : 1.0,
+                                              onChangeStart: (_) => _hideControlsTimer?.cancel(),
+                                              onChanged: (v) => setState(() => _positionSecs = v),
+                                              onChangeEnd: (v) {
+                                                _seekTo(v);
+                                                _scheduleHideControls();
+                                              },
+                                            ),
+                                          ),
+                                          SizedBox(
+                                            width: 58,
+                                            child: Text(
+                                              _fmtTime(_durationSecs),
+                                              textAlign: TextAlign.right,
+                                              style: const TextStyle(
+                                                color: VedroTheme.fg3,
+                                                fontSize: 12,
+                                                fontFeatures: [FontFeature.tabularFigures()],
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      Row(
+                                        children: [
+                                          _ChromeIconButton(
+                                            icon: Icons.replay_10_rounded,
+                                            onTap: () => _seekBy(-10, showHud: true),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          _ChromeIconButton(
+                                            icon: _paused
+                                                ? Icons.play_arrow_rounded
+                                                : Icons.pause_rounded,
+                                            iconSize: 28,
+                                            onTap: _togglePause,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          _ChromeIconButton(
+                                            icon: Icons.forward_10_rounded,
+                                            onTap: () => _seekBy(10, showHud: true),
+                                          ),
+                                          if (_nextEpisode != null) ...[
+                                            const SizedBox(width: 4),
+                                            _ChromeIconButton(
+                                              icon: Icons.skip_next_rounded,
+                                              tooltip: '下一集 (N)',
+                                              onTap: () => _switchEpisode(_nextEpisode!),
+                                            ),
+                                          ],
+                                          const Spacer(),
+                                          GestureDetector(
+                                            onTap: _openSpeedSheet,
+                                            child: Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 9,
+                                                vertical: 5,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0x16FFFFFF),
+                                                borderRadius: BorderRadius.circular(8),
+                                              ),
+                                              child: Text(
+                                                '${_speed.toStringAsFixed(_speed == _speed.roundToDouble() ? 1 : 2)}×',
+                                                style: const TextStyle(
+                                                  color: VedroTheme.fg,
+                                                  fontSize: 12.5,
+                                                  fontWeight: FontWeight.w500,
+                                                  fontFeatures: [FontFeature.tabularFigures()],
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          _ChromeIconButton(
+                                            icon: Icons.hdr_on_rounded,
+                                            tooltip: 'HDR 与杜比视界',
+                                            onTap: _openHdrSheet,
+                                          ),
+                                          _ChromeIconButton(
+                                            icon: Icons.spatial_audio_off_rounded,
+                                            tooltip: '音轨与杜比全景声',
+                                            onTap: _openAudioSheet,
+                                          ),
+                                          _ChromeIconButton(
+                                            icon: Icons.subtitles_outlined,
+                                            tooltip: '字幕与样式',
+                                            onTap: _openSubtitleSheet,
+                                          ),
+                                          if ((_prepared?.allSources.length ?? 0) > 1)
+                                            _ChromeIconButton(
+                                              icon: Icons.layers_outlined,
+                                              tooltip: '切换版本',
+                                              onTap: _openVersionSheet,
+                                            ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
                             ),
                           ),
                         ],
@@ -576,238 +976,121 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     ),
                   ),
 
-                // Brightness / Volume / ±10s gesture feedback HUD
-                if (!_scrubbing && _gestureMode != null)
-                  Center(
-                    child: GlassSurface(
-                      borderRadius: 16,
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                      child: _buildGestureHudContent(),
-                    ),
-                  ),
-
-                if (_showStats)
-                  Positioned(
-                    top: 84,
-                    left: 24,
-                    child: NerdStatsHud(stats: _stats),
-                  ),
-
-                // Auto-hiding Apple TV+ frosted top & bottom chrome
-                IgnorePointer(
-                  ignoring: !_controlsVisible,
-                  child: AnimatedOpacity(
-                    opacity: _controlsVisible ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 220),
+                  // Slide-out frosted Episode Drawer (Infuse / SenPlayer signature feature!)
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 280),
                     curve: Curves.easeOutCubic,
-                    child: Stack(
-                      children: [
-                        // Top bar
-                        Positioned(
-                          top: 0,
-                          left: 0,
-                          right: 0,
-                          child: Container(
-                            padding: EdgeInsets.fromLTRB(
-                              20,
-                              MediaQuery.paddingOf(context).top + 12,
-                              20,
-                              24,
-                            ),
-                            decoration: const BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                                colors: [Color(0xB8000000), Colors.transparent],
-                              ),
-                            ),
+                    top: 16,
+                    bottom: 16,
+                    right: _showEpisodeDrawer ? 16 : -360,
+                    width: 332,
+                    child: GlassSurface(
+                      borderRadius: 20,
+                      blur: 30,
+                      color: VedroTheme.glassStrong,
+                      child: Column(
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(18, 14, 10, 10),
                             child: Row(
                               children: [
-                                PressableScale(
-                                  onTap: () => Navigator.of(context).pop(),
-                                  child: GlassSurface(
-                                    borderRadius: 20,
-                                    blur: 18,
-                                    color: const Color(0x55141417),
-                                    padding: const EdgeInsets.all(9),
-                                    child: const Icon(
-                                      Icons.arrow_back_ios_new_rounded,
-                                      size: 16,
-                                      color: VedroTheme.fg,
-                                    ),
+                                Text(
+                                  '剧集 (${_episodes.length})',
+                                  style: const TextStyle(
+                                    color: VedroTheme.fg,
+                                    fontSize: 15.5,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
-                                const SizedBox(width: 14),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text(
-                                        widget.item.seriesName != null
-                                            ? '${widget.item.seriesName} ${widget.item.episodeCode ?? ''} · ${widget.item.name}'
-                                            : widget.item.name,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          color: VedroTheme.fg,
-                                          fontSize: 15.5,
-                                          fontWeight: FontWeight.w600,
-                                          letterSpacing: -0.2,
-                                        ),
-                                      ),
-                                      if (specs.isNotEmpty) ...[
-                                        const SizedBox(height: 4),
-                                        SpecGlyphRow(specs: specs),
-                                      ],
-                                    ],
-                                  ),
-                                ),
-                                _ChromeIconButton(
-                                  icon: Icons.info_outline_rounded,
-                                  active: _showStats,
-                                  tooltip: '播放信息 (I)',
-                                  onTap: () => setState(() => _showStats = !_showStats),
-                                ),
-                                const SizedBox(width: 8),
-                                _ChromeIconButton(
-                                  icon: Icons.picture_in_picture_alt_rounded,
-                                  tooltip: '画中画',
-                                  onTap: NativePlaybackChannel.enterPictureInPicture,
+                                const Spacer(),
+                                IconButton(
+                                  icon: const Icon(Icons.close_rounded, size: 18, color: VedroTheme.fg2),
+                                  onPressed: () {
+                                    setState(() => _showEpisodeDrawer = false);
+                                    _scheduleHideControls();
+                                  },
                                 ),
                               ],
                             ),
                           ),
-                        ),
-
-                        // Floating frosted bottom deck
-                        Positioned(
-                          left: 20,
-                          right: 20,
-                          bottom: MediaQuery.paddingOf(context).bottom + 18,
-                          child: Center(
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 820),
-                              child: GlassSurface(
-                                borderRadius: 18,
-                                blur: 28,
-                                color: const Color(0xBA141417),
-                                padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        SizedBox(
-                                          width: 56,
-                                          child: Text(
-                                            _fmtTime(_scrubbing ? _scrubTargetSecs : _positionSecs),
-                                            style: const TextStyle(
-                                              color: VedroTheme.fg2,
-                                              fontSize: 12,
-                                              fontFeatures: [FontFeature.tabularFigures()],
-                                            ),
-                                          ),
-                                        ),
-                                        Expanded(
-                                          child: Slider(
-                                            value: (_scrubbing ? _scrubTargetSecs : _positionSecs)
-                                                .clamp(0.0, _durationSecs > 0 ? _durationSecs : 1.0),
-                                            max: _durationSecs > 0 ? _durationSecs : 1.0,
-                                            onChangeStart: (_) => _hideControlsTimer?.cancel(),
-                                            onChanged: (v) => setState(() => _positionSecs = v),
-                                            onChangeEnd: (v) {
-                                              _seekTo(v);
-                                              _scheduleHideControls();
-                                            },
-                                          ),
-                                        ),
-                                        SizedBox(
-                                          width: 56,
-                                          child: Text(
-                                            _fmtTime(_durationSecs),
-                                            textAlign: TextAlign.right,
-                                            style: const TextStyle(
-                                              color: VedroTheme.fg3,
-                                              fontSize: 12,
-                                              fontFeatures: [FontFeature.tabularFigures()],
-                                            ),
-                                          ),
-                                        ),
-                                      ],
+                          const Divider(height: 1),
+                          Expanded(
+                            child: ListView.separated(
+                              padding: const EdgeInsets.all(12),
+                              itemCount: _episodes.length,
+                              separatorBuilder: (_, __) => const SizedBox(height: 8),
+                              itemBuilder: (_, idx) {
+                                final ep = _episodes[idx];
+                                final playing = ep.id == _currentItem.id;
+                                return PressableScale(
+                                  onTap: () => _switchEpisode(ep),
+                                  hoverScale: 1.015,
+                                  pressScale: 0.97,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: playing ? VedroTheme.accentSoft : const Color(0x0FFFFFFF),
+                                      borderRadius: BorderRadius.circular(11),
+                                      border: Border.all(
+                                        color: playing
+                                            ? VedroTheme.accent.withValues(alpha: 0.55)
+                                            : VedroTheme.line,
+                                        width: 0.7,
+                                      ),
                                     ),
-                                    Row(
+                                    child: Row(
                                       children: [
-                                        _ChromeIconButton(
-                                          icon: Icons.replay_10_rounded,
-                                          onTap: () => _seekBy(-10, showHud: true),
-                                        ),
-                                        const SizedBox(width: 4),
-                                        _ChromeIconButton(
-                                          icon: _paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
-                                          iconSize: 28,
-                                          onTap: _togglePause,
-                                        ),
-                                        const SizedBox(width: 4),
-                                        _ChromeIconButton(
-                                          icon: Icons.forward_10_rounded,
-                                          onTap: () => _seekBy(10, showHud: true),
-                                        ),
-                                        const Spacer(),
-                                        GestureDetector(
-                                          onTap: _openSpeedSheet,
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                                            decoration: BoxDecoration(
-                                              color: const Color(0x16FFFFFF),
-                                              borderRadius: BorderRadius.circular(8),
-                                            ),
-                                            child: Text(
-                                              '${_speed.toStringAsFixed(_speed == _speed.roundToDouble() ? 1 : 2)}×',
-                                              style: const TextStyle(
-                                                color: VedroTheme.fg,
-                                                fontSize: 12.5,
-                                                fontWeight: FontWeight.w500,
-                                                fontFeatures: [FontFeature.tabularFigures()],
+                                        SizedBox(
+                                          width: 84,
+                                          child: AspectRatio(
+                                            aspectRatio: 16 / 9,
+                                            child: ClipRRect(
+                                              borderRadius: BorderRadius.circular(6),
+                                              child: VedroArtwork(
+                                                item: ep,
+                                                appState: widget.appState,
+                                                landscape: true,
+                                                width: 240,
                                               ),
                                             ),
                                           ),
                                         ),
-                                        const SizedBox(width: 4),
-                                        _ChromeIconButton(
-                                          icon: Icons.hdr_on_rounded,
-                                          tooltip: 'HDR 与杜比视界',
-                                          onTap: _openHdrSheet,
-                                        ),
-                                        _ChromeIconButton(
-                                          icon: Icons.spatial_audio_off_rounded,
-                                          tooltip: '音轨与杜比全景声',
-                                          onTap: _openAudioSheet,
-                                        ),
-                                        _ChromeIconButton(
-                                          icon: Icons.subtitles_outlined,
-                                          tooltip: '字幕',
-                                          onTap: _openSubtitleSheet,
-                                        ),
-                                        if ((_prepared?.allSources.length ?? 0) > 1)
-                                          _ChromeIconButton(
-                                            icon: Icons.layers_outlined,
-                                            tooltip: '切换版本',
-                                            onTap: _openVersionSheet,
+                                        const SizedBox(width: 10),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                '${ep.indexNumber ?? idx + 1}. ${ep.displayName}',
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(
+                                                  color: playing ? Colors.white : VedroTheme.fg,
+                                                  fontSize: 13,
+                                                  fontWeight: playing ? FontWeight.w600 : FontWeight.w500,
+                                                ),
+                                              ),
+                                              if (fmtDurationTicks(ep.runTimeTicks).isNotEmpty)
+                                                Text(
+                                                  fmtDurationTicks(ep.runTimeTicks),
+                                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                                                ),
+                                            ],
                                           ),
+                                        ),
                                       ],
                                     ),
-                                  ],
-                                ),
-                              ),
+                                  ),
+                                );
+                              },
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -866,6 +1149,37 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  void _openAspectSheet() {
+    const modes = {
+      'fit': '原始比例（适应屏幕）',
+      'fill': '铺满屏幕（等比裁切黑边）',
+      '16:9': '强制 16:9',
+      '21:9': '宽银幕 21:9',
+      '4:3': '经典 4:3',
+    };
+    showGlassSheet<void>(
+      context: context,
+      builder: (ctx) => ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+        children: [
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Text('画面比例', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
+          ),
+          ...modes.entries.map((e) => _SheetOptionRow(
+                label: e.value,
+                selected: e.key == _aspectMode,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _applyAspectMode(e.key);
+                },
+              )),
+        ],
+      ),
     );
   }
 
@@ -1101,38 +1415,41 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   },
                 )),
             const Divider(height: 22),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(
-                children: [
-                  const Text('时间偏移', style: TextStyle(color: VedroTheme.fg2, fontSize: 13.5)),
-                  const SizedBox(width: 10),
-                  Text(
-                    '${_subDelaySecs >= 0 ? '+' : ''}${_subDelaySecs.toStringAsFixed(1)}s',
-                    style: const TextStyle(
-                      color: VedroTheme.fg,
-                      fontSize: 13,
-                      fontFeatures: [FontFeature.tabularFigures()],
-                    ),
-                  ),
-                  const Spacer(),
-                  _ChromeIconButton(
-                    icon: Icons.remove_rounded,
-                    onTap: () async {
-                      setModal(() => _subDelaySecs -= 0.2);
-                      await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
-                    },
-                  ),
-                  const SizedBox(width: 6),
-                  _ChromeIconButton(
-                    icon: Icons.add_rounded,
-                    onTap: () async {
-                      setModal(() => _subDelaySecs += 0.2);
-                      await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
-                    },
-                  ),
-                ],
-              ),
+            _StepperRow(
+              label: '字号缩放',
+              valueText: '${(_subScale * 100).round()}%',
+              onMinus: () async {
+                setModal(() => _subScale = (_subScale - 0.1).clamp(0.5, 2.0));
+                await _applyMpvProperty('sub-scale', _subScale.toStringAsFixed(2));
+              },
+              onPlus: () async {
+                setModal(() => _subScale = (_subScale + 0.1).clamp(0.5, 2.0));
+                await _applyMpvProperty('sub-scale', _subScale.toStringAsFixed(2));
+              },
+            ),
+            _StepperRow(
+              label: '垂直位置',
+              valueText: '$_subPos%',
+              onMinus: () async {
+                setModal(() => _subPos = (_subPos - 4).clamp(60, 100));
+                await _applyMpvProperty('sub-pos', '$_subPos');
+              },
+              onPlus: () async {
+                setModal(() => _subPos = (_subPos + 4).clamp(60, 100));
+                await _applyMpvProperty('sub-pos', '$_subPos');
+              },
+            ),
+            _StepperRow(
+              label: '时间偏移',
+              valueText: '${_subDelaySecs >= 0 ? '+' : ''}${_subDelaySecs.toStringAsFixed(1)}s',
+              onMinus: () async {
+                setModal(() => _subDelaySecs -= 0.2);
+                await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
+              },
+              onPlus: () async {
+                setModal(() => _subDelaySecs += 0.2);
+                await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
+              },
             ),
           ],
         ),
@@ -1178,6 +1495,45 @@ class _PlayerScreenState extends State<PlayerScreen> {
   String _fmtDelta(double delta) {
     final sign = delta >= 0 ? '+' : '-';
     return '$sign${_fmtTime(delta.abs())}';
+  }
+}
+
+class _StepperRow extends StatelessWidget {
+  const _StepperRow({
+    required this.label,
+    required this.valueText,
+    required this.onMinus,
+    required this.onPlus,
+  });
+
+  final String label;
+  final String valueText;
+  final VoidCallback onMinus;
+  final VoidCallback onPlus;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      child: Row(
+        children: [
+          Text(label, style: const TextStyle(color: VedroTheme.fg2, fontSize: 13.5)),
+          const SizedBox(width: 10),
+          Text(
+            valueText,
+            style: const TextStyle(
+              color: VedroTheme.fg,
+              fontSize: 13,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
+          ),
+          const Spacer(),
+          _ChromeIconButton(icon: Icons.remove_rounded, onTap: onMinus),
+          const SizedBox(width: 4),
+          _ChromeIconButton(icon: Icons.add_rounded, onTap: onPlus),
+        ],
+      ),
+    );
   }
 }
 

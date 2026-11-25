@@ -1,0 +1,394 @@
+import 'dart:math' as math;
+import 'dart:ui';
+
+import 'package:flutter/material.dart';
+
+import '../core/models/models.dart';
+import '../core/theme/vedro_theme.dart';
+import '../state/app_state.dart';
+
+/// Deterministic, low-chroma two-tone field with clean display initials
+/// for any media item without artwork (mirrors embygo Web's `GeneratedArt`).
+class GeneratedArt extends StatelessWidget {
+  const GeneratedArt({
+    super.key,
+    required this.seed,
+    this.label,
+  });
+
+  final String seed;
+  final String? label;
+
+  @override
+  Widget build(BuildContext context) {
+    final (h1, h2) = deterministicHues(seed);
+    final c1 = HSLColor.fromAHSL(1.0, h1, 0.22, 0.23).toColor();
+    final c2 = HSLColor.fromAHSL(1.0, h2, 0.26, 0.11).toColor();
+    final text = label == null ? '' : artworkInitials(label);
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: const Alignment(-0.85, -1.0),
+          end: const Alignment(0.85, 1.0),
+          colors: [c1, c2],
+        ),
+      ),
+      child: label == null
+          ? const SizedBox.expand()
+          : LayoutBuilder(
+              builder: (context, constraints) {
+                final w = constraints.maxWidth.isFinite ? constraints.maxWidth : 160.0;
+                final fontSize = (text.length > 3 ? w * 0.17 : w * 0.25).clamp(14.0, 48.0);
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    child: Text(
+                      text,
+                      maxLines: 1,
+                      overflow: TextOverflow.fade,
+                      softWrap: false,
+                      style: TextStyle(
+                        color: const Color(0x8CFFFFFF),
+                        fontSize: fontSize,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.6,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+/// Network image that smoothly fades in once decoded and gracefully disappears
+/// on error so `GeneratedArt` beneath remains visible with zero layout jump.
+class FadeNetworkImage extends StatelessWidget {
+  const FadeNetworkImage({
+    super.key,
+    required this.url,
+    this.fit = BoxFit.cover,
+    this.alignment = Alignment.center,
+  });
+
+  final String url;
+  final BoxFit fit;
+  final Alignment alignment;
+
+  @override
+  Widget build(BuildContext context) {
+    if (url.isEmpty) return const SizedBox.shrink();
+    return Image.network(
+      url,
+      fit: fit,
+      alignment: alignment,
+      gaplessPlayback: true,
+      frameBuilder: (_, child, frame, wasSynchronouslyLoaded) {
+        if (wasSynchronouslyLoaded) return child;
+        return AnimatedOpacity(
+          opacity: frame == null ? 0.0 : 1.0,
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOut,
+          child: child,
+        );
+      },
+      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+    );
+  }
+}
+
+/// Portrait poster displayed inside a 16:9 slot: blurred ambient-glow poster fills
+/// the field while the crisp poster sits framed with a soft cinema float shadow.
+class FramedPoster extends StatelessWidget {
+  const FramedPoster({super.key, required this.url});
+  final String url;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Transform.scale(
+          scale: 1.25,
+          child: ImageFiltered(
+            imageFilter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+            child: ColorFiltered(
+              colorFilter: const ColorFilter.matrix(<double>[
+                0.58, 0, 0, 0, 0,
+                0, 0.58, 0, 0, 0,
+                0, 0, 0.58, 0, 0,
+                0, 0, 0, 1, 0,
+              ]),
+              child: FadeNetworkImage(url: url, fit: BoxFit.cover),
+            ),
+          ),
+        ),
+        Center(
+          child: FractionallySizedBox(
+            heightFactor: 0.84,
+            child: AspectRatio(
+              aspectRatio: 2 / 3,
+              child: Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(6),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x99000000),
+                      blurRadius: 24,
+                      offset: Offset(0, 10),
+                    ),
+                  ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: FadeNetworkImage(url: url, fit: BoxFit.cover),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Unified artwork surface for posters (2:3) and widescreen cards/heroes (16:9).
+/// Always layers `GeneratedArt` beneath real imagery so slow/missing covers look calm and intentional.
+class VedroArtwork extends StatelessWidget {
+  const VedroArtwork({
+    super.key,
+    required this.item,
+    required this.appState,
+    this.landscape = false,
+    this.isHero = false,
+    this.width,
+    this.alignment = Alignment.center,
+    this.showInitials = true,
+  });
+
+  final MediaItemModel item;
+  final VedroAppState appState;
+  final bool landscape;
+  final bool isHero;
+  final int? width;
+  final Alignment alignment;
+  final bool showInitials;
+
+  @override
+  Widget build(BuildContext context) {
+    final seed = item.type == 'Episode' && !landscape
+        ? (item.seriesId ?? item.id)
+        : (item.id.isNotEmpty ? item.id : item.name);
+    final label = showInitials
+        ? (item.type == 'Episode' ? (item.seriesName ?? item.displayName) : item.name)
+        : null;
+
+    Widget? artLayer;
+    if (isHero) {
+      final art = appState.backdropArt(item, width: width ?? 1920);
+      if (art != null) {
+        artLayer = art.isPoster
+            ? FramedPoster(url: art.url)
+            : FadeNetworkImage(url: art.url, fit: BoxFit.cover, alignment: alignment);
+      }
+    } else if (landscape) {
+      final art = appState.wideArt(item, width: width ?? 640);
+      if (art != null) {
+        artLayer = art.isPoster
+            ? FramedPoster(url: art.url)
+            : FadeNetworkImage(url: art.url, fit: BoxFit.cover, alignment: alignment);
+      }
+    } else {
+      final url = appState.posterArtUrl(item, width: width ?? 420);
+      if (url != null) {
+        artLayer = FadeNetworkImage(url: url, fit: BoxFit.cover, alignment: alignment);
+      }
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        GeneratedArt(seed: seed, label: label),
+        if (artLayer != null) artLayer,
+      ],
+    );
+  }
+}
+
+/// Smooth GPU-animated dark shimmer placeholder (replaces jarring frozen spinners).
+class VedroShimmer extends StatefulWidget {
+  const VedroShimmer({
+    super.key,
+    this.width,
+    this.height,
+    this.borderRadius = 12,
+    this.aspectRatio,
+  });
+
+  final double? width;
+  final double? height;
+  final double borderRadius;
+  final double? aspectRatio;
+
+  @override
+  State<VedroShimmer> createState() => _VedroShimmerState();
+}
+
+class _VedroShimmerState extends State<VedroShimmer> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1450),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final box = AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) {
+        final t = _ctrl.value;
+        final slide = -1.0 + 3.0 * t;
+        return Container(
+          width: widget.width,
+          height: widget.height,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(widget.borderRadius),
+            gradient: LinearGradient(
+              begin: Alignment(slide - 0.8, -0.3),
+              end: Alignment(slide + 0.8, 0.3),
+              colors: const [
+                VedroTheme.surface,
+                VedroTheme.surface2,
+                VedroTheme.surface,
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (widget.aspectRatio != null) {
+      return AspectRatio(aspectRatio: widget.aspectRatio!, child: box);
+    }
+    return box;
+  }
+}
+
+class HeroSkeleton extends StatelessWidget {
+  const HeroSkeleton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final screenH = MediaQuery.sizeOf(context).height;
+    final heroH = (screenH * 0.66).clamp(420.0, 680.0);
+    return SizedBox(
+      height: heroH,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          const VedroShimmer(borderRadius: 0),
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                stops: [0.35, 1.0],
+                colors: [Colors.transparent, VedroTheme.canvas],
+              ),
+            ),
+          ),
+          const Positioned(
+            left: 32,
+            right: 32,
+            bottom: 48,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                VedroShimmer(width: 90, height: 14, borderRadius: 4),
+                SizedBox(height: 14),
+                VedroShimmer(width: 320, height: 42, borderRadius: 8),
+                SizedBox(height: 14),
+                VedroShimmer(width: 440, height: 14, borderRadius: 4),
+                SizedBox(height: 8),
+                VedroShimmer(width: 300, height: 14, borderRadius: 4),
+                SizedBox(height: 24),
+                Row(
+                  children: [
+                    VedroShimmer(width: 112, height: 44, borderRadius: 12),
+                    SizedBox(width: 12),
+                    VedroShimmer(width: 96, height: 44, borderRadius: 12),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class RailSkeleton extends StatelessWidget {
+  const RailSkeleton({super.key, this.landscape = false});
+  final bool landscape;
+
+  @override
+  Widget build(BuildContext context) {
+    final cardW = landscape ? 290.0 : 152.0;
+    final ratio = landscape ? 16 / 9 : 2 / 3;
+    return Padding(
+      padding: const EdgeInsets.only(top: 28),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 28),
+            child: VedroShimmer(width: 132, height: 20, borderRadius: 6),
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            height: (cardW / ratio) + 52,
+            child: ListView.separated(
+              padding: const EdgeInsets.symmetric(horizontal: 28),
+              scrollDirection: Axis.horizontal,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: 7,
+              separatorBuilder: (_, __) => const SizedBox(width: 16),
+              itemBuilder: (_, idx) => SizedBox(
+                width: cardW,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    VedroShimmer(aspectRatio: ratio, borderRadius: 14),
+                    const SizedBox(height: 10),
+                    VedroShimmer(
+                      width: math.max(70, cardW * 0.72),
+                      height: 13,
+                      borderRadius: 4,
+                    ),
+                    const SizedBox(height: 6),
+                    VedroShimmer(
+                      width: math.max(44, cardW * 0.42),
+                      height: 11,
+                      borderRadius: 4,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

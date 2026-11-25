@@ -1,0 +1,37 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Flutter / Dart
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.packages
+app/build/
+app/.pub-cache/
+app/android/.gradle/
+app/android/local.properties
+app/ios/Pods/
+app/ios/.symlinks/
+app/macos/Pods/
+app/macos/Flutter/ephemeral/
+app/windows/flutter/ephemeral/
+
+# Native build artifacts
+*.so
+*.dylib
+*.dll
+*.a
+*.exe
+*.apk
+*.aab
+*.ipa
+*.dmg
+
+# Local databases & test fixtures
+*.db
+*.db-wal
+*.db-shm
+.tmp/
+.DS_Store

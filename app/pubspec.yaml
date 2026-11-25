@@ -1,0 +1,21 @@
+name: prism_player
+description: "Prism Player — High-performance Rust + libmpv/libplacebo cross-platform player for embygo, Emby, and Jellyfin with Dolby Vision and Dolby Atmos."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.3
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

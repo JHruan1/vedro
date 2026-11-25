@@ -74,14 +74,13 @@ final class PrismHardwarePlugin: NSObject {
         refreshHz = Double(screen.maximumFramesPerSecond)
       }
     }
-    let supportsHdr = headroom > 1.2
-    let maxNits = supportsHdr ? Int(min(1600.0, Double(headroom) * 400.0)) : 400
-    let hdrModes = AVPlayer.availableHDRModes
-    let supportsDovi = hdrModes.contains(.dolbyVision) && supportsHdr
+    let supportsHdr = headroom > 1.2 || AVPlayer.eligibleForHDRPlayback
+    let maxNits = headroom > 1.2 ? Int(min(1600.0, Double(headroom) * 400.0)) : (supportsHdr ? 1000 : 400)
+    let supportsDovi = supportsHdr && headroom > 1.2
 
     return [
-      "supports_hdr10": supportsHdr || hdrModes.contains(.hdr10),
-      "supports_hlg": supportsHdr || hdrModes.contains(.hlg),
+      "supports_hdr10": supportsHdr,
+      "supports_hlg": supportsHdr,
       "supports_native_dolby_vision": supportsDovi,
       "supports_atmos_bitstream": true,
       "supports_spatial_audio": true,

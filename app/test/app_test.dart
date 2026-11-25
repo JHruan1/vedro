@@ -3,11 +3,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:prism_player/core/ffi/prism_bridge.dart';
-import 'package:prism_player/core/models/models.dart';
-import 'package:prism_player/main.dart';
+import 'package:vedro/core/ffi/vedro_bridge.dart';
+import 'package:vedro/core/models/models.dart';
+import 'package:vedro/main.dart';
 
-class _MockPrismCore implements PrismCoreClient {
+class _MockVedroCore implements VedroCoreClient {
   @override
   String get coreVersion => '0.1.0-test';
 
@@ -120,7 +120,7 @@ void main() {
 
   testWidgets('ServerConnectScreen renders and logs into embygo home screen', (tester) async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
-      const MethodChannel('com.prismplayer/hardware'),
+      const MethodChannel('com.vedro.player/hardware'),
       (call) async => <String, dynamic>{
         'supports_hdr10': true,
         'supports_hlg': true,
@@ -131,11 +131,11 @@ void main() {
       },
     );
 
-    final mock = _MockPrismCore();
-    await tester.pumpWidget(PrismPlayerApp(core: mock));
+    final mock = _MockVedroCore();
+    await tester.pumpWidget(VedroApp(core: mock));
     await tester.pumpAndSettle();
 
-    expect(find.text('Prism Player'), findsOneWidget);
+    expect(find.text('Vedro'), findsOneWidget);
     expect(find.text('embygo DirectPlay'), findsOneWidget);
     expect(find.text('Dolby Vision'), findsOneWidget);
     expect(find.text('Dolby Atmos'), findsOneWidget);
@@ -154,12 +154,12 @@ void main() {
     await tester.pump();
   });
 
-  test('Direct dart:ffi integration loads REAL compiled Rust libprism_ffi.so', () async {
-    final soPath = Platform.environment['PRISM_FFI_PATH'] ?? '../target/release/libprism_ffi.so';
+  test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {
+    final soPath = Platform.environment['VEDRO_FFI_PATH'] ?? '../target/release/libvedro_ffi.so';
     if (!File(soPath).existsSync()) {
       return;
     }
-    final bridge = PrismFfiBridge.open(libraryPath: soPath);
+    final bridge = VedroFfiBridge.open(libraryPath: soPath);
     try {
       expect(bridge.coreVersion, isNotEmpty);
       final ver = await bridge.invoke('version') as Map<String, dynamic>;

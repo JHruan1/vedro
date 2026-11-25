@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'badge_strip.dart';
 
@@ -17,7 +17,7 @@ class MediaCard extends StatelessWidget {
   });
 
   final MediaItemModel item;
-  final PrismAppState appState;
+  final VedroAppState appState;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
   final double width;
@@ -53,7 +53,7 @@ class MediaCard extends StatelessWidget {
                   fit: StackFit.expand,
                   children: [
                     Container(
-                      color: PrismTheme.surfaceElevated,
+                      color: VedroTheme.surfaceElevated,
                       child: imgUrl.isNotEmpty
                           ? Image.network(
                               imgUrl,
@@ -77,7 +77,7 @@ class MediaCard extends StatelessWidget {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                           decoration: BoxDecoration(
-                            color: PrismTheme.accent,
+                            color: VedroTheme.accent,
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: Text(
@@ -92,7 +92,7 @@ class MediaCard extends StatelessWidget {
                         right: 6,
                         child: CircleAvatar(
                           radius: 11,
-                          backgroundColor: PrismTheme.embygoGreen,
+                          backgroundColor: VedroTheme.embygoGreen,
                           child: Icon(Icons.check, size: 14, color: Colors.black),
                         ),
                       ),
@@ -106,7 +106,7 @@ class MediaCard extends StatelessWidget {
                           value: item.resumeProgress,
                           minHeight: 4,
                           backgroundColor: Colors.black54,
-                          color: PrismTheme.accent,
+                          color: VedroTheme.accent,
                         ),
                       ),
                   ],
@@ -131,7 +131,7 @@ class MediaCard extends StatelessWidget {
                     ].join(' • '),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: PrismTheme.textSecondary, fontSize: 11.5),
+              style: const TextStyle(color: VedroTheme.textSecondary, fontSize: 11.5),
             ),
           ],
         ),
@@ -161,7 +161,7 @@ class _PlaceholderPoster extends StatelessWidget {
         textAlign: TextAlign.center,
         maxLines: 3,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(color: PrismTheme.textSecondary, fontWeight: FontWeight.w600),
+        style: const TextStyle(color: VedroTheme.textSecondary, fontWeight: FontWeight.w600),
       ),
     );
   }

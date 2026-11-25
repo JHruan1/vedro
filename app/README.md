@@ -1,6 +1,6 @@
-# prism_player
+# vedro
 
-Prism Player — High-performance Rust + libmpv/libplacebo cross-platform player for embygo, Emby, and Jellyfin with Dolby Vision and Dolby Atmos
+Vedro — High-performance Rust + libmpv/libplacebo cross-platform player for embygo, Emby, and Jellyfin with Dolby Vision and Dolby Atmos
 
 ## Getting Started
 

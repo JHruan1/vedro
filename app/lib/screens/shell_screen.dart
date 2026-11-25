@@ -11,7 +11,7 @@ import 'settings_screen.dart';
 
 class ShellScreen extends StatefulWidget {
   const ShellScreen({super.key, required this.appState});
-  final PrismAppState appState;
+  final VedroAppState appState;
 
   @override
   State<ShellScreen> createState() => _ShellScreenState();

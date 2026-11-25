@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'media_card.dart';
 
@@ -21,7 +21,7 @@ class HorizontalMediaRail extends StatelessWidget {
   final String title;
   final String? subtitle;
   final List<MediaItemModel> items;
-  final PrismAppState appState;
+  final VedroAppState appState;
   final void Function(MediaItemModel) onItemTap;
   final void Function(MediaItemModel)? onItemLongPress;
   final VoidCallback? onSeeAll;
@@ -51,7 +51,7 @@ class HorizontalMediaRail extends StatelessWidget {
                     if (subtitle != null)
                       Text(
                         subtitle!,
-                        style: const TextStyle(color: PrismTheme.textSecondary, fontSize: 12),
+                        style: const TextStyle(color: VedroTheme.textSecondary, fontSize: 12),
                       ),
                   ],
                 ),

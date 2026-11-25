@@ -1,15 +1,15 @@
 # embygo / Emby / Jellyfin Compatibility Matrix
 
-Prism Player was engineered by auditing `embygo` directly alongside standard Emby 4.8/4.9 and Jellyfin 10.9/10.10 contracts.
+Vedro was engineered by auditing `embygo` directly alongside standard Emby 4.8/4.9 and Jellyfin 10.9/10.10 contracts.
 
-| Capability / Endpoint | embygo | Emby | Jellyfin | Prism Player Implementation |
+| Capability / Endpoint | embygo | Emby | Jellyfin | Vedro Implementation |
 | --- | :---: | :---: | :---: | --- |
 | `GET /System/Info/Public` & dialect probe | ✅ | ✅ | ✅ | Auto-detects `EmbyGo`, `Emby`, `Jellyfin` |
 | `POST /Users/AuthenticateByName` (`Pw` JSON) | ✅ | ✅ | ✅ | Header-only auth (`X-Emby-Authorization`, `X-Emby-Token`) |
 | `security.allow_query_credentials: false` | ✅ | ✅ | ✅ | Fully compliant — never leaks tokens in query strings |
 | `POST /Items/{id}/PlaybackInfo` DirectPlay | ✅ | ✅ | ✅ | Omits restrictive `DeviceProfile` on `embygo`; universal DirectPlay on Emby/Jellyfin |
-| `StreamTicket` short-lived media/subtitle URLs | ✅ | — | — | Preserves signed ticket untouched; hot-swaps upstream URL in `prism-stream` before expiry |
-| `max_connections_per_session` (default 4) | ✅ | — | — | `prism-stream` Semaphore caps upstream connections to `<= 2` + HTTP 429 `Retry-After` backoff |
+| `StreamTicket` short-lived media/subtitle URLs | ✅ | — | — | Preserves signed ticket untouched; hot-swaps upstream URL in `vedro-stream` before expiry |
+| `max_connections_per_session` (default 4) | ✅ | — | — | `vedro-stream` Semaphore caps upstream connections to `<= 2` + HTTP 429 `Retry-After` backoff |
 | `GET /Users/{id}/Items/Popular` | ✅ | — | — | Powers Home Hero Spotlight & Trending rail (graceful fallback on 404) |
 | `GET /Users/{id}/Suggestions` | ✅ | ✅ | ✅ | Powers "猜你喜欢" rail |
 | `POST/DELETE /Users/{id}/Items/{id}/HideFromResume` | ✅ | ✅ | — | Removes from Continue Watching while preserving position & `PlayCount` |

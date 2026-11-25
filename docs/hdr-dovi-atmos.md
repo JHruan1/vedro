@@ -9,11 +9,11 @@
 | **macOS** | `videotoolbox` (Apple Silicon ProRes/HEVC/AV1) | `libmpv` + `libplacebo` (`macvk` / Metal EDR) | Liquid Retina XDR 1600 nits EDR (`target-colorspace-hint=yes`) | CoreAudio Exclusive (`ac3,eac3,dts`) + Apple Spatial Audio |
 | **Windows** | `d3d11va` / `nvdec` (zero-copy NVIDIA/AMD/Intel) | `libmpv` + `libplacebo` (`gpu-api=d3d11`, `d3d11-output-csp=pq`) | DXGI 1.6 PQ HDR10 / DoVi RPU dynamic tone-mapping | **WASAPI Exclusive** (`audio-spdif=ac3,eac3,dts,dts-hd,truehd`) — TrueHD Atmos & DTS:X bit-perfect over HDMI eARC |
 
-## 2. How Prism Handles Every Dolby Vision Profile
+## 2. How Vedro Handles Every Dolby Vision Profile
 
 - **Profile 5 (IPT-PQ-C2, streaming services — no HDR10 base layer)**:
   - Naive players produce purple/green inverted video.
-  - Prism's Rust `inspector.rs` detects `dv_profile = 5` (`bl_signal_compatibility_id = 0`) immediately from the `dvcC`/`dvvC` record and activates `libplacebo`'s IPT-PQ-C2 RPU reshaper (or Apple/Android native DoVi hardware display layer), rendering accurate colors on **both HDR and SDR displays**.
+  - Vedro's Rust `inspector.rs` detects `dv_profile = 5` (`bl_signal_compatibility_id = 0`) immediately from the `dvcC`/`dvvC` record and activates `libplacebo`'s IPT-PQ-C2 RPU reshaper (or Apple/Android native DoVi hardware display layer), rendering accurate colors on **both HDR and SDR displays**.
 - **Profile 7 (UHD Blu-ray Dual-Layer MEL/FEL)**:
   - Plays directly via `libmpv` + `libplacebo` (`vo=gpu-next`) with full dynamic RPU tone-mapping; flags `requires_p7_to_p81_rpu_conversion` when routing to Apple/Android native hardware layers.
 - **Profile 8.1 (HDR10-compatible RPU) & Profile 8.4 (HLG-compatible RPU)**:

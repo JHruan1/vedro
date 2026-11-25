@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/badge_strip.dart';
 import '../widgets/horizontal_rail.dart';
@@ -14,7 +14,7 @@ class HomeScreen extends StatelessWidget {
     required this.onLibraryTap,
   });
 
-  final PrismAppState appState;
+  final VedroAppState appState;
   final void Function(MediaItemModel) onItemTap;
   final void Function(MediaItemModel) onLibraryTap;
 
@@ -40,7 +40,7 @@ class HomeScreen extends StatelessWidget {
             title: Row(
               children: [
                 Text(
-                  caps?.serverName.isNotEmpty == true ? caps!.serverName : 'Prism Player',
+                  caps?.serverName.isNotEmpty == true ? caps!.serverName : 'Vedro',
                   style: const TextStyle(fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(width: 10),
@@ -68,7 +68,7 @@ class HomeScreen extends StatelessWidget {
                 margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: PrismTheme.accent.withValues(alpha: 0.18),
+                  color: VedroTheme.accent.withValues(alpha: 0.18),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Row(
@@ -104,7 +104,7 @@ class HomeScreen extends StatelessWidget {
                                   ? Icons.live_tv_rounded
                                   : Icons.movie_creation_rounded,
                               size: 16,
-                              color: PrismTheme.accent,
+                              color: VedroTheme.accent,
                             ),
                             label: Text(lib.name, style: const TextStyle(fontWeight: FontWeight.w600)),
                             onPressed: () => onLibraryTap(lib),
@@ -204,7 +204,7 @@ class _HeroSpotlight extends StatelessWidget {
   });
 
   final MediaItemModel item;
-  final PrismAppState appState;
+  final VedroAppState appState;
   final bool isPopular;
   final VoidCallback onTap;
 
@@ -225,8 +225,8 @@ class _HeroSpotlight extends StatelessWidget {
           height: 300,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(20),
-            color: PrismTheme.surfaceElevated,
-            border: Border.all(color: PrismTheme.border),
+            color: VedroTheme.surfaceElevated,
+            border: Border.all(color: VedroTheme.border),
           ),
           clipBehavior: Clip.antiAlias,
           child: Stack(
@@ -272,7 +272,7 @@ class _HeroSpotlight extends StatelessWidget {
                         item.overview!,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: PrismTheme.textSecondary, fontSize: 13.5),
+                        style: const TextStyle(color: VedroTheme.textSecondary, fontSize: 13.5),
                       ),
                     ],
                     const SizedBox(height: 14),

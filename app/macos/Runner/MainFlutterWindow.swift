@@ -11,24 +11,24 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
-    PrismHardwarePlugin.register(with: flutterViewController.engine.binaryMessenger)
+    VedroHardwarePlugin.register(with: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
   }
 }
 
-/// Native macOS hardware bridge for Prism Player:
+/// Native macOS hardware bridge for Vedro:
 /// - Detects Apple Silicon Liquid Retina XDR / external HDR EDR headroom (up to 1600 nits)
 /// - Reports VideoToolbox HEVC/AV1/Dolby Vision & CoreAudio Spatial Audio capabilities
 /// - Prevents display sleep via IOKit IOPMAssertion during active playback
-final class PrismHardwarePlugin: NSObject {
-  static let channelName = "com.prismplayer/hardware"
+final class VedroHardwarePlugin: NSObject {
+  static let channelName = "com.vedro.player/hardware"
   private var sleepAssertionId: IOPMAssertionID = 0
   private var holdingAssertion = false
 
   static func register(with messenger: FlutterBinaryMessenger) {
     let channel = FlutterMethodChannel(name: channelName, binaryMessenger: messenger)
-    let instance = PrismHardwarePlugin()
+    let instance = VedroHardwarePlugin()
     channel.setMethodCallHandler(instance.handle)
   }
 
@@ -50,7 +50,7 @@ final class PrismHardwarePlugin: NSObject {
 
   private func setPreventSleep(_ enabled: Bool) {
     if enabled && !holdingAssertion {
-      let reason = "Prism Player active video playback" as CFString
+      let reason = "Vedro active video playback" as CFString
       if IOPMAssertionCreateWithName(
         kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
         IOPMAssertionLevel(kIOPMAssertionLevelOn),

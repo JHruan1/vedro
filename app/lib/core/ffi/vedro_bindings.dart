@@ -1,0 +1,102 @@
+import 'dart:ffi';
+import 'dart:io';
+
+import 'package:ffi/ffi.dart';
+
+/// Opaque handle matching `VedroRuntime` in `core/vedro-ffi/include/vedro_ffi.h`.
+final class VedroRuntime extends Opaque {}
+
+typedef VedroInitNative = Pointer<VedroRuntime> Function(Pointer<Utf8> dbPath);
+typedef VedroInitDart = Pointer<VedroRuntime> Function(Pointer<Utf8> dbPath);
+
+typedef VedroInvokeNative = Pointer<Utf8> Function(
+  Pointer<VedroRuntime> rt,
+  Pointer<Utf8> method,
+  Pointer<Utf8> paramsJson,
+);
+typedef VedroInvokeDart = Pointer<Utf8> Function(
+  Pointer<VedroRuntime> rt,
+  Pointer<Utf8> method,
+  Pointer<Utf8> paramsJson,
+);
+
+typedef VedroPollEventsNative = Pointer<Utf8> Function(Pointer<VedroRuntime> rt);
+typedef VedroPollEventsDart = Pointer<Utf8> Function(Pointer<VedroRuntime> rt);
+
+typedef VedroVersionNative = Pointer<Utf8> Function();
+typedef VedroVersionDart = Pointer<Utf8> Function();
+
+typedef VedroFreeStringNative = Void Function(Pointer<Utf8> ptr);
+typedef VedroFreeStringDart = void Function(Pointer<Utf8> ptr);
+
+typedef VedroDestroyNative = Void Function(Pointer<VedroRuntime> rt);
+typedef VedroDestroyDart = void Function(Pointer<VedroRuntime> rt);
+
+/// Direct zero-overhead C-ABI bindings to our compiled Rust core (`libvedro_ffi`).
+class VedroNativeBindings {
+  VedroNativeBindings(DynamicLibrary lib)
+      : init = lib.lookupFunction<VedroInitNative, VedroInitDart>('vedro_init'),
+        invoke = lib.lookupFunction<VedroInvokeNative, VedroInvokeDart>('vedro_invoke'),
+        pollEvents = lib.lookupFunction<VedroPollEventsNative, VedroPollEventsDart>(
+          'vedro_poll_events',
+        ),
+        version = lib.lookupFunction<VedroVersionNative, VedroVersionDart>('vedro_version'),
+        freeString = lib.lookupFunction<VedroFreeStringNative, VedroFreeStringDart>(
+          'vedro_free_string',
+        ),
+        destroy = lib.lookupFunction<VedroDestroyNative, VedroDestroyDart>('vedro_destroy');
+
+  final VedroInitDart init;
+  final VedroInvokeDart invoke;
+  final VedroPollEventsDart pollEvents;
+  final VedroVersionDart version;
+  final VedroFreeStringDart freeString;
+  final VedroDestroyDart destroy;
+
+  /// Dynamically load `libvedro_ffi` for Android, iOS, macOS, Windows, or Linux.
+  static VedroNativeBindings load({String? overridePath}) {
+    if (overridePath != null && overridePath.isNotEmpty) {
+      return VedroNativeBindings(DynamicLibrary.open(overridePath));
+    }
+    if (Platform.isIOS) {
+      return VedroNativeBindings(DynamicLibrary.process());
+    }
+    if (Platform.isMacOS) {
+      return VedroNativeBindings(_openFirst([
+        'libvedro_ffi.dylib',
+        '@executable_path/../Frameworks/libvedro_ffi.dylib',
+      ]));
+    }
+    if (Platform.isWindows) {
+      return VedroNativeBindings(_openFirst([
+        'vedro_ffi.dll',
+        'libvedro_ffi.dll',
+      ]));
+    }
+    if (Platform.isAndroid) {
+      return VedroNativeBindings(DynamicLibrary.open('libvedro_ffi.so'));
+    }
+    // Linux desktop / test environment
+    final envPath = Platform.environment['VEDRO_FFI_PATH'];
+    return VedroNativeBindings(_openFirst([
+      if (envPath != null && envPath.isNotEmpty) envPath,
+      'libvedro_ffi.so',
+      '../target/release/libvedro_ffi.so',
+      '../target/debug/libvedro_ffi.so',
+      'target/release/libvedro_ffi.so',
+      'target/debug/libvedro_ffi.so',
+    ]));
+  }
+
+  static DynamicLibrary _openFirst(List<String> candidates) {
+    Object? lastError;
+    for (final path in candidates) {
+      try {
+        return DynamicLibrary.open(path);
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw StateError('Failed to load libvedro_ffi ($candidates): $lastError');
+  }
+}

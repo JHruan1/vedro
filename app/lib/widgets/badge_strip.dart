@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 
 /// Displays cinema-grade technical pills (Dolby Vision, Dolby Atmos, HDR10+, 4K, Direct Play, embygo).
 class BadgeStrip extends StatelessWidget {
@@ -31,15 +31,15 @@ class _BadgePill extends StatelessWidget {
     final lower = label.toLowerCase();
     final Color color;
     if (lower.contains('dolby vision') || lower.contains('dovi')) {
-      color = PrismTheme.dolbyGold;
+      color = VedroTheme.dolbyGold;
     } else if (lower.contains('atmos') || lower.contains('dts:x')) {
-      color = PrismTheme.atmosCyan;
+      color = VedroTheme.atmosCyan;
     } else if (lower.contains('hdr') || lower.contains('hlg')) {
-      color = PrismTheme.hdrPurple;
+      color = VedroTheme.hdrPurple;
     } else if (lower.contains('embygo') || lower.contains('direct')) {
-      color = PrismTheme.embygoGreen;
+      color = VedroTheme.embygoGreen;
     } else {
-      color = PrismTheme.accent;
+      color = VedroTheme.accent;
     }
 
     return Container(

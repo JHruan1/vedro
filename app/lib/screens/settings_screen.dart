@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/badge_strip.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key, required this.appState});
-  final PrismAppState appState;
+  final VedroAppState appState;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -41,7 +41,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           // Connected Server Summary
           Card(
             child: ListTile(
-              leading: const Icon(Icons.dns_rounded, color: PrismTheme.embygoGreen),
+              leading: const Icon(Icons.dns_rounded, color: VedroTheme.embygoGreen),
               title: Text(caps?.serverName ?? widget.appState.connectedUrl ?? '未连接'),
               subtitle: Text(
                 '用户: ${widget.appState.username ?? '-'} • 后端: ${caps?.dialect ?? '-'} (${caps?.advertisedVersion ?? '-'}) • Rust Core v${widget.appState.core.coreVersion}',
@@ -162,7 +162,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: admin == null
-                    ? const Text('正在获取 embygo 运行状态...', style: TextStyle(color: PrismTheme.textSecondary))
+                    ? const Text('正在获取 embygo 运行状态...', style: TextStyle(color: VedroTheme.textSecondary))
                     : Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/media_card.dart';
 
@@ -15,7 +15,7 @@ class LibraryScreen extends StatefulWidget {
     this.initialLibrary,
   });
 
-  final PrismAppState appState;
+  final VedroAppState appState;
   final void Function(MediaItemModel) onItemTap;
   final MediaItemModel? initialLibrary;
 
@@ -212,7 +212,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               children: [
                 Text(
                   '共 $_total 部作品',
-                  style: const TextStyle(color: PrismTheme.textSecondary, fontSize: 12),
+                  style: const TextStyle(color: VedroTheme.textSecondary, fontSize: 12),
                 ),
               ],
             ),

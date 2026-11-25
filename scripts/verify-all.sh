@@ -9,19 +9,19 @@ echo "=== [1/4] Rust format, clippy & unit tests ==="
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo build --release -p prism-ffi -p prism-cli
+cargo build --release -p vedro-ffi -p vedro-cli
 
 echo "=== [2/4] Flutter analyze & widget + live Rust dart:ffi tests ==="
 (cd "$ROOT_DIR/app" && flutter analyze && flutter test --reporter expanded)
 
-echo "=== [3/4] Prism CLI platform profile matrix check ==="
-"$ROOT_DIR/target/release/prism-cli" profile-matrix >/dev/null
+echo "=== [3/4] Vedro CLI platform profile matrix check ==="
+"$ROOT_DIR/target/release/vedro-cli" profile-matrix >/dev/null
 echo "profile-matrix OK"
 
 EMBYGO_DIR="${EMBYGO_SRC_DIR:-}"
 if [ -n "$EMBYGO_DIR" ] && [ -d "$EMBYGO_DIR" ]; then
   echo "=== [4/4] Live End-to-End Integration Test against real isolated embygo ==="
-  TMP_DIR="$(mktemp -d /tmp/prism-embygo-e2e.XXXXXX)"
+  TMP_DIR="$(mktemp -d /tmp/vedro-embygo-e2e.XXXXXX)"
   EMBYGO_PID=""
   cleanup() {
     if [ -n "$EMBYGO_PID" ]; then kill "$EMBYGO_PID" 2>/dev/null || true; fi
@@ -53,18 +53,18 @@ EOF
   cat > "$TMP_DIR/media/movies/Dune Part Two (2024)/Dune.Part.Two.2024.2160p.DV.Atmos.zh.default.srt" <<'EOF'
 1
 00:00:00,200 --> 00:00:02,500
-Prism Player embygo E2E Subtitle
+Vedro embygo E2E Subtitle
 EOF
 
   (cd "$EMBYGO_DIR" && go build -o "$TMP_DIR/embygo-test" ./cmd/embygo)
 
   TEST_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); p=s.getsockname()[1]; s.close(); print(p)')"
-  PW_HASH="$(printf '%s' 'prism-e2e-pass' | "$TMP_DIR/embygo-test" -hash-password)"
+  PW_HASH="$(printf '%s' 'vedro-e2e-pass' | "$TMP_DIR/embygo-test" -hash-password)"
 
   cat > "$TMP_DIR/embygo.json" <<EOF
 {
   "listen": "127.0.0.1:${TEST_PORT}",
-  "server_name": "Prism Test EmbyGo",
+  "server_name": "Vedro Test EmbyGo",
   "data_dir": "${TMP_DIR}/data",
   "scan_interval": "15m",
   "stream_ticket_ttl": "10m",
@@ -107,7 +107,7 @@ EOF
     exit 1
   fi
 
-  "$ROOT_DIR/target/release/prism-cli" e2e-embygo "http://127.0.0.1:${TEST_PORT}" "admin" "prism-e2e-pass"
+  "$ROOT_DIR/target/release/vedro-cli" e2e-embygo "http://127.0.0.1:${TEST_PORT}" "admin" "vedro-e2e-pass"
 fi
 
 echo "=== ALL VERIFICATION CHECKS PASSED ==="

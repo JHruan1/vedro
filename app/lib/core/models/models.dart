@@ -1,4 +1,4 @@
-// Core data models mirroring `core/prism-protocol`, `core/prism-stream`, and `core/prism-playback`.
+// Core data models mirroring `core/vedro-protocol`, `core/vedro-stream`, and `core/vedro-playback`.
 
 class ServerCapabilitiesModel {
   ServerCapabilitiesModel({

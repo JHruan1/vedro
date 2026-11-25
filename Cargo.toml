@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "core/prism-protocol",
-    "core/prism-stream",
-    "core/prism-playback",
-    "core/prism-storage",
-    "core/prism-ffi",
-    "core/prism-cli",
+    "core/vedro-protocol",
+    "core/vedro-stream",
+    "core/vedro-playback",
+    "core/vedro-storage",
+    "core/vedro-ffi",
+    "core/vedro-cli",
 ]
 
 [workspace.package]

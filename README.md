@@ -1,6 +1,6 @@
-# Prism Player
+# Vedro
 
-**Prism Player** 是一款面向 **embygo / Emby / Jellyfin** 生态打造的次世代跨平台全能硬件解码播放器，专为追求极致性能、**零转码直连播放 (DirectPlay)**、**杜比视界 (Dolby Vision)** 与 **杜比全景声 (Dolby Atmos)** 的影音发烧友设计。
+**Vedro** 是一款面向 **embygo / Emby / Jellyfin** 生态打造的次世代跨平台全能硬件解码播放器，专为追求极致性能、**零转码直连播放 (DirectPlay)**、**杜比视界 (Dolby Vision)** 与 **杜比全景声 (Dolby Atmos)** 的影音发烧友设计。
 
 支持全平台：**Android** · **iOS** · **macOS** · **Windows**（以及 Linux 桌面/CI 测试环境）。
 
@@ -13,7 +13,7 @@
 | **核心引擎 (`core/`)** | **Rust** (Tokio + Rustls HTTP/2 + Hyper + SQLite WAL + C-ABI FFI) | 零 GC 停顿、微秒级内存安全并发、7.4MB 精简原生动态库、统一复用于 Android / iOS / macOS / Windows |
 | **视频解码 & HDR / 杜比视界** | **libmpv + libplacebo (`vo=gpu-next`)** + 平台原生硬件管线 (`VideoToolbox` / `AVSampleBufferDisplayLayer` / `MediaCodec` / `D3D11VA` / `NVDEC`) | 零拷贝硬件解码、原生支持 Dolby Vision Profile 5 (无绿紫偏色) / Profile 7 / Profile 8.1 & 8.4 动态元数据与 HDR10+ / HLG 色调映射 |
 | **音频 & 杜比全景声** | **WASAPI Exclusive** / **Android AudioTrack IEC61937** / **Apple CoreAudio & Spatial Audio** / 32-bit Float HRTF | 支持 TrueHD Atmos、E-AC-3 JOC Atmos、DTS-HD MA / DTS:X 源码直通与空间音频，并内置夜间模式 DRC 与对白增强 |
-| **高速流媒体代理 (`prism-stream`)** | Rust 本地回环 HTTP Range 预取代理 + 环形 LRU 分块缓存 | 严格限制单会话并发上游连接数（≤2，完美适配 `embygo` 默认 4 连接上限，绝不触发 429）、自动预热 MKV 头尾 Cues 索引、支持 `StreamTicket` 无缝热更新、内置纯 Rust 二进制容器探针（无需服务端 ffprobe 即可识别 DoVi/Atmos） |
+| **高速流媒体代理 (`vedro-stream`)** | Rust 本地回环 HTTP Range 预取代理 + 环形 LRU 分块缓存 | 严格限制单会话并发上游连接数（≤2，完美适配 `embygo` 默认 4 连接上限，绝不触发 429）、自动预热 MKV 头尾 Cues 索引、支持 `StreamTicket` 无缝热更新、内置纯 Rust 二进制容器探针（无需服务端 ffprobe 即可识别 DoVi/Atmos） |
 | **跨平台 UI (`app/`)** | **Flutter (Impeller GPU 引擎)** + `dart:ffi` 直连 Rust + 四端原生硬件桥接插件 | 120Hz GPU 渲染、自适应桌面侧边栏与移动端底部导航、完整手势与键盘快捷键、实时硬件统计浮窗 (`I`) |
 
 ---
@@ -42,12 +42,12 @@
 
 ```text
 ├── core/
-│   ├── prism-protocol/     # Emby / Jellyfin / embygo REST + WebSocket + UDP 7359 协议引擎
-│   ├── prism-stream/       # 本地 Range 预取代理、LRU 分块缓存、MKV/MP4 杜比视界/全景声探针、字幕解析器
-│   ├── prism-playback/     # libmpv + libplacebo 硬件解码控制、DoVi P5/7/8 策略、Atmos 音频路由
-│   ├── prism-storage/      # SQLite WAL 本地多服/配置/缓存持久化
-│   ├── prism-ffi/          # C-ABI 原生共享/静态库（供 Flutter dart:ffi / Swift / Kotlin / C++ 调用）
-│   └── prism-cli/          # 原生命令行探针、多平台配置矩阵与 embygo 端到端集成测试工具
+│   ├── vedro-protocol/     # Emby / Jellyfin / embygo REST + WebSocket + UDP 7359 协议引擎
+│   ├── vedro-stream/       # 本地 Range 预取代理、LRU 分块缓存、MKV/MP4 杜比视界/全景声探针、字幕解析器
+│   ├── vedro-playback/     # libmpv + libplacebo 硬件解码控制、DoVi P5/7/8 策略、Atmos 音频路由
+│   ├── vedro-storage/      # SQLite WAL 本地多服/配置/缓存持久化
+│   ├── vedro-ffi/          # C-ABI 原生共享/静态库（供 Flutter dart:ffi / Swift / Kotlin / C++ 调用）
+│   └── vedro-cli/          # 原生命令行探针、多平台配置矩阵与 embygo 端到端集成测试工具
 ├── app/
 │   ├── lib/                # Flutter 跨平台 UI + dart:ffi Rust 桥接
 │   ├── android/            # Android Kotlin 原生硬件插件 (MediaCodec DoVi, AudioTrack IEC61937 Atmos, PiP)

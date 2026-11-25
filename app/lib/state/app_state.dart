@@ -3,15 +3,15 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
-import '../core/ffi/prism_bridge.dart';
+import '../core/ffi/vedro_bridge.dart';
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
 
-/// Central reactive application state backed directly by the compiled Rust core (`PrismCoreClient`).
-class PrismAppState extends ChangeNotifier {
-  PrismAppState(this.core);
+/// Central reactive application state backed directly by the compiled Rust core (`VedroCoreClient`).
+class VedroAppState extends ChangeNotifier {
+  VedroAppState(this.core);
 
-  final PrismCoreClient core;
+  final VedroCoreClient core;
 
   bool isInitialized = false;
   bool isBusy = false;

@@ -1,0 +1,16 @@
+[package]
+name = "vedro-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vedro-protocol = { path = "../vedro-protocol" }
+vedro-stream = { path = "../vedro-stream" }
+vedro-playback = { path = "../vedro-playback" }
+vedro-ffi = { path = "../vedro-ffi" }
+tokio.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

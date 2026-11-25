@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/badge_strip.dart';
 
 class ServerConnectScreen extends StatefulWidget {
   const ServerConnectScreen({super.key, required this.appState});
-  final PrismAppState appState;
+  final VedroAppState appState;
 
   @override
   State<ServerConnectScreen> createState() => _ServerConnectScreenState();
@@ -52,10 +52,10 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Icon(Icons.play_circle_filled_rounded, size: 64, color: PrismTheme.accent),
+                const Icon(Icons.play_circle_filled_rounded, size: 64, color: VedroTheme.accent),
                 const SizedBox(height: 12),
                 const Text(
-                  'Prism Player',
+                  'Vedro',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800, letterSpacing: -0.5),
                 ),
@@ -63,7 +63,7 @@ class _ServerConnectScreenState extends State<ServerConnectScreen> {
                 const Text(
                   'Rust 原生内核 • 杜比视界 & 杜比全景声 • 完美适配 embygo / Emby / Jellyfin',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: PrismTheme.textSecondary, fontSize: 13),
+                  style: TextStyle(color: VedroTheme.textSecondary, fontSize: 13),
                 ),
                 const SizedBox(height: 14),
                 const Center(
@@ -187,7 +187,7 @@ class _SavedServerTile extends StatelessWidget {
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
-        leading: const Icon(Icons.cloud_done_rounded, color: PrismTheme.embygoGreen),
+        leading: const Icon(Icons.cloud_done_rounded, color: VedroTheme.embygoGreen),
         title: Text(profile.name, style: const TextStyle(fontWeight: FontWeight.w600)),
         subtitle: Text('${profile.username ?? ''} • ${profile.url} (${profile.dialect})'),
         trailing: const Icon(Icons.chevron_right_rounded),

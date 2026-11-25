@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 
 /// Real-time hardware decoding, Dolby Vision RPU, Dolby Atmos & Rust Stream Proxy telemetry overlay (`I`).
 class NerdStatsHud extends StatelessWidget {
@@ -25,28 +25,28 @@ class NerdStatsHud extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xD90A0E17),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: PrismTheme.border),
+        border: Border.all(color: VedroTheme.border),
       ),
       child: DefaultTextStyle(
         style: const TextStyle(
           fontFamily: 'monospace',
           fontSize: 11.5,
           height: 1.45,
-          color: PrismTheme.textPrimary,
+          color: VedroTheme.textPrimary,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'PRISM ENGINE TELEMETRY',
+              'VEDRO ENGINE TELEMETRY',
               style: TextStyle(
-                color: PrismTheme.accent,
+                color: VedroTheme.accent,
                 fontWeight: FontWeight.w800,
                 letterSpacing: 1.1,
               ),
             ),
-            const Divider(color: PrismTheme.border, height: 14),
+            const Divider(color: VedroTheme.border, height: 14),
             _row('Decoder', '${pb['video_codec'] ?? '-'} • HW: ${pb['hwdec_current'] ?? 'auto'}'),
             _row('Video', '${pb['width'] ?? 0}x${pb['height'] ?? 0} @ ${((pb['fps'] as num?) ?? 0).toStringAsFixed(2)} fps (drop: ${pb['dropped_frames'] ?? 0})'),
             _row('HDR / DoVi', '${hdr['explanation'] ?? 'SDR'}'),
@@ -67,7 +67,7 @@ class NerdStatsHud extends StatelessWidget {
         children: [
           SizedBox(
             width: 92,
-            child: Text(k, style: const TextStyle(color: PrismTheme.textSecondary)),
+            child: Text(k, style: const TextStyle(color: VedroTheme.textSecondary)),
           ),
           Expanded(child: Text(v)),
         ],

@@ -5,10 +5,10 @@
 // 'flutter create' template.
 
 // The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = prism_player
+PRODUCT_NAME = Vedro
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.prismplayer.prismPlayer
+PRODUCT_BUNDLE_IDENTIFIER = com.vedro.player
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.prismplayer. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 com.vedro.player. All rights reserved.

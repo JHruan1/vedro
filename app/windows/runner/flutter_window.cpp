@@ -3,7 +3,7 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
-#include "prism_hardware_plugin.h"
+#include "vedro_hardware_plugin.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -26,7 +26,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
-  prism::RegisterPrismHardwarePlugin(flutter_controller_->engine()->messenger(), GetHandle());
+  vedro::RegisterVedroHardwarePlugin(flutter_controller_->engine()->messenger(), GetHandle());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {

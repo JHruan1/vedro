@@ -7,7 +7,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/badge_strip.dart';
 import '../widgets/nerd_stats_hud.dart';
@@ -21,7 +21,7 @@ class PlayerScreen extends StatefulWidget {
   });
 
   final MediaItemModel item;
-  final PrismAppState appState;
+  final VedroAppState appState;
   final String? mediaSourceId;
 
   @override
@@ -427,7 +427,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         ),
                         IconButton(
                           tooltip: '硬件/码流统计 (I)',
-                          icon: Icon(Icons.analytics_outlined, color: _showStats ? PrismTheme.accent : null),
+                          icon: Icon(Icons.analytics_outlined, color: _showStats ? VedroTheme.accent : null),
                           onPressed: () => setState(() => _showStats = !_showStats),
                         ),
                         IconButton(
@@ -491,12 +491,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             ),
                             IconButton(
                               tooltip: '杜比视界 & HDR 映射',
-                              icon: const Icon(Icons.hdr_on_rounded, color: PrismTheme.dolbyGold),
+                              icon: const Icon(Icons.hdr_on_rounded, color: VedroTheme.dolbyGold),
                               onPressed: _openHdrSheet,
                             ),
                             IconButton(
                               tooltip: '杜比全景声 & 音轨',
-                              icon: const Icon(Icons.surround_sound_rounded, color: PrismTheme.atmosCyan),
+                              icon: const Icon(Icons.surround_sound_rounded, color: VedroTheme.atmosCyan),
                               onPressed: _openAudioSheet,
                             ),
                             IconButton(
@@ -544,14 +544,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
             if (_prepared != null)
               Padding(
                 padding: const EdgeInsets.only(top: 4, bottom: 12),
-                child: Text(_prepared!.hdrExplanation, style: const TextStyle(color: PrismTheme.textSecondary, fontSize: 12.5)),
+                child: Text(_prepared!.hdrExplanation, style: const TextStyle(color: VedroTheme.textSecondary, fontSize: 12.5)),
               ),
             ...algos.entries.map((e) {
               final selected = e.key == _toneMapping;
               return ListTile(
                 leading: Icon(
                   selected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
-                  color: selected ? PrismTheme.dolbyGold : PrismTheme.textSecondary,
+                  color: selected ? VedroTheme.dolbyGold : VedroTheme.textSecondary,
                 ),
                 title: Text(e.value),
                 onTap: () async {
@@ -593,7 +593,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   final active = _player.state.track.audio.id == t.id;
                   return ListTile(
                     leading: Icon(active ? Icons.volume_up_rounded : Icons.audiotrack_rounded,
-                        color: active ? PrismTheme.atmosCyan : null),
+                        color: active ? VedroTheme.atmosCyan : null),
                     title: Text(t.title ?? t.language ?? '音轨 #${t.id}'),
                     subtitle: Text([t.codec, t.language, t.channels].whereType<String>().join(' • ')),
                     onTap: () async {
@@ -610,7 +610,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 return ListTile(
                   leading: Icon(
                     selected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
-                    color: selected ? PrismTheme.atmosCyan : PrismTheme.textSecondary,
+                    color: selected ? VedroTheme.atmosCyan : VedroTheme.textSecondary,
                   ),
                   title: Text(e.value),
                   onTap: () async {
@@ -698,7 +698,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     },
                   )),
               ...extSubs.map((s) => ListTile(
-                    leading: const Icon(Icons.closed_caption_rounded, color: PrismTheme.embygoGreen),
+                    leading: const Icon(Icons.closed_caption_rounded, color: VedroTheme.embygoGreen),
                     title: Text(s['title']?.toString() ?? '外挂字幕'),
                     subtitle: Text('${s['codec'] ?? 'srt'} • ${s['language'] ?? 'external'}'),
                     onTap: () async {
@@ -756,7 +756,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ...sources.map((src) => ListTile(
                   leading: Icon(
                     src.id == _prepared?.mediaSourceId ? Icons.check_circle_rounded : Icons.movie_outlined,
-                    color: src.id == _prepared?.mediaSourceId ? PrismTheme.accent : null,
+                    color: src.id == _prepared?.mediaSourceId ? VedroTheme.accent : null,
                   ),
                   title: Text(src.displayLabel),
                   onTap: () {

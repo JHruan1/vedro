@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 
 class PlaylistsScreen extends StatefulWidget {
   const PlaylistsScreen({super.key, required this.appState, required this.onItemTap});
 
-  final PrismAppState appState;
+  final VedroAppState appState;
   final void Function(MediaItemModel) onItemTap;
 
   @override
@@ -56,7 +56,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         ],
       ),
       body: list.isEmpty
-          ? const Center(child: Text('暂无片单，点击右上角 + 创建', style: TextStyle(color: PrismTheme.textSecondary)))
+          ? const Center(child: Text('暂无片单，点击右上角 + 创建', style: TextStyle(color: VedroTheme.textSecondary)))
           : ListView.builder(
               padding: const EdgeInsets.all(16),
               itemCount: list.length,
@@ -65,7 +65,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                 return Card(
                   margin: const EdgeInsets.only(bottom: 10),
                   child: ListTile(
-                    leading: const Icon(Icons.playlist_play_rounded, color: PrismTheme.accent),
+                    leading: const Icon(Icons.playlist_play_rounded, color: VedroTheme.accent),
                     title: Text(pl.name, style: const TextStyle(fontWeight: FontWeight.w600)),
                     subtitle: Text('${pl.childCount ?? 0} 部影片'),
                     trailing: const Icon(Icons.chevron_right_rounded),

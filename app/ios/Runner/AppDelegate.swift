@@ -13,20 +13,20 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    PrismHardwarePlugin.register(with: engineBridge.applicationRegistrar.messenger())
+    VedroHardwarePlugin.register(with: engineBridge.applicationRegistrar.messenger())
   }
 }
 
-/// Native iOS hardware bridge for Prism Player:
+/// Native iOS hardware bridge for Vedro:
 /// - Detects EDR headroom, Dolby Vision / HDR10 / HLG display support, and ProMotion 120Hz
 /// - Configures AVAudioSession for multichannel Apple Spatial Audio & Dolby Atmos E-AC-3 JOC
 /// - Manages idle timer during playback
-final class PrismHardwarePlugin: NSObject {
-  static let channelName = "com.prismplayer/hardware"
+final class VedroHardwarePlugin: NSObject {
+  static let channelName = "com.vedro.player/hardware"
 
   static func register(with messenger: FlutterBinaryMessenger) {
     let channel = FlutterMethodChannel(name: channelName, binaryMessenger: messenger)
-    let instance = PrismHardwarePlugin()
+    let instance = VedroHardwarePlugin()
     instance.configureSpatialAudioSession()
     channel.setMethodCallHandler(instance.handle)
   }
@@ -40,7 +40,7 @@ final class PrismHardwarePlugin: NSObject {
       }
       try session.setActive(true)
     } catch {
-      NSLog("PrismHardwarePlugin: AVAudioSession setup warning: \(error)")
+      NSLog("VedroHardwarePlugin: AVAudioSession setup warning: \(error)")
     }
   }
 

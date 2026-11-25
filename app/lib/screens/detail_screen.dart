@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/badge_strip.dart';
 import '../widgets/horizontal_rail.dart';
@@ -11,7 +11,7 @@ class DetailScreen extends StatefulWidget {
   const DetailScreen({super.key, required this.item, required this.appState});
 
   final MediaItemModel item;
-  final PrismAppState appState;
+  final VedroAppState appState;
 
   @override
   State<DetailScreen> createState() => _DetailScreenState();
@@ -114,7 +114,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
-                        colors: [Color(0x3307090F), PrismTheme.bg],
+                        colors: [Color(0x3307090F), VedroTheme.bg],
                       ),
                     ),
                   ),
@@ -184,13 +184,13 @@ class _DetailScreenState extends State<DetailScreen> {
                         child: ListTile(
                           leading: Icon(
                             selected ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
-                            color: selected ? PrismTheme.accent : PrismTheme.textSecondary,
+                            color: selected ? VedroTheme.accent : VedroTheme.textSecondary,
                           ),
                           onTap: () => setState(() => _selectedSourceId = src.id),
                           title: Text(src.displayLabel, style: const TextStyle(fontSize: 13.5)),
                           subtitle: Text(
                             '容器: ${src.container?.toUpperCase() ?? '-'} • DirectPlay: ${src.supportsDirectPlay ? '支持' : '否'}',
-                            style: const TextStyle(color: PrismTheme.textSecondary, fontSize: 12),
+                            style: const TextStyle(color: VedroTheme.textSecondary, fontSize: 12),
                           ),
                         ),
                       );
@@ -200,7 +200,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     const SizedBox(height: 16),
                     Text(
                       _item.overview!,
-                      style: const TextStyle(color: PrismTheme.textSecondary, height: 1.55),
+                      style: const TextStyle(color: VedroTheme.textSecondary, height: 1.55),
                     ),
                   ],
                   if (_seasons.isNotEmpty) ...[
@@ -220,7 +220,7 @@ class _DetailScreenState extends State<DetailScreen> {
                           margin: const EdgeInsets.only(bottom: 10),
                           child: ListTile(
                             leading: CircleAvatar(
-                              backgroundColor: PrismTheme.surfaceElevated,
+                              backgroundColor: VedroTheme.surfaceElevated,
                               child: Text(ep.episodeCode ?? '${ep.indexNumber ?? ''}'),
                             ),
                             title: Text(ep.name, style: const TextStyle(fontWeight: FontWeight.w600)),
@@ -228,7 +228,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                 ? Text(ep.overview!, maxLines: 2, overflow: TextOverflow.ellipsis)
                                 : null,
                             trailing: IconButton(
-                              icon: const Icon(Icons.play_circle_fill_rounded, color: PrismTheme.accent, size: 32),
+                              icon: const Icon(Icons.play_circle_fill_rounded, color: VedroTheme.accent, size: 32),
                               onPressed: () => _play(ep),
                             ),
                             onTap: () => _play(ep),
@@ -251,9 +251,9 @@ class _DetailScreenState extends State<DetailScreen> {
                             width: 160,
                             padding: const EdgeInsets.all(10),
                             decoration: BoxDecoration(
-                              color: PrismTheme.surface,
+                              color: VedroTheme.surface,
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: PrismTheme.border),
+                              border: Border.all(color: VedroTheme.border),
                             ),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
@@ -264,7 +264,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                 Text(p.role ?? p.type ?? '',
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(color: PrismTheme.textSecondary, fontSize: 12)),
+                                    style: const TextStyle(color: VedroTheme.textSecondary, fontSize: 12)),
                               ],
                             ),
                           );

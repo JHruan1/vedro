@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 /// - macOS: Metal EDR + VideoToolbox, CoreAudio Exclusive / Spatial Audio
 /// - Windows: DXGI HDR10/Dolby Vision detection, WASAPI Exclusive TrueHD/E-AC-3 Atmos
 class NativePlaybackChannel {
-  static const MethodChannel _channel = MethodChannel('com.prismplayer/hardware');
+  static const MethodChannel _channel = MethodChannel('com.vedro.player/hardware');
 
   static Future<Map<String, dynamic>> queryDisplayAndAudioCapabilities() async {
     try {

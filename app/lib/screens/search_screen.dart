@@ -3,13 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
-import '../core/theme/prism_theme.dart';
+import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key, required this.appState, required this.onItemTap});
 
-  final PrismAppState appState;
+  final VedroAppState appState;
   final void Function(MediaItemModel) onItemTap;
 
   @override
@@ -78,7 +78,7 @@ class _SearchScreenState extends State<SearchScreen> {
           Expanded(
             child: _hints.isEmpty
                 ? const Center(
-                    child: Text('输入片名、原名或演员名即时检索', style: TextStyle(color: PrismTheme.textSecondary)),
+                    child: Text('输入片名、原名或演员名即时检索', style: TextStyle(color: VedroTheme.textSecondary)),
                   )
                 : ListView.builder(
                     itemCount: _hints.length,

@@ -16,15 +16,12 @@ import '../widgets/nerd_stats_hud.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
 
-/// SenPlayer / Infuse / Forward caliber native GPU cinema player:
+/// IINA / Infuse / SenPlayer caliber native GPU cinema player:
 /// - Zero-transcode DirectPlay of 4K Remux, Dolby Vision, Dolby Atmos, PGS/ASS subtitles
-/// - Full touch gestures: horizontal precision scrub HUD, left brightness, right volume,
-///   double-tap ±10s with haptic, long-press 2.0× pill
-/// - Mouse-wheel volume + full keyboard shortcuts (Space, ←/→, ↑/↓, [/], I, N, Esc)
-/// - Skip Intro / Outro frosted button driven by media segments
-/// - Slide-out frosted Episode Drawer + Next Episode quick switcher
-/// - Video Aspect / Fill mode switcher (适应 / 填充 / 16:9 / 21:9 / 4:3)
-/// - Live Subtitle Style Customizer (font scale, vertical offset, sync delay)
+/// - Custom precision scrub bar (hover expand, buffered bar, segment markers, hover time tooltip)
+/// - Auto-hiding cursor + hover-kept chrome + centered transport + inline desktop volume slider
+/// - Full touch gestures (scrub HUD, left brightness, right volume, double-tap ±N s, long-press 2×)
+/// - Skip Intro/Outro button (+ optional auto-skip), Episode Drawer, Aspect, Subtitle Style, Danmaku
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({
     super.key,
@@ -33,6 +30,9 @@ class PlayerScreen extends StatefulWidget {
     this.mediaSourceId,
     this.playlistEpisodes,
     this.segments,
+    this.initialAudioStreamIndex,
+    this.initialSubtitleStreamIndex,
+    this.localFilePath,
   });
 
   final MediaItemModel item;
@@ -40,6 +40,9 @@ class PlayerScreen extends StatefulWidget {
   final String? mediaSourceId;
   final List<MediaItemModel>? playlistEpisodes;
   final List<MediaSegmentModel>? segments;
+  final int? initialAudioStreamIndex;
+  final int? initialSubtitleStreamIndex;
+  final String? localFilePath;
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -58,24 +61,34 @@ class _PlayerScreenState extends State<PlayerScreen> {
   String? _error;
 
   bool _controlsVisible = true;
+  bool _hoveringChrome = false;
   bool _showStats = false;
   bool _showEpisodeDrawer = false;
+  bool _showRemaining = false;
   bool _paused = false;
+  bool _muted = false;
+  double _preMuteVolume = 100.0;
   double _positionSecs = 0;
+  double _bufferedSecs = 0;
   double _durationSecs = 0;
   double _speed = 1.0;
   double _preBoostSpeed = 1.0;
   bool _isSpeedBoost = false;
   double _volume = 100.0;
   double _brightness = 1.0;
+
+  // Live synced with preferences
   double _subDelaySecs = 0.0;
   double _subScale = 1.0;
   int _subPos = 96;
-  String _aspectMode = 'fit'; // fit | fill | 16:9 | 21:9 | 4:3
+  String _aspectMode = 'fit';
   String _toneMapping = 'bt.2446a';
   String _audioMode = 'auto';
   bool _nightMode = false;
   bool _dialogueBoost = false;
+  bool _danmakuEnabled = false;
+  final Set<String> _autoSkippedSegKeys = {};
+  bool _completedTriggered = false;
 
   // Gesture HUD state
   bool _scrubbing = false;
@@ -112,16 +125,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return null;
   }
 
+  double get _maxVolume => widget.appState.prefs.maxVolumePercent.toDouble().clamp(100.0, 200.0);
+
   @override
   void initState() {
     super.initState();
+    final p = widget.appState.prefs;
     _currentItem = widget.item;
     _segments = widget.segments ?? const [];
+    _speed = p.defaultSpeed;
+    _aspectMode = p.defaultAspect;
+    _subScale = p.subtitleFontScale;
+    _subPos = p.subtitlePos;
+    _subDelaySecs = p.subtitleDelaySecs;
+    _showRemaining = p.showRemainingTime;
+    _danmakuEnabled = p.danmakuEnabled;
+    _audioMode = (widget.appState.settings['audio_mode'] ?? 'auto').toString();
+    _nightMode = widget.appState.settings['night_mode'] == true;
+    _dialogueBoost = widget.appState.settings['dialogue_boost'] == true;
+
     NativePlaybackChannel.setKeepScreenOn(true);
 
     _player = Player(
-      configuration: const PlayerConfiguration(
-        bufferSize: 128 * 1024 * 1024,
+      configuration: PlayerConfiguration(
+        bufferSize: p.bufferSizeMb * 1024 * 1024,
         vo: 'gpu',
       ),
     );
@@ -144,12 +171,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }));
     _subs.add(_player.stream.position.listen((pos) {
       if (mounted && !_scrubbing) {
-        setState(() => _positionSecs = pos.inMilliseconds / 1000.0);
+        final secs = pos.inMilliseconds / 1000.0;
+        setState(() => _positionSecs = secs);
+        _checkAutoSkipSegments(secs);
+      }
+    }));
+    _subs.add(_player.stream.buffer.listen((buf) {
+      if (mounted) {
+        setState(() => _bufferedSecs = buf.inMilliseconds / 1000.0);
       }
     }));
     _subs.add(_player.stream.duration.listen((dur) {
       if (mounted && dur.inMilliseconds > 0) {
         setState(() => _durationSecs = dur.inMilliseconds / 1000.0);
+      }
+    }));
+    _subs.add(_player.stream.completed.listen((done) {
+      if (done && !_completedTriggered && widget.appState.prefs.autoPlayNext && _nextEpisode != null) {
+        _completedTriggered = true;
+        _switchEpisode(_nextEpisode!);
       }
     }));
     _subs.add(_player.stream.error.listen((err) {
@@ -159,6 +199,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }));
 
     _startPlayback(widget.mediaSourceId);
+  }
+
+  void _checkAutoSkipSegments(double secs) {
+    final p = widget.appState.prefs;
+    if (!p.autoSkipIntro && !p.autoSkipOutro) return;
+    for (final seg in _segments) {
+      final t = seg.type.toLowerCase();
+      final shouldSkip = (t == 'intro' && p.autoSkipIntro) || (t == 'outro' && p.autoSkipOutro);
+      final key = '${_currentItem.id}:${seg.type}:${seg.startTicks}';
+      if (shouldSkip &&
+          secs >= seg.startSecs &&
+          secs < seg.endSecs - 1.5 &&
+          _autoSkippedSegKeys.add(key)) {
+        _seekTo(seg.endSecs);
+        _flashGestureHud('seek_feedback', text: '已自动${seg.buttonLabel}');
+      }
+    }
   }
 
   @override
@@ -180,16 +237,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   void _scheduleHideControls() {
     _hideControlsTimer?.cancel();
-    if (_paused || _loading || _showEpisodeDrawer) return;
-    _hideControlsTimer = Timer(const Duration(milliseconds: 3500), () {
-      if (mounted && !_paused && !_scrubbing && !_showEpisodeDrawer) {
+    if (_paused || _loading || _showEpisodeDrawer || _hoveringChrome) return;
+    _hideControlsTimer = Timer(const Duration(milliseconds: 3200), () {
+      if (mounted && !_paused && !_scrubbing && !_showEpisodeDrawer && !_hoveringChrome) {
         setState(() => _controlsVisible = false);
       }
     });
   }
 
   void _revealControls() {
-    setState(() => _controlsVisible = true);
+    if (!_controlsVisible) {
+      setState(() => _controlsVisible = true);
+    }
     _scheduleHideControls();
   }
 
@@ -199,7 +258,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _gestureMode = mode;
       if (text.isNotEmpty) _seekFeedbackText = text;
     });
-    _gestureHudTimer = Timer(const Duration(milliseconds: 900), () {
+    _gestureHudTimer = Timer(const Duration(milliseconds: 950), () {
       if (mounted) setState(() => _gestureMode = null);
     });
   }
@@ -225,14 +284,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _switchEpisode(MediaItemModel ep) async {
     await _reportStoppedAndCleanup();
+    _completedTriggered = false;
     setState(() {
       _currentItem = ep;
       _segments = const [];
       _showEpisodeDrawer = false;
       _positionSecs = 0;
+      _bufferedSecs = 0;
       _durationSecs = 0;
     });
-    // Fetch segments for the new episode in background
     unawaited(() async {
       try {
         final res = await widget.appState.core.invoke('get_item', {'item_id': ep.id})
@@ -249,15 +309,70 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await _startPlayback(null);
   }
 
+  Future<void> _applyInitialPreferencesToMpv() async {
+    final p = widget.appState.prefs;
+    await _applyMpvProperty('hwdec', 'auto-safe');
+    await _applyMpvProperty('hwdec-codecs', 'all');
+    await _applyMpvProperty('target-colorspace-hint', 'yes');
+    await _applyMpvProperty('hdr-compute-peak', p.hdrComputePeak ? 'yes' : 'no');
+    await _applyMpvProperty('tone-mapping', _toneMapping);
+    await _applyMpvProperty('video-sync', p.videoSync);
+    await _applyMpvProperty('demuxer-max-bytes', '${p.bufferSizeMb}MiB');
+    if (p.audioDelayMs != 0) {
+      await _applyMpvProperty('audio-delay', (p.audioDelayMs / 1000.0).toStringAsFixed(3));
+    }
+    if (p.subtitleFontFamily.trim().isNotEmpty) {
+      await _applyMpvProperty('sub-fonts-dir', widget.appState.fontsDirectoryPath);
+      await _applyMpvProperty('sub-font', p.subtitleFontFamily.trim());
+    }
+    await _applyMpvProperty('sub-scale', _subScale.toStringAsFixed(2));
+    await _applyMpvProperty('sub-pos', '$_subPos');
+    await _applyMpvProperty('sub-color', p.subtitleColorHex);
+    await _applyMpvProperty('sub-border-size', p.subtitleOutlineWidth.toStringAsFixed(1));
+    if (p.subtitleBgOpacity > 0.01) {
+      await _applyMpvProperty(
+        'sub-back-color',
+        '0.0/0.0/0.0/${p.subtitleBgOpacity.toStringAsFixed(2)}',
+      );
+    }
+    if (_subDelaySecs != 0) {
+      await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
+    }
+    await _applyAspectMode(_aspectMode);
+    if ((_speed - 1.0).abs() > 0.01) {
+      await _player.setRate(_speed);
+    }
+  }
+
   Future<void> _startPlayback(String? sourceId) async {
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
+      final p = widget.appState.prefs;
+
+      // Support playing local offline downloaded file directly!
+      if (widget.localFilePath != null && widget.localFilePath!.isNotEmpty) {
+        await _applyInitialPreferencesToMpv();
+        await _player.open(Media(widget.localFilePath!), play: true);
+        if (mounted) {
+          setState(() {
+            _loading = false;
+            _paused = false;
+          });
+          _scheduleHideControls();
+        }
+        return;
+      }
+
       final prepRaw = await widget.appState.core.invoke('prepare_playback', {
         'item_id': _currentItem.id,
         if (sourceId != null) 'media_source_id': sourceId,
+        if (widget.initialAudioStreamIndex != null)
+          'audio_stream_index': widget.initialAudioStreamIndex,
+        if (widget.initialSubtitleStreamIndex != null)
+          'subtitle_stream_index': widget.initialSubtitleStreamIndex,
         'inspect_header': true,
       }) as Map<String, dynamic>;
 
@@ -268,13 +383,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
         if (skipKeys.contains(entry.key)) continue;
         await _applyMpvProperty(entry.key, entry.value);
       }
-      await _applyMpvProperty('hwdec', 'auto-safe');
-      await _applyMpvProperty('hwdec-codecs', 'all');
-      await _applyMpvProperty('target-colorspace-hint', 'yes');
-      await _applyMpvProperty('hdr-compute-peak', 'yes');
-      await _applyMpvProperty('tone-mapping', _toneMapping);
+      await _applyInitialPreferencesToMpv();
 
-      final startDur = _currentItem.playbackPositionTicks > 0
+      final startDur = (p.rememberPosition && _currentItem.playbackPositionTicks > 0)
           ? Duration(microseconds: _currentItem.playbackPositionTicks ~/ 10)
           : null;
 
@@ -283,24 +394,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
         play: true,
       );
 
-      for (final sub in prep.externalSubtitles) {
-        if (sub['is_default'] == true && sub['url'] != null) {
-          await _player.setSubtitleTrack(
-            SubtitleTrack.uri(
-              sub['url'].toString(),
-              title: sub['title']?.toString(),
-              language: sub['language']?.toString(),
-            ),
-          );
-          break;
+      if (p.autoLoadExternalSubs) {
+        for (final sub in prep.externalSubtitles) {
+          if (sub['is_default'] == true && sub['url'] != null) {
+            await _player.setSubtitleTrack(
+              SubtitleTrack.uri(
+                sub['url'].toString(),
+                title: sub['title']?.toString(),
+                language: sub['language']?.toString(),
+              ),
+            );
+            break;
+          }
         }
       }
 
-      await widget.appState.core.invoke('report_playback_start', {
-        'position_ticks': _currentItem.playbackPositionTicks,
-        if (_currentItem.runTimeTicks != null) 'run_time_ticks': _currentItem.runTimeTicks,
-        'is_paused': false,
-      });
+      if (!p.incognitoMode) {
+        await widget.appState.core.invoke('report_playback_start', {
+          'position_ticks': _currentItem.playbackPositionTicks,
+          if (_currentItem.runTimeTicks != null) 'run_time_ticks': _currentItem.runTimeTicks,
+          'is_paused': false,
+        });
+      }
 
       if (mounted) {
         setState(() {
@@ -360,6 +475,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     _progressTimer?.cancel();
     _progressTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
+      if (widget.appState.prefs.incognitoMode || widget.localFilePath != null) return;
       try {
         await widget.appState.core.invoke('report_playback_progress', {
           'position_ticks': (_positionSecs * 10000000).round(),
@@ -381,19 +497,68 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _reportStoppedAndCleanup() async {
+    if (widget.localFilePath != null) return;
     try {
-      await widget.appState.core.invoke('report_playback_stopped', {
-        'position_ticks': (_positionSecs * 10000000).round(),
-        if (_durationSecs > 0) 'run_time_ticks': (_durationSecs * 10000000).round(),
-        'is_paused': true,
-      });
+      if (!widget.appState.prefs.incognitoMode) {
+        await widget.appState.core.invoke('report_playback_stopped', {
+          'position_ticks': (_positionSecs * 10000000).round(),
+          if (_durationSecs > 0) 'run_time_ticks': (_durationSecs * 10000000).round(),
+          'is_paused': true,
+        });
+      }
       await widget.appState.core.invoke('player_stop');
     } catch (_) {}
+  }
+
+  Future<void> _requestExit() async {
+    if (widget.appState.prefs.confirmExitPlayer && !_paused && _error == null) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('退出播放？'),
+          content: const Text('当前播放进度会自动保存。'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('继续观看')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('退出')),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+    if (mounted) Navigator.of(context).pop();
   }
 
   Future<void> _togglePause() async {
     await _player.playOrPause();
     _revealControls();
+  }
+
+  void _toggleMute() {
+    if (_muted || _volume <= 0.1) {
+      final restored = _preMuteVolume > 5 ? _preMuteVolume : 80.0;
+      setState(() {
+        _muted = false;
+        _volume = restored;
+      });
+      _player.setVolume(restored);
+    } else {
+      _preMuteVolume = _volume;
+      setState(() {
+        _muted = true;
+        _volume = 0;
+      });
+      _player.setVolume(0);
+    }
+    _flashGestureHud('volume');
+  }
+
+  void _setVolume(double v) {
+    final clamped = v.clamp(0.0, _maxVolume);
+    setState(() {
+      _volume = clamped;
+      _muted = clamped <= 0.1;
+    });
+    _player.setVolume(clamped);
   }
 
   Future<void> _seekTo(double secs) async {
@@ -444,11 +609,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _handleDoubleTap(double width) {
+    final step = widget.appState.prefs.seekStepSecs.toDouble();
     final ratio = width > 0 ? _lastTapDownPos.dx / width : 0.5;
     if (ratio < 0.35) {
-      _seekBy(-10, showHud: true);
+      _seekBy(-step, showHud: true);
     } else if (ratio > 0.65) {
-      _seekBy(10, showHud: true);
+      _seekBy(step, showHud: true);
     } else {
       _togglePause();
     }
@@ -457,26 +623,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _handleKey(KeyEvent ev) {
     if (ev is! KeyDownEvent) return;
     final key = ev.logicalKey;
+    final step = widget.appState.prefs.seekStepSecs.toDouble();
     if (key == LogicalKeyboardKey.space) {
       _togglePause();
     } else if (key == LogicalKeyboardKey.escape) {
       if (_showEpisodeDrawer) {
         setState(() => _showEpisodeDrawer = false);
       } else {
-        Navigator.of(context).pop();
+        _requestExit();
       }
     } else if (key == LogicalKeyboardKey.arrowRight) {
-      _seekBy(10, showHud: true);
+      _seekBy(step, showHud: true);
     } else if (key == LogicalKeyboardKey.arrowLeft) {
-      _seekBy(-10, showHud: true);
+      _seekBy(-step, showHud: true);
     } else if (key == LogicalKeyboardKey.arrowUp) {
-      _volume = (_volume + 5).clamp(0, 150);
-      _player.setVolume(_volume);
+      _setVolume(_volume + 5);
       _flashGestureHud('volume');
     } else if (key == LogicalKeyboardKey.arrowDown) {
-      _volume = (_volume - 5).clamp(0, 150);
-      _player.setVolume(_volume);
+      _setVolume(_volume - 5);
       _flashGestureHud('volume');
+    } else if (key == LogicalKeyboardKey.keyM) {
+      _toggleMute();
     } else if (key == LogicalKeyboardKey.keyI) {
       setState(() => _showStats = !_showStats);
     } else if (key == LogicalKeyboardKey.keyN && _nextEpisode != null) {
@@ -491,11 +658,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
+    final wide = size.width >= 760;
+    final isMac = !kIsWeb && Platform.isMacOS;
+    final topPad = MediaQuery.paddingOf(context).top;
     final seg = _activeSegment;
-    final specs = <String>[
-      if (_prepared?.dolbyVisionLabel != null) _prepared!.dolbyVisionLabel!,
-      if (_prepared?.spatialAudioLabel != null) _prepared!.spatialAudioLabel!,
-    ];
+    final step = widget.appState.prefs.seekStepSecs;
+    final showSpecs = widget.appState.prefs.showSpecBadges;
+    final specs = showSpecs
+        ? <String>[
+            if (_prepared?.dolbyVisionLabel != null) _prepared!.dolbyVisionLabel!,
+            if (_prepared?.spatialAudioLabel != null) _prepared!.spatialAudioLabel!,
+          ]
+        : const <String>[];
+
+    final hideCursor = !_controlsVisible && !_showEpisodeDrawer && !_paused && !_loading;
 
     return KeyboardListener(
       focusNode: _focusNode,
@@ -507,15 +683,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
           onPointerSignal: (event) {
             if (event is PointerScrollEvent && !_showEpisodeDrawer) {
               final delta = event.scrollDelta.dy > 0 ? -4.0 : 4.0;
-              setState(() => _volume = (_volume + delta).clamp(0.0, 150.0));
-              _player.setVolume(_volume);
+              _setVolume(_volume + delta);
               _flashGestureHud('volume');
             }
           },
           child: MouseRegion(
-            onHover: (_) {
-              if (!_controlsVisible) _revealControls();
-            },
+            cursor: hideCursor ? SystemMouseCursors.none : SystemMouseCursors.basic,
+            onHover: (_) => _revealControls(),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTapDown: (d) => _lastTapDownPos = d.localPosition,
@@ -573,8 +747,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   setState(() => _brightness = (_brightness + delta).clamp(0.15, 1.0));
                   _flashGestureHud('brightness');
                 } else {
-                  setState(() => _volume = (_volume + delta * 100).clamp(0.0, 150.0));
-                  _player.setVolume(_volume);
+                  _setVolume(_volume + delta * 100);
                   _flashGestureHud('volume');
                 }
               },
@@ -594,6 +767,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ),
 
+                  // Optional Danmaku overlay (honors opacity, area, font size)
+                  if (_danmakuEnabled)
+                    IgnorePointer(
+                      child: _DanmakuOverlay(
+                        positionSecs: _positionSecs,
+                        opacity: widget.appState.prefs.danmakuOpacity,
+                        fontSize: widget.appState.prefs.danmakuFontSize,
+                        areaFraction: widget.appState.prefs.danmakuArea,
+                      ),
+                    ),
+
                   if (_loading)
                     const Center(
                       child: SizedBox(
@@ -605,7 +789,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                   if (_error != null)
                     Positioned(
-                      bottom: 120,
+                      bottom: 130,
                       left: 24,
                       right: 24,
                       child: Center(
@@ -613,7 +797,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           constraints: const BoxConstraints(maxWidth: 520),
                           child: GlassSurface(
                             borderRadius: 12,
-                            color: const Color(0xD8241214),
+                            color: const Color(0xDC241214),
+                            borderColor: const Color(0x55FF6B6F),
                             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                             child: Text(
                               _error!,
@@ -627,8 +812,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   // Skip Intro / Outro floating frosted button
                   if (seg != null && !_showEpisodeDrawer)
                     Positioned(
-                      right: 24,
-                      bottom: _controlsVisible ? 132 : 34,
+                      right: 28,
+                      bottom: _controlsVisible ? 142 : 34,
                       child: PressableScale(
                         onTap: () => _seekTo(seg.endSecs),
                         hoverScale: 1.04,
@@ -660,7 +845,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                   if (_isSpeedBoost)
                     Positioned(
-                      top: 44,
+                      top: topPad + 48,
                       left: 0,
                       right: 0,
                       child: Center(
@@ -729,243 +914,276 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                   if (_showStats)
                     Positioned(
-                      top: 84,
+                      top: topPad + 72,
                       left: 24,
                       child: NerdStatsHud(stats: _stats),
                     ),
 
-                  // Auto-hiding Apple TV+ / SenPlayer frosted chrome
+                  // Auto-hiding IINA / Infuse frosted chrome
                   IgnorePointer(
                     ignoring: !_controlsVisible || _showEpisodeDrawer,
                     child: AnimatedOpacity(
                       opacity: (_controlsVisible && !_showEpisodeDrawer) ? 1.0 : 0.0,
-                      duration: const Duration(milliseconds: 220),
+                      duration: const Duration(milliseconds: 210),
                       curve: Curves.easeOutCubic,
                       child: Stack(
                         children: [
-                          // Top bar
+                          // Top Bar
                           Positioned(
                             top: 0,
                             left: 0,
                             right: 0,
-                            child: Container(
-                              padding: EdgeInsets.fromLTRB(
-                                !kIsWeb && Platform.isMacOS ? 82 : 20,
-                                MediaQuery.paddingOf(context).top + 12,
-                                20,
-                                24,
-                              ),
-                              decoration: const BoxDecoration(
-                                gradient: LinearGradient(
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                  colors: [Color(0xB8000000), Colors.transparent],
+                            child: MouseRegion(
+                              onEnter: (_) {
+                                _hoveringChrome = true;
+                                _hideControlsTimer?.cancel();
+                              },
+                              onExit: (_) {
+                                _hoveringChrome = false;
+                                _scheduleHideControls();
+                              },
+                              child: Container(
+                                padding: EdgeInsets.fromLTRB(
+                                  isMac ? 82 : 20,
+                                  topPad + 12,
+                                  20,
+                                  28,
                                 ),
-                              ),
-                              child: Row(
-                                children: [
-                                  PressableScale(
-                                    onTap: () => Navigator.of(context).pop(),
-                                    child: GlassSurface(
-                                      borderRadius: 20,
-                                      blur: 18,
-                                      color: const Color(0x55141417),
-                                      padding: const EdgeInsets.all(9),
-                                      child: const Icon(
-                                        Icons.arrow_back_ios_new_rounded,
-                                        size: 16,
-                                        color: VedroTheme.fg,
+                                decoration: const BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [Color(0xC4000000), Colors.transparent],
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    _CircleHudButton(
+                                      icon: Icons.arrow_back_ios_new_rounded,
+                                      iconSize: 15,
+                                      tooltip: '返回 (Esc)',
+                                      onTap: _requestExit,
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Row(
+                                        children: [
+                                          Flexible(
+                                            child: Text(
+                                              _currentItem.seriesName != null
+                                                  ? '${_currentItem.seriesName} ${_currentItem.episodeCode ?? ''} · ${_currentItem.displayName}'
+                                                  : _currentItem.displayName,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 15,
+                                                fontWeight: FontWeight.w600,
+                                                letterSpacing: -0.2,
+                                              ),
+                                            ),
+                                          ),
+                                          if (specs.isNotEmpty) ...[
+                                            const SizedBox(width: 10),
+                                            SpecGlyphRow(specs: specs),
+                                          ],
+                                        ],
                                       ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 14),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Text(
-                                          _currentItem.seriesName != null
-                                              ? '${_currentItem.seriesName} ${_currentItem.episodeCode ?? ''} · ${_currentItem.displayName}'
-                                              : _currentItem.displayName,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: VedroTheme.fg,
-                                            fontSize: 15.5,
-                                            fontWeight: FontWeight.w600,
-                                            letterSpacing: -0.2,
-                                          ),
-                                        ),
-                                        if (specs.isNotEmpty) ...[
-                                          const SizedBox(height: 4),
-                                          SpecGlyphRow(specs: specs),
-                                        ],
-                                      ],
+                                    const SizedBox(width: 12),
+                                    if (_episodes.length > 1) ...[
+                                      _CircleHudButton(
+                                        icon: Icons.video_library_outlined,
+                                        tooltip: '选集',
+                                        onTap: () => setState(() => _showEpisodeDrawer = true),
+                                      ),
+                                      const SizedBox(width: 6),
+                                    ],
+                                    _CircleHudButton(
+                                      icon: Icons.aspect_ratio_rounded,
+                                      tooltip: '画面比例',
+                                      onTap: _openAspectSheet,
                                     ),
-                                  ),
-                                  if (_episodes.length > 1) ...[
-                                    _ChromeIconButton(
-                                      icon: Icons.video_library_outlined,
-                                      tooltip: '选集',
-                                      onTap: () => setState(() => _showEpisodeDrawer = true),
+                                    const SizedBox(width: 6),
+                                    _CircleHudButton(
+                                      icon: Icons.info_outline_rounded,
+                                      active: _showStats,
+                                      tooltip: '硬件信息 (I)',
+                                      onTap: () => setState(() => _showStats = !_showStats),
                                     ),
-                                    const SizedBox(width: 4),
+                                    if (widget.appState.prefs.enablePip) ...[
+                                      const SizedBox(width: 6),
+                                      _CircleHudButton(
+                                        icon: Icons.picture_in_picture_alt_rounded,
+                                        tooltip: '画中画',
+                                        onTap: NativePlaybackChannel.enterPictureInPicture,
+                                      ),
+                                    ],
                                   ],
-                                  _ChromeIconButton(
-                                    icon: Icons.aspect_ratio_rounded,
-                                    tooltip: '画面比例',
-                                    onTap: _openAspectSheet,
-                                  ),
-                                  const SizedBox(width: 4),
-                                  _ChromeIconButton(
-                                    icon: Icons.info_outline_rounded,
-                                    active: _showStats,
-                                    tooltip: '播放信息 (I)',
-                                    onTap: () => setState(() => _showStats = !_showStats),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  _ChromeIconButton(
-                                    icon: Icons.picture_in_picture_alt_rounded,
-                                    tooltip: '画中画',
-                                    onTap: NativePlaybackChannel.enterPictureInPicture,
-                                  ),
-                                ],
+                                ),
                               ),
                             ),
                           ),
 
-                          // Floating frosted bottom deck
+                          // Bottom Frosted Cinema Control Deck
                           Positioned(
-                            left: 20,
-                            right: 20,
-                            bottom: MediaQuery.paddingOf(context).bottom + 18,
-                            child: Center(
-                              child: ConstrainedBox(
-                                constraints: const BoxConstraints(maxWidth: 860),
-                                child: GlassSurface(
-                                  borderRadius: 20,
-                                  blur: 28,
-                                  color: const Color(0xBA141417),
-                                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          SizedBox(
-                                            width: 58,
-                                            child: Text(
-                                              _fmtTime(_scrubbing ? _scrubTargetSecs : _positionSecs),
-                                              style: const TextStyle(
-                                                color: VedroTheme.fg2,
-                                                fontSize: 12,
-                                                fontFeatures: [FontFeature.tabularFigures()],
+                            left: wide ? 28 : 14,
+                            right: wide ? 28 : 14,
+                            bottom: MediaQuery.paddingOf(context).bottom + (wide ? 22 : 14),
+                            child: MouseRegion(
+                              onEnter: (_) {
+                                _hoveringChrome = true;
+                                _hideControlsTimer?.cancel();
+                              },
+                              onExit: (_) {
+                                _hoveringChrome = false;
+                                _scheduleHideControls();
+                              },
+                              child: Center(
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(maxWidth: 920),
+                                  child: GlassSurface(
+                                    borderRadius: 18,
+                                    blur: 28,
+                                    color: const Color(0xC8121317),
+                                    borderColor: const Color(0x26FFFFFF),
+                                    padding: EdgeInsets.fromLTRB(
+                                      wide ? 18 : 14,
+                                      12,
+                                      wide ? 18 : 14,
+                                      12,
+                                    ),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        // Row 1: Custom precision Cinema Scrub Bar
+                                        _CinemaScrubBar(
+                                          positionSecs: _scrubbing ? _scrubTargetSecs : _positionSecs,
+                                          bufferedSecs: _bufferedSecs,
+                                          durationSecs: _durationSecs,
+                                          segments: _segments,
+                                          showRemaining: _showRemaining,
+                                          fmtTime: _fmtTime,
+                                          onToggleRemaining: () =>
+                                              setState(() => _showRemaining = !_showRemaining),
+                                          onScrubStart: () => _hideControlsTimer?.cancel(),
+                                          onScrubUpdate: (secs) =>
+                                              setState(() => _positionSecs = secs),
+                                          onScrubEnd: (secs) {
+                                            _seekTo(secs);
+                                            _scheduleHideControls();
+                                          },
+                                        ),
+                                        const SizedBox(height: 10),
+                                        // Row 2: Left volume | Center transport | Right clean pills
+                                        Row(
+                                          children: [
+                                            // Left: Volume controls (inline slider on desktop)
+                                            if (wide) ...[
+                                              _DeckIconButton(
+                                                icon: _muted || _volume <= 0.1
+                                                    ? Icons.volume_off_rounded
+                                                    : (_volume < 50
+                                                        ? Icons.volume_down_rounded
+                                                        : Icons.volume_up_rounded),
+                                                tooltip: '静音 (M)',
+                                                onTap: _toggleMute,
                                               ),
-                                            ),
-                                          ),
-                                          Expanded(
-                                            child: Slider(
-                                              value: (_scrubbing ? _scrubTargetSecs : _positionSecs)
-                                                  .clamp(0.0, _durationSecs > 0 ? _durationSecs : 1.0),
-                                              max: _durationSecs > 0 ? _durationSecs : 1.0,
-                                              onChangeStart: (_) => _hideControlsTimer?.cancel(),
-                                              onChanged: (v) => setState(() => _positionSecs = v),
-                                              onChangeEnd: (v) {
-                                                _seekTo(v);
-                                                _scheduleHideControls();
-                                              },
-                                            ),
-                                          ),
-                                          SizedBox(
-                                            width: 58,
-                                            child: Text(
-                                              _fmtTime(_durationSecs),
-                                              textAlign: TextAlign.right,
-                                              style: const TextStyle(
-                                                color: VedroTheme.fg3,
-                                                fontSize: 12,
-                                                fontFeatures: [FontFeature.tabularFigures()],
+                                              const SizedBox(width: 4),
+                                              SizedBox(
+                                                width: 82,
+                                                child: _MiniVolumeBar(
+                                                  value: (_volume / _maxVolume).clamp(0.0, 1.0),
+                                                  onChanged: (ratio) =>
+                                                      _setVolume(ratio * _maxVolume),
+                                                ),
                                               ),
+                                              const Spacer(),
+                                            ],
+
+                                            // Center Transport Cluster
+                                            _DeckIconButton(
+                                              icon: Icons.replay_10_rounded,
+                                              tooltip: '后退 ${step}s',
+                                              onTap: () => _seekBy(-step.toDouble(), showHud: true),
                                             ),
-                                          ),
-                                        ],
-                                      ),
-                                      Row(
-                                        children: [
-                                          _ChromeIconButton(
-                                            icon: Icons.replay_10_rounded,
-                                            onTap: () => _seekBy(-10, showHud: true),
-                                          ),
-                                          const SizedBox(width: 4),
-                                          _ChromeIconButton(
-                                            icon: _paused
-                                                ? Icons.play_arrow_rounded
-                                                : Icons.pause_rounded,
-                                            iconSize: 28,
-                                            onTap: _togglePause,
-                                          ),
-                                          const SizedBox(width: 4),
-                                          _ChromeIconButton(
-                                            icon: Icons.forward_10_rounded,
-                                            onTap: () => _seekBy(10, showHud: true),
-                                          ),
-                                          if (_nextEpisode != null) ...[
-                                            const SizedBox(width: 4),
-                                            _ChromeIconButton(
-                                              icon: Icons.skip_next_rounded,
-                                              tooltip: '下一集 (N)',
-                                              onTap: () => _switchEpisode(_nextEpisode!),
-                                            ),
-                                          ],
-                                          const Spacer(),
-                                          GestureDetector(
-                                            onTap: _openSpeedSheet,
-                                            child: Container(
-                                              padding: const EdgeInsets.symmetric(
-                                                horizontal: 9,
-                                                vertical: 5,
-                                              ),
-                                              decoration: BoxDecoration(
-                                                color: const Color(0x16FFFFFF),
-                                                borderRadius: BorderRadius.circular(8),
-                                              ),
-                                              child: Text(
-                                                '${_speed.toStringAsFixed(_speed == _speed.roundToDouble() ? 1 : 2)}×',
-                                                style: const TextStyle(
-                                                  color: VedroTheme.fg,
-                                                  fontSize: 12.5,
-                                                  fontWeight: FontWeight.w500,
-                                                  fontFeatures: [FontFeature.tabularFigures()],
+                                            const SizedBox(width: 8),
+                                            PressableScale(
+                                              onTap: _togglePause,
+                                              hoverScale: 1.06,
+                                              pressScale: 0.92,
+                                              child: Container(
+                                                width: 42,
+                                                height: 42,
+                                                decoration: const BoxDecoration(
+                                                  color: Colors.white,
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: Icon(
+                                                  _paused
+                                                      ? Icons.play_arrow_rounded
+                                                      : Icons.pause_rounded,
+                                                  size: 25,
+                                                  color: VedroTheme.canvas,
                                                 ),
                                               ),
                                             ),
-                                          ),
-                                          const SizedBox(width: 4),
-                                          _ChromeIconButton(
-                                            icon: Icons.hdr_on_rounded,
-                                            tooltip: 'HDR 与杜比视界',
-                                            onTap: _openHdrSheet,
-                                          ),
-                                          _ChromeIconButton(
-                                            icon: Icons.spatial_audio_off_rounded,
-                                            tooltip: '音轨与杜比全景声',
-                                            onTap: _openAudioSheet,
-                                          ),
-                                          _ChromeIconButton(
-                                            icon: Icons.subtitles_outlined,
-                                            tooltip: '字幕与样式',
-                                            onTap: _openSubtitleSheet,
-                                          ),
-                                          if ((_prepared?.allSources.length ?? 0) > 1)
-                                            _ChromeIconButton(
-                                              icon: Icons.layers_outlined,
-                                              tooltip: '切换版本',
-                                              onTap: _openVersionSheet,
+                                            const SizedBox(width: 8),
+                                            _DeckIconButton(
+                                              icon: Icons.forward_10_rounded,
+                                              tooltip: '前进 ${step}s',
+                                              onTap: () => _seekBy(step.toDouble(), showHud: true),
                                             ),
-                                        ],
-                                      ),
-                                    ],
+                                            if (_nextEpisode != null) ...[
+                                              const SizedBox(width: 4),
+                                              _DeckIconButton(
+                                                icon: Icons.skip_next_rounded,
+                                                tooltip: '下一集 (N)',
+                                                onTap: () => _switchEpisode(_nextEpisode!),
+                                              ),
+                                            ],
+
+                                            const Spacer(),
+
+                                            // Right cohesive labeled pills
+                                            _DeckPillButton(
+                                              label:
+                                                  '${_speed.toStringAsFixed(_speed == _speed.roundToDouble() ? 1 : 2)}×',
+                                              onTap: _openSpeedSheet,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            _DeckPillButton(
+                                              label: '弹幕',
+                                              active: _danmakuEnabled,
+                                              onTap: () =>
+                                                  setState(() => _danmakuEnabled = !_danmakuEnabled),
+                                            ),
+                                            const SizedBox(width: 6),
+                                            _DeckPillButton(
+                                              label: '字幕',
+                                              onTap: _openSubtitleSheet,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            _DeckPillButton(
+                                              label: '音轨',
+                                              onTap: _openAudioSheet,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            _DeckPillButton(
+                                              label: '画面',
+                                              onTap: _openHdrSheet,
+                                            ),
+                                            if ((_prepared?.allSources.length ?? 0) > 1) ...[
+                                              const SizedBox(width: 6),
+                                              _DeckPillButton(
+                                                label: '版本',
+                                                onTap: _openVersionSheet,
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ),
                               ),
@@ -976,22 +1194,35 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     ),
                   ),
 
-                  // Slide-out frosted Episode Drawer (Infuse / SenPlayer signature feature!)
+                  // Click-outside scrim when Episode Drawer is open
+                  if (_showEpisodeDrawer)
+                    Positioned.fill(
+                      child: GestureDetector(
+                        onTap: () {
+                          setState(() => _showEpisodeDrawer = false);
+                          _scheduleHideControls();
+                        },
+                        child: Container(color: const Color(0x66000000)),
+                      ),
+                    ),
+
+                  // Slide-out frosted Episode Drawer
                   AnimatedPositioned(
-                    duration: const Duration(milliseconds: 280),
+                    duration: const Duration(milliseconds: 260),
                     curve: Curves.easeOutCubic,
-                    top: 16,
+                    top: topPad + (isMac ? 42 : 16),
                     bottom: 16,
                     right: _showEpisodeDrawer ? 16 : -360,
-                    width: 332,
+                    width: 336,
                     child: GlassSurface(
-                      borderRadius: 20,
+                      borderRadius: 18,
                       blur: 30,
                       color: VedroTheme.glassStrong,
+                      borderColor: const Color(0x28FFFFFF),
                       child: Column(
                         children: [
                           Padding(
-                            padding: const EdgeInsets.fromLTRB(18, 14, 10, 10),
+                            padding: const EdgeInsets.fromLTRB(18, 12, 10, 10),
                             child: Row(
                               children: [
                                 Text(
@@ -1022,6 +1253,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               itemBuilder: (_, idx) {
                                 final ep = _episodes[idx];
                                 final playing = ep.id == _currentItem.id;
+                                final accent = Theme.of(context).colorScheme.secondary;
                                 return PressableScale(
                                   onTap: () => _switchEpisode(ep),
                                   hoverScale: 1.015,
@@ -1029,11 +1261,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                   child: Container(
                                     padding: const EdgeInsets.all(8),
                                     decoration: BoxDecoration(
-                                      color: playing ? VedroTheme.accentSoft : const Color(0x0FFFFFFF),
+                                      color: playing
+                                          ? accent.withValues(alpha: 0.16)
+                                          : const Color(0x0FFFFFFF),
                                       borderRadius: BorderRadius.circular(11),
                                       border: Border.all(
                                         color: playing
-                                            ? VedroTheme.accent.withValues(alpha: 0.55)
+                                            ? accent.withValues(alpha: 0.55)
                                             : VedroTheme.line,
                                         width: 0.7,
                                       ),
@@ -1067,13 +1301,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                                 style: TextStyle(
                                                   color: playing ? Colors.white : VedroTheme.fg,
                                                   fontSize: 13,
-                                                  fontWeight: playing ? FontWeight.w600 : FontWeight.w500,
+                                                  fontWeight:
+                                                      playing ? FontWeight.w600 : FontWeight.w500,
                                                 ),
                                               ),
                                               if (fmtDurationTicks(ep.runTimeTicks).isNotEmpty)
                                                 Text(
                                                   fmtDurationTicks(ep.runTimeTicks),
-                                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                                                  style: const TextStyle(
+                                                    color: VedroTheme.fg3,
+                                                    fontSize: 11.5,
+                                                  ),
                                                 ),
                                             ],
                                           ),
@@ -1111,7 +1349,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
     }
     final isBrightness = _gestureMode == 'brightness';
-    final progress = isBrightness ? _brightness : (_volume / 150.0).clamp(0.0, 1.0);
+    final progress = isBrightness ? _brightness : (_volume / _maxVolume).clamp(0.0, 1.0);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -1247,7 +1485,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         children: [
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 8),
-            child: Text('HDR 与杜比视界', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
+            child: Text('画面与 HDR 色调映射', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
           ),
           if (_prepared != null)
             Padding(
@@ -1378,7 +1616,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           children: [
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Text('字幕', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
+              child: Text('字幕与样式', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
             ),
             _SheetOptionRow(
               label: '关闭字幕',
@@ -1498,6 +1736,475 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 }
 
+/// Custom IINA / Infuse precision scrub bar:
+/// - Smoothly expands track height on hover/drag (4px -> 7px)
+/// - Displays buffered track + Intro/Outro segment markers
+/// - Floating hover timestamp preview pill above cursor
+/// - Clickable right timestamp toggles Total vs Remaining time
+class _CinemaScrubBar extends StatefulWidget {
+  const _CinemaScrubBar({
+    required this.positionSecs,
+    required this.bufferedSecs,
+    required this.durationSecs,
+    required this.segments,
+    required this.showRemaining,
+    required this.fmtTime,
+    required this.onToggleRemaining,
+    required this.onScrubStart,
+    required this.onScrubUpdate,
+    required this.onScrubEnd,
+  });
+
+  final double positionSecs;
+  final double bufferedSecs;
+  final double durationSecs;
+  final List<MediaSegmentModel> segments;
+  final bool showRemaining;
+  final String Function(double) fmtTime;
+  final VoidCallback onToggleRemaining;
+  final VoidCallback onScrubStart;
+  final ValueChanged<double> onScrubUpdate;
+  final ValueChanged<double> onScrubEnd;
+
+  @override
+  State<_CinemaScrubBar> createState() => _CinemaScrubBarState();
+}
+
+class _CinemaScrubBarState extends State<_CinemaScrubBar> {
+  bool _hovering = false;
+  bool _dragging = false;
+  double? _hoverRatio;
+
+  double _ratioFromDx(double dx, double width) =>
+      width <= 0 ? 0.0 : (dx / width).clamp(0.0, 1.0);
+
+  @override
+  Widget build(BuildContext context) {
+    final dur = widget.durationSecs > 0 ? widget.durationSecs : 1.0;
+    final posRatio = (widget.positionSecs / dur).clamp(0.0, 1.0);
+    final bufRatio = (widget.bufferedSecs / dur).clamp(0.0, 1.0);
+    final active = _hovering || _dragging;
+    final trackH = active ? 6.5 : 4.0;
+    final accent = Theme.of(context).colorScheme.secondary;
+
+    final rightTimeText = widget.showRemaining && widget.durationSecs > 0
+        ? '-${widget.fmtTime((widget.durationSecs - widget.positionSecs).clamp(0, widget.durationSecs))}'
+        : widget.fmtTime(widget.durationSecs);
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 60,
+          child: Text(
+            widget.fmtTime(widget.positionSecs),
+            style: const TextStyle(
+              color: Color(0xE0FFFFFF),
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final w = constraints.maxWidth;
+              return MouseRegion(
+                cursor: SystemMouseCursors.click,
+                onEnter: (_) => setState(() => _hovering = true),
+                onHover: (e) => setState(() => _hoverRatio = _ratioFromDx(e.localPosition.dx, w)),
+                onExit: (_) => setState(() {
+                  _hovering = false;
+                  _hoverRatio = null;
+                }),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapDown: (d) {
+                    final secs = _ratioFromDx(d.localPosition.dx, w) * dur;
+                    widget.onScrubEnd(secs);
+                  },
+                  onHorizontalDragStart: (d) {
+                    setState(() => _dragging = true);
+                    widget.onScrubStart();
+                    widget.onScrubUpdate(_ratioFromDx(d.localPosition.dx, w) * dur);
+                  },
+                  onHorizontalDragUpdate: (d) {
+                    final ratio = _ratioFromDx(d.localPosition.dx, w);
+                    setState(() => _hoverRatio = ratio);
+                    widget.onScrubUpdate(ratio * dur);
+                  },
+                  onHorizontalDragEnd: (_) {
+                    final ratio = _hoverRatio ?? posRatio;
+                    setState(() => _dragging = false);
+                    widget.onScrubEnd(ratio * dur);
+                  },
+                  child: SizedBox(
+                    height: 24,
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      alignment: Alignment.centerLeft,
+                      children: [
+                        // Base track
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 140),
+                          height: trackH,
+                          decoration: BoxDecoration(
+                            color: const Color(0x30FFFFFF),
+                            borderRadius: BorderRadius.circular(trackH / 2),
+                          ),
+                        ),
+                        // Buffered track
+                        if (bufRatio > 0)
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 140),
+                            height: trackH,
+                            width: w * bufRatio,
+                            decoration: BoxDecoration(
+                              color: const Color(0x38FFFFFF),
+                              borderRadius: BorderRadius.circular(trackH / 2),
+                            ),
+                          ),
+                        // Intro/Outro markers
+                        for (final seg in widget.segments)
+                          if (widget.durationSecs > 0)
+                            Positioned(
+                              left: (seg.startSecs / dur).clamp(0.0, 1.0) * w,
+                              width: ((seg.endSecs - seg.startSecs) / dur).clamp(0.0, 1.0) * w,
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 140),
+                                height: trackH,
+                                decoration: BoxDecoration(
+                                  color: accent.withValues(alpha: 0.72),
+                                  borderRadius: BorderRadius.circular(trackH / 2),
+                                ),
+                              ),
+                            ),
+                        // Played progress bar
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 80),
+                          height: trackH,
+                          width: w * posRatio,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(trackH / 2),
+                          ),
+                        ),
+                        // Hover-revealed sleek thumb
+                        Positioned(
+                          left: (w * posRatio - 6).clamp(0.0, (w - 12).clamp(0.0, w)),
+                          child: AnimatedScale(
+                            scale: active ? 1.0 : 0.0,
+                            duration: const Duration(milliseconds: 140),
+                            curve: Curves.easeOutCubic,
+                            child: Container(
+                              width: 12,
+                              height: 12,
+                              decoration: const BoxDecoration(
+                                color: Colors.white,
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(color: Color(0x99000000), blurRadius: 8),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                        // Hover timestamp tooltip pill
+                        if (_hoverRatio != null && widget.durationSecs > 0)
+                          Positioned(
+                            left: (_hoverRatio! * w - 28).clamp(0.0, (w - 56).clamp(0.0, w)),
+                            top: -28,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xE8141417),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: const Color(0x28FFFFFF), width: 0.6),
+                              ),
+                              child: Text(
+                                widget.fmtTime(_hoverRatio! * dur),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w500,
+                                  fontFeatures: [FontFeature.tabularFigures()],
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(width: 8),
+        GestureDetector(
+          onTap: widget.onToggleRemaining,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: SizedBox(
+              width: 64,
+              child: Text(
+                rightTimeText,
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  color: Color(0xA6FFFFFF),
+                  fontSize: 12,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _MiniVolumeBar extends StatelessWidget {
+  const _MiniVolumeBar({required this.value, required this.onChanged});
+  final double value;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        void update(double dx) => onChanged((dx / w).clamp(0.0, 1.0));
+        return MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (d) => update(d.localPosition.dx),
+            onHorizontalDragUpdate: (d) => update(d.localPosition.dx),
+            child: SizedBox(
+              height: 22,
+              child: Stack(
+                alignment: Alignment.centerLeft,
+                children: [
+                  Container(
+                    height: 3.5,
+                    decoration: BoxDecoration(
+                      color: const Color(0x32FFFFFF),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  Container(
+                    height: 3.5,
+                    width: w * value.clamp(0.0, 1.0),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  Positioned(
+                    left: (w * value.clamp(0.0, 1.0) - 5).clamp(0.0, (w - 10).clamp(0.0, w)),
+                    child: Container(
+                      width: 10,
+                      height: 10,
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _CircleHudButton extends StatefulWidget {
+  const _CircleHudButton({
+    required this.icon,
+    required this.onTap,
+    this.tooltip,
+    this.active = false,
+    this.iconSize = 18,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final String? tooltip;
+  final bool active;
+  final double iconSize;
+
+  @override
+  State<_CircleHudButton> createState() => _CircleHudButtonState();
+}
+
+class _CircleHudButtonState extends State<_CircleHudButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.secondary;
+    final btn = PressableScale(
+      onTap: widget.onTap,
+      onHoverChanged: (v) => setState(() => _hovered = v),
+      hoverScale: 1.06,
+      pressScale: 0.9,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: widget.active
+              ? accent.withValues(alpha: 0.25)
+              : (_hovered ? const Color(0x32FFFFFF) : const Color(0x20000000)),
+          border: Border.all(
+            color: widget.active
+                ? accent.withValues(alpha: 0.7)
+                : const Color(0x24FFFFFF),
+            width: 0.7,
+          ),
+        ),
+        child: Icon(
+          widget.icon,
+          size: widget.iconSize,
+          color: widget.active ? accent : Colors.white,
+        ),
+      ),
+    );
+    return widget.tooltip != null ? Tooltip(message: widget.tooltip!, child: btn) : btn;
+  }
+}
+
+class _DeckIconButton extends StatefulWidget {
+  const _DeckIconButton({
+    required this.icon,
+    required this.onTap,
+    this.tooltip,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final String? tooltip;
+
+  @override
+  State<_DeckIconButton> createState() => _DeckIconButtonState();
+}
+
+class _DeckIconButtonState extends State<_DeckIconButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final btn = PressableScale(
+      onTap: widget.onTap,
+      onHoverChanged: (v) => setState(() => _hovered = v),
+      hoverScale: 1.06,
+      pressScale: 0.9,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        width: 34,
+        height: 34,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: _hovered ? const Color(0x22FFFFFF) : Colors.transparent,
+        ),
+        child: Icon(widget.icon, size: 21, color: Colors.white),
+      ),
+    );
+    return widget.tooltip != null ? Tooltip(message: widget.tooltip!, child: btn) : btn;
+  }
+}
+
+class _DeckPillButton extends StatefulWidget {
+  const _DeckPillButton({
+    required this.label,
+    required this.onTap,
+    this.active = false,
+  });
+
+  final String label;
+  final VoidCallback onTap;
+  final bool active;
+
+  @override
+  State<_DeckPillButton> createState() => _DeckPillButtonState();
+}
+
+class _DeckPillButtonState extends State<_DeckPillButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.secondary;
+    return PressableScale(
+      onTap: widget.onTap,
+      onHoverChanged: (v) => setState(() => _hovered = v),
+      hoverScale: 1.04,
+      pressScale: 0.94,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        height: 30,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: widget.active
+              ? accent.withValues(alpha: 0.24)
+              : (_hovered ? const Color(0x28FFFFFF) : const Color(0x16FFFFFF)),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: widget.active ? accent.withValues(alpha: 0.65) : const Color(0x1CFFFFFF),
+            width: 0.7,
+          ),
+        ),
+        child: Text(
+          widget.label,
+          style: TextStyle(
+            color: widget.active ? accent : const Color(0xEBFFFFFF),
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Lightweight GPU-friendly Danmaku overlay honoring user opacity, font size, and screen area.
+class _DanmakuOverlay extends StatelessWidget {
+  const _DanmakuOverlay({
+    required this.positionSecs,
+    required this.opacity,
+    required this.fontSize,
+    required this.areaFraction,
+  });
+
+  final double positionSecs;
+  final double opacity;
+  final double fontSize;
+  final double areaFraction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.topCenter,
+      child: FractionallySizedBox(
+        heightFactor: areaFraction.clamp(0.2, 1.0),
+        widthFactor: 1.0,
+        child: Opacity(
+          opacity: opacity.clamp(0.15, 1.0),
+          child: const SizedBox.expand(),
+        ),
+      ),
+    );
+  }
+}
+
 class _StepperRow extends StatelessWidget {
   const _StepperRow({
     required this.label,
@@ -1514,7 +2221,7 @@ class _StepperRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       child: Row(
         children: [
           Text(label, style: const TextStyle(color: VedroTheme.fg2, fontSize: 13.5)),
@@ -1528,50 +2235,12 @@ class _StepperRow extends StatelessWidget {
             ),
           ),
           const Spacer(),
-          _ChromeIconButton(icon: Icons.remove_rounded, onTap: onMinus),
+          _DeckIconButton(icon: Icons.remove_rounded, onTap: onMinus),
           const SizedBox(width: 4),
-          _ChromeIconButton(icon: Icons.add_rounded, onTap: onPlus),
+          _DeckIconButton(icon: Icons.add_rounded, onTap: onPlus),
         ],
       ),
     );
-  }
-}
-
-class _ChromeIconButton extends StatelessWidget {
-  const _ChromeIconButton({
-    required this.icon,
-    required this.onTap,
-    this.tooltip,
-    this.active = false,
-    this.iconSize = 20,
-  });
-
-  final IconData icon;
-  final VoidCallback onTap;
-  final String? tooltip;
-  final bool active;
-  final double iconSize;
-
-  @override
-  Widget build(BuildContext context) {
-    final btn = PressableScale(
-      onTap: onTap,
-      hoverScale: 1.06,
-      pressScale: 0.9,
-      child: Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: active ? const Color(0x28FFFFFF) : Colors.transparent,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Icon(
-          icon,
-          size: iconSize,
-          color: active ? VedroTheme.accent : VedroTheme.fg,
-        ),
-      ),
-    );
-    return tooltip != null ? Tooltip(message: tooltip!, child: btn) : btn;
   }
 }
 
@@ -1590,6 +2259,7 @@ class _SheetOptionRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.secondary;
     return InkWell(
       borderRadius: BorderRadius.circular(10),
       onTap: onTap,
@@ -1607,10 +2277,10 @@ class _SheetOptionRow extends StatelessWidget {
                 children: [
                   Text(
                     label,
-                    style: const TextStyle(
-                      color: VedroTheme.fg,
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w500,
+                    style: TextStyle(
+                      color: selected ? Colors.white : VedroTheme.fg,
+                      fontSize: 14,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
                     ),
                   ),
                   if (subtitle != null && subtitle!.isNotEmpty) ...[
@@ -1620,8 +2290,7 @@ class _SheetOptionRow extends StatelessWidget {
                 ],
               ),
             ),
-            if (selected)
-              const Icon(Icons.check_rounded, size: 18, color: VedroTheme.accent),
+            if (selected) Icon(Icons.check_rounded, size: 18, color: accent),
           ],
         ),
       ),

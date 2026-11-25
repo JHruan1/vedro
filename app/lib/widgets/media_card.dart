@@ -42,6 +42,8 @@ class _MediaCardState extends State<MediaCard> {
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
+    final prefs = widget.appState.prefs;
+    final radius = prefs.cardRadius;
     final aspect = widget.landscape ? 16 / 9 : 2 / 3;
     final showPlayFab = widget.onQuickPlay != null && !item.isFolderish && item.type != 'Person';
 
@@ -74,19 +76,22 @@ class _MediaCardState extends State<MediaCard> {
                 duration: const Duration(milliseconds: 200),
                 curve: VedroTheme.easeOut,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(radius),
                   color: VedroTheme.surface2,
-                  border: Border.all(
-                    color: _hovered ? const Color(0x88FFFFFF) : VedroTheme.line,
-                    width: _hovered ? 1.5 : 0.8,
-                  ),
                   boxShadow: [
                     BoxShadow(
-                      color: _hovered ? const Color(0x8A000000) : const Color(0x52000000),
-                      blurRadius: _hovered ? 26 : 14,
-                      offset: Offset(0, _hovered ? 12 : 6),
+                      color: _hovered ? const Color(0x90000000) : const Color(0x52000000),
+                      blurRadius: _hovered ? 24 : 12,
+                      offset: Offset(0, _hovered ? 10 : 5),
                     ),
                   ],
+                ),
+                foregroundDecoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(radius),
+                  border: Border.all(
+                    color: _hovered ? const Color(0x99FFFFFF) : VedroTheme.line,
+                    width: _hovered ? 1.5 : 0.8,
+                  ),
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Stack(
@@ -94,7 +99,7 @@ class _MediaCardState extends State<MediaCard> {
                   children: [
                     artBox,
                     // Quiet top-right watched / unplayed count badge
-                    if (item.played)
+                    if (prefs.showWatchedBadge && item.played)
                       const Positioned(
                         top: 7,
                         right: 7,
@@ -102,7 +107,9 @@ class _MediaCardState extends State<MediaCard> {
                           child: Icon(Icons.check_rounded, size: 12, color: Colors.white),
                         ),
                       )
-                    else if (item.unplayedItemCount != null && item.unplayedItemCount! > 0)
+                    else if (prefs.showUnplayedCount &&
+                        item.unplayedItemCount != null &&
+                        item.unplayedItemCount! > 0)
                       Positioned(
                         top: 7,
                         right: 7,
@@ -311,19 +318,22 @@ class _ResumeCardState extends State<ResumeCard> {
                 duration: const Duration(milliseconds: 200),
                 curve: VedroTheme.easeOut,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(12),
                   color: VedroTheme.surface2,
-                  border: Border.all(
-                    color: _hovered ? const Color(0x88FFFFFF) : VedroTheme.line,
-                    width: _hovered ? 1.5 : 0.8,
-                  ),
                   boxShadow: [
                     BoxShadow(
-                      color: _hovered ? const Color(0x8A000000) : const Color(0x52000000),
-                      blurRadius: _hovered ? 26 : 14,
-                      offset: Offset(0, _hovered ? 12 : 6),
+                      color: _hovered ? const Color(0x90000000) : const Color(0x52000000),
+                      blurRadius: _hovered ? 24 : 12,
+                      offset: Offset(0, _hovered ? 10 : 5),
                     ),
                   ],
+                ),
+                foregroundDecoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _hovered ? const Color(0x99FFFFFF) : VedroTheme.line,
+                    width: _hovered ? 1.5 : 0.8,
+                  ),
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Stack(
@@ -447,8 +457,8 @@ class _ResumeCardState extends State<ResumeCard> {
   }
 }
 
-/// Large 16:9 cinematic Library tile showing a recent item's widescreen backdrop
-/// behind the library name and category (matching embygo Web & Forward).
+/// 16:9 Library tile prioritizing the server's own library cover (`Primary`/`Backdrop`/`Thumb`),
+/// gracefully falling back to a recent item's widescreen backdrop only when the library has none.
 class LibraryCard extends StatefulWidget {
   const LibraryCard({
     super.key,
@@ -456,7 +466,7 @@ class LibraryCard extends StatefulWidget {
     this.coverItem,
     required this.appState,
     required this.onTap,
-    this.width = 330,
+    this.width = 276,
   });
 
   final MediaItemModel library;
@@ -474,117 +484,130 @@ class _LibraryCardState extends State<LibraryCard> {
 
   @override
   Widget build(BuildContext context) {
-    final kind = widget.library.collectionType == 'tvshows' ? '剧集' : '电影';
-    final target = widget.coverItem ?? widget.library;
+    final serverCover = widget.appState.libraryCoverUrl(widget.library, width: 720);
+    final hasServerCover = serverCover != null && serverCover.isNotEmpty;
 
     return SizedBox(
       width: widget.width,
       child: PressableScale(
         onTap: widget.onTap,
         onHoverChanged: (v) => setState(() => _hovered = v),
-        hoverScale: 1.02,
+        hoverScale: 1.022,
         pressScale: 0.97,
-        child: AspectRatio(
-          aspectRatio: 16 / 9,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            curve: VedroTheme.easeOut,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              color: VedroTheme.surface2,
-              border: Border.all(
-                color: _hovered ? const Color(0x88FFFFFF) : VedroTheme.line,
-                width: _hovered ? 1.5 : 0.8,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                curve: VedroTheme.easeOut,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: VedroTheme.surface2,
+                  boxShadow: [
+                    BoxShadow(
+                      color: _hovered ? const Color(0x90000000) : const Color(0x52000000),
+                      blurRadius: _hovered ? 24 : 12,
+                      offset: Offset(0, _hovered ? 10 : 5),
+                    ),
+                  ],
+                ),
+                foregroundDecoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _hovered ? const Color(0x99FFFFFF) : VedroTheme.line,
+                    width: _hovered ? 1.5 : 0.8,
+                  ),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // Fallback layer beneath server cover (shows if server cover is absent or fails)
+                    if (widget.coverItem != null)
+                      VedroArtwork(
+                        item: widget.coverItem!,
+                        appState: widget.appState,
+                        landscape: true,
+                        width: 720,
+                        showInitials: false,
+                      )
+                    else
+                      GeneratedArt(
+                        seed: widget.library.id,
+                        label: hasServerCover ? null : widget.library.name,
+                      ),
+                    // Authoritative server-generated / custom library cover on top!
+                    if (hasServerCover)
+                      FadeNetworkImage(
+                        url: serverCover,
+                        fit: BoxFit.cover,
+                      ),
+                    // Subtle bottom-edge gradient only when no server cover (server covers often include titles/art)
+                    if (!hasServerCover)
+                      const DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            stops: [0.35, 1.0],
+                            colors: [
+                              Colors.transparent,
+                              Color(0xB8000000),
+                            ],
+                          ),
+                        ),
+                      ),
+                    if (!hasServerCover)
+                      Positioned(
+                        left: 14,
+                        right: 14,
+                        bottom: 12,
+                        child: Text(
+                          widget.library.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 17,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: -0.3,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
-              boxShadow: [
-                BoxShadow(
-                  color: _hovered ? const Color(0x8A000000) : const Color(0x52000000),
-                  blurRadius: _hovered ? 26 : 14,
-                  offset: Offset(0, _hovered ? 12 : 6),
-                ),
-              ],
             ),
-            clipBehavior: Clip.antiAlias,
-            child: Stack(
-              fit: StackFit.expand,
+            const SizedBox(height: 8),
+            Row(
               children: [
-                VedroArtwork(
-                  item: target,
-                  appState: widget.appState,
-                  landscape: true,
-                  width: 720,
-                  showInitials: widget.coverItem == null,
-                ),
-                const DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      stops: [0.0, 0.48, 1.0],
-                      colors: [
-                        Color(0x1A000000),
-                        Color(0x59000000),
-                        Color(0xCC000000),
-                      ],
+                Expanded(
+                  child: Text(
+                    widget.library.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: VedroTheme.fg,
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: -0.1,
                     ),
                   ),
                 ),
-                Positioned(
-                  left: 18,
-                  right: 16,
-                  bottom: 16,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (kind != widget.library.name)
-                              Text(
-                                kind,
-                                style: const TextStyle(
-                                  color: Color(0xB8FFFFFF),
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            const SizedBox(height: 2),
-                            Text(
-                              widget.library.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 21,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: -0.4,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        width: 32,
-                        height: 32,
-                        decoration: BoxDecoration(
-                          color: _hovered ? const Color(0x4DFFFFFF) : const Color(0x2EFFFFFF),
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(
-                          Icons.chevron_right_rounded,
-                          size: 18,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
+                AnimatedOpacity(
+                  opacity: _hovered ? 1.0 : 0.45,
+                  duration: const Duration(milliseconds: 160),
+                  child: const Icon(
+                    Icons.chevron_right_rounded,
+                    size: 16,
+                    color: VedroTheme.fg2,
                   ),
                 ),
               ],
             ),
-          ),
+          ],
         ),
       ),
     );

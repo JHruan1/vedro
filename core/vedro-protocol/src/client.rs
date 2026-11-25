@@ -12,7 +12,7 @@ use crate::dialect::{ServerCapabilities, ServerDialect};
 use crate::error::{ProtocolError, Result};
 use crate::models::*;
 
-const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,Overview,ChildCount,RecursiveItemCount,People,Genres,Tags,ProviderIds,OriginalTitle,DateCreated,ProductionLocations";
+const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,Overview,ChildCount,RecursiveItemCount,People,Genres,Tags,Studios,ProviderIds,OriginalTitle,DateCreated,ProductionLocations";
 
 /// High-performance async REST client supporting `embygo`, `Emby`, and `Jellyfin`.
 ///
@@ -981,6 +981,112 @@ impl EmbyClient {
     pub async fn trigger_library_refresh(&self) -> Result<()> {
         self.request_empty(Method::POST, "Library/Refresh", &[], None)
             .await
+    }
+
+    pub async fn virtual_folders(&self) -> Result<serde_json::Value> {
+        self.request_json(Method::GET, "Library/VirtualFolders", &[], None)
+            .await
+    }
+
+    pub async fn set_library_generate_covers(&self, id: &str, enabled: bool) -> Result<()> {
+        self.request_empty(
+            Method::POST,
+            "Library/VirtualFolders/GenerateCovers",
+            &[("id", id.to_string())],
+            Some(serde_json::json!({ "Enabled": enabled })),
+        )
+        .await
+    }
+
+    pub async fn end_session(&self, session_id: &str) -> Result<()> {
+        self.request_empty(Method::DELETE, &format!("Sessions/{session_id}"), &[], None)
+            .await
+    }
+
+    pub async fn query_users(&self) -> Result<serde_json::Value> {
+        match self
+            .request_json::<serde_json::Value>(Method::GET, "Users/Query", &[], None)
+            .await
+        {
+            Ok(v) => Ok(v),
+            Err(ProtocolError::NotFound(_)) => {
+                self.request_json(Method::GET, "Users", &[], None).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn create_user(&self, name: &str, password: &str) -> Result<serde_json::Value> {
+        self.request_json(
+            Method::POST,
+            "Users/New",
+            &[],
+            Some(serde_json::json!({ "Name": name, "Password": password })),
+        )
+        .await
+    }
+
+    pub async fn set_user_policy(&self, user_id: &str, policy: serde_json::Value) -> Result<()> {
+        self.request_empty(
+            Method::POST,
+            &format!("Users/{user_id}/Policy"),
+            &[],
+            Some(policy),
+        )
+        .await
+    }
+
+    pub async fn delete_user(&self, user_id: &str) -> Result<()> {
+        self.request_empty(Method::DELETE, &format!("Users/{user_id}"), &[], None)
+            .await
+    }
+
+    pub async fn scheduled_tasks(&self) -> Result<serde_json::Value> {
+        match self
+            .request_json::<serde_json::Value>(Method::GET, "emby-compat/tasks", &[], None)
+            .await
+        {
+            Ok(v) => Ok(v),
+            Err(ProtocolError::NotFound(_)) => {
+                self.request_json(Method::GET, "ScheduledTasks", &[], None)
+                    .await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn run_scheduled_task(&self, key: &str) -> Result<()> {
+        match self
+            .request_empty(
+                Method::POST,
+                &format!("emby-compat/tasks/{key}/run"),
+                &[],
+                None,
+            )
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(ProtocolError::NotFound(_)) => {
+                self.request_empty(
+                    Method::POST,
+                    &format!("ScheduledTasks/Running/{key}"),
+                    &[],
+                    None,
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn activity_log(&self, limit: u32) -> Result<serde_json::Value> {
+        self.request_json(
+            Method::GET,
+            "System/ActivityLog/Entries",
+            &[("Limit", limit.to_string())],
+            None,
+        )
+        .await
     }
 
     /// Build the authenticated WebSocket URL (`/embywebsocket` or `/socket`).

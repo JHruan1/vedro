@@ -34,7 +34,10 @@ class VedroTheme {
   static const Curve easeOut = Cubic(0.2, 0.7, 0.2, 1.0);
   static const Curve springCurve = Curves.easeOutExpo;
 
-  static ThemeData dark() {
+  static ThemeData dark({
+    Color accentColor = accent,
+    Color accentFillColor = accentFill,
+  }) {
     final base = ThemeData.dark(useMaterial3: true);
     return base.copyWith(
       scaffoldBackgroundColor: canvas,
@@ -42,10 +45,10 @@ class VedroTheme {
       splashFactory: NoSplash.splashFactory,
       highlightColor: const Color(0x0DFFFFFF),
       hoverColor: const Color(0x0AFFFFFF),
-      colorScheme: const ColorScheme.dark(
-        primary: accentFill,
+      colorScheme: ColorScheme.dark(
+        primary: accentFillColor,
         onPrimary: Colors.white,
-        secondary: accent,
+        secondary: accentColor,
         surface: surface,
         onSurface: fg,
         error: danger,
@@ -93,12 +96,12 @@ class VedroTheme {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: accent, width: 1.2),
+          borderSide: BorderSide(color: accentColor, width: 1.2),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          backgroundColor: accentFill,
+          backgroundColor: accentFillColor,
           foregroundColor: Colors.white,
           elevation: 0,
           textStyle: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600),
@@ -117,7 +120,7 @@ class VedroTheme {
       switchTheme: SwitchThemeData(
         thumbColor: WidgetStateProperty.all(Colors.white),
         trackColor: WidgetStateProperty.resolveWith(
-          (states) => states.contains(WidgetState.selected) ? accentFill : surface3,
+          (states) => states.contains(WidgetState.selected) ? accentFillColor : surface3,
         ),
         trackOutlineColor: WidgetStateProperty.all(Colors.transparent),
       ),

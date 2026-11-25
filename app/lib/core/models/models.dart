@@ -65,6 +65,109 @@ class ResolvedArt {
   final bool isPoster;
 }
 
+class HomeSectionConfig {
+  const HomeSectionConfig({
+    required this.id,
+    required this.visible,
+  });
+
+  final String id;
+  final bool visible;
+
+  String get title {
+    switch (id) {
+      case 'libraries':
+        return '媒体库';
+      case 'resume':
+        return '继续播放';
+      case 'next_up':
+        return '接下来播放';
+      case 'favorites':
+        return '我的收藏';
+      case 'latest':
+        return '最新加入';
+      case 'suggestions':
+        return '猜你喜欢';
+      default:
+        return id;
+    }
+  }
+
+  String get subtitle {
+    switch (id) {
+      case 'libraries':
+        return '服务器上的全部媒体库入口与封面';
+      case 'resume':
+        return '未看完的影片与剧集进度';
+      case 'next_up':
+        return '追剧下一集自动衔接';
+      case 'favorites':
+        return '已收藏的电影与剧集';
+      case 'latest':
+        return '各媒体库近期入库内容';
+      case 'suggestions':
+        return '根据观影记录生成的推荐（默认关闭）';
+      default:
+        return '';
+    }
+  }
+
+  HomeSectionConfig copyWith({bool? visible}) =>
+      HomeSectionConfig(id: id, visible: visible ?? this.visible);
+
+  Map<String, dynamic> toJson() => {'id': id, 'visible': visible};
+
+  static const List<HomeSectionConfig> defaults = [
+    HomeSectionConfig(id: 'libraries', visible: true),
+    HomeSectionConfig(id: 'resume', visible: true),
+    HomeSectionConfig(id: 'next_up', visible: true),
+    HomeSectionConfig(id: 'favorites', visible: true),
+    HomeSectionConfig(id: 'latest', visible: true),
+    HomeSectionConfig(id: 'suggestions', visible: false),
+  ];
+
+  static List<HomeSectionConfig> normalize(List<dynamic>? raw) {
+    final known = {for (final d in defaults) d.id: d};
+    if (raw == null || raw.isEmpty) {
+      return List<HomeSectionConfig>.from(defaults);
+    }
+    final seen = <String>{};
+    final out = <HomeSectionConfig>[];
+    for (final entry in raw) {
+      if (entry is Map) {
+        final id = entry['id']?.toString() ?? '';
+        if (known.containsKey(id) && seen.add(id)) {
+          out.add(HomeSectionConfig(
+            id: id,
+            visible: entry['visible'] == true,
+          ));
+        }
+      }
+    }
+    for (final d in defaults) {
+      if (seen.add(d.id)) out.add(d);
+    }
+    return out;
+  }
+}
+
+/// Strip HTML tags & collapse messy scraper line breaks so overviews read cleanly.
+String cleanOverviewText(String? raw) {
+  if (raw == null) return '';
+  var s = raw
+      .replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n')
+      .replaceAll(RegExp(r'</p\s*>', caseSensitive: false), '\n')
+      .replaceAll(RegExp(r'<[^>]+>'), '')
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('&amp;', '&')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>');
+  s = s.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+  return s;
+}
+
 class ServerCapabilitiesModel {
   ServerCapabilitiesModel({
     required this.dialect,
@@ -474,6 +577,7 @@ class MediaItemModel {
     this.parentBackdropImageTag,
     this.genres = const [],
     this.tags = const [],
+    this.studios = const [],
     this.people = const [],
     this.mediaSources = const [],
     this.playlistItemId,
@@ -520,9 +624,12 @@ class MediaItemModel {
   final String? parentBackdropImageTag;
   final List<String> genres;
   final List<String> tags;
+  final List<String> studios;
   final List<PersonCreditModel> people;
   final List<MediaSourceModel> mediaSources;
   final String? playlistItemId;
+
+  String get cleanOverview => cleanOverviewText(overview);
 
   bool get isPlayable => type == 'Movie' || type == 'Episode' || type == 'Video';
   bool get isSeries => type == 'Series';
@@ -656,7 +763,9 @@ class MediaItemModel {
       primaryImageTag: imageTags['Primary']?.toString(),
       thumbImageTag: imageTags['Thumb']?.toString(),
       logoImageTag: imageTags['Logo']?.toString(),
-      backdropImageTag: backdrops.isNotEmpty ? backdrops.first.toString() : null,
+      backdropImageTag: backdrops.isNotEmpty
+          ? backdrops.first.toString()
+          : imageTags['Backdrop']?.toString(),
       seriesPrimaryImageTag: j['SeriesPrimaryImageTag']?.toString(),
       parentPrimaryImageItemId: j['ParentPrimaryImageItemId']?.toString(),
       parentPrimaryImageTag: j['ParentPrimaryImageTag']?.toString(),
@@ -668,6 +777,10 @@ class MediaItemModel {
       parentBackdropImageTag: parentBackdrops.isNotEmpty ? parentBackdrops.first.toString() : null,
       genres: ((j['Genres'] as List<dynamic>?) ?? const []).map((e) => e.toString()).toList(),
       tags: ((j['Tags'] as List<dynamic>?) ?? const []).map((e) => e.toString()).toList(),
+      studios: ((j['Studios'] as List<dynamic>?) ?? const [])
+          .map((e) => e is Map ? (e['Name']?.toString() ?? '') : e.toString())
+          .where((s) => s.isNotEmpty)
+          .toList(),
       people: people,
       mediaSources: sources,
       playlistItemId: j['PlaylistItemId']?.toString(),

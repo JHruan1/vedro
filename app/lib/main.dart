@@ -6,6 +6,7 @@ import 'core/ffi/vedro_bridge.dart';
 import 'core/theme/vedro_theme.dart';
 import 'screens/shell_screen.dart';
 import 'state/app_state.dart';
+import 'widgets/app_lock_gate.dart';
 import 'widgets/vedro_ui.dart';
 
 Future<void> main() async {
@@ -50,53 +51,59 @@ class _VedroAppState extends State<VedroApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Vedro',
-      debugShowCheckedModeBanner: false,
-      theme: VedroTheme.dark(),
-      scrollBehavior: const VedroScrollBehavior(),
-      home: ListenableBuilder(
-        listenable: _appState,
-        builder: (context, _) {
-          // Never trap users behind a full-screen login wall — launch directly into
-          // the main Shell workspace (Home Server Hub, Settings, Aggregated Search).
-          final Widget child;
-          if (!_appState.isInitialized || _appState.isAutoRestoring) {
-            child = Scaffold(
-              key: const ValueKey('splash'),
-              backgroundColor: VedroTheme.canvas,
-              body: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const BreathingBrandMark(size: 50),
-                    const SizedBox(height: 18),
-                    Text(
-                      _appState.isAutoRestoring ? '正在连接媒体服务器…' : 'Vedro',
-                      style: const TextStyle(
-                        color: VedroTheme.fg2,
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w500,
-                      ),
+    return ListenableBuilder(
+      listenable: _appState,
+      builder: (context, _) {
+        final pal = _appState.prefs.accentPalette;
+        final Widget child;
+        if (!_appState.isInitialized || _appState.isAutoRestoring) {
+          child = Scaffold(
+            key: const ValueKey('splash'),
+            backgroundColor: VedroTheme.canvas,
+            body: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const BreathingBrandMark(size: 50),
+                  const SizedBox(height: 18),
+                  Text(
+                    _appState.isAutoRestoring ? '正在连接媒体服务器…' : 'Vedro',
+                    style: const TextStyle(
+                      color: VedroTheme.fg2,
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w500,
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            );
-          } else {
-            child = ShellScreen(
-              key: const ValueKey('shell'),
-              appState: _appState,
-            );
-          }
-          return AnimatedSwitcher(
-            duration: const Duration(milliseconds: 280),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            child: child,
+            ),
           );
-        },
-      ),
+        } else {
+          child = ShellScreen(
+            key: const ValueKey('shell'),
+            appState: _appState,
+          );
+        }
+
+        return MaterialApp(
+          title: 'Vedro',
+          debugShowCheckedModeBanner: false,
+          theme: VedroTheme.dark(
+            accentColor: pal.accent,
+            accentFillColor: pal.fill,
+          ),
+          scrollBehavior: const VedroScrollBehavior(),
+          home: AppLockGate(
+            appState: _appState,
+            child: AnimatedSwitcher(
+              duration: Duration(milliseconds: _appState.prefs.reduceMotion ? 0 : 260),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              child: child,
+            ),
+          ),
+        );
+      },
     );
   }
 }

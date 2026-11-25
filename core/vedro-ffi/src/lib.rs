@@ -1463,15 +1463,30 @@ impl VedroRuntime {
 
             "get_embygo_admin_dashboard" => {
                 let client = self.require_client()?;
-                let (status, counts, sessions) = tokio::join!(
+                let (status, counts, sessions, libraries, users, tasks, activity) = tokio::join!(
                     client.embygo_status(),
                     client.item_counts(),
-                    client.sessions(true),
+                    client.sessions(false),
+                    client.virtual_folders(),
+                    client.query_users(),
+                    client.scheduled_tasks(),
+                    client.activity_log(30),
                 );
+                let all_sessions = sessions.unwrap_or_default();
+                let playing_sessions: Vec<_> = all_sessions
+                    .iter()
+                    .filter(|s| s.now_playing_item.is_some())
+                    .cloned()
+                    .collect();
                 Ok(json!({
                     "status": status.ok(),
                     "counts": counts.ok(),
-                    "playing_sessions": sessions.unwrap_or_default(),
+                    "playing_sessions": playing_sessions,
+                    "sessions": all_sessions,
+                    "libraries": libraries.ok(),
+                    "users": users.ok(),
+                    "tasks": tasks.ok(),
+                    "activity": activity.ok(),
                 }))
             }
 
@@ -1482,6 +1497,133 @@ impl VedroRuntime {
                     .await
                     .map_err(|e| e.to_string())?;
                 Ok(json!({"refresh_started": true}))
+            }
+
+            "admin_end_session" => {
+                let client = self.require_client()?;
+                let session_id = str_param(&params, "session_id")?;
+                client
+                    .end_session(&session_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"ended": session_id}))
+            }
+
+            "admin_create_user" => {
+                let client = self.require_client()?;
+                let name = str_param(&params, "name")?;
+                let password = params.get("password").and_then(Value::as_str).unwrap_or("");
+                let user = client
+                    .create_user(&name, password)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(user)
+            }
+
+            "admin_set_user_policy" => {
+                let client = self.require_client()?;
+                let user_id = str_param(&params, "user_id")?;
+                let policy = params.get("policy").cloned().unwrap_or_else(|| json!({}));
+                client
+                    .set_user_policy(&user_id, policy)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"updated": user_id}))
+            }
+
+            "admin_delete_user" => {
+                let client = self.require_client()?;
+                let user_id = str_param(&params, "user_id")?;
+                client
+                    .delete_user(&user_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"deleted": user_id}))
+            }
+
+            "admin_run_task" => {
+                let client = self.require_client()?;
+                let key = str_param(&params, "key")?;
+                client
+                    .run_scheduled_task(&key)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"started": key}))
+            }
+
+            "admin_set_library_covers" => {
+                let client = self.require_client()?;
+                let id = str_param(&params, "id")?;
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                client
+                    .set_library_generate_covers(&id, enabled)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({"updated": id, "enabled": enabled}))
+            }
+
+            "ai_translate" => {
+                let base_url = str_param(&params, "base_url")?;
+                let api_key = params.get("api_key").and_then(Value::as_str).unwrap_or("");
+                let model = params
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("gpt-4o-mini");
+                let text = str_param(&params, "text")?;
+                let target_lang = params
+                    .get("target_lang")
+                    .and_then(Value::as_str)
+                    .unwrap_or("简体中文");
+                let system_prompt = params
+                    .get("system_prompt")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| {
+                        format!(
+                            "You are a concise cinema translator. Translate the user text naturally into {target_lang}. Output only the translation with no extra commentary."
+                        )
+                    });
+
+                let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+                let http = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(30))
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                let mut req = http.post(&endpoint).json(&json!({
+                    "model": model,
+                    "temperature": 0.2,
+                    "messages": [
+                        { "role": "system", "content": system_prompt },
+                        { "role": "user", "content": text }
+                    ]
+                }));
+                if !api_key.is_empty() {
+                    req = req.bearer_auth(api_key);
+                }
+                let resp = req.send().await.map_err(|e| e.to_string())?;
+                let status = resp.status();
+                let body: Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| format!("invalid AI response ({status}): {e}"))?;
+                if !status.is_success() {
+                    let msg = body
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("AI request failed");
+                    return Err(format!("HTTP {}: {msg}", status.as_u16()));
+                }
+                let translated = body
+                    .pointer("/choices/0/message/content")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                Ok(json!({ "translated": translated }))
             }
 
             "get_settings" => {
@@ -1497,6 +1639,21 @@ impl VedroRuntime {
                     .map_err(|e| e.to_string())?;
                 *self.playback_config.lock() = cfg.clone();
                 Ok(serde_json::to_value(cfg).unwrap())
+            }
+
+            "get_kv" => {
+                let key = str_param(&params, "key")?;
+                let val: Option<Value> = self.store.get_setting(&key).map_err(|e| e.to_string())?;
+                Ok(json!({ "value": val }))
+            }
+
+            "set_kv" => {
+                let key = str_param(&params, "key")?;
+                let value = params.get("value").cloned().unwrap_or(Value::Null);
+                self.store
+                    .set_setting(&key, &value)
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({ "saved": true }))
             }
 
             "image_url" => {

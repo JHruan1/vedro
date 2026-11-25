@@ -152,6 +152,33 @@ class FramedPoster extends StatelessWidget {
   }
 }
 
+/// Full-bleed darkened ambient blur when a detail page item lacks a widescreen backdrop.
+/// Unlike `FramedPoster` (for 16:9 cards), never places a duplicate vertical poster in the center
+/// where hero typography & overview live.
+class _AmbientBlurBackdrop extends StatelessWidget {
+  const _AmbientBlurBackdrop({required this.url});
+  final String url;
+
+  @override
+  Widget build(BuildContext context) {
+    return Transform.scale(
+      scale: 1.28,
+      child: ImageFiltered(
+        imageFilter: ImageFilter.blur(sigmaX: 36, sigmaY: 36),
+        child: ColorFiltered(
+          colorFilter: const ColorFilter.matrix(<double>[
+            0.36, 0, 0, 0, 0,
+            0, 0.36, 0, 0, 0,
+            0, 0, 0.36, 0, 0,
+            0, 0, 0, 1, 0,
+          ]),
+          child: FadeNetworkImage(url: url, fit: BoxFit.cover),
+        ),
+      ),
+    );
+  }
+}
+
 /// Unified artwork surface for posters (2:3) and widescreen cards/heroes (16:9).
 /// Always layers `GeneratedArt` beneath real imagery so slow/missing covers look calm and intentional.
 class VedroArtwork extends StatelessWidget {
@@ -188,7 +215,7 @@ class VedroArtwork extends StatelessWidget {
       final art = appState.backdropArt(item, width: width ?? 1920);
       if (art != null) {
         artLayer = art.isPoster
-            ? FramedPoster(url: art.url)
+            ? _AmbientBlurBackdrop(url: art.url)
             : FadeNetworkImage(url: art.url, fit: BoxFit.cover, alignment: alignment);
       }
     } else if (landscape) {

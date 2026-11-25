@@ -124,18 +124,21 @@ class GlassSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(borderRadius),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-        child: Container(
-          padding: padding,
-          decoration: BoxDecoration(
+    final radius = BorderRadius.circular(borderRadius);
+    return Container(
+      foregroundDecoration: BoxDecoration(
+        borderRadius: radius,
+        border: Border.all(color: borderColor, width: 0.8),
+      ),
+      child: ClipRRect(
+        borderRadius: radius,
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+          child: Container(
+            padding: padding,
             color: color,
-            borderRadius: BorderRadius.circular(borderRadius),
-            border: Border.all(color: borderColor, width: 0.7),
+            child: child,
           ),
-          child: child,
         ),
       ),
     );
@@ -314,7 +317,7 @@ class VedroSegmentedControl<T> extends StatelessWidget {
   }
 }
 
-/// Present a frosted dark glass bottom sheet with an Apple grabber handle.
+/// Present a frosted dark glass sheet (centered floating HUD panel on desktop, bottom sheet on mobile).
 Future<T?> showGlassSheet<T>({
   required BuildContext context,
   required WidgetBuilder builder,
@@ -322,35 +325,44 @@ Future<T?> showGlassSheet<T>({
   return showModalBottomSheet<T>(
     context: context,
     backgroundColor: Colors.transparent,
-    barrierColor: const Color(0x88000000),
+    barrierColor: const Color(0x8A000000),
     isScrollControlled: true,
     builder: (ctx) {
+      final size = MediaQuery.sizeOf(ctx);
+      final wide = size.width >= 720;
       return SafeArea(
         top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxWidth: 520,
-              maxHeight: MediaQuery.sizeOf(ctx).height * 0.78,
-            ),
-            child: GlassSurface(
-              borderRadius: 22,
-              color: VedroTheme.glassStrong,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const SizedBox(height: 10),
-                  Container(
-                    width: 36,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: const Color(0x40FFFFFF),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  Flexible(child: builder(ctx)),
-                ],
+        child: Align(
+          alignment: wide ? Alignment.center : Alignment.bottomCenter,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(16, wide ? 24 : 0, 16, wide ? 24 : 14),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: wide ? 480 : 520,
+                maxHeight: size.height * 0.80,
+              ),
+              child: GlassSurface(
+                borderRadius: 20,
+                blur: 30,
+                color: VedroTheme.glassStrong,
+                borderColor: const Color(0x28FFFFFF),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (!wide) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        width: 36,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: const Color(0x40FFFFFF),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ],
+                    Flexible(child: builder(ctx)),
+                  ],
+                ),
               ),
             ),
           ),

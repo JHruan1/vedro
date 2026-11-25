@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../core/models/models.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
+import '../widgets/home_layout_sheet.dart';
 import '../widgets/server_sheets.dart';
 import '../widgets/spotlight_search_dialog.dart';
 import '../widgets/vedro_ui.dart';
@@ -198,6 +199,10 @@ class _ShellScreenState extends State<ShellScreen> {
                     onSelectIndex: (i) => setState(() => _index = i),
                     onOpenServerHub: _openServerHub,
                     onOpenSearch: _openSpotlight,
+                    onOpenLayout: () => showHomeLayoutSheet(
+                      context: context,
+                      appState: widget.appState,
+                    ),
                     onRefresh: widget.appState.refreshHome,
                   ),
                 ),
@@ -251,6 +256,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
     required this.onSelectIndex,
     required this.onOpenServerHub,
     required this.onOpenSearch,
+    required this.onOpenLayout,
     required this.onRefresh,
   });
 
@@ -261,6 +267,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
   final ValueChanged<int> onSelectIndex;
   final VoidCallback onOpenServerHub;
   final VoidCallback onOpenSearch;
+  final VoidCallback onOpenLayout;
   final VoidCallback onRefresh;
 
   @override
@@ -421,26 +428,55 @@ class _FloatingDesktopHeader extends StatelessWidget {
               ),
             ),
             if (appState.isSignedIn) ...[
-              const SizedBox(width: 10),
-              PressableScale(
-                onTap: onRefresh,
-                hoverScale: 1.06,
-                pressScale: 0.92,
-                child: Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: clear ? const Color(0x1EFFFFFF) : VedroTheme.surface2,
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: clear ? const Color(0x24FFFFFF) : VedroTheme.line,
-                      width: 0.7,
+              const SizedBox(width: 8),
+              Tooltip(
+                message: '自定义首页布局',
+                child: PressableScale(
+                  onTap: onOpenLayout,
+                  hoverScale: 1.06,
+                  pressScale: 0.92,
+                  child: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: clear ? const Color(0x1EFFFFFF) : VedroTheme.surface2,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: clear ? const Color(0x24FFFFFF) : VedroTheme.line,
+                        width: 0.7,
+                      ),
+                    ),
+                    child: Icon(
+                      Icons.dashboard_customize_outlined,
+                      size: 16,
+                      color: clear ? Colors.white : VedroTheme.fg2,
                     ),
                   ),
-                  child: Icon(
-                    Icons.refresh_rounded,
-                    size: 17,
-                    color: clear ? Colors.white : VedroTheme.fg2,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Tooltip(
+                message: '刷新首页',
+                child: PressableScale(
+                  onTap: onRefresh,
+                  hoverScale: 1.06,
+                  pressScale: 0.92,
+                  child: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: clear ? const Color(0x1EFFFFFF) : VedroTheme.surface2,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: clear ? const Color(0x24FFFFFF) : VedroTheme.line,
+                        width: 0.7,
+                      ),
+                    ),
+                    child: Icon(
+                      Icons.refresh_rounded,
+                      size: 17,
+                      color: clear ? Colors.white : VedroTheme.fg2,
+                    ),
                   ),
                 ),
               ),

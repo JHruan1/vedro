@@ -89,10 +89,12 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
     final padX = wide ? 32.0 : 20.0;
     final cardWidth = widget.isResume
         ? (wide ? 306.0 : 268.0)
-        : (widget.landscape ? (wide ? 286.0 : 252.0) : (wide ? 158.0 : 132.0));
+        : (widget.landscape
+            ? (wide ? 286.0 : 252.0)
+            : widget.appState.prefs.posterCardWidth(wide));
     final railHeight = widget.isResume || widget.landscape
-        ? (cardWidth / (16 / 9)) + 56
-        : (cardWidth / (2 / 3)) + 56;
+        ? (cardWidth / (16 / 9)) + 68
+        : (cardWidth / (2 / 3)) + 68;
     final showArrows = wide && !(_atStart && _atEnd);
 
     return Column(
@@ -160,7 +162,8 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
           height: railHeight,
           child: ListView.separated(
             controller: _scrollCtrl,
-            padding: EdgeInsets.fromLTRB(padX, 4, padX, 4),
+            clipBehavior: Clip.none,
+            padding: EdgeInsets.fromLTRB(padX, 8, padX, 10),
             scrollDirection: Axis.horizontal,
             physics: const BouncingScrollPhysics(),
             itemCount: widget.items.length,
@@ -308,7 +311,8 @@ class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
           height: widget.height,
           child: ListView.separated(
             controller: _scrollCtrl,
-            padding: EdgeInsets.fromLTRB(padX, 4, padX, 4),
+            clipBehavior: Clip.none,
+            padding: EdgeInsets.fromLTRB(padX, 8, padX, 10),
             scrollDirection: Axis.horizontal,
             physics: const BouncingScrollPhysics(),
             itemCount: widget.itemCount,

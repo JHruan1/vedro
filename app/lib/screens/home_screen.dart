@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../core/models/models.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
+import '../widgets/home_layout_sheet.dart';
 import '../widgets/horizontal_rail.dart';
 import '../widgets/media_card.dart';
 import '../widgets/vedro_artwork.dart';
@@ -60,40 +61,45 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// Pick up to 6 featured Hero slides strictly requiring real widescreen landscape artwork
+  /// (Backdrop / ParentBackdrop / Thumb / Episode still). Never puts portrait posters in Hero!
   List<({MediaItemModel item, String eyebrow})> _pickFeatured() {
     final app = widget.appState;
     final pool = <({MediaItemModel item, String eyebrow})>[];
-    if (app.popular.isNotEmpty) {
-      for (final i in app.popular) {
-        pool.add((item: i, eyebrow: i.type == 'Series' ? '热门剧集' : '热门电影'));
-      }
-    } else {
-      for (final i in app.resume) {
-        pool.add((item: i, eyebrow: '继续观看'));
-      }
-      for (final i in app.nextUp) {
-        pool.add((item: i, eyebrow: '接下来播放'));
-      }
-      for (final entry in app.latestByLibrary) {
-        final lib = MediaItemModel.fromJson(entry['library'] as Map<String, dynamic>);
-        final items = ((entry['items'] as List<dynamic>?) ?? const [])
-            .whereType<Map<String, dynamic>>()
-            .map(MediaItemModel.fromJson);
-        for (final i in items) {
-          pool.add((item: i, eyebrow: '最新加入 · ${lib.name}'));
-        }
+    for (final i in app.popular) {
+      pool.add((item: i, eyebrow: i.type == 'Series' ? '热门剧集' : '热门电影'));
+    }
+    for (final i in app.resume) {
+      pool.add((item: i, eyebrow: '继续播放'));
+    }
+    for (final i in app.nextUp) {
+      pool.add((item: i, eyebrow: '接下来播放'));
+    }
+    for (final i in app.favorites) {
+      pool.add((item: i, eyebrow: '我的收藏'));
+    }
+    for (final entry in app.latestByLibrary) {
+      final lib = MediaItemModel.fromJson(entry['library'] as Map<String, dynamic>);
+      final items = ((entry['items'] as List<dynamic>?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(MediaItemModel.fromJson);
+      for (final i in items) {
+        pool.add((item: i, eyebrow: '最新加入 · ${lib.name}'));
       }
     }
 
     final seen = <String>{};
-    final unique = <({MediaItemModel item, String eyebrow})>[];
+    final landscapeOnly = <({MediaItemModel item, String eyebrow})>[];
     for (final entry in pool) {
       final key = entry.item.seriesId ?? entry.item.id;
-      if (seen.add(key)) unique.add(entry);
+      if (!seen.add(key)) continue;
+      final art = app.backdropArt(entry.item);
+      if (art != null && !art.isPoster) {
+        landscapeOnly.add(entry);
+        if (landscapeOnly.length >= 6) break;
+      }
     }
-    final wideOnes = unique.where((e) => app.backdropArt(e.item)?.isPoster == false).toList();
-    final rest = unique.where((e) => app.backdropArt(e.item)?.isPoster != false).toList();
-    return [...wideOnes, ...rest].take(5).toList();
+    return landscapeOnly;
   }
 
   @override
@@ -157,7 +163,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    final featured = _pickFeatured();
+    final featured = app.showHomeHero ? _pickFeatured() : const <({MediaItemModel item, String eyebrow})>[];
     final caps = app.capabilities;
     final resumeIds = app.resume.map((e) => e.id).toSet();
     final nextItems = app.nextUp.where((e) => !resumeIds.contains(e.id)).toList();
@@ -172,8 +178,137 @@ class _HomeScreenState extends State<HomeScreen> {
       latestMap[lib.id] = items;
     }
 
-    final libCardW = wide ? 340.0 : 284.0;
-    final libRailH = (libCardW / (16 / 9)) + 16;
+    final libCardW = wide ? 276.0 : 228.0;
+    final libRailH = (libCardW / (16 / 9)) + 48;
+
+    final dynamicSectionSlivers = <Widget>[];
+    for (final sec in app.homeSections) {
+      if (!sec.visible) continue;
+      switch (sec.id) {
+        case 'libraries':
+          if (app.views.isNotEmpty) {
+            dynamicSectionSlivers.add(
+              SliverToBoxAdapter(
+                child: CustomHorizontalRail(
+                  title: '媒体库',
+                  height: libRailH,
+                  itemCount: app.views.length,
+                  itemBuilder: (_, idx) {
+                    final view = app.views[idx];
+                    final libItems = latestMap[view.id] ?? const <MediaItemModel>[];
+                    MediaItemModel? cover;
+                    for (final candidate in libItems) {
+                      if (app.backdropArt(candidate)?.isPoster == false) {
+                        cover = candidate;
+                        break;
+                      }
+                    }
+                    cover ??= libItems.isNotEmpty ? libItems.first : null;
+                    return LibraryCard(
+                      library: view,
+                      coverItem: cover,
+                      appState: app,
+                      width: libCardW,
+                      onTap: () => widget.onLibraryTap(view),
+                    );
+                  },
+                ),
+              ),
+            );
+          }
+          break;
+        case 'resume':
+          if (app.resume.isNotEmpty) {
+            dynamicSectionSlivers.add(
+              SliverToBoxAdapter(
+                child: HorizontalMediaRail(
+                  title: '继续播放',
+                  items: app.resume,
+                  appState: app,
+                  isResume: true,
+                  onItemTap: (item) => widget.onItemTap(item),
+                  onItemQuickPlay: widget.onQuickPlay,
+                  onItemLongPress: caps?.supportsHideFromResume == true
+                      ? (item) => _confirmHideFromResume(context, item)
+                      : null,
+                ),
+              ),
+            );
+          }
+          break;
+        case 'next_up':
+          if (nextItems.isNotEmpty) {
+            dynamicSectionSlivers.add(
+              SliverToBoxAdapter(
+                child: HorizontalMediaRail(
+                  title: '接下来播放',
+                  items: nextItems,
+                  appState: app,
+                  landscape: true,
+                  onItemTap: (item) => widget.onItemTap(item),
+                  onItemQuickPlay: widget.onQuickPlay,
+                ),
+              ),
+            );
+          }
+          break;
+        case 'favorites':
+          if (app.favorites.isNotEmpty) {
+            dynamicSectionSlivers.add(
+              SliverToBoxAdapter(
+                child: HorizontalMediaRail(
+                  title: '我的收藏',
+                  items: app.favorites,
+                  appState: app,
+                  heroPrefix: 'fav',
+                  onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'fav'),
+                  onItemQuickPlay: widget.onQuickPlay,
+                ),
+              ),
+            );
+          }
+          break;
+        case 'latest':
+          for (final entry in app.latestByLibrary) {
+            final lib = MediaItemModel.fromJson(entry['library'] as Map<String, dynamic>);
+            final items = ((entry['items'] as List<dynamic>?) ?? const [])
+                .whereType<Map<String, dynamic>>()
+                .map(MediaItemModel.fromJson)
+                .toList();
+            if (items.isEmpty) continue;
+            dynamicSectionSlivers.add(
+              SliverToBoxAdapter(
+                child: HorizontalMediaRail(
+                  title: '最新加入 · ${lib.name}',
+                  items: items,
+                  appState: app,
+                  heroPrefix: 'lat-${lib.id}',
+                  onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'lat-${lib.id}'),
+                  onItemQuickPlay: widget.onQuickPlay,
+                  onSeeAll: () => widget.onLibraryTap(lib),
+                ),
+              ),
+            );
+          }
+          break;
+        case 'suggestions':
+          if (app.suggestions.isNotEmpty) {
+            dynamicSectionSlivers.add(
+              SliverToBoxAdapter(
+                child: HorizontalMediaRail(
+                  title: '猜你喜欢',
+                  items: app.suggestions,
+                  appState: app,
+                  heroPrefix: 'sug',
+                  onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'sug'),
+                  onItemQuickPlay: widget.onQuickPlay,
+                ),
+              ),
+            );
+          }
+          break;
+      }
+    }
 
     return RefreshIndicator(
       color: VedroTheme.fg,
@@ -196,7 +331,9 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             )
           else
-            SliverToBoxAdapter(child: SizedBox(height: wide ? 78 : 24)),
+            SliverToBoxAdapter(
+              child: SizedBox(height: wide ? 78 : MediaQuery.paddingOf(context).top + 16),
+            ),
 
           if (app.remoteBannerMessage != null)
             SliverToBoxAdapter(
@@ -221,101 +358,44 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-          SliverToBoxAdapter(
-            child: HorizontalMediaRail(
-              title: '继续观看',
-              items: app.resume,
-              appState: app,
-              isResume: true,
-              onItemTap: (item) => widget.onItemTap(item),
-              onItemQuickPlay: widget.onQuickPlay,
-              onItemLongPress: caps?.supportsHideFromResume == true
-                  ? (item) => _confirmHideFromResume(context, item)
-                  : null,
-            ),
-          ),
+          ...dynamicSectionSlivers,
 
+          // Subtle footer action to customize Home section order & visibility
           SliverToBoxAdapter(
-            child: HorizontalMediaRail(
-              title: '接下来播放',
-              items: nextItems,
-              appState: app,
-              landscape: true,
-              onItemTap: (item) => widget.onItemTap(item),
-              onItemQuickPlay: widget.onQuickPlay,
-            ),
-          ),
-
-          SliverToBoxAdapter(
-            child: HorizontalMediaRail(
-              title: '猜你喜欢',
-              items: app.suggestions,
-              appState: app,
-              heroPrefix: 'sug',
-              onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'sug'),
-              onItemQuickPlay: widget.onQuickPlay,
-            ),
-          ),
-
-          if (app.views.isNotEmpty)
-            SliverToBoxAdapter(
-              child: CustomHorizontalRail(
-                title: '媒体库',
-                height: libRailH,
-                itemCount: app.views.length,
-                itemBuilder: (_, idx) {
-                  final view = app.views[idx];
-                  final libItems = latestMap[view.id] ?? const <MediaItemModel>[];
-                  MediaItemModel? cover;
-                  for (final candidate in libItems) {
-                    if (app.backdropArt(candidate)?.isPoster == false) {
-                      cover = candidate;
-                      break;
-                    }
-                  }
-                  cover ??= libItems.isNotEmpty ? libItems.first : null;
-                  return LibraryCard(
-                    library: view,
-                    coverItem: cover,
-                    appState: app,
-                    width: libCardW,
-                    onTap: () => widget.onLibraryTap(view),
-                  );
-                },
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(wide ? 32 : 20, 32, wide ? 32 : 20, wide ? 48 : 112),
+              child: Center(
+                child: PressableScale(
+                  onTap: () => showHomeLayoutSheet(context: context, appState: app),
+                  hoverScale: 1.03,
+                  pressScale: 0.96,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                    decoration: BoxDecoration(
+                      color: VedroTheme.surface,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: VedroTheme.line, width: 0.8),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.tune_rounded, size: 15, color: VedroTheme.fg2),
+                        SizedBox(width: 7),
+                        Text(
+                          '自定义首页布局与顺序',
+                          style: TextStyle(
+                            color: VedroTheme.fg2,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             ),
-
-          SliverToBoxAdapter(
-            child: HorizontalMediaRail(
-              title: '我的收藏',
-              items: app.favorites,
-              appState: app,
-              heroPrefix: 'fav',
-              onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'fav'),
-              onItemQuickPlay: widget.onQuickPlay,
-            ),
           ),
-
-          ...app.latestByLibrary.map((entry) {
-            final lib = MediaItemModel.fromJson(entry['library'] as Map<String, dynamic>);
-            final items = ((entry['items'] as List<dynamic>?) ?? const [])
-                .whereType<Map<String, dynamic>>()
-                .map(MediaItemModel.fromJson)
-                .toList();
-            return SliverToBoxAdapter(
-              child: HorizontalMediaRail(
-                title: '最新加入 · ${lib.name}',
-                items: items,
-                appState: app,
-                heroPrefix: 'lat-${lib.id}',
-                onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'lat-${lib.id}'),
-                onItemQuickPlay: widget.onQuickPlay,
-                onSeeAll: () => widget.onLibraryTap(lib),
-              ),
-            );
-          }),
-
-          SliverToBoxAdapter(child: SizedBox(height: wide ? 56 : 112)),
         ],
       ),
     );
@@ -736,8 +816,13 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                   gradient: LinearGradient(
                     begin: Alignment.centerLeft,
                     end: Alignment.centerRight,
-                    stops: [0.0, 0.52, 1.0],
-                    colors: [Color(0xC80B0B0D), Color(0x520B0B0D), Colors.transparent],
+                    stops: [0.0, 0.48, 0.82, 1.0],
+                    colors: [
+                      Color(0xDC0B0B0D),
+                      Color(0x780B0B0D),
+                      Color(0x140B0B0D),
+                      Colors.transparent,
+                    ],
                   ),
                 ),
               ),
@@ -747,11 +832,12 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  stops: [0.0, 0.25, 0.70, 1.0],
+                  stops: [0.0, 0.24, 0.58, 0.86, 1.0],
                   colors: [
-                    Color(0x660B0B0D),
+                    Color(0x720B0B0D),
                     Colors.transparent,
-                    Color(0xB30B0B0D),
+                    Color(0x660B0B0D),
+                    Color(0xE00B0B0D),
                     VedroTheme.canvas,
                   ],
                 ),
@@ -884,18 +970,18 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                         ),
                       ),
                     ],
-                    if (item.overview != null && item.overview!.isNotEmpty) ...[
+                    if (item.cleanOverview.isNotEmpty) ...[
                       const SizedBox(height: 10),
                       ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 560),
                         child: Text(
-                          item.overview!,
+                          item.cleanOverview,
                           maxLines: wide ? 3 : 2,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            color: Color(0xBDFFFFFF),
+                            color: Color(0xD9FFFFFF),
                             fontSize: 14,
-                            height: 1.5,
+                            height: 1.55,
                           ),
                         ),
                       ),

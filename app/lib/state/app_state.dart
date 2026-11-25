@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../core/ffi/vedro_bridge.dart';
 import '../core/models/models.dart';
+import '../core/models/preferences.dart';
 import '../core/platform/native_playback_channel.dart';
 
 /// Central reactive application state backed directly by the compiled Rust core (`VedroCoreClient`).
@@ -55,6 +57,17 @@ class VedroAppState extends ChangeNotifier {
 
   // Playback settings mirrored with Rust SQLite store
   Map<String, dynamic> settings = {};
+
+  // Comprehensive user preferences persisted in SQLite KV (`vedro_prefs`)
+  VedroPreferences prefs = const VedroPreferences();
+
+  // Local offline downloads queue persisted in SQLite KV (`downloads_queue`)
+  List<DownloadTaskModel> downloads = [];
+  String? _supportDirPath;
+
+  // Customizable Home layout (persisted in SQLite `settings` KV under `home_layout`)
+  List<HomeSectionConfig> homeSections = List<HomeSectionConfig>.from(HomeSectionConfig.defaults);
+  bool showHomeHero = true;
 
   // Network transport options (auto-detected OS/Android proxy or user override)
   String systemProxyUrl = '';
@@ -118,6 +131,31 @@ class VedroAppState extends ChangeNotifier {
       if (cfg is Map<String, dynamic>) {
         settings = Map<String, dynamic>.from(cfg);
       }
+      try {
+        final kv = await core.invoke('get_kv', {'key': 'home_layout'});
+        if (kv is Map<String, dynamic> && kv['value'] is Map<String, dynamic>) {
+          final layout = kv['value'] as Map<String, dynamic>;
+          homeSections = HomeSectionConfig.normalize(layout['sections'] as List<dynamic>?);
+          if (layout['show_hero'] is bool) {
+            showHomeHero = layout['show_hero'] as bool;
+          }
+        }
+      } catch (_) {}
+      try {
+        final kv = await core.invoke('get_kv', {'key': 'vedro_prefs'});
+        if (kv is Map<String, dynamic> && kv['value'] is Map<String, dynamic>) {
+          prefs = VedroPreferences.fromJson(kv['value'] as Map<String, dynamic>);
+        }
+      } catch (_) {}
+      try {
+        final kv = await core.invoke('get_kv', {'key': 'downloads_queue'});
+        if (kv is Map<String, dynamic> && kv['value'] is List) {
+          downloads = (kv['value'] as List)
+              .whereType<Map<String, dynamic>>()
+              .map(DownloadTaskModel.fromJson)
+              .toList();
+        }
+      } catch (_) {}
 
       final hwCaps = await NativePlaybackChannel.queryDisplayAndAudioCapabilities();
       final detectedProxy = hwCaps['system_proxy_url']?.toString().trim() ?? '';
@@ -137,6 +175,13 @@ class VedroAppState extends ChangeNotifier {
       isInitialized = true;
       isBusy = false;
       notifyListeners();
+
+      unawaited(() async {
+        try {
+          final dir = await getApplicationSupportDirectory();
+          _supportDirPath = dir.path;
+        } catch (_) {}
+      }());
 
       // Seamless auto-restore for returning users; fresh users land directly on Home Server Hub
       final recent = savedServers.where((s) => s.accessToken != null && s.userId != null).toList();
@@ -532,6 +577,245 @@ class VedroAppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> saveHomeLayout(
+    List<HomeSectionConfig> sections, {
+    bool? showHero,
+  }) async {
+    homeSections = List<HomeSectionConfig>.from(sections);
+    if (showHero != null) showHomeHero = showHero;
+    notifyListeners();
+    try {
+      await core.invoke('set_kv', {
+        'key': 'home_layout',
+        'value': {
+          'show_hero': showHomeHero,
+          'sections': homeSections.map((s) => s.toJson()).toList(),
+        },
+      });
+    } catch (_) {}
+  }
+
+  Future<void> resetHomeLayout() => saveHomeLayout(
+        HomeSectionConfig.defaults,
+        showHero: true,
+      );
+
+  Future<void> updatePrefs(VedroPreferences updated) async {
+    prefs = updated;
+    notifyListeners();
+    try {
+      await core.invoke('set_kv', {
+        'key': 'vedro_prefs',
+        'value': prefs.toJson(),
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _persistDownloads() async {
+    try {
+      await core.invoke('set_kv', {
+        'key': 'downloads_queue',
+        'value': downloads.map((d) => d.toJson()).toList(),
+      });
+    } catch (_) {}
+  }
+
+  String get downloadsDirectoryPath {
+    if (prefs.downloadCustomDir.trim().isNotEmpty) {
+      return prefs.downloadCustomDir.trim();
+    }
+    return '${_supportDirPath ?? Directory.systemTemp.path}/vedro_downloads';
+  }
+
+  String get fontsDirectoryPath =>
+      '${_supportDirPath ?? Directory.systemTemp.path}/vedro_fonts';
+
+  Future<void> enqueueDownload(MediaItemModel item, {String? mediaSourceId}) async {
+    final taskId = '${item.id}_${DateTime.now().millisecondsSinceEpoch}';
+    final initial = DownloadTaskModel(
+      id: taskId,
+      itemId: item.id,
+      title: item.cardTitle,
+      subtitle: item.cardSubtitle,
+      status: 'downloading',
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    downloads.insert(0, initial);
+    notifyListeners();
+    await _persistDownloads();
+
+    unawaited(() async {
+      try {
+        final prepRaw = await core.invoke('prepare_playback', {
+          'item_id': item.id,
+          if (mediaSourceId != null) 'media_source_id': mediaSourceId,
+          'inspect_header': false,
+        }) as Map<String, dynamic>;
+        final prep = PreparedPlaybackModel.fromJson(prepRaw);
+        final ext = (prep.allSources.isNotEmpty ? prep.allSources.first.container : null) ?? 'mkv';
+        final safeName = item.cardTitle
+            .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ]+'), '_')
+            .trim();
+        final dir = Directory(downloadsDirectoryPath);
+        if (!dir.existsSync()) dir.createSync(recursive: true);
+        final outPath = '${dir.path}/${safeName.isEmpty ? item.id : safeName}.$ext';
+
+        final client = HttpClient();
+        try {
+          final req = await client.getUrl(Uri.parse(prep.proxyUrl));
+          final resp = await req.close();
+          final total = resp.contentLength > 0 ? resp.contentLength : 0;
+          final file = File(outPath);
+          final sink = file.openWrite();
+          var received = 0;
+          var lastEmit = DateTime.now();
+
+          await for (final chunk in resp) {
+            sink.add(chunk);
+            received += chunk.length;
+            final now = DateTime.now();
+            if (now.difference(lastEmit).inMilliseconds > 350) {
+              lastEmit = now;
+              _replaceDownload(
+                taskId,
+                (d) => d.copyWith(
+                  filePath: outPath,
+                  totalBytes: total,
+                  downloadedBytes: received,
+                  status: 'downloading',
+                ),
+              );
+            }
+          }
+          await sink.flush();
+          await sink.close();
+          _replaceDownload(
+            taskId,
+            (d) => d.copyWith(
+              filePath: outPath,
+              totalBytes: total > 0 ? total : received,
+              downloadedBytes: received,
+              status: 'completed',
+            ),
+          );
+          await _persistDownloads();
+        } finally {
+          client.close();
+        }
+      } catch (e) {
+        _replaceDownload(
+          taskId,
+          (d) => d.copyWith(status: 'failed', error: e.toString()),
+        );
+        await _persistDownloads();
+      }
+    }());
+  }
+
+  void _replaceDownload(
+    String id,
+    DownloadTaskModel Function(DownloadTaskModel) transform,
+  ) {
+    final idx = downloads.indexWhere((d) => d.id == id);
+    if (idx >= 0) {
+      downloads[idx] = transform(downloads[idx]);
+      notifyListeners();
+    }
+  }
+
+  Future<void> deleteDownload(String taskId, {bool deleteFile = true}) async {
+    final idx = downloads.indexWhere((d) => d.id == taskId);
+    if (idx < 0) return;
+    final task = downloads.removeAt(idx);
+    if (deleteFile && task.filePath.isNotEmpty) {
+      try {
+        final f = File(task.filePath);
+        if (f.existsSync()) f.deleteSync();
+      } catch (_) {}
+    }
+    notifyListeners();
+    await _persistDownloads();
+  }
+
+  Future<String> importSubtitleFont(String sourcePath) async {
+    final src = File(sourcePath.trim());
+    if (!src.existsSync()) {
+      throw Exception('找不到字体文件：$sourcePath');
+    }
+    final dir = Directory(fontsDirectoryPath);
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+    final fileName = src.uri.pathSegments.last;
+    final dest = '${dir.path}/$fileName';
+    await src.copy(dest);
+    final next = <String>{...prefs.customFontPaths, dest}.toList();
+    final stem = fileName.replaceAll(RegExp(r'\.(ttf|otf|ttc)$', caseSensitive: false), '');
+    await updatePrefs(prefs.copyWith(
+      customFontPaths: next,
+      subtitleFontFamily: stem,
+    ));
+    return stem;
+  }
+
+  Future<void> removeSubtitleFont(String fontPath) async {
+    try {
+      final f = File(fontPath);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
+    final next = prefs.customFontPaths.where((p) => p != fontPath).toList();
+    await updatePrefs(prefs.copyWith(customFontPaths: next));
+  }
+
+  /// Translate text (movie overview / subtitle line) through Rust OpenAI-compatible proxy.
+  Future<String> translateText(String text, {String? targetLang}) async {
+    if (!prefs.isAiReady) {
+      throw Exception('请先在「设置 → AI 服务（翻译）」中启用并配置接口');
+    }
+    final res = await core.invoke('ai_translate', {
+      'base_url': prefs.aiBaseUrl.trim(),
+      'api_key': prefs.aiApiKey.trim(),
+      'model': prefs.aiModel.trim(),
+      'text': text,
+      'target_lang': targetLang ?? prefs.aiTargetLang,
+    }) as Map<String, dynamic>;
+    return (res['translated'] ?? '').toString();
+  }
+
+  Future<void> adminEndSession(String sessionId) async {
+    if (!isAdmin) return;
+    await core.invoke('admin_end_session', {'session_id': sessionId});
+    await loadEmbyGoAdminDashboard();
+  }
+
+  Future<void> adminCreateUser(String name, String password) async {
+    if (!isAdmin) return;
+    await core.invoke('admin_create_user', {'name': name, 'password': password});
+    await loadEmbyGoAdminDashboard();
+  }
+
+  Future<void> adminSetUserPolicy(String userId, Map<String, dynamic> policy) async {
+    if (!isAdmin) return;
+    await core.invoke('admin_set_user_policy', {'user_id': userId, 'policy': policy});
+    await loadEmbyGoAdminDashboard();
+  }
+
+  Future<void> adminDeleteUser(String userId) async {
+    if (!isAdmin) return;
+    await core.invoke('admin_delete_user', {'user_id': userId});
+    await loadEmbyGoAdminDashboard();
+  }
+
+  Future<void> adminRunTask(String key) async {
+    if (!isAdmin) return;
+    await core.invoke('admin_run_task', {'key': key});
+    await loadEmbyGoAdminDashboard();
+  }
+
+  Future<void> adminSetLibraryCovers(String id, bool enabled) async {
+    if (!isAdmin) return;
+    await core.invoke('admin_set_library_covers', {'id': id, 'enabled': enabled});
+    await loadEmbyGoAdminDashboard();
+  }
+
   // ---------------------------------------------------------------------------
   // Artwork resolution (exact embygo Web ancestor fallback chain + RAM proxy)
   // ---------------------------------------------------------------------------
@@ -604,7 +888,30 @@ class VedroAppState extends ChangeNotifier {
     return null;
   }
 
+  /// Direct server-side library cover for `CollectionFolder` / `UserView` items.
+  /// Emby / Jellyfin / embygo store generated or custom 16:9 library covers in `Primary`,
+  /// `Backdrop`, or `Thumb` on the view item itself.
+  String? libraryCoverUrl(MediaItemModel view, {int width = 720}) {
+    if (view.primaryImageTag != null && view.primaryImageTag!.isNotEmpty) {
+      return buildImageUrl(view.id, type: 'Primary', tag: view.primaryImageTag, maxWidth: width);
+    }
+    if (view.backdropImageTag != null && view.backdropImageTag!.isNotEmpty) {
+      return buildImageUrl(view.id, type: 'Backdrop', tag: view.backdropImageTag, maxWidth: width);
+    }
+    if (view.thumbImageTag != null && view.thumbImageTag!.isNotEmpty) {
+      return buildImageUrl(view.id, type: 'Thumb', tag: view.thumbImageTag, maxWidth: width);
+    }
+    return null;
+  }
+
   ResolvedArt? wideArt(MediaItemModel item, {int width = 640}) {
+    if ((item.type == 'CollectionFolder' || item.type == 'UserView') &&
+        item.primaryImageTag != null) {
+      return ResolvedArt(
+        url: buildImageUrl(item.id, type: 'Primary', tag: item.primaryImageTag, maxWidth: width),
+        isPoster: false,
+      );
+    }
     if (item.thumbImageTag != null) {
       return ResolvedArt(
         url: buildImageUrl(item.id, type: 'Thumb', tag: item.thumbImageTag, maxWidth: width),

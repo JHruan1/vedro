@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
@@ -27,6 +29,9 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
+  late final Player _player;
+  late final VideoController _videoController;
+
   PreparedPlaybackModel? _prepared;
   Map<String, dynamic> _stats = {};
   bool _loading = true;
@@ -39,11 +44,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double _durationSecs = 0;
   double _speed = 1.0;
   double _volume = 100.0;
+  double _subDelaySecs = 0.0;
   String _toneMapping = 'bt2446a';
   String _audioMode = 'auto';
   bool _nightMode = false;
   bool _dialogueBoost = false;
 
+  final List<StreamSubscription<dynamic>> _subs = [];
   Timer? _statsTimer;
   Timer? _progressTimer;
   Timer? _ticketRefreshTimer;
@@ -53,18 +60,72 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void initState() {
     super.initState();
     NativePlaybackChannel.setKeepScreenOn(true);
+
+    _player = Player(
+      configuration: const PlayerConfiguration(
+        bufferSize: 128 * 1024 * 1024,
+        vo: 'gpu',
+      ),
+    );
+    _videoController = VideoController(
+      _player,
+      configuration: const VideoControllerConfiguration(
+        enableHardwareAcceleration: true,
+      ),
+    );
+
+    _subs.add(_player.stream.playing.listen((playing) {
+      if (mounted) setState(() => _paused = !playing);
+    }));
+    _subs.add(_player.stream.position.listen((pos) {
+      if (mounted) setState(() => _positionSecs = pos.inMilliseconds / 1000.0);
+    }));
+    _subs.add(_player.stream.duration.listen((dur) {
+      if (mounted && dur.inMilliseconds > 0) {
+        setState(() => _durationSecs = dur.inMilliseconds / 1000.0);
+      }
+    }));
+    _subs.add(_player.stream.error.listen((err) {
+      if (mounted && err.isNotEmpty) {
+        setState(() => _error = '播放内核提示: $err');
+      }
+    }));
+
     _startPlayback(widget.mediaSourceId);
   }
 
   @override
   void dispose() {
+    for (final s in _subs) {
+      s.cancel();
+    }
     _statsTimer?.cancel();
     _progressTimer?.cancel();
     _ticketRefreshTimer?.cancel();
     _focusNode.dispose();
     NativePlaybackChannel.setKeepScreenOn(false);
     _reportStoppedAndCleanup();
+    _player.dispose();
     super.dispose();
+  }
+
+  Future<void> _applyMpvProperty(String key, String value) async {
+    final platform = _player.platform;
+    if (platform is NativePlayer) {
+      try {
+        await platform.setProperty(key, value);
+      } catch (_) {}
+    }
+  }
+
+  Future<String?> _readMpvProperty(String key) async {
+    final platform = _player.platform;
+    if (platform is NativePlayer) {
+      try {
+        return await platform.getProperty(key);
+      } catch (_) {}
+    }
+    return null;
   }
 
   Future<void> _startPlayback(String? sourceId) async {
@@ -73,6 +134,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _error = null;
     });
     try {
+      // 1. Rust Core negotiates PlaybackInfo, mints StreamTicket, starts bounded Range Proxy (<=2 conns),
+      //    runs binary MKV/MP4 Dolby Vision & Atmos inspector, and computes optimal libmpv options!
       final prepRaw = await widget.appState.core.invoke('prepare_playback', {
         'item_id': widget.item.id,
         if (sourceId != null) 'media_source_id': sourceId,
@@ -80,40 +143,58 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }) as Map<String, dynamic>;
 
       final prep = PreparedPlaybackModel.fromJson(prepRaw);
-      final wid = await NativePlaybackChannel.attachNativeVideoSurface();
-      final startSecs = widget.item.playbackPositionTicks > 0
-          ? widget.item.playbackPositionTicks / 10000000.0
+
+      // 2. Apply Rust-computed Dolby Vision / HDR10+ / HWDec / Dolby Atmos properties onto bundled libmpv
+      const skipKeys = {'vo', 'ao', 'gpu-api', 'gpu-context'};
+      for (final entry in prep.mpvOptions.entries) {
+        if (skipKeys.contains(entry.key)) continue;
+        await _applyMpvProperty(entry.key, entry.value);
+      }
+      // Enable zero-copy hardware decoding + Dolby Vision RPU tone mapping
+      await _applyMpvProperty('hwdec', 'auto-safe');
+      await _applyMpvProperty('hwdec-codecs', 'all');
+      await _applyMpvProperty('target-colorspace-hint', 'yes');
+      await _applyMpvProperty('hdr-compute-peak', 'yes');
+      await _applyMpvProperty('tone-mapping', _toneMapping);
+
+      // 3. Open local Rust Range proxy URL in GPU-accelerated libmpv VideoController!
+      final startDur = widget.item.playbackPositionTicks > 0
+          ? Duration(microseconds: widget.item.playbackPositionTicks ~/ 10)
           : null;
 
-      await widget.appState.core.invoke('player_start', {
-        'url': prep.proxyUrl,
-        if (startSecs != null) 'start_secs': startSecs,
-        if (wid != null) 'wid': wid,
-        if (prep.inspectedJson != null) 'inspected': prep.inspectedJson,
-      });
+      await _player.open(
+        Media(prep.proxyUrl, start: startDur),
+        play: true,
+      );
 
-      // Attach default external sidecar subtitle from embygo/Emby if present
+      // 4. Attach default external sidecar subtitle from embygo/Emby if present
       for (final sub in prep.externalSubtitles) {
-        if (sub['is_default'] == true) {
-          await widget.appState.core.invoke('player_add_subtitle', {
-            'url': sub['url'],
-            'title': sub['title'],
-            'language': sub['language'],
-          });
+        if (sub['is_default'] == true && sub['url'] != null) {
+          await _player.setSubtitleTrack(
+            SubtitleTrack.uri(
+              sub['url'].toString(),
+              title: sub['title']?.toString(),
+              language: sub['language']?.toString(),
+            ),
+          );
           break;
         }
       }
 
+      // 5. Report playback start to embygo / Emby / Jellyfin
       await widget.appState.core.invoke('report_playback_start', {
         'position_ticks': widget.item.playbackPositionTicks,
+        if (widget.item.runTimeTicks != null) 'run_time_ticks': widget.item.runTimeTicks,
         'is_paused': false,
       });
 
-      setState(() {
-        _prepared = prep;
-        _loading = false;
-        _paused = false;
-      });
+      if (mounted) {
+        setState(() {
+          _prepared = prep;
+          _loading = false;
+          _paused = false;
+        });
+      }
       _startTimers();
     } catch (e) {
       if (mounted) {
@@ -127,16 +208,36 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   void _startTimers() {
     _statsTimer?.cancel();
-    _statsTimer = Timer.periodic(const Duration(milliseconds: 500), (_) async {
+    _statsTimer = Timer.periodic(const Duration(milliseconds: 800), (_) async {
+      if (!_showStats) return;
       try {
-        final s = await widget.appState.core.invoke('player_stats') as Map<String, dynamic>;
-        final pb = (s['playback'] as Map<String, dynamic>?) ?? const {};
+        final rustStats = await widget.appState.core.invoke('player_stats') as Map<String, dynamic>;
+        final vCodec = await _readMpvProperty('video-codec');
+        final hwdec = await _readMpvProperty('hwdec-current');
+        final w = int.tryParse(await _readMpvProperty('width') ?? '');
+        final h = int.tryParse(await _readMpvProperty('height') ?? '');
+        final fps = double.tryParse(await _readMpvProperty('estimated-vf-fps') ?? '');
+        final drop = int.tryParse(await _readMpvProperty('frame-drop-count') ?? '') ?? 0;
+        final aCodec = await _readMpvProperty('audio-codec-name');
+        final aCh = await _readMpvProperty('audio-params/channels');
+
         if (mounted) {
           setState(() {
-            _stats = s;
-            _paused = pb['paused'] == true;
-            _positionSecs = (pb['position_secs'] as num?)?.toDouble() ?? _positionSecs;
-            _durationSecs = (pb['duration_secs'] as num?)?.toDouble() ?? _durationSecs;
+            _stats = {
+              'proxy': rustStats['proxy'],
+              'playback': {
+                'video_codec': vCodec,
+                'hwdec_current': hwdec ?? 'auto-safe',
+                'width': w ?? 0,
+                'height': h ?? 0,
+                'fps': fps ?? 0.0,
+                'dropped_frames': drop,
+                'audio_codec': aCodec,
+                'audio_channels': aCh,
+                'hdr_decision': {'explanation': _prepared?.hdrExplanation ?? 'Direct Play'},
+                'audio_decision': {'summary': _prepared?.audioSummary ?? 'Auto'},
+              },
+            };
           });
         }
       } catch (_) {}
@@ -178,23 +279,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _togglePause() async {
-    await widget.appState.core.invoke('player_toggle_pause');
-    setState(() => _paused = !_paused);
+    await _player.playOrPause();
   }
 
   Future<void> _seekTo(double secs) async {
     final target = secs.clamp(0.0, _durationSecs > 0 ? _durationSecs : 86400.0);
-    await widget.appState.core.invoke('player_seek', {'seconds': target, 'relative': false});
+    await _player.seek(Duration(milliseconds: (target * 1000).round()));
     setState(() => _positionSecs = target);
   }
 
   Future<void> _seekBy(double delta) async {
-    await widget.appState.core.invoke('player_seek', {'seconds': delta, 'relative': true});
+    await _seekTo(_positionSecs + delta);
   }
 
   Future<void> _setSpeed(double s) async {
-    await widget.appState.core.invoke('player_set_speed', {'speed': s});
-    setState(() => _speed = s);
+    final clamped = s.clamp(0.25, 4.0);
+    await _player.setRate(clamped);
+    setState(() => _speed = clamped);
   }
 
   void _handleKey(KeyEvent ev) {
@@ -208,16 +309,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _seekBy(-10);
     } else if (key == LogicalKeyboardKey.arrowUp) {
       _volume = (_volume + 5).clamp(0, 150);
-      widget.appState.core.invoke('player_set_volume', {'volume': _volume});
+      _player.setVolume(_volume);
     } else if (key == LogicalKeyboardKey.arrowDown) {
       _volume = (_volume - 5).clamp(0, 150);
-      widget.appState.core.invoke('player_set_volume', {'volume': _volume});
+      _player.setVolume(_volume);
     } else if (key == LogicalKeyboardKey.keyI) {
       setState(() => _showStats = !_showStats);
     } else if (key == LogicalKeyboardKey.bracketRight) {
-      _setSpeed((_speed + 0.25).clamp(0.5, 4.0));
+      _setSpeed(_speed + 0.25);
     } else if (key == LogicalKeyboardKey.bracketLeft) {
-      _setSpeed((_speed - 0.25).clamp(0.5, 4.0));
+      _setSpeed(_speed - 0.25);
     }
   }
 
@@ -232,32 +333,46 @@ class _PlayerScreenState extends State<PlayerScreen> {
         body: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: () => setState(() => _controlsVisible = !_controlsVisible),
+          onDoubleTap: _togglePause,
           onLongPressStart: (_) => _setSpeed(2.0),
           onLongPressEnd: (_) => _setSpeed(1.0),
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // Native hardware video surface backdrop (libmpv/libplacebo or AVSampleBufferDisplayLayer / MediaCodec)
-              Center(
-                child: _loading
-                    ? const Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 14),
-                          Text('正在建立 DirectPlay 高速缓存与杜比视界/全景声管线...'),
-                        ],
-                      )
-                    : _error != null
-                        ? Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Text(_error!, style: const TextStyle(color: Colors.redAccent)),
-                          )
-                        : const SizedBox.expand(),
+              // REAL hardware-accelerated GPU Video Surface (libmpv + Vulkan/Metal/D3D11/MediaCodec)
+              Video(
+                controller: _videoController,
+                controls: NoVideoControls,
+                fill: Colors.black,
               ),
+              if (_loading)
+                const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 14),
+                      Text('正在建立 Rust DirectPlay 缓存与杜比视界/全景声管线...'),
+                    ],
+                  ),
+                ),
+              if (_error != null)
+                Positioned(
+                  bottom: 110,
+                  left: 20,
+                  right: 20,
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(_error!, style: const TextStyle(color: Colors.white)),
+                  ),
+                ),
               if (_showStats)
                 Positioned(
-                  top: 72,
+                  top: 76,
                   left: 20,
                   child: NerdStatsHud(stats: _stats),
                 ),
@@ -411,9 +526,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   void _openHdrSheet() {
     const algos = {
-      'bt2446a': 'BT.2446a（推荐：自然色彩与高光保留）',
+      'bt.2446a': 'BT.2446a（推荐：自然色彩与高光保留）',
       'spline': 'Spline（libplacebo 曲线动态映射）',
-      'st2094_40': 'ST.2094-40（HDR10+/杜比视界动态元）',
+      'st2094-40': 'ST.2094-40（HDR10+/杜比视界动态元）',
       'reinhard': 'Reinhard（高亮温和压缩）',
       'hable': 'Hable（电影感曲线）',
       'clip': 'Clip（原生 HDR 直通无压缩）',
@@ -442,7 +557,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 onTap: () async {
                   Navigator.pop(ctx);
                   setState(() => _toneMapping = e.key);
-                  await widget.appState.core.invoke('player_set_tone_mapping', {'algorithm': e.key});
+                  await _applyMpvProperty('tone-mapping', e.key);
                 },
               );
             }),
@@ -460,6 +575,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
       'headphone_binaural': '耳机双耳空间化（HRTF / BS2B）',
       'pcm_stereo': '发烧级 32-bit Float 立体声 PCM',
     };
+    final audioTracks = _player.state.tracks.audio
+        .where((t) => t.id != 'auto' && t.id != 'no')
+        .toList();
+
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -468,6 +587,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
             shrinkWrap: true,
             padding: const EdgeInsets.all(16),
             children: [
+              if (audioTracks.isNotEmpty) ...[
+                const Text('音轨切换', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+                ...audioTracks.map((t) {
+                  final active = _player.state.track.audio.id == t.id;
+                  return ListTile(
+                    leading: Icon(active ? Icons.volume_up_rounded : Icons.audiotrack_rounded,
+                        color: active ? PrismTheme.atmosCyan : null),
+                    title: Text(t.title ?? t.language ?? '音轨 #${t.id}'),
+                    subtitle: Text([t.codec, t.language, t.channels].whereType<String>().join(' • ')),
+                    onTap: () async {
+                      Navigator.pop(ctx);
+                      await _player.setAudioTrack(t);
+                    },
+                  );
+                }),
+                const Divider(),
+              ],
               const Text('杜比全景声 & 音频输出', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
               ...modes.entries.map((e) {
                 final selected = e.key == _audioMode;
@@ -480,11 +616,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   onTap: () async {
                     setModal(() => _audioMode = e.key);
                     setState(() => _audioMode = e.key);
-                    await widget.appState.core.invoke('player_set_audio_mode', {
-                      'mode': e.key,
-                      'night_mode': _nightMode,
-                      'dialogue_boost': _dialogueBoost,
-                    });
+                    await _applyAudioMode();
                   },
                 );
               }),
@@ -494,11 +626,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 onChanged: (v) async {
                   setModal(() => _nightMode = v);
                   setState(() => _nightMode = v);
-                  await widget.appState.core.invoke('player_set_audio_mode', {
-                    'mode': _audioMode,
-                    'night_mode': _nightMode,
-                    'dialogue_boost': _dialogueBoost,
-                  });
+                  await _applyAudioMode();
                 },
               ),
               SwitchListTile(
@@ -507,11 +635,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 onChanged: (v) async {
                   setModal(() => _dialogueBoost = v);
                   setState(() => _dialogueBoost = v);
-                  await widget.appState.core.invoke('player_set_audio_mode', {
-                    'mode': _audioMode,
-                    'night_mode': _nightMode,
-                    'dialogue_boost': _dialogueBoost,
-                  });
+                  await _applyAudioMode();
                 },
               ),
             ],
@@ -521,38 +645,99 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
+  Future<void> _applyAudioMode() async {
+    if (_audioMode == 'passthrough_bitstream') {
+      await _applyMpvProperty('audio-spdif', 'ac3,eac3,dts,dts-hd,truehd');
+      await _applyMpvProperty('af', '');
+    } else {
+      await _applyMpvProperty('audio-spdif', '');
+      final filters = <String>[];
+      if (_audioMode == 'headphone_binaural') {
+        filters.add('lavfi=[bs2b=fcut=700:feed=45]');
+      }
+      if (_dialogueBoost) {
+        filters.add('lavfi=[equalizer=f=2200:t=q:w=1.2:g=4.0]');
+      }
+      if (_nightMode) {
+        filters.add('lavfi=[acompressor=threshold=-20dB:ratio=4:attack=10:release=150:makeup=4dB]');
+      }
+      await _applyMpvProperty('af', filters.join(','));
+    }
+  }
+
   void _openSubtitleSheet() {
-    final subs = _prepared?.externalSubtitles ?? const [];
+    final extSubs = _prepared?.externalSubtitles ?? const [];
+    final embeddedSubs = _player.state.tracks.subtitle
+        .where((t) => t.id != 'auto' && t.id != 'no')
+        .toList();
+
     showModalBottomSheet<void>(
       context: context,
-      builder: (ctx) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.all(16),
-          children: [
-            const Text('字幕轨（内封 ASS/PGS + embygo 外挂侧车）', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
-            ListTile(
-              leading: const Icon(Icons.subtitles_off_rounded),
-              title: const Text('关闭字幕'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                await widget.appState.core.invoke('player_set_subtitle_track', {'track_id': -1});
-              },
-            ),
-            ...subs.map((s) => ListTile(
-                  leading: const Icon(Icons.closed_caption_rounded),
-                  title: Text(s['title']?.toString() ?? '外挂字幕'),
-                  subtitle: Text('${s['codec'] ?? 'srt'} • ${s['language'] ?? 'unknown'}'),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    await widget.appState.core.invoke('player_add_subtitle', {
-                      'url': s['url'],
-                      'title': s['title'],
-                      'language': s['language'],
-                    });
-                  },
-                )),
-          ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) => SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.all(16),
+            children: [
+              const Text('字幕轨（内封 ASS/PGS + embygo 外挂侧车）', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+              ListTile(
+                leading: const Icon(Icons.subtitles_off_rounded),
+                title: const Text('关闭字幕'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await _player.setSubtitleTrack(SubtitleTrack.no());
+                },
+              ),
+              ...embeddedSubs.map((t) => ListTile(
+                    leading: const Icon(Icons.subtitles_rounded),
+                    title: Text(t.title ?? t.language ?? '内封字幕 #${t.id}'),
+                    subtitle: Text([t.codec, t.language].whereType<String>().join(' • ')),
+                    onTap: () async {
+                      Navigator.pop(ctx);
+                      await _player.setSubtitleTrack(t);
+                    },
+                  )),
+              ...extSubs.map((s) => ListTile(
+                    leading: const Icon(Icons.closed_caption_rounded, color: PrismTheme.embygoGreen),
+                    title: Text(s['title']?.toString() ?? '外挂字幕'),
+                    subtitle: Text('${s['codec'] ?? 'srt'} • ${s['language'] ?? 'external'}'),
+                    onTap: () async {
+                      Navigator.pop(ctx);
+                      if (s['url'] != null) {
+                        await _player.setSubtitleTrack(
+                          SubtitleTrack.uri(
+                            s['url'].toString(),
+                            title: s['title']?.toString(),
+                            language: s['language']?.toString(),
+                          ),
+                        );
+                      }
+                    },
+                  )),
+              const Divider(),
+              Row(
+                children: [
+                  const Text('字幕时间偏移：'),
+                  Text('${_subDelaySecs.toStringAsFixed(1)}s', style: const TextStyle(fontFamily: 'monospace')),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.remove_circle_outline),
+                    onPressed: () async {
+                      setModal(() => _subDelaySecs -= 0.2);
+                      await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
+                    },
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.add_circle_outline),
+                    onPressed: () async {
+                      setModal(() => _subDelaySecs += 0.2);
+                      await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

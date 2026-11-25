@@ -304,6 +304,7 @@ class PreparedPlaybackModel {
     required this.hdrExplanation,
     required this.audioSummary,
     required this.backend,
+    required this.mpvOptions,
     required this.externalSubtitles,
     required this.allSources,
     this.inspectedJson,
@@ -319,6 +320,7 @@ class PreparedPlaybackModel {
   final String hdrExplanation;
   final String audioSummary;
   final String backend;
+  final Map<String, String> mpvOptions;
   final List<Map<String, dynamic>> externalSubtitles;
   final List<MediaSourceModel> allSources;
   final Map<String, dynamic>? inspectedJson;
@@ -329,6 +331,14 @@ class PreparedPlaybackModel {
     final hdr = (j['hdr_decision'] as Map<String, dynamic>?) ?? const {};
     final audio = (j['audio_decision'] as Map<String, dynamic>?) ?? const {};
     final inspected = j['inspected'] as Map<String, dynamic>?;
+    final mpvOpts = <String, String>{};
+    if (j['mpv_options'] is List) {
+      for (final pair in (j['mpv_options'] as List)) {
+        if (pair is List && pair.length >= 2) {
+          mpvOpts[pair[0].toString()] = pair[1].toString();
+        }
+      }
+    }
     String? dvLabel;
     if (inspected != null && inspected['dolby_vision'] is Map<String, dynamic>) {
       final dv = inspected['dolby_vision'] as Map<String, dynamic>;
@@ -351,6 +361,7 @@ class PreparedPlaybackModel {
       hdrExplanation: (hdr['explanation'] ?? 'Direct Play').toString(),
       audioSummary: (audio['summary'] ?? 'Auto Audio').toString(),
       backend: (hdr['backend'] ?? 'libmpv_gpu_next').toString(),
+      mpvOptions: mpvOpts,
       externalSubtitles: ((j['external_subtitles'] as List<dynamic>?) ?? const [])
           .whereType<Map<String, dynamic>>()
           .toList(),

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'core/ffi/prism_bridge.dart';
 import 'core/theme/prism_theme.dart';
@@ -6,9 +8,19 @@ import 'screens/server_connect_screen.dart';
 import 'screens/shell_screen.dart';
 import 'state/app_state.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final core = PrismFfiBridge.open();
+  MediaKit.ensureInitialized();
+
+  String? dbPath;
+  try {
+    final dir = await getApplicationSupportDirectory();
+    dbPath = '${dir.path}/prism_player.db';
+  } catch (_) {
+    dbPath = null;
+  }
+
+  final core = PrismFfiBridge.open(dbPath: dbPath);
   runApp(PrismPlayerApp(core: core));
 }
 

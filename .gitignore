@@ -19,6 +19,8 @@ app/macos/Flutter/ephemeral/
 app/windows/flutter/ephemeral/
 
 # Native build artifacts
+/dist/
+app/android/app/src/main/jniLibs/
 *.so
 *.dylib
 *.dll

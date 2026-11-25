@@ -37,6 +37,7 @@ pub struct PreparedPlayback {
     pub inspected: Option<InspectedMedia>,
     pub hdr_decision: DolbyVisionDecision,
     pub audio_decision: AudioRoutingDecision,
+    pub mpv_options: Vec<(String, String)>,
     pub external_subtitles: Vec<ExternalSubtitle>,
     pub all_sources: Vec<MediaSourceInfo>,
 }
@@ -643,6 +644,7 @@ impl PrismRuntime {
                     cfg.night_mode,
                     cfg.dialogue_boost,
                 );
+                let mpv_options = cfg.build_mpv_options(&hdr_fmt, spatial.as_ref());
 
                 let external_subtitles: Vec<ExternalSubtitle> = chosen
                     .media_streams
@@ -694,6 +696,7 @@ impl PrismRuntime {
                     inspected,
                     hdr_decision,
                     audio_decision,
+                    mpv_options,
                     external_subtitles,
                     all_sources: pb.media_sources,
                 };

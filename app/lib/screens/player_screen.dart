@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -34,6 +36,7 @@ class PlayerScreen extends StatefulWidget {
     this.initialAudioStreamIndex,
     this.initialSubtitleStreamIndex,
     this.localFilePath,
+    this.localPlaylistPaths,
   });
 
   final MediaItemModel item;
@@ -44,6 +47,7 @@ class PlayerScreen extends StatefulWidget {
   final int? initialAudioStreamIndex;
   final int? initialSubtitleStreamIndex;
   final String? localFilePath;
+  final List<String>? localPlaylistPaths;
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -55,6 +59,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   late MediaItemModel _currentItem;
   late List<MediaSegmentModel> _segments;
+  String? _activeLocalPath;
+  List<MediaItemModel> _localEpisodes = const [];
+  final Map<String, String> _localPathById = {};
+  final List<({String title, String path})> _loadedLocalSubtitles = [];
 
   PreparedPlaybackModel? _prepared;
   Map<String, dynamic> _stats = {};
@@ -66,6 +74,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _showStats = false;
   bool _showEpisodeDrawer = false;
   bool _showRemaining = false;
+  bool _isFullscreen = false;
+  bool _enteredFullscreenHere = false;
+  bool _alwaysOnTop = false;
+  bool _screenLocked = false;
+  bool _lockIconVisible = false;
+  bool _loopFile = false;
   bool _paused = false;
   bool _muted = false;
   double _preMuteVolume = 100.0;
@@ -77,6 +91,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _isSpeedBoost = false;
   double _volume = 100.0;
   double _brightness = 1.0;
+
+  // Color equalizer & audio delay & A-B loop & chapters & sleep timer
+  int _eqBrightness = 0;
+  int _eqContrast = 0;
+  int _eqSaturation = 0;
+  int _eqGamma = 0;
+  double _audioDelaySecs = 0.0;
+  double? _loopPointA;
+  double? _loopPointB;
+  List<({String title, double timeSecs})> _chapters = const [];
+  bool _sleepAfterEpisode = false;
+  int _sleepRemainingSecs = 0;
+  Timer? _sleepTimer;
+  Timer? _lockIconTimer;
 
   // Live synced with preferences
   bool _hwDecodeEnabled = true;
@@ -128,7 +156,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Timer? _ticketRefreshTimer;
   final _focusNode = FocusNode();
 
-  List<MediaItemModel> get _episodes => widget.playlistEpisodes ?? const [];
+  List<MediaItemModel> get _episodes =>
+      _localEpisodes.isNotEmpty ? _localEpisodes : (widget.playlistEpisodes ?? const []);
 
   int get _currentEpisodeIndex => _episodes.indexWhere((e) => e.id == _currentItem.id);
 
@@ -188,6 +217,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final p = widget.appState.prefs;
     _currentItem = widget.item;
     _segments = widget.segments ?? const [];
+    _activeLocalPath = widget.localFilePath;
+    if (widget.localPlaylistPaths != null && widget.localPlaylistPaths!.isNotEmpty) {
+      _buildLocalPlaylist(widget.localPlaylistPaths!);
+    } else if (_activeLocalPath != null && _activeLocalPath!.isNotEmpty) {
+      final resolved = NativePlaybackChannel.resolveLocalPlaylist(_activeLocalPath!);
+      if (resolved.files.length > 1) {
+        _buildLocalPlaylist(resolved.files);
+      }
+    }
     _speed = p.defaultSpeed;
     _aspectMode = p.defaultAspect;
     _subScale = p.subtitleFontScale;
@@ -195,6 +233,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _subDelaySecs = p.subtitleDelaySecs;
     _subFontFamily = p.subtitleFontFamily;
     _forceAssOverride = p.forceAssOverride;
+    _audioDelaySecs = p.audioDelayMs / 1000.0;
     _showRemaining = p.showRemainingTime;
     _danmakuEnabled = p.danmakuEnabled;
     _danmakuOpacity = p.danmakuOpacity;
@@ -213,6 +252,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _dialogueBoost = widget.appState.settings['dialogue_boost'] == true;
 
     NativePlaybackChannel.setKeepScreenOn(true);
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    }
+    if (_isDesktop) {
+      NativePlaybackChannel.ensureWindowListener();
+      NativePlaybackChannel.fullscreenNotifier.addListener(_onNativeFullscreenChanged);
+      NativePlaybackChannel.droppedFilesNotifier.addListener(_onFilesDropped);
+      unawaited(NativePlaybackChannel.isFullscreen().then((fs) {
+        if (mounted) setState(() => _isFullscreen = fs);
+      }));
+    }
 
     _player = Player(
       configuration: PlayerConfiguration(
@@ -242,6 +292,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
         final secs = pos.inMilliseconds / 1000.0;
         setState(() => _positionSecs = secs);
         _checkAutoSkipSegments(secs);
+        if (_loopPointA != null && _loopPointB != null && secs >= _loopPointB!) {
+          _seekTo(_loopPointA!);
+        }
       }
     }));
     _subs.add(_player.stream.buffer.listen((buf) {
@@ -252,10 +305,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _subs.add(_player.stream.duration.listen((dur) {
       if (mounted && dur.inMilliseconds > 0) {
         setState(() => _durationSecs = dur.inMilliseconds / 1000.0);
+        if (_chapters.isEmpty) {
+          unawaited(_loadChapters());
+        }
       }
     }));
     _subs.add(_player.stream.completed.listen((done) {
-      if (done && !_completedTriggered && widget.appState.prefs.autoPlayNext && _nextEpisode != null) {
+      if (!done) return;
+      if (_sleepAfterEpisode) {
+        _sleepAfterEpisode = false;
+        if (mounted) Navigator.of(context).pop();
+        return;
+      }
+      if (!_completedTriggered && !_loopFile && widget.appState.prefs.autoPlayNext && _nextEpisode != null) {
         _completedTriggered = true;
         _switchEpisode(_nextEpisode!);
       }
@@ -312,6 +374,345 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
+  bool get _isDesktop =>
+      !kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux);
+
+  void _buildLocalPlaylist(List<String> files) {
+    _localPathById.clear();
+    final eps = <MediaItemModel>[];
+    for (var i = 0; i < files.length; i++) {
+      final path = files[i];
+      final id = 'local_$i';
+      final fileName = path.split(Platform.pathSeparator).last;
+      final dot = fileName.lastIndexOf('.');
+      final stem = dot > 0 ? fileName.substring(0, dot) : fileName;
+      _localPathById[id] = path;
+      eps.add(MediaItemModel(
+        id: id,
+        name: stem,
+        type: 'Video',
+        indexNumber: i + 1,
+      ));
+      if (path == _activeLocalPath) {
+        _currentItem = eps.last;
+      }
+    }
+    _localEpisodes = eps;
+  }
+
+  void _onFilesDropped() {
+    if (!mounted) return;
+    final paths = NativePlaybackChannel.droppedFilesNotifier.value;
+    if (paths.isEmpty) return;
+    // Clear immediately so ShellScreen doesn't re-handle the same drop
+    NativePlaybackChannel.droppedFilesNotifier.value = const [];
+
+    // 1. Check for subtitle files first -> load live without interrupting playback!
+    final subPaths = paths.where(NativePlaybackChannel.isSubtitleFile).toList();
+    if (subPaths.isNotEmpty) {
+      for (final sp in subPaths) {
+        unawaited(_loadExternalSubtitleFile(sp));
+      }
+      return;
+    }
+
+    // 2. Otherwise check for video files or directory -> switch local playback!
+    for (final p in paths) {
+      final resolved = NativePlaybackChannel.resolveLocalPlaylist(p);
+      if (resolved.files.isNotEmpty) {
+        setState(() {
+          _activeLocalPath = resolved.files[resolved.startIndex];
+          _buildLocalPlaylist(resolved.files);
+          _segments = const [];
+          _chapters = const [];
+          _danmakuComments = const [];
+        });
+        unawaited(_startPlayback(null));
+        return;
+      }
+    }
+  }
+
+  Future<void> _loadExternalSubtitleFile(String path) async {
+    final trimmed = path.trim();
+    if (trimmed.isEmpty) return;
+    final fileName = trimmed.split(Platform.pathSeparator).last;
+    try {
+      await _player.setSubtitleTrack(
+        SubtitleTrack.uri(Uri.file(trimmed).toString(), title: fileName),
+      );
+      if (mounted) {
+        setState(() {
+          _loadedLocalSubtitles.removeWhere((e) => e.path == trimmed);
+          _loadedLocalSubtitles.add((title: fileName, path: trimmed));
+        });
+        _flashGestureHud('seek_feedback', text: '已加载字幕：$fileName');
+      }
+    } catch (_) {
+      _flashGestureHud('seek_feedback', text: '字幕加载失败');
+    }
+  }
+
+  Future<void> _pickAndLoadLocalSubtitle() async {
+    final picked = await NativePlaybackChannel.pickFiles(
+      extensions: NativePlaybackChannel.subtitleExtensions.toList(),
+      title: '选择外挂字幕文件 (.srt / .ass / .vtt)',
+    );
+    if (picked.isNotEmpty) {
+      await _loadExternalSubtitleFile(picked.first);
+      return;
+    }
+    if (!mounted) return;
+    // Fallback manual path input when native dialog isn't available or cancelled on mobile
+    if (!_isDesktop) {
+      final ctrl = TextEditingController();
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('加载本地外挂字幕'),
+          content: TextField(
+            controller: ctrl,
+            autofocus: true,
+            decoration: const InputDecoration(hintText: '/path/to/subtitle.ass'),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('加载')),
+          ],
+        ),
+      );
+      final p = ctrl.text.trim();
+      ctrl.dispose();
+      if (ok == true && p.isNotEmpty) {
+        await _loadExternalSubtitleFile(p);
+      }
+    }
+  }
+
+  Future<void> _openContextMenu(Offset globalPos) async {
+    if (_screenLocked) return;
+    _hideControlsTimer?.cancel();
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) return;
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(globalPos.dx, globalPos.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      color: const Color(0xF0171820),
+      elevation: 18,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Color(0x2AFFFFFF), width: 0.8),
+      ),
+      items: [
+        _ctxItem('play_pause', _paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+            _paused ? '继续播放' : '暂停播放', 'Space'),
+        if (_isDesktop)
+          _ctxItem('fullscreen',
+              _isFullscreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
+              _isFullscreen ? '退出全屏' : '进入全屏', 'F'),
+        if (_isDesktop)
+          _ctxItem('aot', _alwaysOnTop ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+              _alwaysOnTop ? '取消窗口置顶' : '窗口置顶', 'T'),
+        const PopupMenuDivider(height: 8),
+        _ctxItem('speed', Icons.speed_rounded,
+            '播放倍速 (${_speed.toStringAsFixed(_speed == _speed.roundToDouble() ? 1 : 2)}×)', '[ / ]'),
+        _ctxItem('aspect', Icons.aspect_ratio_rounded, '画面比例 / 旋转 / 缩放', 'R'),
+        _ctxItem('audio', Icons.audiotrack_rounded, '音轨与音频输出', ''),
+        _ctxItem('subtitle', Icons.subtitles_outlined, '字幕轨道与样式', ''),
+        _ctxItem('load_sub', Icons.upload_file_rounded, '加载本地外挂字幕…', ''),
+        _ctxItem('danmaku', Icons.comment_outlined, _danmakuEnabled ? '弹幕设置（已开）' : '弹幕设置（已关）', 'D'),
+        if (_chapters.isNotEmpty)
+          _ctxItem('chapters', Icons.format_list_bulleted_rounded, '章节列表 (${_chapters.length})', 'C'),
+        const PopupMenuDivider(height: 8),
+        _ctxItem('screenshot', Icons.camera_alt_outlined, '高清含字幕截图', 'S'),
+        _ctxItem('stats', Icons.info_outline_rounded, _showStats ? '隐藏硬件信息 HUD' : '显示硬件信息 HUD', 'I'),
+        _ctxItem('tools', Icons.tune_rounded, '定时关闭 / A-B 复读 / 色彩均衡器', ''),
+        if (_isDesktop) _ctxItem('shortcuts', Icons.keyboard_rounded, '快捷键一览', 'H'),
+      ],
+    );
+    _scheduleHideControls();
+    if (!mounted || selected == null) return;
+    switch (selected) {
+      case 'play_pause':
+        await _togglePause();
+        break;
+      case 'fullscreen':
+        await _toggleFullscreen();
+        break;
+      case 'aot':
+        await _toggleAlwaysOnTop();
+        break;
+      case 'speed':
+        _openSpeedSheet();
+        break;
+      case 'aspect':
+        _openAspectSheet();
+        break;
+      case 'audio':
+        _openAudioSheet();
+        break;
+      case 'subtitle':
+        _openSubtitleSheet();
+        break;
+      case 'load_sub':
+        await _pickAndLoadLocalSubtitle();
+        break;
+      case 'danmaku':
+        _openDanmakuSheet();
+        break;
+      case 'chapters':
+        _openChaptersSheet();
+        break;
+      case 'screenshot':
+        await _takeScreenshot();
+        break;
+      case 'stats':
+        setState(() => _showStats = !_showStats);
+        break;
+      case 'tools':
+        _openMoreToolsSheet();
+        break;
+      case 'shortcuts':
+        _openShortcutsDialog();
+        break;
+    }
+  }
+
+  PopupMenuItem<String> _ctxItem(String value, IconData icon, String label, String shortcut) {
+    return PopupMenuItem<String>(
+      value: value,
+      height: 36,
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: const Color(0xFFD0D4DE)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
+          ),
+          if (shortcut.isNotEmpty) ...[
+            const SizedBox(width: 12),
+            Text(
+              shortcut,
+              style: const TextStyle(color: VedroTheme.fg3, fontSize: 11, fontFamily: 'monospace'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _onNativeFullscreenChanged() {
+    if (!mounted) return;
+    final fs = NativePlaybackChannel.fullscreenNotifier.value;
+    if (_isFullscreen != fs) {
+      setState(() => _isFullscreen = fs);
+    }
+  }
+
+  Future<void> _toggleFullscreen() async {
+    if (!_isDesktop) return;
+    final next = await NativePlaybackChannel.toggleFullscreen();
+    if (!mounted) return;
+    setState(() {
+      _isFullscreen = next;
+      if (next) _enteredFullscreenHere = true;
+    });
+    _flashGestureHud('seek_feedback', text: next ? '已进入全屏 (F / Esc)' : '已退出全屏');
+  }
+
+  Future<void> _toggleAlwaysOnTop() async {
+    if (!_isDesktop) return;
+    final next = await NativePlaybackChannel.setAlwaysOnTop(!_alwaysOnTop);
+    if (!mounted) return;
+    setState(() => _alwaysOnTop = next);
+    _flashGestureHud('seek_feedback', text: next ? '窗口已置顶 (T)' : '已取消置顶');
+  }
+
+  void _toggleScreenLock() {
+    final next = !_screenLocked;
+    _lockIconTimer?.cancel();
+    setState(() {
+      _screenLocked = next;
+      _controlsVisible = !next;
+      _lockIconVisible = next;
+    });
+    if (next) {
+      _lockIconTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted) setState(() => _lockIconVisible = false);
+      });
+    } else {
+      _scheduleHideControls();
+    }
+  }
+
+  void _revealLockIconBriefly() {
+    _lockIconTimer?.cancel();
+    setState(() => _lockIconVisible = true);
+    _lockIconTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _lockIconVisible = false);
+    });
+  }
+
+  Future<void> _loadChapters() async {
+    final raw = await _readMpvProperty('chapter-list');
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final list = jsonDecode(raw);
+      if (list is List) {
+        final parsed = <({String title, double timeSecs})>[];
+        for (var i = 0; i < list.length; i++) {
+          final item = list[i];
+          if (item is Map) {
+            final t = (item['time'] as num?)?.toDouble() ?? 0.0;
+            final title = (item['title']?.toString().trim() ?? '');
+            parsed.add((title: title.isEmpty ? '章节 ${i + 1}' : title, timeSecs: t));
+          }
+        }
+        if (mounted && parsed.isNotEmpty) {
+          setState(() => _chapters = parsed);
+        }
+      }
+    } catch (_) {}
+  }
+
+  void _setSleepTimer({int minutes = 0, bool afterEpisode = false}) {
+    _sleepTimer?.cancel();
+    setState(() {
+      _sleepAfterEpisode = afterEpisode;
+      _sleepRemainingSecs = minutes * 60;
+    });
+    if (minutes > 0) {
+      _sleepTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+        if (!mounted) {
+          t.cancel();
+          return;
+        }
+        if (_sleepRemainingSecs <= 1) {
+          t.cancel();
+          setState(() => _sleepRemainingSecs = 0);
+          _player.pause();
+          Navigator.of(context).pop();
+        } else {
+          setState(() => _sleepRemainingSecs -= 1);
+        }
+      });
+      _flashGestureHud('seek_feedback', text: '定时关闭：$minutes 分钟后');
+    } else if (afterEpisode) {
+      _flashGestureHud('seek_feedback', text: '定时关闭：播完本集后');
+    } else {
+      _flashGestureHud('seek_feedback', text: '已关闭定时休眠');
+    }
+  }
+
+  Future<void> _stepFrame(bool forward) async {
+    if (!_paused) await _player.pause();
+    await _seekBy(forward ? 0.042 : -0.042);
+    _flashGestureHud('seek_feedback', text: forward ? '下一帧 (+1f)' : '上一帧 (-1f)');
+  }
+
   @override
   void dispose() {
     for (final s in _subs) {
@@ -322,11 +723,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _statsTimer?.cancel();
     _progressTimer?.cancel();
     _ticketRefreshTimer?.cancel();
+    _sleepTimer?.cancel();
+    _lockIconTimer?.cancel();
     _focusNode.dispose();
     if (widget.appState.prefs.rememberBrightness) {
       unawaited(widget.appState.updatePrefs(
         widget.appState.prefs.copyWith(savedBrightness: _brightness),
       ));
+    }
+    if (_isDesktop) {
+      NativePlaybackChannel.fullscreenNotifier.removeListener(_onNativeFullscreenChanged);
+      NativePlaybackChannel.droppedFilesNotifier.removeListener(_onFilesDropped);
+    }
+    if (_enteredFullscreenHere && _isFullscreen) {
+      unawaited(NativePlaybackChannel.setFullscreen(false));
+    }
+    if (_alwaysOnTop) {
+      unawaited(NativePlaybackChannel.setAlwaysOnTop(false));
+    }
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     NativePlaybackChannel.setKeepScreenOn(false);
     _reportStoppedAndCleanup();
@@ -386,9 +802,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _completedTriggered = false;
     _customIntroSkipped = false;
     _customOutroSkipped = false;
+    final localNext = _localPathById[ep.id];
     setState(() {
       _currentItem = ep;
+      if (localNext != null) _activeLocalPath = localNext;
       _segments = const [];
+      _chapters = const [];
       _showEpisodeDrawer = false;
       _positionSecs = 0;
       _bufferedSecs = 0;
@@ -397,19 +816,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _danmakuMatchTitle = null;
       _danmakuError = null;
     });
-    unawaited(() async {
-      try {
-        final res = await widget.appState.core.invoke('get_item', {'item_id': ep.id})
-            as Map<String, dynamic>;
-        final segs = ((res['segments'] as List<dynamic>?) ?? const [])
-            .whereType<Map<String, dynamic>>()
-            .map(MediaSegmentModel.fromJson)
-            .toList();
-        if (mounted && _currentItem.id == ep.id) {
-          setState(() => _segments = segs);
-        }
-      } catch (_) {}
-    }());
+    if (localNext == null) {
+      unawaited(() async {
+        try {
+          final res = await widget.appState.core.invoke('get_item', {'item_id': ep.id})
+              as Map<String, dynamic>;
+          final segs = ((res['segments'] as List<dynamic>?) ?? const [])
+              .whereType<Map<String, dynamic>>()
+              .map(MediaSegmentModel.fromJson)
+              .toList();
+          if (mounted && _currentItem.id == ep.id) {
+            setState(() => _segments = segs);
+          }
+        } catch (_) {}
+      }());
+    }
     await _startPlayback(null);
     if (_danmakuEnabled) {
       unawaited(_loadDanmaku());
@@ -584,10 +1005,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
     try {
       final p = widget.appState.prefs;
 
-      // Support playing local offline downloaded file directly!
-      if (widget.localFilePath != null && widget.localFilePath!.isNotEmpty) {
+      // Support playing local offline downloaded file or dropped local folder directly!
+      if (_activeLocalPath != null && _activeLocalPath!.isNotEmpty) {
         await _applyInitialPreferencesToMpv();
-        await _player.open(Media(widget.localFilePath!), play: true);
+        await _player.open(Media(_activeLocalPath!), play: true);
+        if (p.autoLoadExternalSubs) {
+          final sidecars = NativePlaybackChannel.findSidecarSubtitles(_activeLocalPath!);
+          if (sidecars.isNotEmpty) {
+            final subPath = sidecars.first;
+            final title = subPath.split(Platform.pathSeparator).last;
+            await _player.setSubtitleTrack(
+              SubtitleTrack.uri(Uri.file(subPath).toString(), title: title),
+            );
+          }
+        }
         if (mounted) {
           setState(() {
             _loading = false;
@@ -595,6 +1026,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           });
           _scheduleHideControls();
         }
+        _startTimers();
         return;
       }
 
@@ -707,7 +1139,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     _progressTimer?.cancel();
     _progressTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
-      if (widget.appState.prefs.incognitoMode || widget.localFilePath != null) return;
+      if (widget.appState.prefs.incognitoMode || _activeLocalPath != null) return;
       try {
         await widget.appState.core.invoke('report_playback_progress', {
           'position_ticks': (_positionSecs * 10000000).round(),
@@ -729,7 +1161,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _reportStoppedAndCleanup() async {
-    if (widget.localFilePath != null) return;
+    if (_activeLocalPath != null) return;
     try {
       if (!widget.appState.prefs.incognitoMode) {
         await widget.appState.core.invoke('report_playback_stopped', {
@@ -841,8 +1273,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _handleDoubleTap(double width) {
+    if (_screenLocked) return;
     final step = widget.appState.prefs.seekStepSecs.toDouble();
     final ratio = width > 0 ? _lastTapDownPos.dx / width : 0.5;
+    if (_isDesktop) {
+      // Classic IINA / Infuse / PotPlayer desktop behavior: double-click toggles native Fullscreen!
+      _toggleFullscreen();
+      return;
+    }
     if (ratio < 0.35) {
       _seekBy(-step, showHud: true);
     } else if (ratio > 0.65) {
@@ -858,9 +1296,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final step = widget.appState.prefs.seekStepSecs.toDouble();
     if (key == LogicalKeyboardKey.space) {
       _togglePause();
+    } else if (key == LogicalKeyboardKey.keyF ||
+        key == LogicalKeyboardKey.f11 ||
+        key == LogicalKeyboardKey.enter) {
+      _toggleFullscreen();
+    } else if (key == LogicalKeyboardKey.keyT) {
+      _toggleAlwaysOnTop();
+    } else if (key == LogicalKeyboardKey.keyL) {
+      _toggleScreenLock();
+    } else if (key == LogicalKeyboardKey.keyC && _chapters.isNotEmpty) {
+      _openChaptersSheet();
+    } else if (key == LogicalKeyboardKey.keyH) {
+      _openShortcutsDialog();
+    } else if (key == LogicalKeyboardKey.period) {
+      _stepFrame(true);
+    } else if (key == LogicalKeyboardKey.comma) {
+      _stepFrame(false);
     } else if (key == LogicalKeyboardKey.escape) {
       if (_showEpisodeDrawer) {
         setState(() => _showEpisodeDrawer = false);
+      } else if (_isFullscreen) {
+        _toggleFullscreen();
       } else {
         _requestExit();
       }
@@ -930,11 +1386,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
           },
           child: MouseRegion(
             cursor: hideCursor ? SystemMouseCursors.none : SystemMouseCursors.basic,
-            onHover: (_) => _revealControls(),
+            onHover: (_) {
+              if (_screenLocked) {
+                _revealLockIconBriefly();
+              } else {
+                _revealControls();
+              }
+            },
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
+              onSecondaryTapDown: (d) => _openContextMenu(d.globalPosition),
               onTapDown: (d) => _lastTapDownPos = d.localPosition,
               onTap: () {
+                if (_screenLocked) {
+                  _revealLockIconBriefly();
+                  return;
+                }
                 if (_showEpisodeDrawer) {
                   setState(() => _showEpisodeDrawer = false);
                   _scheduleHideControls();
@@ -949,17 +1416,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
               },
               onDoubleTap: () => _handleDoubleTap(size.width),
               onLongPressStart: (_) {
+                if (_screenLocked) return;
                 HapticFeedback.mediumImpact();
                 _preBoostSpeed = _speed;
                 setState(() => _isSpeedBoost = true);
                 _setSpeed(widget.appState.prefs.longPressSpeed);
               },
               onLongPressEnd: (_) {
+                if (_screenLocked) return;
                 setState(() => _isSpeedBoost = false);
                 _setSpeed(_preBoostSpeed);
               },
               onScaleStart: (d) {
-                if (_showEpisodeDrawer) return;
+                if (_showEpisodeDrawer || _screenLocked) return;
                 _scaleAxis = null;
                 _scaleAnchor = d.localFocalPoint;
                 _pinchBaseZoom = _videoZoom;
@@ -1192,11 +1661,39 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       child: NerdStatsHud(stats: _stats),
                     ),
 
+                  // Screen-lock minimal unlock button
+                  if (_screenLocked && _lockIconVisible)
+                    Positioned(
+                      left: 24,
+                      top: 0,
+                      bottom: 0,
+                      child: Center(
+                        child: PressableScale(
+                          onTap: _toggleScreenLock,
+                          child: GlassSurface(
+                            borderRadius: 22,
+                            blur: 24,
+                            color: const Color(0xC814151B),
+                            borderColor: const Color(0x38FFFFFF),
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.lock_open_rounded, size: 18, color: Colors.white),
+                                SizedBox(width: 6),
+                                Text('解锁屏幕', style: TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w600)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
                   // Auto-hiding IINA / Infuse frosted chrome
                   IgnorePointer(
-                    ignoring: !_controlsVisible || _showEpisodeDrawer,
+                    ignoring: !_controlsVisible || _showEpisodeDrawer || _screenLocked,
                     child: AnimatedOpacity(
-                      opacity: (_controlsVisible && !_showEpisodeDrawer) ? 1.0 : 0.0,
+                      opacity: (_controlsVisible && !_showEpisodeDrawer && !_screenLocked) ? 1.0 : 0.0,
                       duration: const Duration(milliseconds: 210),
                       curve: Curves.easeOutCubic,
                       child: Stack(
@@ -1217,7 +1714,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               },
                               child: Container(
                                 padding: EdgeInsets.fromLTRB(
-                                  isMac ? 82 : 20,
+                                  (isMac && !_isFullscreen) ? 82 : 20,
                                   topPad + 12,
                                   20,
                                   28,
@@ -1264,6 +1761,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                       ),
                                     ),
                                     const SizedBox(width: 12),
+                                    if (_sleepRemainingSecs > 0 || _sleepAfterEpisode) ...[
+                                      _DeckPillButton(
+                                        label: _sleepAfterEpisode
+                                            ? '本集后休眠'
+                                            : '休眠 ${_fmtTime(_sleepRemainingSecs.toDouble())}',
+                                        active: true,
+                                        onTap: _openMoreToolsSheet,
+                                      ),
+                                      const SizedBox(width: 6),
+                                    ],
                                     Tooltip(
                                       message: _hwDecodeEnabled ? '当前硬件解码，点击切至软解' : '当前软件解码，点击切至硬解',
                                       child: _DeckPillButton(
@@ -1273,6 +1780,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                       ),
                                     ),
                                     const SizedBox(width: 6),
+                                    if (_chapters.isNotEmpty) ...[
+                                      _CircleHudButton(
+                                        icon: Icons.format_list_bulleted_rounded,
+                                        tooltip: '章节列表 (C)',
+                                        onTap: _openChaptersSheet,
+                                      ),
+                                      const SizedBox(width: 6),
+                                    ],
                                     _CircleHudButton(
                                       icon: Icons.camera_alt_outlined,
                                       tooltip: '截图 (S)',
@@ -1299,6 +1814,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                       tooltip: '硬件信息 (I)',
                                       onTap: () => setState(() => _showStats = !_showStats),
                                     ),
+                                    if (_isDesktop) ...[
+                                      const SizedBox(width: 6),
+                                      _CircleHudButton(
+                                        icon: _alwaysOnTop ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                                        active: _alwaysOnTop,
+                                        tooltip: _alwaysOnTop ? '取消置顶 (T)' : '窗口置顶 (T)',
+                                        onTap: _toggleAlwaysOnTop,
+                                      ),
+                                    ],
                                     if (widget.appState.prefs.enablePip) ...[
                                       const SizedBox(width: 6),
                                       _CircleHudButton(
@@ -1307,6 +1831,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                         onTap: NativePlaybackChannel.enterPictureInPicture,
                                       ),
                                     ],
+                                    const SizedBox(width: 6),
+                                    _CircleHudButton(
+                                      icon: Icons.lock_outline_rounded,
+                                      tooltip: '锁屏防误触 (L)',
+                                      onTap: _toggleScreenLock,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    _CircleHudButton(
+                                      icon: Icons.more_horiz_rounded,
+                                      tooltip: '更多工具（定时 / A-B循环 / 色彩 / 快捷键）',
+                                      onTap: _openMoreToolsSheet,
+                                    ),
                                   ],
                                 ),
                               ),
@@ -1350,6 +1886,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                           bufferedSecs: _bufferedSecs,
                                           durationSecs: _durationSecs,
                                           segments: _segments,
+                                          chapterTimes: _chapters.map((c) => c.timeSecs).toList(),
                                           showRemaining: _showRemaining,
                                           fmtTime: _fmtTime,
                                           onToggleRemaining: () =>
@@ -1467,6 +2004,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                               _DeckPillButton(
                                                 label: '版本',
                                                 onTap: _openVersionSheet,
+                                              ),
+                                            ],
+                                            if (_isDesktop) ...[
+                                              const SizedBox(width: 6),
+                                              _DeckIconButton(
+                                                icon: _isFullscreen
+                                                    ? Icons.fullscreen_exit_rounded
+                                                    : Icons.fullscreen_rounded,
+                                                tooltip: _isFullscreen ? '退出全屏 (F / Esc)' : '进入全屏 (F / 双击画面)',
+                                                onTap: _toggleFullscreen,
                                               ),
                                             ],
                                           ],
@@ -2115,6 +2662,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 await _applyAudioMode();
               },
             ),
+            const Divider(height: 18),
+            _StepperRow(
+              label: '音频同步偏移',
+              valueText: '${_audioDelaySecs >= 0 ? '+' : ''}${_audioDelaySecs.toStringAsFixed(1)}s',
+              onMinus: () async {
+                final v = (_audioDelaySecs - 0.1).clamp(-5.0, 5.0);
+                setModal(() => _audioDelaySecs = v);
+                setState(() => _audioDelaySecs = v);
+                await _applyMpvProperty('audio-delay', v.toStringAsFixed(2));
+              },
+              onPlus: () async {
+                final v = (_audioDelaySecs + 0.1).clamp(-5.0, 5.0);
+                setModal(() => _audioDelaySecs = v);
+                setState(() => _audioDelaySecs = v);
+                await _applyMpvProperty('audio-delay', v.toStringAsFixed(2));
+              },
+            ),
           ],
         ),
       ),
@@ -2158,6 +2722,32 @@ class _PlayerScreenState extends State<PlayerScreen> {
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               child: Text('字幕与样式', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
             ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  side: const BorderSide(color: Color(0x28FFFFFF), width: 0.8),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                onPressed: () async {
+                  Navigator.pop(ctx);
+                  await _pickAndLoadLocalSubtitle();
+                },
+                icon: const Icon(Icons.upload_file_rounded, size: 16),
+                label: const Text('加载本地外挂字幕 (.srt / .ass / .vtt，也支持直接拖入窗口)',
+                    style: TextStyle(fontSize: 12.5)),
+              ),
+            ),
+            ..._loadedLocalSubtitles.map((ls) => _SheetOptionRow(
+                  label: ls.title,
+                  subtitle: '本地外挂字幕',
+                  selected: false,
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await _loadExternalSubtitleFile(ls.path);
+                  },
+                )),
             _SheetOptionRow(
               label: '关闭字幕',
               selected: _player.state.track.subtitle.id == 'no',
@@ -2288,6 +2878,334 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
+  void _openChaptersSheet() {
+    showGlassSheet<void>(
+      context: context,
+      builder: (ctx) => ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Text(
+              '章节列表 (${_chapters.length})',
+              style: const TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+          ),
+          for (var i = 0; i < _chapters.length; i++)
+            _SheetOptionRow(
+              label: _chapters[i].title,
+              subtitle: _fmtTime(_chapters[i].timeSecs),
+              selected: _positionSecs >= _chapters[i].timeSecs &&
+                  (i + 1 >= _chapters.length || _positionSecs < _chapters[i + 1].timeSecs),
+              onTap: () {
+                Navigator.pop(ctx);
+                _seekTo(_chapters[i].timeSecs);
+              },
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _openMoreToolsSheet() {
+    showGlassSheet<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) => ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 22),
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Text('播放工具与画面均衡器', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
+            ),
+            const SizedBox(height: 8),
+
+            // Sleep Timer
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('定时关闭', style: TextStyle(color: VedroTheme.fg2, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      _DeckPillButton(
+                        label: '关闭',
+                        active: !_sleepAfterEpisode && _sleepRemainingSecs == 0,
+                        onTap: () {
+                          _setSleepTimer();
+                          setModal(() {});
+                        },
+                      ),
+                      _DeckPillButton(
+                        label: '播完本集',
+                        active: _sleepAfterEpisode,
+                        onTap: () {
+                          _setSleepTimer(afterEpisode: true);
+                          setModal(() {});
+                        },
+                      ),
+                      for (final m in [15, 30, 60, 90])
+                        _DeckPillButton(
+                          label: '$m 分钟',
+                          active: !_sleepAfterEpisode &&
+                              _sleepRemainingSecs > (m - 1) * 60 &&
+                              _sleepRemainingSecs <= m * 60,
+                          onTap: () {
+                            _setSleepTimer(minutes: m);
+                            setModal(() {});
+                          },
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            const Divider(height: 20),
+
+            // Loop file + A-B Loop
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text('单集循环播放', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+                  ),
+                  Transform.scale(
+                    scale: 0.78,
+                    child: CupertinoSwitch(
+                      value: _loopFile,
+                      onChanged: (v) async {
+                        setModal(() => _loopFile = v);
+                        setState(() => _loopFile = v);
+                        await _applyMpvProperty('loop-file', v ? 'inf' : 'no');
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Row(
+                children: [
+                  const Text('A-B 复读', style: TextStyle(color: VedroTheme.fg2, fontSize: 13)),
+                  const Spacer(),
+                  _DeckPillButton(
+                    label: _loopPointA == null ? '设 A 点' : 'A ${_fmtTime(_loopPointA!)}',
+                    active: _loopPointA != null,
+                    onTap: () {
+                      setModal(() => _loopPointA = _positionSecs);
+                      setState(() => _loopPointA = _positionSecs);
+                    },
+                  ),
+                  const SizedBox(width: 6),
+                  _DeckPillButton(
+                    label: _loopPointB == null ? '设 B 点' : 'B ${_fmtTime(_loopPointB!)}',
+                    active: _loopPointB != null,
+                    onTap: () {
+                      if (_loopPointA != null && _positionSecs > _loopPointA! + 0.5) {
+                        setModal(() => _loopPointB = _positionSecs);
+                        setState(() => _loopPointB = _positionSecs);
+                      }
+                    },
+                  ),
+                  if (_loopPointA != null || _loopPointB != null) ...[
+                    const SizedBox(width: 6),
+                    _DeckPillButton(
+                      label: '清除',
+                      onTap: () {
+                        setModal(() {
+                          _loopPointA = null;
+                          _loopPointB = null;
+                        });
+                        setState(() {
+                          _loopPointA = null;
+                          _loopPointB = null;
+                        });
+                      },
+                    ),
+                  ],
+                ],
+              ),
+            ),
+
+            const Divider(height: 20),
+
+            // Video Color Equalizer (MPV brightness / contrast / saturation / gamma)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                children: [
+                  const Text('色彩均衡器', style: TextStyle(color: VedroTheme.fg2, fontSize: 13, fontWeight: FontWeight.w600)),
+                  const Spacer(),
+                  if (_eqBrightness != 0 || _eqContrast != 0 || _eqSaturation != 0 || _eqGamma != 0)
+                    TextButton(
+                      onPressed: () async {
+                        setModal(() {
+                          _eqBrightness = 0;
+                          _eqContrast = 0;
+                          _eqSaturation = 0;
+                          _eqGamma = 0;
+                        });
+                        await _applyMpvProperty('brightness', '0');
+                        await _applyMpvProperty('contrast', '0');
+                        await _applyMpvProperty('saturation', '0');
+                        await _applyMpvProperty('gamma', '0');
+                      },
+                      child: const Text('复位', style: TextStyle(fontSize: 12)),
+                    ),
+                ],
+              ),
+            ),
+            _StepperRow(
+              label: '亮度',
+              valueText: '${_eqBrightness >= 0 ? '+' : ''}$_eqBrightness',
+              onMinus: () async {
+                final v = (_eqBrightness - 5).clamp(-50, 50);
+                setModal(() => _eqBrightness = v);
+                await _applyMpvProperty('brightness', '$v');
+              },
+              onPlus: () async {
+                final v = (_eqBrightness + 5).clamp(-50, 50);
+                setModal(() => _eqBrightness = v);
+                await _applyMpvProperty('brightness', '$v');
+              },
+            ),
+            _StepperRow(
+              label: '对比度',
+              valueText: '${_eqContrast >= 0 ? '+' : ''}$_eqContrast',
+              onMinus: () async {
+                final v = (_eqContrast - 5).clamp(-50, 50);
+                setModal(() => _eqContrast = v);
+                await _applyMpvProperty('contrast', '$v');
+              },
+              onPlus: () async {
+                final v = (_eqContrast + 5).clamp(-50, 50);
+                setModal(() => _eqContrast = v);
+                await _applyMpvProperty('contrast', '$v');
+              },
+            ),
+            _StepperRow(
+              label: '饱和度',
+              valueText: '${_eqSaturation >= 0 ? '+' : ''}$_eqSaturation',
+              onMinus: () async {
+                final v = (_eqSaturation - 5).clamp(-50, 50);
+                setModal(() => _eqSaturation = v);
+                await _applyMpvProperty('saturation', '$v');
+              },
+              onPlus: () async {
+                final v = (_eqSaturation + 5).clamp(-50, 50);
+                setModal(() => _eqSaturation = v);
+                await _applyMpvProperty('saturation', '$v');
+              },
+            ),
+            _StepperRow(
+              label: '伽马值',
+              valueText: '${_eqGamma >= 0 ? '+' : ''}$_eqGamma',
+              onMinus: () async {
+                final v = (_eqGamma - 5).clamp(-50, 50);
+                setModal(() => _eqGamma = v);
+                await _applyMpvProperty('gamma', '$v');
+              },
+              onPlus: () async {
+                final v = (_eqGamma + 5).clamp(-50, 50);
+                setModal(() => _eqGamma = v);
+                await _applyMpvProperty('gamma', '$v');
+              },
+            ),
+
+            if (_isDesktop) ...[
+              const Divider(height: 20),
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.keyboard_rounded, size: 19, color: VedroTheme.fg2),
+                title: const Text('桌面快捷键一览', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+                trailing: const Text('H', style: TextStyle(color: VedroTheme.fg3, fontSize: 12)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openShortcutsDialog();
+                },
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openShortcutsDialog() {
+    const shortcuts = [
+      ('空格', '播放 / 暂停'),
+      ('F / Enter / 双击画面', '进入 / 退出原生全屏'),
+      ('Esc', '退出全屏（窗口模式下退出播放）'),
+      ('← / →', '快退 / 快进'),
+      ('↑ / ↓ / 滚轮', '音量加减'),
+      ('[ / ]', '降低 / 提高倍速'),
+      (', / .', '逐帧后退 / 前进'),
+      ('T', '窗口置顶开关'),
+      ('L', '锁屏防误触'),
+      ('S', '高清含字幕截图'),
+      ('D', '弹幕开关'),
+      ('R', '画面旋转 90°'),
+      ('C', '打开章节列表'),
+      ('I', '硬件解码与码率 HUD'),
+      ('M', '静音切换'),
+      ('N', '下一集'),
+    ];
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('桌面快捷键指南', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: SizedBox(
+          width: 380,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: shortcuts.map((s) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF21232E),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: const Color(0x22FFFFFF), width: 0.7),
+                        ),
+                        child: Text(
+                          s.$1,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(s.$2, style: const TextStyle(color: VedroTheme.fg2, fontSize: 13)),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ),
+        actions: [
+          FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('知道了')),
+        ],
+      ),
+    );
+  }
+
   void _openVersionSheet() {
     final sources = _prepared?.allSources ?? const [];
     showGlassSheet<void>(
@@ -2340,6 +3258,7 @@ class _CinemaScrubBar extends StatefulWidget {
     required this.bufferedSecs,
     required this.durationSecs,
     required this.segments,
+    this.chapterTimes = const [],
     required this.showRemaining,
     required this.fmtTime,
     required this.onToggleRemaining,
@@ -2352,6 +3271,7 @@ class _CinemaScrubBar extends StatefulWidget {
   final double bufferedSecs;
   final double durationSecs;
   final List<MediaSegmentModel> segments;
+  final List<double> chapterTimes;
   final bool showRemaining;
   final String Function(double) fmtTime;
   final VoidCallback onToggleRemaining;
@@ -2483,6 +3403,18 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
                             borderRadius: BorderRadius.circular(trackH / 2),
                           ),
                         ),
+                        // Chapter tick marks
+                        if (widget.durationSecs > 0)
+                          for (final t in widget.chapterTimes)
+                            if (t > 1.0 && t < widget.durationSecs - 1.0)
+                              Positioned(
+                                left: (t / dur).clamp(0.0, 1.0) * w,
+                                child: Container(
+                                  width: 2,
+                                  height: trackH + 2,
+                                  color: const Color(0xAA0B0B0D),
+                                ),
+                              ),
                         // Hover-revealed sleek thumb
                         Positioned(
                           left: (w * posRatio - 6).clamp(0.0, (w - 12).clamp(0.0, w)),

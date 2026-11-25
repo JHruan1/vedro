@@ -1,8 +1,8 @@
 import 'dart:io';
-import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/models/models.dart';
 import '../core/theme/vedro_theme.dart';
@@ -13,13 +13,13 @@ import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
 import 'player_screen.dart';
 
-/// AfuseKt 3.4 / Infuse / Apple TV+ caliber Cinema Detail Screen:
-/// - Full-page adaptive ambient backdrop canvas dissolving smoothly behind all sections
-/// - Progress-filled primary Play pill + sleek circular action buttons (no cluttered text walls)
-/// - Bold Tagline + HTML-cleaned high-contrast Overview + AI Translate + clickable underlined Genres
-/// - Series Seasons with underline tabs + Horizontal 16:9 Episode Cards (toggleable to vertical list)
-/// - Compact rounded-square Cast & Crew portraits with Director label right-aligned on header
-/// - Live Offline Download status & direct local playback + External Player launcher
+/// Apple TV+ / Infuse / AfuseKt caliber Cinema Detail Screen:
+/// - Seamless full-bleed Hero backdrop smoothly dissolving into solid OLED canvas (no muddy wash or seam)
+/// - Exact TextPainter-measured expandable overview (never shows "展开全部" when text fits)
+/// - High-contrast solid elevated Version / Audio / Subtitle selector panel
+/// - Rich Series Seasons with 16:9 Episode Cards (air date, rating, 2-line overview, per-episode detail)
+/// - Complete NFO Metadata & External Provider Links (TMDB / IMDb / TVDB / Studios / Tags / Crew / Dates)
+/// - Full Media Technical Specs card (Video / Audio / Subtitle streams, bitrate, size, filename)
 class DetailScreen extends StatefulWidget {
   const DetailScreen({
     super.key,
@@ -50,7 +50,6 @@ class _DetailScreenState extends State<DetailScreen> {
   int? _selectedAudioIndex;
   int? _selectedSubtitleIndex;
   bool _loading = true;
-  bool _overviewExpanded = false;
   bool _episodeListVertical = false;
   String? _translatedOverview;
   bool _translating = false;
@@ -164,6 +163,16 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
+  void _openItemDetail(MediaItemModel other) {
+    Navigator.of(context).push(
+      vedroRoute(DetailScreen(
+        item: other,
+        appState: widget.appState,
+        onGenreTap: widget.onGenreTap,
+      )),
+    );
+  }
+
   Future<void> _launchExternal(MediaItemModel target, {String? sourceId, String? player}) async {
     try {
       final msg = await widget.appState.launchExternalPlayer(
@@ -188,10 +197,7 @@ class _DetailScreenState extends State<DetailScreen> {
     try {
       final translated = await widget.appState.translateText(text);
       if (mounted) {
-        setState(() {
-          _translatedOverview = translated;
-          _overviewExpanded = true;
-        });
+        setState(() => _translatedOverview = translated);
       }
     } catch (e) {
       if (mounted) {
@@ -321,6 +327,19 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
+  String _localizeStatus(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return '';
+    switch (raw.trim().toLowerCase()) {
+      case 'continuing':
+      case 'returning series':
+        return '连载中';
+      case 'ended':
+        return '已完结';
+      default:
+        return raw.trim();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.sizeOf(context);
@@ -342,58 +361,44 @@ class _DetailScreenState extends State<DetailScreen> {
     final directors = _item.people
         .where((p) => (p.type ?? '').toLowerCase() == 'director')
         .map((p) => p.name)
-        .take(2)
         .toList();
+    final statusLabel = _localizeStatus(_item.status);
+    final premiere = fmtIsoDate(_item.premiereDate);
 
+    // Aggregate specs from current item or first episode if Series
+    final sampleMediaItem = _item.isPlayable
+        ? _item
+        : (_episodes.isNotEmpty ? _episodes.first : null);
     final specChips = showSpecs
         ? <String>[
             ..._item.inferredBadges,
             if (src != null) ...src.factChips.where((c) => !_item.inferredBadges.contains(c)),
-          ].take(5).toList()
+            if (!_item.isPlayable && sampleMediaItem != null)
+              ...sampleMediaItem.inferredBadges.where((c) => !_item.inferredBadges.contains(c)),
+          ].take(6).toList()
         : const <String>[];
 
-    final backdropArt = widget.appState.backdropArt(_item, width: 1920);
-    final heroMinH = (size.height * (wide ? 0.56 : 0.46)).clamp(350.0, 560.0);
+    // Pick next unwatched episode for Series main Play CTA
+    MediaItemModel? nextEpToPlay;
+    if (_episodes.isNotEmpty) {
+      nextEpToPlay = _episodes.firstWhere(
+        (e) => e.resumeProgress > 0.01,
+        orElse: () => _episodes.firstWhere(
+          (e) => !e.played,
+          orElse: () => _episodes.first,
+        ),
+      );
+    }
+
+    final heroMinH = (size.height * (wide ? 0.56 : 0.44)).clamp(340.0, 540.0);
 
     return Scaffold(
       backgroundColor: VedroTheme.canvas,
       body: Stack(
         children: [
-          // Adaptive full-page atmospheric ambient backdrop behind the entire page (AfuseKt 3.4 style!)
-          if (backdropArt != null)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: ImageFiltered(
-                  imageFilter: ImageFilter.blur(sigmaX: 48, sigmaY: 48),
-                  child: Opacity(
-                    opacity: 0.24,
-                    child: FadeNetworkImage(url: backdropArt.url, fit: BoxFit.cover),
-                  ),
-                ),
-              ),
-            ),
-          Positioned.fill(
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    stops: const [0.0, 0.45, 1.0],
-                    colors: [
-                      Colors.transparent,
-                      VedroTheme.canvas.withValues(alpha: 0.78),
-                      VedroTheme.canvas.withValues(alpha: 0.94),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-
           CustomScrollView(
             slivers: [
-              // Crisp Top Cinema Hero
+              // Clean Seamless Cinema Hero (dissolves cleanly to solid VedroTheme.canvas — zero seam!)
               SliverToBoxAdapter(
                 child: ConstrainedBox(
                   constraints: BoxConstraints(minHeight: heroMinH),
@@ -416,11 +421,11 @@ class _DetailScreenState extends State<DetailScreen> {
                                   gradient: LinearGradient(
                                     begin: Alignment.centerLeft,
                                     end: Alignment.centerRight,
-                                    stops: [0.0, 0.52, 0.85, 1.0],
+                                    stops: [0.0, 0.48, 0.78, 1.0],
                                     colors: [
-                                      Color(0xDE0B0B0D),
-                                      Color(0x940B0B0D),
-                                      Color(0x280B0B0D),
+                                      Color(0xF00B0B0D),
+                                      Color(0xBA0B0B0D),
+                                      Color(0x400B0B0D),
                                       Colors.transparent,
                                     ],
                                   ),
@@ -431,12 +436,13 @@ class _DetailScreenState extends State<DetailScreen> {
                                 gradient: LinearGradient(
                                   begin: Alignment.topCenter,
                                   end: Alignment.bottomCenter,
-                                  stops: [0.0, 0.28, 0.65, 1.0],
+                                  stops: [0.0, 0.22, 0.60, 0.88, 1.0],
                                   colors: [
-                                    Color(0x780B0B0D),
-                                    Colors.transparent,
+                                    Color(0x880B0B0D),
+                                    Color(0x180B0B0D),
                                     Color(0xB80B0B0D),
-                                    Color(0xEE0B0B0D),
+                                    Color(0xF50B0B0D),
+                                    VedroTheme.canvas,
                                   ],
                                 ),
                               ),
@@ -449,12 +455,12 @@ class _DetailScreenState extends State<DetailScreen> {
                       Padding(
                         padding: EdgeInsets.fromLTRB(
                           padX,
-                          topSafe + (wide ? 110 : 120),
+                          topSafe + (wide ? 96 : 112),
                           padX,
                           24,
                         ),
                         child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 780),
+                          constraints: const BoxConstraints(maxWidth: 820),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisSize: MainAxisSize.min,
@@ -465,18 +471,18 @@ class _DetailScreenState extends State<DetailScreen> {
                                   child: Text(
                                     '${_item.seriesName} · ${_item.episodeCode ?? ''}',
                                     style: const TextStyle(
-                                      color: Color(0xD8FFFFFF),
+                                      color: Color(0xE0FFFFFF),
                                       fontSize: 13.5,
                                       fontWeight: FontWeight.w500,
                                     ),
                                   ),
                                 ),
 
-                              // Transparent Title Logo or bold Display Title
+                              // Title Logo or Display Headline
                               if (logoUrl != null)
                                 ConstrainedBox(
                                   constraints: BoxConstraints(
-                                    maxHeight: wide ? 96 : 72,
+                                    maxHeight: wide ? 92 : 70,
                                     maxWidth: wide ? 440 : 300,
                                   ),
                                   child: Image.network(
@@ -496,19 +502,19 @@ class _DetailScreenState extends State<DetailScreen> {
                                   _item.originalTitle!,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: Color(0xB8FFFFFF), fontSize: 13.5),
+                                  style: const TextStyle(color: Color(0xBDFFFFFF), fontSize: 13.5),
                                 ),
                               ],
 
                               const SizedBox(height: 12),
 
-                              // Compact AfuseKt Metadata Line (★ Rating · [PG] · Year · Duration · Specs · Clickable Genres)
+                              // Rich NFO Metadata Strip
                               Wrap(
                                 spacing: 10,
                                 runSpacing: 6,
                                 crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
-                                  if (_item.communityRating != null)
+                                  if (_item.communityRating != null && _item.communityRating! > 0)
                                     Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
@@ -525,38 +531,98 @@ class _DetailScreenState extends State<DetailScreen> {
                                         ),
                                       ],
                                     ),
-                                  if (_item.officialRating != null)
+                                  if (_item.criticRating != null && _item.criticRating! > 0)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6.5, vertical: 1.5),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0x22FB7185),
+                                        borderRadius: BorderRadius.circular(5),
+                                        border: Border.all(color: const Color(0x55FB7185), width: 0.7),
+                                      ),
+                                      child: Text(
+                                        '媒体 ${_item.criticRating!.round()}%',
+                                        style: const TextStyle(
+                                          color: Color(0xFFFDA4AF),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          fontFeatures: [FontFeature.tabularFigures()],
+                                        ),
+                                      ),
+                                    ),
+                                  if (_item.officialRating != null && _item.officialRating!.isNotEmpty)
                                     Container(
                                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
                                       decoration: BoxDecoration(
+                                        color: const Color(0x18FFFFFF),
                                         borderRadius: BorderRadius.circular(5),
-                                        border: Border.all(color: const Color(0x66FFFFFF), width: 0.9),
+                                        border: Border.all(color: const Color(0x58FFFFFF), width: 0.8),
                                       ),
                                       child: Text(
                                         _item.officialRating!,
                                         style: const TextStyle(
-                                          color: Color(0xE8FFFFFF),
+                                          color: Color(0xF0FFFFFF),
                                           fontSize: 11,
                                           fontWeight: FontWeight.w600,
                                         ),
                                       ),
                                     ),
-                                  if (_item.productionYear != null)
+                                  if (statusLabel.isNotEmpty)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
+                                      decoration: BoxDecoration(
+                                        color: statusLabel == '连载中'
+                                            ? const Color(0x2634D399)
+                                            : const Color(0x1CFFFFFF),
+                                        borderRadius: BorderRadius.circular(5),
+                                      ),
+                                      child: Text(
+                                        statusLabel,
+                                        style: TextStyle(
+                                          color: statusLabel == '连载中'
+                                              ? const Color(0xFF34D399)
+                                              : const Color(0xD8FFFFFF),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  if (premiere.isNotEmpty)
+                                    Text(
+                                      premiere,
+                                      style: const TextStyle(
+                                        color: Color(0xEBFFFFFF),
+                                        fontSize: 13.5,
+                                        fontFeatures: [FontFeature.tabularFigures()],
+                                      ),
+                                    )
+                                  else if (_item.productionYear != null)
                                     Text(
                                       '${_item.productionYear}',
-                                      style: const TextStyle(color: Color(0xE8FFFFFF), fontSize: 13.5),
+                                      style: const TextStyle(color: Color(0xEBFFFFFF), fontSize: 13.5),
                                     ),
                                   if (!_item.isFolderish && fmtDurationTicks(_item.runTimeTicks).isNotEmpty)
                                     Text(
                                       fmtDurationTicks(_item.runTimeTicks),
-                                      style: const TextStyle(color: Color(0xE8FFFFFF), fontSize: 13.5),
+                                      style: const TextStyle(color: Color(0xEBFFFFFF), fontSize: 13.5),
                                     ),
-                                  if (_item.isSeries && (_item.childCount ?? 0) > 0)
+                                  if (_item.isSeries) ...[
+                                    if (_seasons.isNotEmpty || (_item.childCount ?? 0) > 0)
+                                      Text(
+                                        '共 ${_seasons.isNotEmpty ? _seasons.length : _item.childCount} 季${(_item.recursiveItemCount ?? 0) > 0 ? ' · ${_item.recursiveItemCount} 集' : ''}',
+                                        style: const TextStyle(color: Color(0xEBFFFFFF), fontSize: 13.5),
+                                      ),
+                                    if (fmtDurationTicks(_item.runTimeTicks).isNotEmpty)
+                                      Text(
+                                        '单集约 ${fmtDurationTicks(_item.runTimeTicks)}',
+                                        style: const TextStyle(color: Color(0xCCFFFFFF), fontSize: 13),
+                                      ),
+                                  ],
+                                  if (_item.productionLocations.isNotEmpty)
                                     Text(
-                                      '共 ${_item.childCount} 季${(_item.recursiveItemCount ?? 0) > 0 ? ' · ${_item.recursiveItemCount} 集' : ''}',
-                                      style: const TextStyle(color: Color(0xE8FFFFFF), fontSize: 13.5),
+                                      _item.productionLocations.take(2).join(' / '),
+                                      style: const TextStyle(color: Color(0xD8FFFFFF), fontSize: 13),
                                     ),
-                                  for (final g in _item.genres.take(5))
+                                  for (final g in _item.genres.take(6))
                                     GestureDetector(
                                       onTap: widget.onGenreTap == null ? null : () => widget.onGenreTap!(g),
                                       child: MouseRegion(
@@ -566,7 +632,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                         child: Text(
                                           g,
                                           style: TextStyle(
-                                            color: const Color(0xE0FFFFFF),
+                                            color: const Color(0xE8FFFFFF),
                                             fontSize: 13.5,
                                             decoration: widget.onGenreTap != null
                                                 ? TextDecoration.underline
@@ -584,85 +650,38 @@ class _DetailScreenState extends State<DetailScreen> {
                                 SpecGlyphRow(specs: specChips),
                               ],
 
-                              // Tagline + Crystal-clear Overview right in the primary hero reading zone!
                               if (tagline != null) ...[
-                                const SizedBox(height: 16),
+                                const SizedBox(height: 14),
                                 Text(
                                   tagline,
                                   style: const TextStyle(
                                     color: Colors.white,
-                                    fontSize: 15.5,
+                                    fontSize: 15,
                                     fontWeight: FontWeight.w600,
                                     letterSpacing: -0.1,
                                   ),
                                 ),
                               ],
+
+                              // Exact TextPainter-measured overview: NEVER shows "展开全部" when short!
                               if (overviewText.isNotEmpty) ...[
                                 SizedBox(height: tagline != null ? 6 : 14),
-                                AnimatedSize(
-                                  duration: const Duration(milliseconds: 220),
-                                  curve: Curves.easeOutCubic,
-                                  alignment: Alignment.topLeft,
-                                  child: Text(
-                                    overviewText,
-                                    maxLines: _overviewExpanded ? null : (wide ? 4 : 3),
-                                    overflow: _overviewExpanded
-                                        ? TextOverflow.visible
-                                        : TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Color(0xF0F1F2F6),
-                                      fontSize: 14.5,
-                                      height: 1.7,
-                                      letterSpacing: 0.1,
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                Wrap(
-                                  spacing: 14,
-                                  children: [
-                                    if (overviewText.length > 96)
-                                      GestureDetector(
-                                        onTap: () => setState(() => _overviewExpanded = !_overviewExpanded),
-                                        child: Text(
-                                          _overviewExpanded ? '收起' : '展开全部',
-                                          style: TextStyle(
-                                            color: accent,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ),
-                                    if (widget.appState.prefs.isAiReady)
-                                      GestureDetector(
-                                        onTap: _translatedOverview != null
-                                            ? () => setState(() => _translatedOverview = null)
-                                            : _translateOverview,
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Icon(Icons.auto_awesome_rounded, size: 13.5, color: accent),
-                                            const SizedBox(width: 4),
-                                            Text(
-                                              _translating
-                                                  ? 'AI 翻译中…'
-                                                  : (_translatedOverview != null ? '显示原文' : 'AI 翻译简介'),
-                                              style: TextStyle(
-                                                color: accent,
-                                                fontSize: 13,
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                  ],
+                                _ExpandableOverview(
+                                  text: overviewText,
+                                  collapsedLines: wide ? 4 : 3,
+                                  accent: accent,
+                                  aiReady: widget.appState.prefs.isAiReady,
+                                  translating: _translating,
+                                  isTranslated: _translatedOverview != null,
+                                  onTranslateToggle: _translatedOverview != null
+                                      ? () => setState(() => _translatedOverview = null)
+                                      : _translateOverview,
                                 ),
                               ],
 
                               const SizedBox(height: 22),
 
-                              // AfuseKt Signature Row: Progress-Filled Primary Play Pill + Clean Circular Icon Buttons!
+                              // Primary Play Pill + Circular Action Buttons
                               Wrap(
                                 spacing: 10,
                                 runSpacing: 10,
@@ -674,7 +693,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                           ? '播放离线缓存'
                                           : (_item.playbackPositionTicks > 0
                                               ? '继续 ${fmtDurationTicks(_item.playbackPositionTicks)}'
-                                              : '播放'),
+                                              : '立即播放'),
                                       progress: _item.resumeProgress,
                                       accent: accent,
                                       onTap: () => _play(
@@ -683,12 +702,14 @@ class _DetailScreenState extends State<DetailScreen> {
                                         localPath: localReady ? dlTask.filePath : null,
                                       ),
                                     )
-                                  else if (_episodes.isNotEmpty)
+                                  else if (nextEpToPlay != null)
                                     _ProgressPlayPill(
-                                      label: '播放 ${_episodes.first.episodeCode ?? '第 1 集'}',
-                                      progress: _episodes.first.resumeProgress,
+                                      label: nextEpToPlay.resumeProgress > 0.01
+                                          ? '继续 ${nextEpToPlay.episodeCode ?? nextEpToPlay.displayName}'
+                                          : '播放 ${nextEpToPlay.episodeCode ?? '第 1 集'}',
+                                      progress: nextEpToPlay.resumeProgress,
                                       accent: accent,
-                                      onTap: () => _play(_episodes.first),
+                                      onTap: () => _play(nextEpToPlay!),
                                     ),
 
                                   if (_item.isPlayable && _item.playbackPositionTicks > 0)
@@ -751,14 +772,32 @@ class _DetailScreenState extends State<DetailScreen> {
                 ),
               ),
 
-              // Body Sections over Ambient Canvas
+              // Body Content on Pure Deep OLED Canvas (razor-sharp contrast)
               SliverToBoxAdapter(
                 child: Padding(
-                  padding: EdgeInsets.fromLTRB(padX, 8, padX, 8),
+                  padding: EdgeInsets.fromLTRB(padX, 6, padX, 8),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // TV Series Seasons & Horizontal 16:9 Episode Cards (AfuseKt 9_ref.png style!)
+                      // 1. High-Contrast Version / Audio / Subtitle Selector (for Movies & Episodes)
+                      if (_item.isPlayable && _item.mediaSources.isNotEmpty) ...[
+                        _TracksPanel(
+                          sources: _item.mediaSources,
+                          selectedId: _selectedSourceId,
+                          selectedAudioIndex: _selectedAudioIndex,
+                          selectedSubtitleIndex: _selectedSubtitleIndex,
+                          onSelectSource: (id) => setState(() {
+                            _selectedSourceId = id;
+                            _selectedAudioIndex = null;
+                            _selectedSubtitleIndex = null;
+                          }),
+                          onSelectAudio: (idx) => setState(() => _selectedAudioIndex = idx),
+                          onSelectSubtitle: (idx) => setState(() => _selectedSubtitleIndex = idx),
+                        ),
+                        const SizedBox(height: 28),
+                      ],
+
+                      // 2. TV Series Seasons & Rich Episode Cards
                       if (_seasons.isNotEmpty) ...[
                         Row(
                           children: [
@@ -786,7 +825,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                           s.name,
                                           style: TextStyle(
                                             color: active ? Colors.white : VedroTheme.fg3,
-                                            fontSize: 15.5,
+                                            fontSize: 16,
                                             fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                                           ),
                                         ),
@@ -797,7 +836,7 @@ class _DetailScreenState extends State<DetailScreen> {
                               ),
                             ),
                             Text(
-                              '${_episodes.length} 集',
+                              '共 ${_episodes.length} 集',
                               style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
                             ),
                             const SizedBox(width: 6),
@@ -818,7 +857,7 @@ class _DetailScreenState extends State<DetailScreen> {
                         const SizedBox(height: 14),
                         if (!_episodeListVertical)
                           SizedBox(
-                            height: wide ? 214 : 186,
+                            height: wide ? 268 : 232,
                             child: ListView.separated(
                               scrollDirection: Axis.horizontal,
                               clipBehavior: Clip.none,
@@ -827,9 +866,10 @@ class _DetailScreenState extends State<DetailScreen> {
                               itemBuilder: (_, idx) => _EpisodeHorizontalCard(
                                 episode: _episodes[idx],
                                 appState: widget.appState,
-                                width: wide ? 246 : 206,
+                                width: wide ? 264 : 216,
                                 accent: accent,
                                 onTap: () => _play(_episodes[idx]),
+                                onOpenDetail: () => _openItemDetail(_episodes[idx]),
                               ),
                             ),
                           )
@@ -838,29 +878,12 @@ class _DetailScreenState extends State<DetailScreen> {
                                 episode: ep,
                                 appState: widget.appState,
                                 onTap: () => _play(ep),
+                                onOpenDetail: () => _openItemDetail(ep),
                               )),
                         const SizedBox(height: 28),
                       ],
 
-                      // Interactive Versions & Audio/Subtitle Tracks card (for playable items)
-                      if (_item.isPlayable && _item.mediaSources.isNotEmpty) ...[
-                        _TracksPanel(
-                          sources: _item.mediaSources,
-                          selectedId: _selectedSourceId,
-                          selectedAudioIndex: _selectedAudioIndex,
-                          selectedSubtitleIndex: _selectedSubtitleIndex,
-                          onSelectSource: (id) => setState(() {
-                            _selectedSourceId = id;
-                            _selectedAudioIndex = null;
-                            _selectedSubtitleIndex = null;
-                          }),
-                          onSelectAudio: (idx) => setState(() => _selectedAudioIndex = idx),
-                          onSelectSubtitle: (idx) => setState(() => _selectedSubtitleIndex = idx),
-                        ),
-                        const SizedBox(height: 28),
-                      ],
-
-                      // Compact Rounded-Square Cast & Crew with right-aligned Director (AfuseKt 3_wide1 / 7_ref style!)
+                      // 3. Cast & Crew Rail
                       if (_item.people.isNotEmpty) ...[
                         Row(
                           children: [
@@ -876,8 +899,8 @@ class _DetailScreenState extends State<DetailScreen> {
                             const Spacer(),
                             if (directors.isNotEmpty)
                               Text(
-                                '导演: ${directors.join(' · ')}',
-                                style: const TextStyle(color: Color(0xC8FFFFFF), fontSize: 13),
+                                '导演：${directors.take(2).join(' · ')}',
+                                style: const TextStyle(color: VedroTheme.fg2, fontSize: 13),
                               ),
                           ],
                         ),
@@ -887,7 +910,7 @@ class _DetailScreenState extends State<DetailScreen> {
                           child: ListView.separated(
                             scrollDirection: Axis.horizontal,
                             clipBehavior: Clip.none,
-                            itemCount: _item.people.take(24).length,
+                            itemCount: _item.people.take(28).length,
                             separatorBuilder: (_, __) => const SizedBox(width: 14),
                             itemBuilder: (_, idx) {
                               final p = _item.people[idx];
@@ -902,18 +925,12 @@ class _DetailScreenState extends State<DetailScreen> {
                               return SizedBox(
                                 width: 88,
                                 child: PressableScale(
-                                  onTap: () => Navigator.of(context).push(
-                                    vedroRoute(DetailScreen(
-                                      item: MediaItemModel(
-                                        id: p.id,
-                                        name: p.name,
-                                        type: 'Person',
-                                        primaryImageTag: p.primaryImageTag,
-                                      ),
-                                      appState: widget.appState,
-                                      onGenreTap: widget.onGenreTap,
-                                    )),
-                                  ),
+                                  onTap: () => _openItemDetail(MediaItemModel(
+                                    id: p.id,
+                                    name: p.name,
+                                    type: 'Person',
+                                    primaryImageTag: p.primaryImageTag,
+                                  )),
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.center,
                                     children: [
@@ -922,7 +939,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                         height: 84,
                                         foregroundDecoration: BoxDecoration(
                                           borderRadius: BorderRadius.circular(14),
-                                          border: Border.all(color: const Color(0x28FFFFFF), width: 0.8),
+                                          border: Border.all(color: const Color(0x26FFFFFF), width: 0.8),
                                         ),
                                         decoration: BoxDecoration(
                                           borderRadius: BorderRadius.circular(14),
@@ -943,7 +960,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                       ),
                                       const SizedBox(height: 7),
                                       Text(
-                                        (p.role ?? '').isNotEmpty ? p.role! : p.name,
+                                        p.name,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                         textAlign: TextAlign.center,
@@ -954,7 +971,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                         ),
                                       ),
                                       Text(
-                                        (p.role ?? '').isNotEmpty ? p.name : (p.type ?? ''),
+                                        (p.role ?? '').isNotEmpty ? p.role! : (p.type ?? ''),
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                         textAlign: TextAlign.center,
@@ -967,10 +984,29 @@ class _DetailScreenState extends State<DetailScreen> {
                             },
                           ),
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 28),
                       ],
 
-                      // Person Credits Grid
+                      // 4. Complete NFO Metadata & External Provider Links (shown for Series, Movies & Episodes!)
+                      if (_item.type != 'Person') ...[
+                        _NfoMetadataSection(
+                          item: _item,
+                          seasonsCount: _seasons.isNotEmpty ? _seasons.length : _item.childCount,
+                          episodesCount: _item.recursiveItemCount ?? (_episodes.isNotEmpty ? _episodes.length : null),
+                          statusLabel: statusLabel,
+                          appState: widget.appState,
+                          onGenreTap: widget.onGenreTap,
+                        ),
+                        const SizedBox(height: 24),
+                      ],
+
+                      // 5. Full Media File Technical Specs (for playable items)
+                      if (src != null) ...[
+                        _MediaSpecsSection(source: src, itemPath: _item.path),
+                        const SizedBox(height: 24),
+                      ],
+
+                      // 6. Person Credits Grid
                       if (_item.type == 'Person' && _personCredits.isNotEmpty) ...[
                         Text(
                           '参与作品 (${_personCredits.length})',
@@ -989,13 +1025,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                     item: c,
                                     appState: widget.appState,
                                     width: wide ? 152 : 110,
-                                    onTap: () => Navigator.of(context).push(
-                                      vedroRoute(DetailScreen(
-                                        item: c,
-                                        appState: widget.appState,
-                                        onGenreTap: widget.onGenreTap,
-                                      )),
-                                    ),
+                                    onTap: () => _openItemDetail(c),
                                   ))
                               .toList(),
                         ),
@@ -1012,13 +1042,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     title: '相关推荐',
                     items: _similar,
                     appState: widget.appState,
-                    onItemTap: (other) => Navigator.of(context).push(
-                      vedroRoute(DetailScreen(
-                        item: other,
-                        appState: widget.appState,
-                        onGenreTap: widget.onGenreTap,
-                      )),
-                    ),
+                    onItemTap: _openItemDetail,
                   ),
                 ),
 
@@ -1040,7 +1064,7 @@ class _DetailScreenState extends State<DetailScreen> {
             ],
           ),
 
-          // Persistent floating glass Back Pill aligned beside macOS traffic lights
+          // Floating glass Back Pill aligned beside macOS traffic lights
           Positioned(
             top: topSafe + 12,
             left: isMac ? 82 : (padX - 4),
@@ -1051,8 +1075,8 @@ class _DetailScreenState extends State<DetailScreen> {
               child: GlassSurface(
                 borderRadius: 18,
                 blur: 22,
-                color: const Color(0x6E141417),
-                borderColor: const Color(0x2EFFFFFF),
+                color: const Color(0x88141418),
+                borderColor: const Color(0x32FFFFFF),
                 padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
                 child: const Row(
                   mainAxisSize: MainAxisSize.min,
@@ -1068,6 +1092,494 @@ class _DetailScreenState extends State<DetailScreen> {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Measures real rendered line overflow via TextPainter so "展开全部" NEVER appears on short text!
+class _ExpandableOverview extends StatefulWidget {
+  const _ExpandableOverview({
+    required this.text,
+    required this.collapsedLines,
+    required this.accent,
+    required this.aiReady,
+    required this.translating,
+    required this.isTranslated,
+    required this.onTranslateToggle,
+  });
+
+  final String text;
+  final int collapsedLines;
+  final Color accent;
+  final bool aiReady;
+  final bool translating;
+  final bool isTranslated;
+  final VoidCallback onTranslateToggle;
+
+  @override
+  State<_ExpandableOverview> createState() => _ExpandableOverviewState();
+}
+
+class _ExpandableOverviewState extends State<_ExpandableOverview> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    const style = TextStyle(
+      color: Color(0xF0F1F2F6),
+      fontSize: 14.5,
+      height: 1.72,
+      letterSpacing: 0.1,
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final tp = TextPainter(
+          text: TextSpan(text: widget.text, style: style),
+          maxLines: widget.collapsedLines,
+          textDirection: TextDirection.ltr,
+        )..layout(maxWidth: constraints.maxWidth);
+        final overflows = tp.didExceedMaxLines;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AnimatedSize(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topLeft,
+              child: Text(
+                widget.text,
+                maxLines: _expanded ? null : widget.collapsedLines,
+                overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                style: style,
+              ),
+            ),
+            if (overflows || widget.aiReady) ...[
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 14,
+                children: [
+                  if (overflows)
+                    GestureDetector(
+                      onTap: () => setState(() => _expanded = !_expanded),
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: Text(
+                          _expanded ? '收起简介' : '展开全部',
+                          style: TextStyle(
+                            color: widget.accent,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (widget.aiReady)
+                    GestureDetector(
+                      onTap: widget.onTranslateToggle,
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.auto_awesome_rounded, size: 13.5, color: widget.accent),
+                            const SizedBox(width: 4),
+                            Text(
+                              widget.translating
+                                  ? 'AI 翻译中…'
+                                  : (widget.isTranslated ? '显示原文' : 'AI 翻译简介'),
+                              style: TextStyle(
+                                color: widget.accent,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// Complete Apple TV+ / Infuse style NFO Metadata Section (displays every present NFO field cleanly).
+class _NfoMetadataSection extends StatelessWidget {
+  const _NfoMetadataSection({
+    required this.item,
+    required this.seasonsCount,
+    required this.episodesCount,
+    required this.statusLabel,
+    required this.appState,
+    this.onGenreTap,
+  });
+
+  final MediaItemModel item;
+  final int? seasonsCount;
+  final int? episodesCount;
+  final String statusLabel;
+  final VedroAppState appState;
+  final ValueChanged<String>? onGenreTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final directors = item.people
+        .where((p) => (p.type ?? '').toLowerCase() == 'director')
+        .map((p) => p.name)
+        .toList();
+    final writers = item.people
+        .where((p) => (p.type ?? '').toLowerCase() == 'writer')
+        .map((p) => p.name)
+        .toList();
+    final producers = item.people
+        .where((p) => (p.type ?? '').toLowerCase() == 'producer')
+        .map((p) => p.name)
+        .toList();
+
+    final facts = <(String label, String value)>[
+      if (item.originalTitle != null && item.originalTitle!.trim().isNotEmpty)
+        ('原名', item.originalTitle!.trim()),
+      if (fmtIsoDate(item.premiereDate).isNotEmpty)
+        (item.isSeries ? '首播日期' : '上映日期', fmtIsoDate(item.premiereDate)),
+      if (fmtIsoDate(item.endDate).isNotEmpty) ('完结日期', fmtIsoDate(item.endDate)),
+      if (statusLabel.isNotEmpty) ('连载状态', statusLabel),
+      if (item.isSeries && ((seasonsCount ?? 0) > 0 || (episodesCount ?? 0) > 0))
+        (
+          '季数 / 集数',
+          [
+            if ((seasonsCount ?? 0) > 0) '$seasonsCount 季',
+            if ((episodesCount ?? 0) > 0) '$episodesCount 集',
+          ].join(' · '),
+        ),
+      if (fmtDurationTicks(item.runTimeTicks).isNotEmpty)
+        (item.isSeries ? '单集时长' : '片长', fmtDurationTicks(item.runTimeTicks)),
+      if (item.officialRating != null && item.officialRating!.trim().isNotEmpty)
+        ('内容分级', item.officialRating!.trim()),
+      if (item.communityRating != null && item.communityRating! > 0)
+        ('社区评分', '${item.communityRating!.toStringAsFixed(1)} / 10'),
+      if (item.criticRating != null && item.criticRating! > 0)
+        ('媒体好评率', '${item.criticRating!.round()}%'),
+      if (item.productionLocations.isNotEmpty)
+        ('制片国家 / 地区', item.productionLocations.join('、')),
+      if (item.studios.isNotEmpty) ('出品方 / 电视网', item.studios.join('、')),
+      if (item.airDays.isNotEmpty || (item.airTime ?? '').isNotEmpty)
+        ('播出时段', [...item.airDays, if ((item.airTime ?? '').isNotEmpty) item.airTime!].join(' ')),
+      if (directors.isNotEmpty) ('导演', directors.take(4).join('、')),
+      if (writers.isNotEmpty) ('编剧', writers.take(4).join('、')),
+      if (producers.isNotEmpty) ('制片人', producers.take(4).join('、')),
+      if (fmtIsoDate(item.dateCreated).isNotEmpty) ('入库日期', fmtIsoDate(item.dateCreated)),
+      if ((item.sourceFolderCount ?? 0) > 1) ('合并源目录', '${item.sourceFolderCount} 个来源文件夹'),
+    ];
+
+    // Build clickable external links from ExternalUrls + ProviderIds (TMDB / IMDb / TVDB / Douban)
+    final links = <(String label, String? url, String displayId)>[];
+    final seenProviders = <String>{};
+    for (final ext in item.externalUrls) {
+      if (ext.name.isNotEmpty && ext.url.isNotEmpty) {
+        seenProviders.add(ext.name.toLowerCase());
+        links.add((ext.name, ext.url, ext.name));
+      }
+    }
+    item.providerIds.forEach((rawKey, rawVal) {
+      final k = rawKey.trim();
+      final v = rawVal.trim();
+      if (k.isEmpty || v.isEmpty) return;
+      final lower = k.toLowerCase();
+      if (seenProviders.contains(lower)) return;
+      String? url;
+      String label = k.toUpperCase();
+      if (lower == 'tmdb') {
+        label = 'TMDB';
+        url = item.isSeries
+            ? 'https://www.themoviedb.org/tv/$v'
+            : 'https://www.themoviedb.org/movie/$v';
+      } else if (lower == 'imdb') {
+        label = 'IMDb';
+        url = 'https://www.imdb.com/title/$v/';
+      } else if (lower == 'tvdb') {
+        label = 'TVDB';
+        url = 'https://thetvdb.com/dereferrer/series/$v';
+      } else if (lower == 'douban') {
+        label = '豆瓣';
+        url = 'https://movie.douban.com/subject/$v/';
+      }
+      links.add((label, url, '$label: $v'));
+    });
+
+    if (facts.isEmpty && item.tags.isEmpty && links.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF13141A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0x1DFFFFFF), width: 0.85),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.info_outline_rounded, size: 17, color: VedroTheme.fg2),
+              SizedBox(width: 8),
+              Text(
+                '影片资料与 NFO 信息',
+                style: TextStyle(
+                  color: VedroTheme.fg,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          if (facts.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final cols = constraints.maxWidth >= 720 ? 3 : (constraints.maxWidth >= 420 ? 2 : 1);
+                const gap = 16.0;
+                final cellW = (constraints.maxWidth - gap * (cols - 1)) / cols;
+                return Wrap(
+                  spacing: gap,
+                  runSpacing: 14,
+                  children: facts.map((f) {
+                    return SizedBox(
+                      width: cellW,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            f.$1,
+                            style: const TextStyle(
+                              color: VedroTheme.fg3,
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          SelectableText(
+                            f.$2,
+                            style: const TextStyle(
+                              color: VedroTheme.fg,
+                              fontSize: 13.5,
+                              height: 1.4,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                );
+              },
+            ),
+          ],
+          if (item.tags.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Divider(height: 1),
+            const SizedBox(height: 14),
+            const Text('NFO 标签', style: TextStyle(color: VedroTheme.fg3, fontSize: 12, fontWeight: FontWeight.w500)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: item.tags.take(24).map((tag) {
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4.5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1D1F27),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0x1EFFFFFF), width: 0.7),
+                  ),
+                  child: Text(
+                    '# $tag',
+                    style: const TextStyle(color: VedroTheme.fg2, fontSize: 12),
+                  ),
+                );
+              }).toList(),
+            ),
+          ],
+          if (links.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Divider(height: 1),
+            const SizedBox(height: 14),
+            const Text('外部资料索引', style: TextStyle(color: VedroTheme.fg3, fontSize: 12, fontWeight: FontWeight.w500)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: links.map((entry) {
+                final (label, url, displayId) = entry;
+                return PressableScale(
+                  onTap: () {
+                    if (url != null) {
+                      appState.openExternalUrl(url);
+                    } else {
+                      Clipboard.setData(ClipboardData(text: displayId));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('已复制 $displayId')),
+                      );
+                    }
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1C1E28),
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(color: const Color(0x28FFFFFF), width: 0.7),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          displayId,
+                          style: const TextStyle(
+                            color: VedroTheme.fg,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                        if (url != null) ...[
+                          const SizedBox(width: 5),
+                          const Icon(Icons.open_in_new_rounded, size: 12.5, color: VedroTheme.fg3),
+                        ],
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _MediaSpecsSection extends StatelessWidget {
+  const _MediaSpecsSection({required this.source, this.itemPath});
+  final MediaSourceModel source;
+  final String? itemPath;
+
+  @override
+  Widget build(BuildContext context) {
+    final videos = source.videoStreams;
+    final audios = source.audioStreams;
+    final subs = source.subtitleStreams;
+    final filePath = source.path?.isNotEmpty == true ? source.path : itemPath;
+
+    final hasAnything = videos.isNotEmpty ||
+        audios.isNotEmpty ||
+        subs.isNotEmpty ||
+        (filePath != null && filePath.isNotEmpty) ||
+        (source.size ?? 0) > 0;
+    if (!hasAnything) return const SizedBox.shrink();
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF13141A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0x1DFFFFFF), width: 0.85),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.memory_rounded, size: 17, color: VedroTheme.fg2),
+              const SizedBox(width: 8),
+              const Text(
+                '媒体文件规格',
+                style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+              const Spacer(),
+              if (source.container != null && source.container!.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0x18FFFFFF),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    [
+                      source.container!.toUpperCase(),
+                      if (fmtFileSize(source.size).isNotEmpty) fmtFileSize(source.size),
+                      if ((source.bitrate ?? 0) > 0)
+                        '${(source.bitrate! / 1000000).toStringAsFixed(1)} Mbps',
+                    ].join(' · '),
+                    style: const TextStyle(
+                      color: VedroTheme.fg2,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w500,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (videos.isNotEmpty)
+            _SpecGroup('视频流', videos.map((v) => v.detailedSpec).toList()),
+          if (audios.isNotEmpty)
+            _SpecGroup('音频流 (${audios.length})', audios.map((a) => a.detailedSpec).toList()),
+          if (subs.isNotEmpty)
+            _SpecGroup('字幕流 (${subs.length})', subs.take(12).map((s) => s.detailedSpec).toList()),
+          if (filePath != null && filePath.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text('文件路径', style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5)),
+            const SizedBox(height: 3),
+            SelectableText(
+              filePath,
+              style: const TextStyle(
+                color: VedroTheme.fg2,
+                fontSize: 12,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _SpecGroup extends StatelessWidget {
+  const _SpecGroup(this.label, this.lines);
+  final String label;
+  final List<String> lines;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 4),
+          for (final line in lines)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 3),
+              child: Text(
+                line,
+                style: const TextStyle(
+                  color: VedroTheme.fg,
+                  fontSize: 13,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -1096,7 +1608,6 @@ class _TitleHeadline extends StatelessWidget {
   }
 }
 
-/// AfuseKt signature wide Play Pill with built-in resume progress shading.
 class _ProgressPlayPill extends StatelessWidget {
   const _ProgressPlayPill({
     required this.label,
@@ -1120,10 +1631,10 @@ class _ProgressPlayPill extends StatelessWidget {
         height: 44,
         constraints: const BoxConstraints(minWidth: 168),
         decoration: BoxDecoration(
-          color: const Color(0xF5FFFFFF),
+          color: const Color(0xF8FFFFFF),
           borderRadius: BorderRadius.circular(22),
           boxShadow: const [
-            BoxShadow(color: Color(0x45000000), blurRadius: 16, offset: Offset(0, 6)),
+            BoxShadow(color: Color(0x55000000), blurRadius: 18, offset: Offset(0, 6)),
           ],
         ),
         clipBehavior: Clip.antiAlias,
@@ -1187,16 +1698,18 @@ class _CircleActionButton extends StatelessWidget {
         onTap: onTap,
         hoverScale: 1.06,
         pressScale: 0.92,
-        child: GlassSurface(
-          borderRadius: 22,
-          blur: 22,
-          color: active ? accent.withValues(alpha: 0.28) : const Color(0x661C1D24),
-          borderColor: active ? accent.withValues(alpha: 0.7) : const Color(0x30FFFFFF),
-          child: SizedBox(
-            width: 44,
-            height: 44,
-            child: Icon(icon, size: 20, color: active ? accent : iconColor),
+        child: Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: active ? accent.withValues(alpha: 0.28) : const Color(0xCC181920),
+            border: Border.all(
+              color: active ? accent.withValues(alpha: 0.8) : const Color(0x36FFFFFF),
+              width: 0.9,
+            ),
           ),
+          child: Icon(icon, size: 20, color: active ? accent : iconColor),
         ),
       ),
     );
@@ -1210,6 +1723,7 @@ class _EpisodeHorizontalCard extends StatefulWidget {
     required this.width,
     required this.accent,
     required this.onTap,
+    required this.onOpenDetail,
   });
 
   final MediaItemModel episode;
@@ -1217,6 +1731,7 @@ class _EpisodeHorizontalCard extends StatefulWidget {
   final double width;
   final Color accent;
   final VoidCallback onTap;
+  final VoidCallback onOpenDetail;
 
   @override
   State<_EpisodeHorizontalCard> createState() => _EpisodeHorizontalCardState();
@@ -1229,12 +1744,16 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
   Widget build(BuildContext context) {
     final ep = widget.episode;
     final hasProgress = ep.resumeProgress > 0.01;
+    final airDate = fmtIsoDate(ep.premiereDate);
+    final dur = fmtDurationTicks(ep.runTimeTicks);
+    final epOverview = ep.cleanOverview;
+
     return SizedBox(
       width: widget.width,
       child: PressableScale(
         onTap: widget.onTap,
         onHoverChanged: (v) => setState(() => _hovered = v),
-        hoverScale: 1.022,
+        hoverScale: 1.02,
         pressScale: 0.97,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1252,7 +1771,7 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                   border: Border.all(
                     color: _hovered
                         ? Colors.white
-                        : (hasProgress ? widget.accent.withValues(alpha: 0.8) : VedroTheme.line),
+                        : (hasProgress ? widget.accent.withValues(alpha: 0.85) : VedroTheme.line),
                     width: _hovered || hasProgress ? 1.5 : 0.8,
                   ),
                 ),
@@ -1266,16 +1785,63 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                       landscape: true,
                       width: 480,
                     ),
-                    if (ep.played)
-                      const Positioned(
+                    // Top-left episode number pill
+                    if (ep.indexNumber != null)
+                      Positioned(
                         top: 7,
-                        right: 7,
-                        child: CircleAvatar(
-                          radius: 10,
-                          backgroundColor: Color(0xAA0B0B0D),
-                          child: Icon(Icons.check_rounded, size: 12, color: Colors.white),
+                        left: 7,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xC00B0B0D),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            'E${ep.indexNumber!.toString().padLeft(2, '0')}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                            ),
+                          ),
                         ),
                       ),
+                    // Top-right Episode Detail / Specs button
+                    Positioned(
+                      top: 6,
+                      right: 6,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (ep.played)
+                            const Padding(
+                              padding: EdgeInsets.only(right: 4),
+                              child: CircleAvatar(
+                                radius: 10,
+                                backgroundColor: Color(0xC00B0B0D),
+                                child: Icon(Icons.check_rounded, size: 12, color: Colors.white),
+                              ),
+                            ),
+                          Tooltip(
+                            message: '本集详情 / 版本 / 规格',
+                            child: GestureDetector(
+                              onTap: widget.onOpenDetail,
+                              child: Container(
+                                width: 22,
+                                height: 22,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xC00B0B0D),
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: const Color(0x38FFFFFF), width: 0.6),
+                                ),
+                                child: const Icon(Icons.info_outline_rounded, size: 13, color: Colors.white),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                     if (hasProgress)
                       Positioned(
                         left: 8,
@@ -1303,14 +1869,35 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
               style: TextStyle(
                 color: hasProgress ? widget.accent : VedroTheme.fg,
                 fontSize: 13.5,
-                fontWeight: FontWeight.w500,
+                fontWeight: FontWeight.w600,
               ),
             ),
-            if (fmtDurationTicks(ep.runTimeTicks).isNotEmpty)
-              Text(
-                fmtDurationTicks(ep.runTimeTicks),
-                style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+            const SizedBox(height: 2),
+            Text(
+              [
+                if (airDate.isNotEmpty) airDate,
+                if (dur.isNotEmpty) dur,
+                if (ep.communityRating != null && ep.communityRating! > 0)
+                  '★ ${ep.communityRating!.toStringAsFixed(1)}',
+                if (ep.versionCount > 1) '${ep.versionCount} 版本',
+              ].join(' · '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: VedroTheme.fg3,
+                fontSize: 11.5,
+                fontFeatures: [FontFeature.tabularFigures()],
               ),
+            ),
+            if (epOverview.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(
+                epOverview,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: VedroTheme.fg2, fontSize: 12, height: 1.4),
+              ),
+            ],
           ],
         ),
       ),
@@ -1318,6 +1905,7 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
   }
 }
 
+/// Crystal-clear high-contrast Version / Audio / Subtitle selector panel.
 class _TracksPanel extends StatelessWidget {
   const _TracksPanel({
     required this.sources,
@@ -1348,61 +1936,90 @@ class _TracksPanel extends StatelessWidget {
     final accent = Theme.of(context).colorScheme.secondary;
 
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: const Color(0xAA141418),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: VedroTheme.line, width: 0.8),
+        color: const Color(0xFF14151C),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0x26FFFFFF), width: 0.9),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (sources.length > 1) ...[
-            Text(
-              '版本 (${sources.length})',
-              style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5, fontWeight: FontWeight.w600),
+            Row(
+              children: [
+                const Icon(Icons.layers_outlined, size: 16, color: VedroTheme.fg2),
+                const SizedBox(width: 7),
+                Text(
+                  '选择片源版本 (${sources.length})',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
             Wrap(
               spacing: 10,
               runSpacing: 10,
               children: sources.map((s) {
                 final on = s.id == active.id;
+                final subMeta = [
+                  if (s.container != null && s.container!.isNotEmpty) s.container!.toUpperCase(),
+                  if (fmtFileSize(s.size).isNotEmpty) fmtFileSize(s.size),
+                  if ((s.bitrate ?? 0) > 0) '${(s.bitrate! / 1000000).toStringAsFixed(1)} Mbps',
+                  if (s.subtitleStreams.isNotEmpty) '${s.subtitleStreams.length} 字幕',
+                ].join(' · ');
                 return PressableScale(
                   onTap: () => onSelectSource(s.id),
-                  hoverScale: 1.02,
+                  hoverScale: 1.015,
                   pressScale: 0.97,
                   child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
+                    duration: const Duration(milliseconds: 160),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
-                      color: on ? accent.withValues(alpha: 0.16) : VedroTheme.surface2,
-                      borderRadius: BorderRadius.circular(10),
+                      color: on ? accent.withValues(alpha: 0.22) : const Color(0xFF1E2029),
+                      borderRadius: BorderRadius.circular(11),
                       border: Border.all(
-                        color: on ? accent.withValues(alpha: 0.65) : VedroTheme.line,
-                        width: 0.9,
+                        color: on ? accent : const Color(0x2EFFFFFF),
+                        width: on ? 1.4 : 0.85,
                       ),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          s.name?.isNotEmpty == true ? s.name! : (s.container?.toUpperCase() ?? '原画'),
-                          style: TextStyle(
-                            color: on ? VedroTheme.fg : VedroTheme.fg2,
-                            fontSize: 13,
-                            fontWeight: on ? FontWeight.w600 : FontWeight.w500,
+                        if (on) ...[
+                          Icon(Icons.check_circle_rounded, size: 16, color: accent),
+                          const SizedBox(width: 8),
+                        ],
+                        Flexible(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                s.name?.isNotEmpty == true ? s.name! : (s.container?.toUpperCase() ?? '原画'),
+                                style: TextStyle(
+                                  color: on ? Colors.white : const Color(0xFFE5E7EE),
+                                  fontSize: 13.5,
+                                  fontWeight: on ? FontWeight.w600 : FontWeight.w500,
+                                ),
+                              ),
+                              if (subMeta.isNotEmpty) ...[
+                                const SizedBox(height: 3),
+                                Text(
+                                  subMeta,
+                                  style: TextStyle(
+                                    color: on ? const Color(0xDCE6EBF5) : const Color(0xFF9EA2B0),
+                                    fontSize: 11.5,
+                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          [
-                            if (s.container != null) s.container!.toUpperCase(),
-                            if (fmtFileSize(s.size).isNotEmpty) fmtFileSize(s.size),
-                            if (s.subtitleStreams.isNotEmpty) '${s.subtitleStreams.length} 条字幕',
-                          ].join(' · '),
-                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
                         ),
                       ],
                     ),
@@ -1411,15 +2028,24 @@ class _TracksPanel extends StatelessWidget {
               }).toList(),
             ),
           ] else
-            Text(
-              active.displayLabel,
-              style: const TextStyle(color: VedroTheme.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
+            Row(
+              children: [
+                const Icon(Icons.high_quality_outlined, size: 16, color: VedroTheme.fg2),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    active.displayLabel,
+                    style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+                  ),
+                ),
+              ],
             ),
+
           if (audios.isNotEmpty) ...[
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             Text(
               '音轨 (${audios.length})',
-              style: const TextStyle(color: VedroTheme.fg3, fontSize: 12, fontWeight: FontWeight.w600),
+              style: const TextStyle(color: Color(0xFFB5B9C6), fontSize: 12.5, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 8),
             Wrap(
@@ -1429,22 +2055,25 @@ class _TracksPanel extends StatelessWidget {
                 final on = selectedAudioIndex == a.index;
                 return GestureDetector(
                   onTap: () => onSelectAudio(on ? null : a.index),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5.5),
-                    decoration: BoxDecoration(
-                      color: on ? accent.withValues(alpha: 0.16) : VedroTheme.surface2,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: on ? accent.withValues(alpha: 0.65) : VedroTheme.line,
-                        width: 0.7,
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6.5),
+                      decoration: BoxDecoration(
+                        color: on ? accent.withValues(alpha: 0.22) : const Color(0xFF1E2029),
+                        borderRadius: BorderRadius.circular(9),
+                        border: Border.all(
+                          color: on ? accent : const Color(0x28FFFFFF),
+                          width: on ? 1.2 : 0.8,
+                        ),
                       ),
-                    ),
-                    child: Text(
-                      a.label,
-                      style: TextStyle(
-                        color: on ? VedroTheme.fg : VedroTheme.fg2,
-                        fontSize: 12,
-                        fontWeight: on ? FontWeight.w600 : FontWeight.w400,
+                      child: Text(
+                        a.label,
+                        style: TextStyle(
+                          color: on ? Colors.white : const Color(0xFFDCE0EA),
+                          fontSize: 12.5,
+                          fontWeight: on ? FontWeight.w600 : FontWeight.w500,
+                        ),
                       ),
                     ),
                   ),
@@ -1452,36 +2081,40 @@ class _TracksPanel extends StatelessWidget {
               }).toList(),
             ),
           ],
+
           if (subs.isNotEmpty) ...[
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             Text(
               '字幕 (${subs.length})',
-              style: const TextStyle(color: VedroTheme.fg3, fontSize: 12, fontWeight: FontWeight.w600),
+              style: const TextStyle(color: Color(0xFFB5B9C6), fontSize: 12.5, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: subs.take(14).map((s) {
+              children: subs.take(16).map((s) {
                 final on = selectedSubtitleIndex == s.index;
                 return GestureDetector(
                   onTap: () => onSelectSubtitle(on ? null : s.index),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5.5),
-                    decoration: BoxDecoration(
-                      color: on ? accent.withValues(alpha: 0.16) : VedroTheme.surface2,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: on ? accent.withValues(alpha: 0.65) : VedroTheme.line,
-                        width: 0.7,
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6.5),
+                      decoration: BoxDecoration(
+                        color: on ? accent.withValues(alpha: 0.22) : const Color(0xFF1E2029),
+                        borderRadius: BorderRadius.circular(9),
+                        border: Border.all(
+                          color: on ? accent : const Color(0x28FFFFFF),
+                          width: on ? 1.2 : 0.8,
+                        ),
                       ),
-                    ),
-                    child: Text(
-                      s.label,
-                      style: TextStyle(
-                        color: on ? VedroTheme.fg : VedroTheme.fg2,
-                        fontSize: 12,
-                        fontWeight: on ? FontWeight.w600 : FontWeight.w400,
+                      child: Text(
+                        s.label,
+                        style: TextStyle(
+                          color: on ? Colors.white : const Color(0xFFDCE0EA),
+                          fontSize: 12.5,
+                          fontWeight: on ? FontWeight.w600 : FontWeight.w500,
+                        ),
                       ),
                     ),
                   ),
@@ -1500,11 +2133,13 @@ class _EpisodeRow extends StatefulWidget {
     required this.episode,
     required this.appState,
     required this.onTap,
+    required this.onOpenDetail,
   });
 
   final MediaItemModel episode;
   final VedroAppState appState;
   final VoidCallback onTap;
+  final VoidCallback onOpenDetail;
 
   @override
   State<_EpisodeRow> createState() => _EpisodeRowState();
@@ -1517,6 +2152,7 @@ class _EpisodeRowState extends State<_EpisodeRow> {
   Widget build(BuildContext context) {
     final ep = widget.episode;
     final dur = fmtDurationTicks(ep.runTimeTicks);
+    final airDate = fmtIsoDate(ep.premiereDate);
     final epOverview = ep.cleanOverview;
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -1527,19 +2163,20 @@ class _EpisodeRowState extends State<_EpisodeRow> {
         pressScale: 0.985,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: _hovered ? VedroTheme.surface2 : const Color(0xAA141418),
-            borderRadius: BorderRadius.circular(13),
+            color: _hovered ? const Color(0xFF1B1C24) : const Color(0xFF13141A),
+            borderRadius: BorderRadius.circular(14),
             border: Border.all(
-              color: _hovered ? VedroTheme.lineStrong : VedroTheme.line,
+              color: _hovered ? VedroTheme.lineStrong : const Color(0x1CFFFFFF),
               width: 0.8,
             ),
           ),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               SizedBox(
-                width: 152,
+                width: 164,
                 child: AspectRatio(
                   aspectRatio: 16 / 9,
                   child: Container(
@@ -1578,7 +2215,7 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                   ),
                 ),
               ),
-              const SizedBox(width: 15),
+              const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1595,43 +2232,56 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               color: VedroTheme.fg,
-                              fontSize: 14.5,
+                              fontSize: 15,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
                         ),
-                        if (dur.isNotEmpty)
-                          Text(
-                            dur,
-                            style: const TextStyle(
-                              color: VedroTheme.fg2,
-                              fontSize: 12,
-                              fontFeatures: [FontFeature.tabularFigures()],
-                            ),
+                        if (ep.played)
+                          const Padding(
+                            padding: EdgeInsets.only(right: 6),
+                            child: Icon(Icons.check_circle_rounded, size: 16, color: Color(0xFF34D399)),
                           ),
+                        Tooltip(
+                          message: '查看本集详情与媒体规格',
+                          child: IconButton(
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.info_outline_rounded, size: 18, color: VedroTheme.fg3),
+                            onPressed: widget.onOpenDetail,
+                          ),
+                        ),
                       ],
                     ),
+                    const SizedBox(height: 2),
+                    Text(
+                      [
+                        if (airDate.isNotEmpty) airDate,
+                        if (dur.isNotEmpty) dur,
+                        if (ep.communityRating != null && ep.communityRating! > 0)
+                          '★ ${ep.communityRating!.toStringAsFixed(1)}',
+                        if (ep.versionCount > 1) '${ep.versionCount} 个版本',
+                      ].join(' · '),
+                      style: const TextStyle(
+                        color: VedroTheme.fg3,
+                        fontSize: 12,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    ),
                     if (epOverview.isNotEmpty) ...[
-                      const SizedBox(height: 5),
+                      const SizedBox(height: 6),
                       Text(
                         epOverview,
-                        maxLines: 2,
+                        maxLines: 3,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          color: Color(0xFFB8BAC4),
-                          fontSize: 12.5,
-                          height: 1.48,
+                          color: VedroTheme.fg2,
+                          fontSize: 13,
+                          height: 1.5,
                         ),
                       ),
                     ],
                   ],
                 ),
-              ),
-              const SizedBox(width: 10),
-              Icon(
-                ep.played ? Icons.check_circle_rounded : Icons.play_arrow_rounded,
-                size: 21,
-                color: _hovered ? VedroTheme.fg : VedroTheme.fg3,
               ),
             ],
           ),

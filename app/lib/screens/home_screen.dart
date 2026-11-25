@@ -8,6 +8,7 @@ import '../state/app_state.dart';
 import '../widgets/home_layout_sheet.dart';
 import '../widgets/horizontal_rail.dart';
 import '../widgets/media_card.dart';
+import '../widgets/server_card_grid.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
 
@@ -20,6 +21,7 @@ class HomeScreen extends StatefulWidget {
     required this.onLibraryTap,
     this.onGenreTap,
     this.onOpenFavorites,
+    this.onOpenLocalMedia,
     required this.onOpenServerHub,
     required this.onOpenAddServer,
     required this.onOpenSettings,
@@ -32,6 +34,7 @@ class HomeScreen extends StatefulWidget {
   final void Function(MediaItemModel) onLibraryTap;
   final ValueChanged<String>? onGenreTap;
   final VoidCallback? onOpenFavorites;
+  final VoidCallback? onOpenLocalMedia;
   final VoidCallback onOpenServerHub;
   final void Function([String? initialUrl]) onOpenAddServer;
   final VoidCallback onOpenSettings;
@@ -117,6 +120,7 @@ class _HomeScreenState extends State<HomeScreen> {
         appState: app,
         wide: wide,
         onOpenAddServer: widget.onOpenAddServer,
+        onOpenLocalMedia: widget.onOpenLocalMedia,
         onOpenServerHub: widget.onOpenServerHub,
         onOpenSettings: widget.onOpenSettings,
       );
@@ -459,6 +463,7 @@ class _ServerWelcomeHub extends StatelessWidget {
     required this.appState,
     required this.wide,
     required this.onOpenAddServer,
+    this.onOpenLocalMedia,
     required this.onOpenServerHub,
     required this.onOpenSettings,
   });
@@ -466,6 +471,7 @@ class _ServerWelcomeHub extends StatelessWidget {
   final VedroAppState appState;
   final bool wide;
   final void Function([String? initialUrl]) onOpenAddServer;
+  final VoidCallback? onOpenLocalMedia;
   final VoidCallback onOpenServerHub;
   final VoidCallback onOpenSettings;
 
@@ -479,7 +485,7 @@ class _ServerWelcomeHub extends StatelessWidget {
         child: SingleChildScrollView(
           padding: EdgeInsets.fromLTRB(24, wide ? 84 : 28, 24, wide ? 48 : 112),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 620),
+            constraints: BoxConstraints(maxWidth: saved.length > 1 ? 940 : 640),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -497,7 +503,7 @@ class _ServerWelcomeHub extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 const Text(
-                  '选择一个媒体服务器开始观影，支持多服务器聚合搜索与多线路测速切换',
+                  '选择一个媒体服务器开始观影，支持多服务器聚合搜索、自定义卡片与多线路测速切换',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: VedroTheme.fg3, fontSize: 13.5),
                 ),
@@ -533,6 +539,34 @@ class _ServerWelcomeHub extends StatelessWidget {
                         ),
                       ),
                     ),
+                    if (onOpenLocalMedia != null)
+                      PressableScale(
+                        onTap: onOpenLocalMedia,
+                        child: Container(
+                          height: 44,
+                          padding: const EdgeInsets.symmetric(horizontal: 18),
+                          decoration: BoxDecoration(
+                            color: VedroTheme.surface2,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: VedroTheme.line, width: 0.8),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.folder_open_rounded, size: 17, color: VedroTheme.fg2),
+                              SizedBox(width: 7),
+                              Text(
+                                '本地播放',
+                                style: TextStyle(
+                                  color: VedroTheme.fg,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     PressableScale(
                       onTap: onOpenSettings,
                       child: Container(
@@ -565,83 +599,11 @@ class _ServerWelcomeHub extends StatelessWidget {
 
                 if (saved.isNotEmpty) ...[
                   const SizedBox(height: 36),
-                  Row(
-                    children: [
-                      const Text(
-                        '我的服务器',
-                        style: TextStyle(
-                          color: VedroTheme.fg,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const Spacer(),
-                      TextButton(
-                        onPressed: onOpenServerHub,
-                        child: const Text(
-                          '管理线路',
-                          style: TextStyle(color: VedroTheme.fg2, fontSize: 13),
-                        ),
-                      ),
-                    ],
+                  ServerCardGrid(
+                    appState: appState,
+                    onSelectServer: (srv) => appState.restoreSavedServer(srv),
+                    onAddServer: () => onOpenAddServer(),
                   ),
-                  const SizedBox(height: 8),
-                  ...saved.map((srv) => Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: PressableScale(
-                          onTap: () => appState.restoreSavedServer(srv),
-                          hoverScale: 1.01,
-                          pressScale: 0.985,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                            decoration: BoxDecoration(
-                              color: VedroTheme.surface,
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: VedroTheme.line, width: 0.8),
-                            ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  width: 40,
-                                  height: 40,
-                                  decoration: BoxDecoration(
-                                    color: VedroTheme.surface2,
-                                    borderRadius: BorderRadius.circular(11),
-                                    border: Border.all(color: VedroTheme.line, width: 0.6),
-                                  ),
-                                  child: const Icon(Icons.dns_outlined, size: 18, color: VedroTheme.fg2),
-                                ),
-                                const SizedBox(width: 14),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        srv.name,
-                                        style: const TextStyle(
-                                          color: VedroTheme.fg,
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 3),
-                                      Text(
-                                        [
-                                          if (srv.username != null) srv.username!,
-                                          srv.activeRoute?.name ?? '默认线路',
-                                          if (srv.routes.length > 1) '${srv.routes.length} 条线路',
-                                        ].join(' · '),
-                                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const Icon(Icons.chevron_right_rounded, size: 20, color: VedroTheme.fg3),
-                              ],
-                            ),
-                          ),
-                        ),
-                      )),
                 ],
 
                 if (discovered.isNotEmpty) ...[
@@ -726,6 +688,7 @@ class _CinemaHeroBanner extends StatefulWidget {
 class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
   int _active = 0;
   bool _paused = false;
+  bool _hovered = false;
   Timer? _autoTimer;
 
   @override
@@ -784,10 +747,12 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
 
     return MouseRegion(
       onEnter: (_) {
+        setState(() => _hovered = true);
         _paused = true;
         _autoTimer?.cancel();
       },
       onExit: (_) {
+        setState(() => _hovered = false);
         _paused = false;
         _armTimer();
       },
@@ -1122,6 +1087,53 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 ),
               ),
             ),
+
+            if (wide && widget.featured.length > 1) ...[
+              Positioned(
+                left: 14,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: AnimatedOpacity(
+                    opacity: _hovered ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 180),
+                    child: PressableScale(
+                      onTap: () => _select((_active - 1 + widget.featured.length) % widget.featured.length),
+                      child: GlassSurface(
+                        borderRadius: 20,
+                        blur: 18,
+                        color: const Color(0x66141418),
+                        borderColor: const Color(0x2EFFFFFF),
+                        padding: const EdgeInsets.all(8),
+                        child: const Icon(Icons.chevron_left_rounded, size: 22, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                right: 14,
+                top: 0,
+                bottom: 0,
+                child: Center(
+                  child: AnimatedOpacity(
+                    opacity: _hovered ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 180),
+                    child: PressableScale(
+                      onTap: () => _select((_active + 1) % widget.featured.length),
+                      child: GlassSurface(
+                        borderRadius: 20,
+                        blur: 18,
+                        color: const Color(0x66141418),
+                        borderColor: const Color(0x2EFFFFFF),
+                        padding: const EdgeInsets.all(8),
+                        child: const Icon(Icons.chevron_right_rounded, size: 22, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
 
             if (widget.featured.length > 1)
               Positioned(

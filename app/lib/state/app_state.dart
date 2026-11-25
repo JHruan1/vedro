@@ -97,6 +97,10 @@ class VedroAppState extends ChangeNotifier {
   }
 
   String get activeServerDisplayName {
+    if (activeServerId != null) {
+      final custom = serverCardStyleFor(activeServerId!).customName.trim();
+      if (custom.isNotEmpty) return custom;
+    }
     if (capabilities?.serverName.isNotEmpty == true) return capabilities!.serverName;
     if (activeServer?.name.isNotEmpty == true) return activeServer!.name;
     return 'Vedro';
@@ -829,6 +833,34 @@ class VedroAppState extends ChangeNotifier {
 
   Future<void> clearSearchHistory() async {
     await updatePrefs(prefs.copyWith(searchHistory: const []));
+  }
+
+  ServerCardStyle serverCardStyleFor(String serverId) =>
+      prefs.serverCardStyles[serverId] ?? const ServerCardStyle();
+
+  String displayNameForServer(SavedServerProfile srv) {
+    final custom = serverCardStyleFor(srv.id).customName.trim();
+    return custom.isNotEmpty ? custom : srv.name;
+  }
+
+  Future<void> updateServerCardStyle(String serverId, ServerCardStyle style) async {
+    final next = Map<String, ServerCardStyle>.from(prefs.serverCardStyles);
+    next[serverId] = style;
+    await updatePrefs(prefs.copyWith(serverCardStyles: next));
+  }
+
+  Future<void> openExternalUrl(String url) async {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return;
+    try {
+      if (!kIsWeb && Platform.isMacOS) {
+        await Process.start('open', [trimmed]);
+      } else if (!kIsWeb && Platform.isWindows) {
+        await Process.start('cmd', ['/c', 'start', '', trimmed], runInShell: true);
+      } else if (!kIsWeb && Platform.isLinux) {
+        await Process.start('xdg-open', [trimmed]);
+      }
+    } catch (_) {}
   }
 
   DownloadTaskModel? findDownloadForItem(String itemId) {

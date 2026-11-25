@@ -43,6 +43,148 @@ class AccentPalette {
   }
 }
 
+/// Visual theme preset for an individual Media Server Card.
+class ServerCardTheme {
+  const ServerCardTheme({
+    required this.id,
+    required this.label,
+    required this.accent,
+    required this.bgTop,
+    required this.bgBottom,
+  });
+
+  final String id;
+  final String label;
+  final Color accent;
+  final Color bgTop;
+  final Color bgBottom;
+
+  static const List<ServerCardTheme> all = [
+    ServerCardTheme(
+      id: 'cobalt',
+      label: '午夜蓝',
+      accent: Color(0xFF5B9BFF),
+      bgTop: Color(0xFF151E30),
+      bgBottom: Color(0xFF11131B),
+    ),
+    ServerCardTheme(
+      id: 'emerald',
+      label: '翡翠绿',
+      accent: Color(0xFF34D399),
+      bgTop: Color(0xFF112620),
+      bgBottom: Color(0xFF111517),
+    ),
+    ServerCardTheme(
+      id: 'violet',
+      label: '暮光紫',
+      accent: Color(0xFFA78BFA),
+      bgTop: Color(0xFF201833),
+      bgBottom: Color(0xFF13121B),
+    ),
+    ServerCardTheme(
+      id: 'amber',
+      label: '琥珀金',
+      accent: Color(0xFFFBBF24),
+      bgTop: Color(0xFF282012),
+      bgBottom: Color(0xFF151311),
+    ),
+    ServerCardTheme(
+      id: 'rose',
+      label: '玫瑰红',
+      accent: Color(0xFFFB7185),
+      bgTop: Color(0xFF2B161E),
+      bgBottom: Color(0xFF161215),
+    ),
+    ServerCardTheme(
+      id: 'graphite',
+      label: '曜石黑',
+      accent: Color(0xFFD1D5DB),
+      bgTop: Color(0xFF1C1D22),
+      bgBottom: Color(0xFF121317),
+    ),
+  ];
+
+  static ServerCardTheme byId(String id) {
+    for (final t in all) {
+      if (t.id == id) return t;
+    }
+    return all.first;
+  }
+
+  /// Deterministic default theme per server id when user hasn't customized one yet.
+  static ServerCardTheme forSeed(String seed) {
+    var h = 0;
+    for (var i = 0; i < seed.length; i++) {
+      h = (h * 31 + seed.codeUnitAt(i)) & 0x7FFFFFFF;
+    }
+    return all[h % all.length];
+  }
+}
+
+/// Per-server customizable card appearance & privacy settings.
+class ServerCardStyle {
+  const ServerCardStyle({
+    this.customName = '',
+    this.subtitle = '',
+    this.themeId = '',
+    this.iconId = 'server',
+    this.hideAddress = false,
+  });
+
+  final String customName;
+  final String subtitle;
+  final String themeId; // '' => auto deterministic
+  final String iconId; // server | film | tv | home | cloud | bolt | globe | sparkles
+  final bool hideAddress;
+
+  static const Map<String, (String label, IconData icon)> icons = {
+    'server': ('服务器', Icons.dns_rounded),
+    'film': ('影院', Icons.movie_filter_rounded),
+    'tv': ('剧集', Icons.live_tv_rounded),
+    'home': ('家庭 NAS', Icons.home_rounded),
+    'cloud': ('云盘', Icons.cloud_rounded),
+    'bolt': ('高速专线', Icons.bolt_rounded),
+    'globe': ('海外节点', Icons.public_rounded),
+    'sparkles': ('番剧动漫', Icons.auto_awesome_rounded),
+  };
+
+  IconData get iconData => icons[iconId]?.$2 ?? Icons.dns_rounded;
+
+  ServerCardTheme resolveTheme(String serverId) =>
+      themeId.isNotEmpty ? ServerCardTheme.byId(themeId) : ServerCardTheme.forSeed(serverId);
+
+  ServerCardStyle copyWith({
+    String? customName,
+    String? subtitle,
+    String? themeId,
+    String? iconId,
+    bool? hideAddress,
+  }) =>
+      ServerCardStyle(
+        customName: customName ?? this.customName,
+        subtitle: subtitle ?? this.subtitle,
+        themeId: themeId ?? this.themeId,
+        iconId: iconId ?? this.iconId,
+        hideAddress: hideAddress ?? this.hideAddress,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'custom_name': customName,
+        'subtitle': subtitle,
+        'theme_id': themeId,
+        'icon_id': iconId,
+        'hide_address': hideAddress,
+      };
+
+  factory ServerCardStyle.fromJson(Map<String, dynamic> j) => ServerCardStyle(
+        customName: (j['custom_name'] ?? '').toString(),
+        subtitle: (j['subtitle'] ?? '').toString(),
+        themeId: (j['theme_id'] ?? '').toString(),
+        iconId: (j['icon_id'] ?? 'server').toString(),
+        hideAddress: j['hide_address'] == true,
+      );
+}
+
 class DownloadTaskModel {
   const DownloadTaskModel({
     required this.id,
@@ -202,9 +344,11 @@ class VedroPreferences {
     this.downloadWifiOnly = true,
     this.downloadMaxConcurrent = 2,
     this.downloadCustomDir = '',
-    // 字体管理 & 搜索历史
+    // 字体管理 & 搜索历史 & 服务器卡片设置
     this.customFontPaths = const [],
     this.searchHistory = const [],
+    this.serverCardStyles = const {},
+    this.serverCardLayout = 'grid', // grid | list
   });
 
   final String accentId;
@@ -291,6 +435,8 @@ class VedroPreferences {
 
   final List<String> customFontPaths;
   final List<String> searchHistory;
+  final Map<String, ServerCardStyle> serverCardStyles;
+  final String serverCardLayout;
 
   AccentPalette get accentPalette => AccentPalette.byId(accentId);
 
@@ -382,6 +528,8 @@ class VedroPreferences {
     String? downloadCustomDir,
     List<String>? customFontPaths,
     List<String>? searchHistory,
+    Map<String, ServerCardStyle>? serverCardStyles,
+    String? serverCardLayout,
   }) =>
       VedroPreferences(
         accentId: accentId ?? this.accentId,
@@ -457,6 +605,8 @@ class VedroPreferences {
         downloadCustomDir: downloadCustomDir ?? this.downloadCustomDir,
         customFontPaths: customFontPaths ?? this.customFontPaths,
         searchHistory: searchHistory ?? this.searchHistory,
+        serverCardStyles: serverCardStyles ?? this.serverCardStyles,
+        serverCardLayout: serverCardLayout ?? this.serverCardLayout,
       );
 
   Map<String, dynamic> toJson() => {
@@ -533,6 +683,8 @@ class VedroPreferences {
         'download_custom_dir': downloadCustomDir,
         'custom_font_paths': customFontPaths,
         'search_history': searchHistory,
+        'server_card_styles': serverCardStyles.map((k, v) => MapEntry(k, v.toJson())),
+        'server_card_layout': serverCardLayout,
       };
 
   factory VedroPreferences.fromJson(Map<String, dynamic> j) => VedroPreferences(
@@ -616,5 +768,18 @@ class VedroPreferences {
             .where((s) => s.isNotEmpty)
             .take(15)
             .toList(),
+        serverCardStyles: j['server_card_styles'] is Map
+            ? (j['server_card_styles'] as Map).map(
+                (k, v) => MapEntry(
+                  k.toString(),
+                  v is Map<String, dynamic>
+                      ? ServerCardStyle.fromJson(v)
+                      : (v is Map
+                          ? ServerCardStyle.fromJson(Map<String, dynamic>.from(v))
+                          : const ServerCardStyle()),
+                ),
+              )
+            : const {},
+        serverCardLayout: (j['server_card_layout'] ?? 'grid').toString(),
       );
 }

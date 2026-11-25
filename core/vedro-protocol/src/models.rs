@@ -484,6 +484,15 @@ impl MediaSourceInfo {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
+pub struct ExternalUrl {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub id: String,
@@ -507,6 +516,22 @@ pub struct BaseItemDto {
     pub production_year: Option<i32>,
     #[serde(default)]
     pub premiere_date: Option<String>,
+    #[serde(default)]
+    pub end_date: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub date_created: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub air_time: Option<String>,
+    #[serde(default)]
+    pub air_days: Vec<String>,
+    #[serde(default)]
+    pub production_locations: Vec<String>,
+    #[serde(default)]
+    pub external_urls: Vec<ExternalUrl>,
     #[serde(default)]
     pub community_rating: Option<f64>,
     #[serde(default)]

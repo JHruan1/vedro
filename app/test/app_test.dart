@@ -7,6 +7,7 @@ import 'package:vedro/core/ffi/vedro_bridge.dart';
 import 'package:vedro/core/models/models.dart';
 import 'package:vedro/core/models/preferences.dart';
 import 'package:vedro/main.dart';
+import 'package:vedro/screens/detail_screen.dart';
 import 'package:vedro/state/app_state.dart';
 import 'package:vedro/widgets/danmaku_engine.dart';
 
@@ -15,13 +16,13 @@ class _MockVedroCore implements VedroCoreClient {
   final bool isAdmin;
 
   @override
-  String get coreVersion => '0.2.0-test';
+  String get coreVersion => '0.2.1-test';
 
   @override
   Future<dynamic> invoke(String method, [Map<String, dynamic> params = const {}]) async {
     switch (method) {
       case 'version':
-        return <String, dynamic>{'version': '0.2.0-test'};
+        return <String, dynamic>{'version': '0.2.1-test'};
       case 'list_servers':
         return <dynamic>[];
       case 'get_settings':
@@ -109,6 +110,33 @@ class _MockVedroCore implements VedroCoreClient {
           'favorites': <dynamic>[],
           'latest_by_library': <dynamic>[],
         };
+      case 'get_item':
+        return <String, dynamic>{
+          'item': <String, dynamic>{
+            'Id': 'tv1',
+            'Name': '三体',
+            'OriginalTitle': '3 Body Problem',
+            'Type': 'Series',
+            'Overview': '简短的一句话简介，不需要展开按钮。',
+            'ProductionYear': 2024,
+            'PremiereDate': '2024-03-21T00:00:00Z',
+            'Status': 'Continuing',
+            'CommunityRating': 8.2,
+            'CriticRating': 79.0,
+            'OfficialRating': 'TV-MA',
+            'ProductionLocations': ['United States'],
+            'Studios': [
+              {'Name': 'Netflix', 'Id': '1'}
+            ],
+            'Tags': ['科幻', '宇宙社会学'],
+            'Genres': ['科幻', '悬疑'],
+            'ProviderIds': {'Tmdb': '108545', 'Imdb': 'tt13016388'},
+          },
+          'similar': <dynamic>[],
+          'segments': <dynamic>[],
+        };
+      case 'get_seasons':
+        return <String, dynamic>{'Items': <dynamic>[]};
       default:
         return <String, dynamic>{};
     }
@@ -188,6 +216,16 @@ void main() {
       customMpvConf: 'interpolation=yes',
       forceAssOverride: true,
       searchHistory: ['沙丘', '进击的巨人'],
+      serverCardLayout: 'list',
+      serverCardStyles: {
+        'srv-1': ServerCardStyle(
+          customName: '主力 4K 服',
+          subtitle: '香港直连',
+          themeId: 'emerald',
+          iconId: 'film',
+          hideAddress: true,
+        ),
+      },
     );
     final decoded = VedroPreferences.fromJson(orig.toJson());
     expect(decoded.accentId, equals('emerald'));
@@ -207,6 +245,35 @@ void main() {
     expect(decoded.customMpvConf, equals('interpolation=yes'));
     expect(decoded.forceAssOverride, isTrue);
     expect(decoded.searchHistory, equals(['沙丘', '进击的巨人']));
+    expect(decoded.serverCardLayout, equals('list'));
+    expect(decoded.serverCardStyles['srv-1']?.customName, equals('主力 4K 服'));
+    expect(decoded.serverCardStyles['srv-1']?.themeId, equals('emerald'));
+    expect(decoded.serverCardStyles['srv-1']?.hideAddress, isTrue);
+
+    // 7. Rich NFO metadata parsing
+    final series = MediaItemModel.fromJson({
+      'Id': 'tv1',
+      'Name': '三体',
+      'OriginalTitle': '3 Body Problem',
+      'Type': 'Series',
+      'PremiereDate': '2024-03-21T00:00:00Z',
+      'Status': 'Continuing',
+      'CriticRating': 79.0,
+      'OfficialRating': 'TV-MA',
+      'ProductionLocations': ['United States'],
+      'Studios': [
+        {'Name': 'Netflix', 'Id': '1'}
+      ],
+      'Tags': ['科幻', '外星文明'],
+      'ProviderIds': {'Tmdb': '108545', 'Imdb': 'tt13016388'},
+    });
+    expect(fmtIsoDate(series.premiereDate), equals('2024-03-21'));
+    expect(series.status, equals('Continuing'));
+    expect(series.criticRating, equals(79.0));
+    expect(series.productionLocations, equals(['United States']));
+    expect(series.studios, equals(['Netflix']));
+    expect(series.tags, equals(['科幻', '外星文明']));
+    expect(series.providerIds['Tmdb'], equals('108545'));
     expect(hashPasscode('1234'), equals(hashPasscode('1234')));
     expect(hashPasscode('1234'), isNot(equals(hashPasscode('4321'))));
 
@@ -277,6 +344,8 @@ void main() {
     expect(find.text('模块配置'), findsOneWidget);
     expect(find.text('列表配置'), findsOneWidget);
     expect(find.text('播放设置'), findsOneWidget);
+    await tester.drag(find.byType(ListView).first, const Offset(0, -320));
+    await tester.pumpAndSettle();
     expect(find.text('弹幕设置'), findsOneWidget);
     expect(find.text('AI 服务（翻译）'), findsOneWidget);
     expect(find.text('隐私保护'), findsOneWidget);
@@ -284,6 +353,28 @@ void main() {
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
+  });
+
+  testWidgets('Series DetailScreen renders full NFO metadata and hides 展开全部 for short overview',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final app = VedroAppState(_MockVedroCore());
+    final stub = MediaItemModel(id: 'tv1', name: '三体', type: 'Series');
+    await tester.pumpWidget(MaterialApp(
+      home: DetailScreen(item: stub, appState: app),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.text('影片资料与 NFO 信息'), findsOneWidget);
+    expect(find.text('Netflix'), findsOneWidget);
+    expect(find.text('# 科幻'), findsOneWidget);
+    expect(find.text('TMDB: 108545'), findsOneWidget);
+    expect(find.text('2024-03-21'), findsWidgets);
+    // Short overview MUST NOT show 展开全部
+    expect(find.text('展开全部'), findsNothing);
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {

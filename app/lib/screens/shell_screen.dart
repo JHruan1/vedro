@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/models/models.dart';
+import '../core/platform/native_playback_channel.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/home_layout_sheet.dart';
@@ -35,6 +36,72 @@ class ShellScreen extends StatefulWidget {
 class _ShellScreenState extends State<ShellScreen> {
   int _index = 0;
   bool _homeScrolled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    NativePlaybackChannel.ensureWindowListener();
+    NativePlaybackChannel.droppedFilesNotifier.addListener(_onGlobalFilesDropped);
+  }
+
+  @override
+  void dispose() {
+    NativePlaybackChannel.droppedFilesNotifier.removeListener(_onGlobalFilesDropped);
+    super.dispose();
+  }
+
+  void _onGlobalFilesDropped() {
+    if (!mounted) return;
+    // If PlayerScreen is on top of navigator, let PlayerScreen consume the drop itself.
+    if (ModalRoute.of(context)?.isCurrent != true) return;
+    final paths = NativePlaybackChannel.droppedFilesNotifier.value;
+    if (paths.isEmpty) return;
+    NativePlaybackChannel.droppedFilesNotifier.value = const [];
+    for (final p in paths) {
+      final resolved = NativePlaybackChannel.resolveLocalPlaylist(p);
+      if (resolved.files.isNotEmpty) {
+        _launchLocalMedia(resolved.files, resolved.startIndex);
+        return;
+      }
+    }
+  }
+
+  Future<void> _openLocalMediaPicker() async {
+    final picked = await NativePlaybackChannel.pickFiles(
+      extensions: NativePlaybackChannel.videoExtensions.toList(),
+      allowDirectory: true,
+      title: '选择本地视频文件或文件夹',
+    );
+    if (picked.isEmpty || !mounted) return;
+    final resolved = NativePlaybackChannel.resolveLocalPlaylist(picked.first);
+    if (resolved.files.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('所选路径中未找到支持的视频文件')),
+      );
+      return;
+    }
+    _launchLocalMedia(resolved.files, resolved.startIndex);
+  }
+
+  void _launchLocalMedia(List<String> files, int startIndex) {
+    final targetPath = files[startIndex.clamp(0, files.length - 1)];
+    final name = targetPath.split(Platform.pathSeparator).last;
+    final dot = name.lastIndexOf('.');
+    final stem = dot > 0 ? name.substring(0, dot) : name;
+    Navigator.of(context).push(
+      vedroRoute(PlayerScreen(
+        item: MediaItemModel(
+          id: 'local_$startIndex',
+          name: stem,
+          type: 'Video',
+          indexNumber: startIndex + 1,
+        ),
+        appState: widget.appState,
+        localFilePath: targetPath,
+        localPlaylistPaths: files,
+      )),
+    );
+  }
 
   static const _desktopNav = [
     (0, '首页'),
@@ -170,6 +237,7 @@ class _ShellScreenState extends State<ShellScreen> {
         onLibraryTap: _openLibrary,
         onGenreTap: _openGenre,
         onOpenFavorites: _openFavorites,
+        onOpenLocalMedia: _openLocalMediaPicker,
         onOpenServerHub: _openServerHub,
         onOpenAddServer: _openAddServer,
         onOpenSettings: () => setState(() => _index = 4),
@@ -240,6 +308,7 @@ class _ShellScreenState extends State<ShellScreen> {
                     onSelectIndex: (i) => setState(() => _index = i),
                     onOpenServerHub: _openServerHub,
                     onOpenSearch: _openSpotlight,
+                    onOpenLocalMedia: _openLocalMediaPicker,
                     onOpenFavorites: _openFavorites,
                     onOpenLayout: () => showHomeLayoutSheet(
                       context: context,
@@ -298,6 +367,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
     required this.onSelectIndex,
     required this.onOpenServerHub,
     required this.onOpenSearch,
+    required this.onOpenLocalMedia,
     required this.onOpenFavorites,
     required this.onOpenLayout,
     required this.onRefresh,
@@ -310,21 +380,29 @@ class _FloatingDesktopHeader extends StatelessWidget {
   final ValueChanged<int> onSelectIndex;
   final VoidCallback onOpenServerHub;
   final VoidCallback onOpenSearch;
+  final VoidCallback onOpenLocalMedia;
   final VoidCallback onOpenFavorites;
   final VoidCallback onOpenLayout;
   final VoidCallback onRefresh;
 
   @override
   Widget build(BuildContext context) {
-    final macTrafficClearance = !kIsWeb && Platform.isMacOS ? 82.0 : 28.0;
-    final routeName = appState.activeRouteDisplayName;
-    final serverLabel = appState.isSignedIn ? appState.activeServerDisplayName : '选择服务器';
+    NativePlaybackChannel.ensureWindowListener();
+    return ValueListenableBuilder<bool>(
+      valueListenable: NativePlaybackChannel.fullscreenNotifier,
+      builder: (context, isFullscreen, _) {
+        final macTrafficClearance = (!kIsWeb && Platform.isMacOS && !isFullscreen) ? 82.0 : 28.0;
+        final routeName = appState.activeRouteDisplayName;
+        final serverLabel = appState.isSignedIn ? appState.activeServerDisplayName : '选择服务器';
+        final activeSrv = appState.activeServer;
+        final cardStyle = activeSrv != null ? appState.serverCardStyleFor(activeSrv.id) : null;
+        final cardTheme = activeSrv != null ? cardStyle?.resolveTheme(activeSrv.id) : null;
 
-    final content = SafeArea(
-      bottom: false,
-      child: Container(
-        height: 58,
-        padding: EdgeInsets.fromLTRB(macTrafficClearance, 0, 28, 0),
+        final content = SafeArea(
+          bottom: false,
+          child: Container(
+            height: 58,
+            padding: EdgeInsets.fromLTRB(macTrafficClearance, 0, 28, 0),
         child: Row(
           children: [
             // Interactive Server + Multi-Route Switcher Pill
@@ -346,7 +424,18 @@ class _FloatingDesktopHeader extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const VedroBrandMark(size: 24),
+                    if (appState.isSignedIn && cardStyle != null && cardTheme != null)
+                      Container(
+                        width: 24,
+                        height: 24,
+                        decoration: BoxDecoration(
+                          color: cardTheme.accent.withValues(alpha: 0.22),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(cardStyle.iconData, size: 13.5, color: cardTheme.accent),
+                      )
+                    else
+                      const VedroBrandMark(size: 24),
                     const SizedBox(width: 8),
                     ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 160),
@@ -417,7 +506,13 @@ class _FloatingDesktopHeader extends StatelessWidget {
                   ),
                 ),
               ),
-            const Spacer(),
+            Expanded(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onDoubleTap: NativePlaybackChannel.toggleZoom,
+                child: const SizedBox.expand(),
+              ),
+            ),
             // Aggregated Spotlight Search pill
             PressableScale(
               onTap: onOpenSearch,
@@ -468,6 +563,32 @@ class _FloatingDesktopHeader extends StatelessWidget {
                       ),
                     ),
                   ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Tooltip(
+              message: '打开本地视频 / 文件夹（也支持直接拖入窗口）',
+              child: PressableScale(
+                onTap: onOpenLocalMedia,
+                hoverScale: 1.06,
+                pressScale: 0.92,
+                child: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: clear ? const Color(0x1EFFFFFF) : VedroTheme.surface2,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: clear ? const Color(0x24FFFFFF) : VedroTheme.line,
+                      width: 0.7,
+                    ),
+                  ),
+                  child: Icon(
+                    Icons.folder_open_rounded,
+                    size: 16,
+                    color: clear ? Colors.white : VedroTheme.fg2,
+                  ),
                 ),
               ),
             ),
@@ -556,30 +677,32 @@ class _FloatingDesktopHeader extends StatelessWidget {
       ),
     );
 
-    if (clear) {
-      return DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0x94000000), Colors.transparent],
-          ),
-        ),
-        child: content,
-      );
-    }
+        if (clear) {
+          return DecoratedBox(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0x94000000), Colors.transparent],
+              ),
+            ),
+            child: content,
+          );
+        }
 
-    return ClipRect(
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-        child: DecoratedBox(
-          decoration: const BoxDecoration(
-            color: Color(0xCC121216),
-            border: Border(bottom: BorderSide(color: VedroTheme.line, width: 0.8)),
+        return ClipRect(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+            child: DecoratedBox(
+              decoration: const BoxDecoration(
+                color: Color(0xCC121216),
+                border: Border(bottom: BorderSide(color: VedroTheme.line, width: 0.8)),
+              ),
+              child: content,
+            ),
           ),
-          child: content,
-        ),
-      ),
+        );
+      },
     );
   }
 }

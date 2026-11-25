@@ -591,22 +591,78 @@ class _MiniDropdown<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 32,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      decoration: BoxDecoration(
-        color: VedroTheme.surface2,
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: VedroTheme.line, width: 0.7),
+    final accent = Theme.of(context).colorScheme.secondary;
+    String currentLabel = hint;
+    for (final it in items) {
+      if (it.value == value && it.child is Text) {
+        final t = (it.child as Text).data;
+        if (t != null && t.isNotEmpty) currentLabel = t;
+        break;
+      }
+    }
+    final active = value != null;
+
+    return PopupMenuButton<int>(
+      color: const Color(0xFF1C1E27),
+      elevation: 16,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Color(0x28FFFFFF), width: 0.8),
       ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<T>(
-          value: value,
-          dropdownColor: VedroTheme.surface2,
-          style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
-          hint: Text(hint, style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5)),
-          items: items,
-          onChanged: onChanged,
+      onSelected: (idx) {
+        if (idx >= 0 && idx < items.length) {
+          onChanged(items[idx].value);
+        }
+      },
+      itemBuilder: (_) => List.generate(items.length, (i) {
+        final it = items[i];
+        final sel = it.value == value;
+        final text = it.child is Text ? ((it.child as Text).data ?? '') : '';
+        return PopupMenuItem<int>(
+          value: i,
+          height: 36,
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  text,
+                  style: TextStyle(
+                    color: sel ? Colors.white : const Color(0xFFC8CCD6),
+                    fontSize: 13,
+                    fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+                  ),
+                ),
+              ),
+              if (sel) Icon(Icons.check_rounded, size: 15, color: accent),
+            ],
+          ),
+        );
+      }),
+      child: Container(
+        height: 32,
+        padding: const EdgeInsets.symmetric(horizontal: 11),
+        decoration: BoxDecoration(
+          color: active ? accent.withValues(alpha: 0.18) : const Color(0xFF1B1C24),
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(
+            color: active ? accent.withValues(alpha: 0.65) : const Color(0x22FFFFFF),
+            width: 0.8,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              currentLabel,
+              style: TextStyle(
+                color: active ? Colors.white : VedroTheme.fg2,
+                fontSize: 12.5,
+                fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Icon(Icons.unfold_more_rounded, size: 14, color: active ? accent : VedroTheme.fg3),
+          ],
         ),
       ),
     );

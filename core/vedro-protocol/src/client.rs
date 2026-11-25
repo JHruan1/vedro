@@ -12,7 +12,7 @@ use crate::dialect::{ServerCapabilities, ServerDialect};
 use crate::error::{ProtocolError, Result};
 use crate::models::*;
 
-const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,Overview,Taglines,ChildCount,RecursiveItemCount,People,Genres,Tags,Studios,ProviderIds,OriginalTitle,DateCreated,ProductionLocations";
+const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,Overview,Taglines,ChildCount,RecursiveItemCount,People,Genres,Tags,Studios,ProviderIds,ExternalUrls,OriginalTitle,DateCreated,ProductionLocations,PremiereDate,EndDate,Status,OfficialRating,CriticRating,Path,AirDays,AirTime";
 
 /// High-performance async REST client supporting `embygo`, `Emby`, and `Jellyfin`.
 ///

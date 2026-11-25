@@ -1,17 +1,21 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
 import '../core/models/preferences.dart';
+import '../core/platform/native_playback_channel.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/admin_console_pane.dart';
+import '../widgets/server_card_grid.dart';
 import '../widgets/vedro_ui.dart';
 import 'player_screen.dart';
 
-/// Apple System Settings / SenPlayer / Infuse caliber Settings Screen:
-/// - Desktop: Split-view sidebar with crisp colored squircle icons + right detail pane
-/// - Mobile: Clean grouped Apple Settings list -> dedicated sub-pages
-/// - All 14 requested categories, 100% live & persisted in Rust SQLite
+/// Authentic macOS Sequoia / iOS 18 System Settings caliber Settings Screen:
+/// - Desktop: Translucent sidebar with live filter box, active server card, vibrant SF-style squircle icons
+/// - Mobile: Clean iOS grouped inset list -> dedicated sub-pages
+/// - Native CupertinoSwitch, custom Apple pop-up menu pickers (zero raw Material dropdowns), slim sliders
+/// - Multi-Server Card Grid + Per-Server Card Settings integrated directly into 服务器与线路
 /// - Admin Console strictly invisible to non-administrator accounts
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -54,68 +58,203 @@ class _NavItemMeta {
     required this.section,
     required this.title,
     required this.icon,
-    required this.tint,
+    required this.tintTop,
+    required this.tintBottom,
     required this.group,
+    this.keywords = '',
   });
 
   final _SettingsSection section;
   final String title;
   final IconData icon;
-  final Color tint;
+  final Color tintTop;
+  final Color tintBottom;
   final String group;
+  final String keywords;
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
   _SettingsSection _active = _SettingsSection.servers;
+  final _filterCtrl = TextEditingController();
+  String _filter = '';
 
   static const _baseNavItems = <_NavItemMeta>[
     // 媒体源与管理
-    _NavItemMeta(section: _SettingsSection.servers, title: '服务器与线路', icon: Icons.dns_rounded, tint: Color(0xFF5B9BFF), group: '媒体源与管理'),
-    _NavItemMeta(section: _SettingsSection.downloads, title: '下载管理', icon: Icons.download_for_offline_rounded, tint: Color(0xFF34D399), group: '媒体源与管理'),
-    _NavItemMeta(section: _SettingsSection.fonts, title: '字体管理', icon: Icons.font_download_rounded, tint: Color(0xFF818CF8), group: '媒体源与管理'),
+    _NavItemMeta(
+      section: _SettingsSection.servers,
+      title: '服务器与线路',
+      icon: Icons.dns_rounded,
+      tintTop: Color(0xFF4F8FF7),
+      tintBottom: Color(0xFF2B65D9),
+      group: '媒体源与管理',
+      keywords: 'server route 线路 卡片 测速',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.downloads,
+      title: '下载管理',
+      icon: Icons.download_rounded,
+      tintTop: Color(0xFF34D399),
+      tintBottom: Color(0xFF059669),
+      group: '媒体源与管理',
+      keywords: 'offline cache 离线 缓存',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.fonts,
+      title: '字体管理',
+      icon: Icons.font_download_rounded,
+      tintTop: Color(0xFF818CF8),
+      tintBottom: Color(0xFF4F46E5),
+      group: '媒体源与管理',
+      keywords: 'font ttf otf 字幕字体',
+    ),
     // 外观与布局
-    _NavItemMeta(section: _SettingsSection.style, title: '应用风格', icon: Icons.palette_rounded, tint: Color(0xFFA78BFA), group: '外观与布局'),
-    _NavItemMeta(section: _SettingsSection.modules, title: '模块配置', icon: Icons.dashboard_customize_rounded, tint: Color(0xFF38BDF8), group: '外观与布局'),
-    _NavItemMeta(section: _SettingsSection.lists, title: '列表配置', icon: Icons.grid_view_rounded, tint: Color(0xFF22D3EE), group: '外观与布局'),
-    _NavItemMeta(section: _SettingsSection.uiPrefs, title: '界面偏好', icon: Icons.tune_rounded, tint: Color(0xFF94A3B8), group: '外观与布局'),
+    _NavItemMeta(
+      section: _SettingsSection.style,
+      title: '应用风格',
+      icon: Icons.palette_rounded,
+      tintTop: Color(0xFFA78BFA),
+      tintBottom: Color(0xFF7C3AED),
+      group: '外观与布局',
+      keywords: 'theme color accent 主题 强调色 圆角',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.modules,
+      title: '模块配置',
+      icon: Icons.dashboard_customize_rounded,
+      tintTop: Color(0xFF38BDF8),
+      tintBottom: Color(0xFF0284C7),
+      group: '外观与布局',
+      keywords: 'home layout 首页 排序',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.lists,
+      title: '列表配置',
+      icon: Icons.grid_view_rounded,
+      tintTop: Color(0xFF22D3EE),
+      tintBottom: Color(0xFF0891B2),
+      group: '外观与布局',
+      keywords: 'poster density sort 海报 密度 排序',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.uiPrefs,
+      title: '界面偏好',
+      icon: Icons.tune_rounded,
+      tintTop: Color(0xFF94A3B8),
+      tintBottom: Color(0xFF475569),
+      group: '外观与布局',
+      keywords: 'badge incognito 无痕 规格 剩余时间',
+    ),
     // 播放与视听
-    _NavItemMeta(section: _SettingsSection.playback, title: '播放设置', icon: Icons.play_circle_filled_rounded, tint: Color(0xFF60A5FA), group: '播放与视听'),
-    _NavItemMeta(section: _SettingsSection.video, title: '视频设置', icon: Icons.hd_rounded, tint: Color(0xFFFB923C), group: '播放与视听'),
-    _NavItemMeta(section: _SettingsSection.audio, title: '音频设置', icon: Icons.graphic_eq_rounded, tint: Color(0xFFF472B6), group: '播放与视听'),
-    _NavItemMeta(section: _SettingsSection.subtitles, title: '字幕设置', icon: Icons.subtitles_rounded, tint: Color(0xFF2DD4BF), group: '播放与视听'),
-    _NavItemMeta(section: _SettingsSection.danmaku, title: '弹幕设置', icon: Icons.comment_rounded, tint: Color(0xFFFBBF24), group: '播放与视听'),
+    _NavItemMeta(
+      section: _SettingsSection.playback,
+      title: '播放设置',
+      icon: Icons.play_arrow_rounded,
+      tintTop: Color(0xFF60A5FA),
+      tintBottom: Color(0xFF2563EB),
+      group: '播放与视听',
+      keywords: 'buffer pip speed intro outro 外部播放器 iina infuse',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.video,
+      title: '视频设置',
+      icon: Icons.hd_rounded,
+      tintTop: Color(0xFFFB923C),
+      tintBottom: Color(0xFFEA580C),
+      group: '播放与视听',
+      keywords: 'hdr dolby vision anime4k mpv.conf 硬解 杜比视界',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.audio,
+      title: '音频设置',
+      icon: Icons.graphic_eq_rounded,
+      tintTop: Color(0xFFF472B6),
+      tintBottom: Color(0xFFDB2777),
+      group: '播放与视听',
+      keywords: 'atmos passthrough drc 杜比全景声 音量',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.subtitles,
+      title: '字幕设置',
+      icon: Icons.subtitles_rounded,
+      tintTop: Color(0xFF2DD4BF),
+      tintBottom: Color(0xFF0D9488),
+      group: '播放与视听',
+      keywords: 'ass srt sub 外挂 颜色 字号',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.danmaku,
+      title: '弹幕设置',
+      icon: Icons.comment_rounded,
+      tintTop: Color(0xFFFBBF24),
+      tintBottom: Color(0xFFD97706),
+      group: '播放与视听',
+      keywords: 'dandanplay bilibili 弹弹play 速度 区域',
+    ),
     // 智能与安全
-    _NavItemMeta(section: _SettingsSection.ai, title: 'AI 服务（翻译）', icon: Icons.auto_awesome_rounded, tint: Color(0xFFC084FC), group: '智能与安全'),
-    _NavItemMeta(section: _SettingsSection.privacy, title: '隐私保护', icon: Icons.lock_rounded, tint: Color(0xFFFB7185), group: '智能与安全'),
+    _NavItemMeta(
+      section: _SettingsSection.ai,
+      title: 'AI 服务（翻译）',
+      icon: Icons.auto_awesome_rounded,
+      tintTop: Color(0xFFC084FC),
+      tintBottom: Color(0xFF9333EA),
+      group: '智能与安全',
+      keywords: 'openai deepseek translate 翻译',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.privacy,
+      title: '隐私保护',
+      icon: Icons.lock_rounded,
+      tintTop: Color(0xFFFB7185),
+      tintBottom: Color(0xFFE11D48),
+      group: '智能与安全',
+      keywords: 'pin passcode lock 密码 模糊',
+    ),
   ];
 
   static const _adminNavItem = _NavItemMeta(
     section: _SettingsSection.admin,
     title: '服务器管理台',
     icon: Icons.admin_panel_settings_rounded,
-    tint: Color(0xFFF59E0B),
+    tintTop: Color(0xFFFBBF24),
+    tintBottom: Color(0xFFD97706),
     group: '管理员',
+    keywords: 'admin sessions users tasks 管理员 后台',
   );
+
+  @override
+  void dispose() {
+    _filterCtrl.dispose();
+    super.dispose();
+  }
 
   bool get _canShowAdmin => widget.appState.isSignedIn && widget.appState.isAdmin;
 
-  List<_NavItemMeta> get _visibleNavItems =>
-      _canShowAdmin ? [..._baseNavItems, _adminNavItem] : _baseNavItems;
+  List<_NavItemMeta> get _visibleNavItems {
+    final all = _canShowAdmin ? [..._baseNavItems, _adminNavItem] : _baseNavItems;
+    final q = _filter.trim().toLowerCase();
+    if (q.isEmpty) return all;
+    return all
+        .where((item) =>
+            item.title.toLowerCase().contains(q) ||
+            item.group.toLowerCase().contains(q) ||
+            item.keywords.toLowerCase().contains(q))
+        .toList();
+  }
 
   String _summaryFor(_SettingsSection sec) {
     final app = widget.appState;
     final p = app.prefs;
     switch (sec) {
       case _SettingsSection.servers:
-        return app.isSignedIn ? app.activeServerDisplayName : '${app.savedServers.length} 个已保存';
+        return app.isSignedIn ? app.activeServerDisplayName : '${app.savedServers.length} 个';
       case _SettingsSection.downloads:
-        return app.downloads.isEmpty ? '暂无任务' : '${app.downloads.length} 项';
+        return app.downloads.isEmpty ? '无任务' : '${app.downloads.length} 项';
       case _SettingsSection.fonts:
         return p.subtitleFontFamily.isEmpty ? '系统默认' : p.subtitleFontFamily;
       case _SettingsSection.style:
         return p.accentPalette.label;
       case _SettingsSection.modules:
-        return '${app.homeSections.where((s) => s.visible).length} 个模块';
+        return '${app.homeSections.where((s) => s.visible).length} 个板块';
       case _SettingsSection.lists:
         return switch (p.listDensity) {
           'compact' => '紧凑',
@@ -125,9 +264,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case _SettingsSection.uiPrefs:
         return p.incognitoMode ? '无痕模式' : '标准';
       case _SettingsSection.playback:
-        return '${p.bufferSizeMb}MB 缓存';
+        return '${p.bufferSizeMb}MB';
       case _SettingsSection.video:
-        return (app.settings['tone_mapping'] ?? 'bt2446a').toString().toUpperCase();
+        return p.anime4kEnabled ? 'Anime4K ${p.anime4kMode}' : (app.settings['tone_mapping'] ?? 'BT.2446a').toString().toUpperCase();
       case _SettingsSection.audio:
         return (app.settings['audio_mode'] ?? 'auto').toString();
       case _SettingsSection.subtitles:
@@ -137,9 +276,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case _SettingsSection.ai:
         return p.isAiReady ? p.aiModel : '未启用';
       case _SettingsSection.privacy:
-        return p.passcodeEnabled ? '密码锁已开' : '未锁定';
+        return p.passcodeEnabled ? '已上锁' : '未锁定';
       case _SettingsSection.admin:
-        return '仅管理员';
+        return '管理员';
     }
   }
 
@@ -158,25 +297,80 @@ class _SettingsScreenState extends State<SettingsScreen> {
           padding: EdgeInsets.only(top: widget.topInset),
           child: Row(
             children: [
-              // macOS System Settings Sidebar
+              // macOS Sequoia translucent-feel Sidebar
               Container(
-                width: 256,
+                width: 268,
                 decoration: const BoxDecoration(
-                  color: Color(0xFF0E0E11),
-                  border: Border(right: BorderSide(color: VedroTheme.line, width: 0.8)),
+                  color: Color(0xFF0E0F14),
+                  border: Border(right: BorderSide(color: Color(0x18FFFFFF), width: 0.8)),
                 ),
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(12, 16, 12, 32),
-                  children: _buildGroupedSidebar(items),
+                child: Column(
+                  children: [
+                    // Sidebar Header: Search box + Active Server Identity Pill
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
+                      child: Column(
+                        children: [
+                          Container(
+                            height: 34,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF171820),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: const Color(0x18FFFFFF), width: 0.7),
+                            ),
+                            child: TextField(
+                              controller: _filterCtrl,
+                              onChanged: (v) => setState(() => _filter = v),
+                              style: const TextStyle(color: VedroTheme.fg, fontSize: 13),
+                              decoration: InputDecoration(
+                                hintText: '筛选设置…',
+                                hintStyle: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
+                                prefixIcon: const Icon(Icons.search_rounded, size: 16, color: VedroTheme.fg3),
+                                prefixIconConstraints: const BoxConstraints(minWidth: 34),
+                                suffixIcon: _filter.isNotEmpty
+                                    ? GestureDetector(
+                                        onTap: () {
+                                          _filterCtrl.clear();
+                                          setState(() => _filter = '');
+                                        },
+                                        child: const Icon(Icons.close_rounded, size: 15, color: VedroTheme.fg3),
+                                      )
+                                    : null,
+                                border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                filled: false,
+                                contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          _SidebarServerMiniCard(
+                            appState: widget.appState,
+                            selected: _active == _SettingsSection.servers,
+                            onTap: () => setState(() => _active = _SettingsSection.servers),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: ListView(
+                        padding: const EdgeInsets.fromLTRB(12, 6, 12, 28),
+                        children: _buildGroupedSidebar(items),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              // Detail Pane
+
+              // Right Detail Pane
               Expanded(
                 child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(36, 26, 36, 56),
+                  padding: const EdgeInsets.fromLTRB(40, 28, 40, 64),
                   child: Center(
                     child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 700),
+                      constraints: const BoxConstraints(maxWidth: 780),
                       child: AnimatedSwitcher(
                         duration: const Duration(milliseconds: 160),
                         child: KeyedSubtree(
@@ -199,7 +393,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
     }
 
-    // Mobile: Apple Settings Grouped Navigation List
+    // Mobile: iOS 18 Grouped Inset Settings List
     final grouped = <String, List<_NavItemMeta>>{};
     for (final item in items) {
       grouped.putIfAbsent(item.group, () => []).add(item);
@@ -226,24 +420,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     )),
                   ),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
                     child: Row(
                       children: [
-                        _SquircleIcon(icon: meta.icon, tint: meta.tint),
+                        _AppleSquircleIcon(
+                          icon: meta.icon,
+                          top: meta.tintTop,
+                          bottom: meta.tintBottom,
+                          size: 28,
+                        ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
                             meta.title,
                             style: const TextStyle(
                               color: VedroTheme.fg,
-                              fontSize: 14.5,
+                              fontSize: 15,
                               fontWeight: FontWeight.w500,
                             ),
                           ),
                         ),
                         Text(
                           _summaryFor(meta.section),
-                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
+                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 13),
                         ),
                         const SizedBox(width: 4),
                         const Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
@@ -254,7 +453,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               }).toList(),
             ),
           ],
-          const SizedBox(height: 18),
+          const SizedBox(height: 22),
           Center(
             child: Text(
               'Vedro v${widget.appState.core.coreVersion}',
@@ -279,9 +478,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           entry.key,
           style: const TextStyle(
             color: VedroTheme.fg3,
-            fontSize: 11.5,
+            fontSize: 11,
             fontWeight: FontWeight.w600,
-            letterSpacing: 0.3,
+            letterSpacing: 0.4,
           ),
         ),
       ));
@@ -295,22 +494,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onTap: () => setState(() => _active = meta.section),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 140),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7.5),
                 decoration: BoxDecoration(
-                  color: selected ? const Color(0x1CFFFFFF) : Colors.transparent,
+                  color: selected ? const Color(0xFF21232D) : Colors.transparent,
                   borderRadius: BorderRadius.circular(10),
+                  border: selected
+                      ? Border.all(color: const Color(0x1EFFFFFF), width: 0.7)
+                      : null,
                 ),
                 child: Row(
                   children: [
-                    _SquircleIcon(icon: meta.icon, tint: meta.tint, size: 26),
-                    const SizedBox(width: 11),
+                    _AppleSquircleIcon(
+                      icon: meta.icon,
+                      top: meta.tintTop,
+                      bottom: meta.tintBottom,
+                      size: 24,
+                    ),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: Text(
                         meta.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          color: selected ? Colors.white : VedroTheme.fg2,
+                          color: selected ? Colors.white : const Color(0xFFC4C7D0),
                           fontSize: 13.5,
                           fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                         ),
@@ -328,10 +535,109 @@ class _SettingsScreenState extends State<SettingsScreen> {
       padding: const EdgeInsets.fromLTRB(12, 20, 12, 0),
       child: Text(
         'Vedro Core v${widget.appState.core.coreVersion}',
-        style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+        style: const TextStyle(color: VedroTheme.fg3, fontSize: 11),
       ),
     ));
     return out;
+  }
+}
+
+class _SidebarServerMiniCard extends StatelessWidget {
+  const _SidebarServerMiniCard({
+    required this.appState,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final VedroAppState appState;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final signedIn = appState.isSignedIn;
+    final activeSrv = appState.activeServer;
+    final style = activeSrv != null ? appState.serverCardStyleFor(activeSrv.id) : const ServerCardStyle();
+    final theme = activeSrv != null ? style.resolveTheme(activeSrv.id) : ServerCardTheme.all.first;
+
+    return GestureDetector(
+      onTap: onTap,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [theme.bgTop, theme.bgBottom],
+            ),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? theme.accent.withValues(alpha: 0.7) : const Color(0x1EFFFFFF),
+              width: 0.9,
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: theme.accent.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(style.iconData, size: 17, color: theme.accent),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            signedIn ? appState.activeServerDisplayName : '未连接服务器',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        if (signedIn) ...[
+                          const SizedBox(width: 5),
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: const BoxDecoration(
+                              color: Color(0xFF34D399),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 1),
+                    Text(
+                      signedIn
+                          ? '${appState.username ?? ''} · ${appState.activeRouteDisplayName ?? '默认线路'}'
+                          : '点击管理 ${appState.savedServers.length} 个服务器',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Color(0x9CFFFFFF), fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -469,94 +775,56 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     };
   }
 
-  Widget _heading(String title, String subtitle) {
+  Widget _heading(String title, String subtitle, {Widget? trailing}) {
     if (widget.hideHeading) return const SizedBox.shrink();
     return Padding(
-      padding: const EdgeInsets.only(bottom: 18),
-      child: Column(
+      padding: const EdgeInsets.only(bottom: 20),
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: const TextStyle(
-              color: VedroTheme.fg,
-              fontSize: 22,
-              fontWeight: FontWeight.w600,
-              letterSpacing: -0.4,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(subtitle, style: const TextStyle(color: VedroTheme.fg3, fontSize: 13)),
+              ],
             ),
           ),
-          const SizedBox(height: 3),
-          Text(subtitle, style: const TextStyle(color: VedroTheme.fg3, fontSize: 13)),
+          if (trailing != null) ...[const SizedBox(width: 12), trailing],
         ],
       ),
     );
   }
 
-  // 1. 服务器与线路
+  // 1. 服务器与线路 — Full Multi-Server Card Grid & Per-Server Card Settings right here!
   Widget _buildServers(VedroAppState app) {
-    final signedIn = app.isSignedIn;
-    final routeName = app.activeRouteDisplayName;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('服务器与线路', '管理多台 embygo / Emby / Jellyfin 服务器、线路延迟测速与热切换'),
-        _GroupedCard(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          signedIn ? app.activeServerDisplayName : '未连接媒体服务器',
-                          style: const TextStyle(
-                            color: VedroTheme.fg,
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          signedIn
-                              ? [
-                                  app.username ?? '-',
-                                  if (routeName != null) routeName,
-                                  '${app.savedServers.length} 个服务器',
-                                ].join(' · ')
-                              : '已保存 ${app.savedServers.length} 个服务器',
-                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (signedIn)
-                    TextButton(
-                      onPressed: app.logout,
-                      child: const Text('断开连接', style: TextStyle(color: VedroTheme.danger)),
-                    )
-                  else
-                    FilledButton(
-                      onPressed: () => widget.onOpenAddServer(),
-                      child: const Text('添加服务器', style: TextStyle(fontSize: 13)),
-                    ),
-                ],
-              ),
-            ),
-            _ActionRow(
-              title: '切换服务器与多线路测速',
-              trailing: const Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
-              onTap: widget.onOpenServerHub,
-            ),
-            _ActionRow(
-              title: '添加新的媒体服务器',
-              titleColor: Theme.of(context).colorScheme.secondary,
-              trailing: Icon(Icons.add_rounded, size: 18, color: Theme.of(context).colorScheme.secondary),
-              onTap: () => widget.onOpenAddServer(),
-            ),
-          ],
+        _heading(
+          '服务器与线路',
+          '自定义每个服务器的卡片配色、图标、别名与多线路延迟测速（点击卡片右上角 ⚙ 进入卡片设置）',
+          trailing: app.isSignedIn
+              ? TextButton(
+                  onPressed: app.logout,
+                  child: const Text('断开当前连接', style: TextStyle(color: VedroTheme.danger, fontSize: 13)),
+                )
+              : null,
+        ),
+        ServerCardGrid(
+          appState: app,
+          onSelectServer: (srv) => app.restoreSavedServer(srv),
+          onAddServer: () => widget.onOpenAddServer(),
         ),
       ],
     );
@@ -568,7 +836,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('下载管理', '离线缓存影片与本地文件管理（详情页点击「下载」即可加入队列）'),
+        _heading('下载管理', '离线缓存影片与本地文件管理（详情页点击下载图标即可加入队列）'),
         _GroupedCard(
           children: [
             _SwitchRow(
@@ -577,10 +845,10 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               value: p.downloadWifiOnly,
               onChanged: (v) => _updatePrefs(p.copyWith(downloadWifiOnly: v)),
             ),
-            _DropdownRow<int>(
+            _AppleMenuPickerRow<int>(
               title: '最大同时下载任务',
               value: p.downloadMaxConcurrent,
-              items: const {1: '1 个', 2: '2 个', 3: '3 个'},
+              items: const {1: '1 个任务', 2: '2 个任务', 3: '3 个任务'},
               onChanged: (v) => _updatePrefs(p.copyWith(downloadMaxConcurrent: v)),
             ),
             Padding(
@@ -621,7 +889,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           _GroupedCard(
             children: const [
               Padding(
-                padding: EdgeInsets.all(24),
+                padding: EdgeInsets.all(28),
                 child: Center(
                   child: Text('暂无离线下载任务', style: TextStyle(color: VedroTheme.fg3, fontSize: 13)),
                 ),
@@ -648,11 +916,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                                 task.title,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: VedroTheme.fg,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                ),
+                                style: const TextStyle(color: VedroTheme.fg, fontSize: 14, fontWeight: FontWeight.w500),
                               ),
                               const SizedBox(height: 2),
                               Text(
@@ -675,11 +939,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                             icon: const Icon(Icons.play_arrow_rounded, color: VedroTheme.fg),
                             onPressed: () => Navigator.of(context).push(
                               vedroRoute(PlayerScreen(
-                                item: MediaItemModel(
-                                  id: task.itemId,
-                                  name: task.title,
-                                  type: 'Movie',
-                                ),
+                                item: MediaItemModel(id: task.itemId, name: task.title, type: 'Movie'),
                                 appState: app,
                                 localFilePath: task.filePath,
                               )),
@@ -742,7 +1002,34 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                           decoration: const InputDecoration(hintText: '/path/to/MySubtitleFont.ttf'),
                         ),
                       ),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          final picked = await NativePlaybackChannel.pickFiles(
+                            extensions: const ['ttf', 'otf', 'ttc'],
+                            title: '选择字幕字体文件',
+                          );
+                          if (picked.isNotEmpty) {
+                            try {
+                              final name = await app.importSubtitleFont(picked.first);
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('已导入并选用字体：$name')),
+                                );
+                              }
+                            } catch (e) {
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+                                );
+                              }
+                            }
+                          }
+                        },
+                        icon: const Icon(Icons.folder_open_rounded, size: 15),
+                        label: const Text('选择文件', style: TextStyle(fontSize: 13)),
+                      ),
+                      const SizedBox(width: 8),
                       FilledButton(
                         onPressed: () async {
                           if (_fontPathCtrl.text.trim().isEmpty) return;
@@ -772,7 +1059,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           ],
         ),
         const SizedBox(height: 16),
-        _GroupHeader('可用字幕字体'),
+        const _GroupHeader('可用字幕字体'),
         _GroupedCard(
           children: [
             for (final (family, label) in builtIn)
@@ -807,7 +1094,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('应用风格', '定制主题强调色、海报圆角与界面动效'),
+        _heading('应用风格', '定制全局强调色、海报圆角、毛玻璃强度与动效'),
         _GroupedCard(
           children: [
             Padding(
@@ -815,11 +1102,11 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('强调色', style: TextStyle(color: VedroTheme.fg, fontSize: 14, fontWeight: FontWeight.w500)),
+                  const Text('全局强调色', style: TextStyle(color: VedroTheme.fg, fontSize: 14, fontWeight: FontWeight.w500)),
                   const SizedBox(height: 12),
                   Wrap(
-                    spacing: 12,
-                    runSpacing: 12,
+                    spacing: 10,
+                    runSpacing: 10,
                     children: AccentPalette.all.map((pal) {
                       final active = p.accentId == pal.id;
                       return PressableScale(
@@ -827,19 +1114,19 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
-                            color: active ? pal.accent.withValues(alpha: 0.16) : VedroTheme.surface2,
+                            color: active ? pal.accent.withValues(alpha: 0.18) : const Color(0xFF1C1E26),
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(
-                              color: active ? pal.accent : VedroTheme.line,
-                              width: active ? 1.2 : 0.7,
+                              color: active ? pal.accent : const Color(0x1CFFFFFF),
+                              width: active ? 1.3 : 0.7,
                             ),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Container(
-                                width: 14,
-                                height: 14,
+                                width: 13,
+                                height: 13,
                                 decoration: BoxDecoration(color: pal.accent, shape: BoxShape.circle),
                               ),
                               const SizedBox(width: 8),
@@ -860,21 +1147,21 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 ],
               ),
             ),
-            _DropdownRow<double>(
+            _InlineSegmentedRow<double>(
               title: '海报卡片圆角',
               value: p.cardRadius,
-              items: {8.0: '干练小圆角 (8px)', 12.0: '标准圆角 (12px)', 16.0: '柔和圆角 (16px)'},
+              items: const [(8.0, '干练 8px'), (12.0, '标准 12px'), (16.0, '柔和 16px')],
               onChanged: (v) => _updatePrefs(p.copyWith(cardRadius: v)),
             ),
-            _DropdownRow<String>(
+            _InlineSegmentedRow<String>(
               title: '毛玻璃通透度',
               value: p.glassIntensity,
-              items: const {'subtle': '微雾', 'standard': '标准', 'rich': '浓郁'},
+              items: const [('subtle', '微雾'), ('standard', '标准'), ('rich', '浓郁')],
               onChanged: (v) => _updatePrefs(p.copyWith(glassIntensity: v)),
             ),
             _SwitchRow(
               title: '减弱动态效果',
-              subtitle: '关闭页面切换动画以获得即时响应',
+              subtitle: '降低页面切换动效幅度以获得更干脆的响应',
               value: p.reduceMotion,
               onChanged: (v) => _updatePrefs(p.copyWith(reduceMotion: v)),
             ),
@@ -884,7 +1171,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     );
   }
 
-  // 5. 模块配置 (inline Home Layout reorderer!)
+  // 5. 模块配置
   Widget _buildModules(VedroAppState app) {
     final sections = List<HomeSectionConfig>.from(app.homeSections);
     return Column(
@@ -928,11 +1215,11 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               key: ValueKey('mod_${sec.id}'),
               padding: const EdgeInsets.only(bottom: 8),
               child: Container(
-                padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+                padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
                 decoration: BoxDecoration(
-                  color: VedroTheme.surface,
-                  borderRadius: BorderRadius.circular(13),
-                  border: Border.all(color: VedroTheme.line, width: 0.8),
+                  color: const Color(0xFF13141A),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0x1DFFFFFF), width: 0.85),
                 ),
                 child: Row(
                   children: [
@@ -940,7 +1227,11 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                       width: 22,
                       child: Text(
                         '${idx + 1}',
-                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
+                        style: const TextStyle(
+                          color: VedroTheme.fg3,
+                          fontSize: 12.5,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                        ),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -960,13 +1251,18 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                         ],
                       ),
                     ),
-                    Switch(
-                      value: sec.visible,
-                      onChanged: (v) {
-                        sections[idx] = sec.copyWith(visible: v);
-                        app.saveHomeLayout(sections);
-                      },
+                    Transform.scale(
+                      scale: 0.78,
+                      child: CupertinoSwitch(
+                        value: sec.visible,
+                        activeTrackColor: Theme.of(context).colorScheme.primary,
+                        onChanged: (v) {
+                          sections[idx] = sec.copyWith(visible: v);
+                          app.saveHomeLayout(sections);
+                        },
+                      ),
                     ),
+                    const SizedBox(width: 4),
                     ReorderableDragStartListener(
                       index: idx,
                       child: const MouseRegion(
@@ -995,19 +1291,19 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
         _heading('列表配置', '调整海报墙排版密度、角标信息与默认排序'),
         _GroupedCard(
           children: [
-            _DropdownRow<String>(
+            _InlineSegmentedRow<String>(
               title: '海报墙密度',
               value: p.listDensity,
-              items: const {'compact': '紧凑（每行更多）', 'comfortable': '标准', 'spacious': '宽松大海报'},
+              items: const [('compact', '紧凑'), ('comfortable', '标准'), ('spacious', '宽松')],
               onChanged: (v) => _updatePrefs(p.copyWith(listDensity: v)),
             ),
-            _DropdownRow<String>(
+            _AppleMenuPickerRow<String>(
               title: '媒体库默认排序',
               value: p.defaultSort,
               items: const {
                 'DateCreated': '按入库时间',
                 'SortName': '按片名 A–Z',
-                'CommunityRating': '按评分',
+                'CommunityRating': '按社区评分',
                 'PremiereDate': '按发行年份',
               },
               onChanged: (v) => _updatePrefs(p.copyWith(defaultSort: v)),
@@ -1081,10 +1377,10 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('播放设置', '内存缓存上限、倍速、手势、自定义跳过片头片尾、画中画与外部播放器'),
+        _heading('播放设置', '默认播放引擎、内存缓存、倍速、手势、片头片尾跳过与画中画'),
         _GroupedCard(
           children: [
-            _DropdownRow<String>(
+            _AppleMenuPickerRow<String>(
               title: '默认播放器引擎',
               value: p.externalPlayer,
               items: const {
@@ -1097,7 +1393,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               },
               onChanged: (v) => _updatePrefs(p.copyWith(externalPlayer: v)),
             ),
-            _DropdownRow<int>(
+            _AppleMenuPickerRow<int>(
               title: '播放器内存缓存大小',
               value: p.bufferSizeMb,
               items: const {
@@ -1109,27 +1405,27 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               },
               onChanged: (v) => _updatePrefs(p.copyWith(bufferSizeMb: v)),
             ),
-            _DropdownRow<int>(
+            _InlineSegmentedRow<int>(
               title: '快进 / 快退步长',
               value: p.seekStepSecs,
-              items: const {5: '5 秒', 10: '10 秒', 15: '15 秒', 30: '30 秒'},
+              items: const [(5, '5s'), (10, '10s'), (15, '15s'), (30, '30s')],
               onChanged: (v) => _updatePrefs(p.copyWith(seekStepSecs: v)),
             ),
-            _DropdownRow<double>(
+            _AppleMenuPickerRow<double>(
               title: '默认播放倍速',
               value: p.defaultSpeed,
               items: {0.75: '0.75×', 1.0: '1.0×', 1.25: '1.25×', 1.5: '1.5×', 2.0: '2.0×'},
               onChanged: (v) => _updatePrefs(p.copyWith(defaultSpeed: v)),
             ),
-            _DropdownRow<double>(
-              title: '长按屏幕临时倍速',
+            _InlineSegmentedRow<double>(
+              title: '长按屏幕倍速',
               value: p.longPressSpeed,
-              items: {1.5: '1.5×', 2.0: '2.0×', 2.5: '2.5×', 3.0: '3.0×'},
+              items: const [(1.5, '1.5×'), (2.0, '2.0×'), (2.5, '2.5×'), (3.0, '3.0×')],
               onChanged: (v) => _updatePrefs(p.copyWith(longPressSpeed: v)),
             ),
             _SwitchRow(
               title: '双指捏合缩放画面',
-              subtitle: '播放时支持双指自由缩放，松手保持当前比例',
+              subtitle: '播放时支持双指自由缩放，松手保持比例',
               value: p.pinchToZoom,
               onChanged: (v) => _updatePrefs(p.copyWith(pinchToZoom: v)),
             ),
@@ -1156,8 +1452,19 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               onChanged: (v) => _updatePrefs(p.copyWith(autoPlayNext: v)),
             ),
             _SwitchRow(
+              title: '记住播放进度续播',
+              value: p.rememberPosition,
+              onChanged: (v) => _updatePrefs(p.copyWith(rememberPosition: v)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        const _GroupHeader('片头与片尾跳过'),
+        _GroupedCard(
+          children: [
+            _SwitchRow(
               title: '自动跳过片头',
-              subtitle: '服务器提供片头标记或设置自定义片头时长时自动跳转',
+              subtitle: '服务端提供标记或设置自定义片头时长时自动跳转',
               value: p.autoSkipIntro,
               onChanged: (v) => _updatePrefs(p.copyWith(autoSkipIntro: v)),
             ),
@@ -1184,11 +1491,6 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               divisions: 18,
               onChanged: (v) => _updatePrefs(p.copyWith(customSkipOutroSecs: v.round())),
             ),
-            _SwitchRow(
-              title: '记住播放进度续播',
-              value: p.rememberPosition,
-              onChanged: (v) => _updatePrefs(p.copyWith(rememberPosition: v)),
-            ),
           ],
         ),
       ],
@@ -1203,7 +1505,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
         _heading('视频设置', '硬件解码、杜比视界直出、HDR 色调映射、Anime4K 与自定义 mpv.conf'),
         _GroupedCard(
           children: [
-            _DropdownRow<String>(
+            _AppleMenuPickerRow<String>(
               title: '硬件解码模式',
               value: (s['hwdec'] ?? 'auto_zero_copy').toString(),
               items: const {
@@ -1219,7 +1521,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               value: s['prefer_native_dolby_vision'] != false,
               onChanged: (v) => _updateRustSetting('prefer_native_dolby_vision', v),
             ),
-            _DropdownRow<String>(
+            _AppleMenuPickerRow<String>(
               title: 'HDR 色调映射算法',
               value: (s['tone_mapping'] ?? 'bt2446a').toString(),
               items: const {
@@ -1243,7 +1545,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               value: s['deband'] == true,
               onChanged: (v) => _updateRustSetting('deband', v),
             ),
-            _DropdownRow<String>(
+            _AppleMenuPickerRow<String>(
               title: '默认画面比例',
               value: p.defaultAspect,
               items: const {
@@ -1255,7 +1557,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               },
               onChanged: (v) => _updatePrefs(p.copyWith(defaultAspect: v)),
             ),
-            _DropdownRow<String>(
+            _AppleMenuPickerRow<String>(
               title: '帧率同步策略',
               value: p.videoSync,
               items: const {
@@ -1267,7 +1569,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           ],
         ),
         const SizedBox(height: 16),
-        const _GroupHeader('Anime4K 超分与高级 MPV 配置'),
+        const _GroupHeader('Anime4K 超分与高级 MPV 参数'),
         _GroupedCard(
           children: [
             _SwitchRow(
@@ -1276,7 +1578,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               value: p.anime4kEnabled,
               onChanged: (v) => _updatePrefs(p.copyWith(anime4kEnabled: v)),
             ),
-            _DropdownRow<String>(
+            _AppleMenuPickerRow<String>(
               title: 'Anime4K 锐化等级',
               value: p.anime4kMode,
               items: const {
@@ -1345,7 +1647,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
         _heading('音频设置', '杜比全景声直通、空间音频、夜间模式与音量增益上限'),
         _GroupedCard(
           children: [
-            _DropdownRow<String>(
+            _AppleMenuPickerRow<String>(
               title: '音频输出模式',
               value: (s['audio_mode'] ?? 'auto').toString(),
               items: const {
@@ -1357,16 +1659,16 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               },
               onChanged: (v) => _updateRustSetting('audio_mode', v),
             ),
-            _DropdownRow<String>(
+            _InlineSegmentedRow<String>(
               title: '首选音轨语言',
               value: p.preferredAudioLang,
-              items: const {'auto': '跟随片源默认', 'zh': '中文', 'en': '英语', 'ja': '日语'},
+              items: const [('auto', '默认'), ('zh', '中文'), ('en', '英语'), ('ja', '日语')],
               onChanged: (v) => _updatePrefs(p.copyWith(preferredAudioLang: v)),
             ),
-            _DropdownRow<int>(
-              title: '最大音量增益上限',
+            _InlineSegmentedRow<int>(
+              title: '最大音量增益',
               value: p.maxVolumePercent,
-              items: const {100: '100%（无放大）', 150: '150%（推荐）', 200: '200%（强增益）'},
+              items: const [(100, '100%'), (150, '150%'), (200, '200%')],
               onChanged: (v) => _updatePrefs(p.copyWith(maxVolumePercent: v)),
             ),
             _SwitchRow(
@@ -1399,10 +1701,10 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
         _heading('字幕设置', '默认字幕语言、字号缩放、垂直位置、颜色与外挂加载'),
         _GroupedCard(
           children: [
-            _DropdownRow<String>(
+            _InlineSegmentedRow<String>(
               title: '首选字幕语言',
               value: p.preferredSubLang,
-              items: const {'zh': '中文', 'en': '英文', 'ja': '日文', 'off': '默认关闭'},
+              items: const [('zh', '中文'), ('en', '英文'), ('ja', '日文'), ('off', '关闭')],
               onChanged: (v) => _updatePrefs(p.copyWith(preferredSubLang: v)),
             ),
             _SwitchRow(
@@ -1458,12 +1760,12 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                       child: GestureDetector(
                         onTap: () => _updatePrefs(p.copyWith(subtitleColorHex: hex)),
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5.5),
                           decoration: BoxDecoration(
-                            color: on ? const Color(0x24FFFFFF) : VedroTheme.surface2,
+                            color: on ? const Color(0x24FFFFFF) : const Color(0xFF1C1E26),
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(
-                              color: on ? Colors.white : VedroTheme.line,
+                              color: on ? Colors.white : const Color(0x1EFFFFFF),
                               width: 0.8,
                             ),
                           ),
@@ -1493,7 +1795,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('弹幕设置', '控制播放器内弹幕渲染开关、透明度、显示区域与自定义弹幕源'),
+        _heading('弹幕设置', '控制播放器内 60fps 弹幕渲染开关、透明度、显示区域与自定义弹幕源'),
         _GroupedCard(
           children: [
             _SwitchRow(
@@ -1528,10 +1830,10 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               divisions: 10,
               onChanged: (v) => _updatePrefs(p.copyWith(danmakuSpeedSecs: v)),
             ),
-            _DropdownRow<double>(
+            _InlineSegmentedRow<double>(
               title: '弹幕显示区域',
               value: p.danmakuArea,
-              items: {0.25: '顶部 1/4 屏', 0.5: '上半屏 (50%)', 0.75: '3/4 屏', 1.0: '全屏'},
+              items: const [(0.25, '1/4 屏'), (0.5, '半屏'), (0.75, '3/4 屏'), (1.0, '全屏')],
               onChanged: (v) => _updatePrefs(p.copyWith(danmakuArea: v)),
             ),
             _SwitchRow(
@@ -1549,7 +1851,8 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('自定义弹幕源接口（支持弹弹play 兼容 API 或 B站 XML 链接）', style: TextStyle(color: VedroTheme.fg2, fontSize: 12.5)),
+                  const Text('自定义弹幕源接口（支持弹弹play 兼容 API 或 B站 XML 链接）',
+                      style: TextStyle(color: VedroTheme.fg2, fontSize: 12.5)),
                   const SizedBox(height: 8),
                   Row(
                     children: [
@@ -1582,7 +1885,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('AI 服务（翻译）', '配置 OpenAI 兼容接口（如 OpenAI / DeepSeek / Ollama），用于详情页简介翻译与字幕辅助翻译'),
+        _heading('AI 服务（翻译）', '配置 OpenAI 兼容接口（OpenAI / DeepSeek / Ollama），用于详情页简介翻译'),
         _GroupedCard(
           children: [
             _SwitchRow(
@@ -1591,10 +1894,15 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               value: p.aiEnabled,
               onChanged: (v) => _updatePrefs(p.copyWith(aiEnabled: v)),
             ),
-            _DropdownRow<String>(
-              title: '目标翻译语言',
+            _InlineSegmentedRow<String>(
+              title: '目标语言',
               value: p.aiTargetLang,
-              items: const {'简体中文': '简体中文', '繁體中文': '繁體中文', 'English': 'English', '日本語': '日本語'},
+              items: const [
+                ('简体中文', '简中'),
+                ('繁體中文', '繁中'),
+                ('English', 'EN'),
+                ('日本語', '日文'),
+              ],
               onChanged: (v) => _updatePrefs(p.copyWith(aiTargetLang: v)),
             ),
             _SwitchRow(
@@ -1618,10 +1926,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                   TextField(
                     controller: _aiKeyCtrl,
                     obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: 'API Key',
-                      hintText: 'sk-...',
-                    ),
+                    decoration: const InputDecoration(labelText: 'API Key', hintText: 'sk-...'),
                   ),
                   const SizedBox(height: 12),
                   TextField(
@@ -1724,10 +2029,10 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 trailing: const Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
                 onTap: () => _openSetPinDialog(p),
               ),
-            _DropdownRow<int>(
-              title: '离开后自动锁定时间',
+            _InlineSegmentedRow<int>(
+              title: '自动锁定时间',
               value: p.lockTimeoutSecs,
-              items: const {0: '立即锁定', 60: '1 分钟后', 300: '5 分钟后', 900: '15 分钟后'},
+              items: const [(0, '立即'), (60, '1 分'), (300, '5 分'), (900, '15 分')],
               onChanged: (v) => _updatePrefs(p.copyWith(lockTimeoutSecs: v)),
             ),
             _SwitchRow(
@@ -1809,10 +2114,18 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
   }
 }
 
-class _SquircleIcon extends StatelessWidget {
-  const _SquircleIcon({required this.icon, required this.tint, this.size = 28});
+/// Genuine macOS / iOS System Settings vibrant gradient squircle icon tile.
+class _AppleSquircleIcon extends StatelessWidget {
+  const _AppleSquircleIcon({
+    required this.icon,
+    required this.top,
+    required this.bottom,
+    this.size = 26,
+  });
+
   final IconData icon;
-  final Color tint;
+  final Color top;
+  final Color bottom;
   final double size;
 
   @override
@@ -1821,11 +2134,21 @@ class _SquircleIcon extends StatelessWidget {
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: tint.withValues(alpha: 0.18),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [top, bottom],
+        ),
         borderRadius: BorderRadius.circular(size * 0.27),
-        border: Border.all(color: tint.withValues(alpha: 0.28), width: 0.6),
+        boxShadow: [
+          BoxShadow(
+            color: bottom.withValues(alpha: 0.3),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
-      child: Icon(icon, size: size * 0.56, color: tint),
+      child: Icon(icon, size: size * 0.58, color: Colors.white),
     );
   }
 }
@@ -1837,7 +2160,7 @@ class _GroupHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
+      padding: const EdgeInsets.fromLTRB(4, 14, 4, 8),
       child: Text(
         text,
         style: const TextStyle(
@@ -1859,15 +2182,15 @@ class _GroupedCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: VedroTheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: VedroTheme.line, width: 0.8),
+        color: const Color(0xFF13141A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0x1DFFFFFF), width: 0.85),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           for (var i = 0; i < children.length; i++) ...[
-            if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16),
+            if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16, color: Color(0x14FFFFFF)),
             children[i],
           ],
         ],
@@ -1881,13 +2204,11 @@ class _ActionRow extends StatelessWidget {
     required this.title,
     required this.onTap,
     this.trailing,
-    this.titleColor = VedroTheme.fg,
   });
 
   final String title;
   final VoidCallback onTap;
   final Widget? trailing;
-  final Color titleColor;
 
   @override
   Widget build(BuildContext context) {
@@ -1897,7 +2218,7 @@ class _ActionRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
         child: Row(
           children: [
-            Expanded(child: Text(title, style: TextStyle(color: titleColor, fontSize: 14))),
+            Expanded(child: Text(title, style: const TextStyle(color: VedroTheme.fg, fontSize: 14))),
             if (trailing != null) trailing!,
           ],
         ),
@@ -1961,8 +2282,9 @@ class _CheckRow extends StatelessWidget {
   }
 }
 
-class _DropdownRow<T> extends StatelessWidget {
-  const _DropdownRow({
+/// Sleek Apple pop-up menu picker pill (replaces raw Material DropdownButton).
+class _AppleMenuPickerRow<T> extends StatelessWidget {
+  const _AppleMenuPickerRow({
     required this.title,
     required this.value,
     required this.items,
@@ -1977,26 +2299,163 @@ class _DropdownRow<T> extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final safeValue = items.containsKey(value) ? value : items.keys.first;
+    final label = items[safeValue] ?? '';
+    final accent = Theme.of(context).colorScheme.secondary;
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       child: Row(
         children: [
           Expanded(child: Text(title, style: const TextStyle(color: VedroTheme.fg, fontSize: 14))),
-          DropdownButtonHideUnderline(
-            child: DropdownButton<T>(
-              value: safeValue,
-              dropdownColor: VedroTheme.surface2,
-              style: const TextStyle(color: VedroTheme.fg2, fontSize: 13.5),
-              items: items.entries
-                  .map((e) => DropdownMenuItem<T>(value: e.key, child: Text(e.value)))
-                  .toList(),
-              onChanged: (v) {
-                if (v != null) onChanged(v);
-              },
+          const SizedBox(width: 12),
+          PopupMenuButton<T>(
+            initialValue: safeValue,
+            onSelected: onChanged,
+            color: const Color(0xFF1C1E27),
+            elevation: 16,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: const BorderSide(color: Color(0x28FFFFFF), width: 0.8),
+            ),
+            itemBuilder: (_) => items.entries.map((e) {
+              final selected = e.key == safeValue;
+              return PopupMenuItem<T>(
+                value: e.key,
+                height: 38,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        e.value,
+                        style: TextStyle(
+                          color: selected ? Colors.white : const Color(0xFFC8CCD6),
+                          fontSize: 13,
+                          fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                        ),
+                      ),
+                    ),
+                    if (selected) Icon(Icons.check_rounded, size: 16, color: accent),
+                  ],
+                ),
+              );
+            }).toList(),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6.5),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1D1F28),
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(color: const Color(0x24FFFFFF), width: 0.8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 210),
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  const Icon(Icons.unfold_more_rounded, size: 15, color: VedroTheme.fg3),
+                ],
+              ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Clean macOS inline segmented control row for compact 2–4 option settings.
+class _InlineSegmentedRow<T> extends StatelessWidget {
+  const _InlineSegmentedRow({
+    required this.title,
+    required this.value,
+    required this.items,
+    required this.onChanged,
+  });
+
+  final String title;
+  final T value;
+  final List<(T, String)> items;
+  final ValueChanged<T> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final seg = Container(
+      padding: const EdgeInsets.all(2.5),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1C24),
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: const Color(0x1DFFFFFF), width: 0.7),
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: items.map((entry) {
+            final active = entry.$1 == value;
+            return GestureDetector(
+              onTap: () => onChanged(entry.$1),
+              child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 140),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: active ? const Color(0xFF2D303E) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(7),
+                  ),
+                  child: Text(
+                    entry.$2,
+                    style: TextStyle(
+                      color: active ? Colors.white : VedroTheme.fg3,
+                      fontSize: 12,
+                      fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ),
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 460) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: const TextStyle(color: VedroTheme.fg, fontSize: 14)),
+                const SizedBox(height: 8),
+                seg,
+              ],
+            ),
+          );
+        }
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              Expanded(child: Text(title, style: const TextStyle(color: VedroTheme.fg, fontSize: 14))),
+              const SizedBox(width: 10),
+              seg,
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -2017,7 +2476,7 @@ class _SwitchRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
       child: Row(
         children: [
           Expanded(
@@ -2032,7 +2491,15 @@ class _SwitchRow extends StatelessWidget {
               ],
             ),
           ),
-          Switch(value: value, onChanged: onChanged),
+          const SizedBox(width: 12),
+          Transform.scale(
+            scale: 0.78,
+            child: CupertinoSwitch(
+              value: value,
+              activeTrackColor: Theme.of(context).colorScheme.primary,
+              onChanged: onChanged,
+            ),
+          ),
         ],
       ),
     );
@@ -2060,30 +2527,48 @@ class _SliderRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.secondary;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
               Expanded(child: Text(title, style: const TextStyle(color: VedroTheme.fg, fontSize: 14))),
-              Text(
-                valueText,
-                style: const TextStyle(
-                  color: VedroTheme.fg2,
-                  fontSize: 12.5,
-                  fontFeatures: [FontFeature.tabularFigures()],
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1D1F28),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  valueText,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
                 ),
               ),
             ],
           ),
-          Slider(
-            value: value.clamp(min, max),
-            min: min,
-            max: max,
-            divisions: divisions,
-            onChanged: onChanged,
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 3.0,
+              activeTrackColor: accent,
+              inactiveTrackColor: const Color(0x28FFFFFF),
+              thumbColor: Colors.white,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6.5),
+            ),
+            child: Slider(
+              value: value.clamp(min, max),
+              min: min,
+              max: max,
+              divisions: divisions,
+              onChanged: onChanged,
+            ),
           ),
         ],
       ),

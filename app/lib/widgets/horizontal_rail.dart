@@ -12,14 +12,12 @@ class HorizontalMediaRail extends StatelessWidget {
     required this.items,
     required this.appState,
     required this.onItemTap,
-    this.subtitle,
     this.onItemLongPress,
     this.onSeeAll,
     this.landscape = false,
   });
 
   final String title;
-  final String? subtitle;
   final List<MediaItemModel> items;
   final VedroAppState appState;
   final void Function(MediaItemModel) onItemTap;
@@ -30,42 +28,48 @@ class HorizontalMediaRail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (items.isEmpty) return const SizedBox.shrink();
-    final cardWidth = landscape ? 248.0 : 148.0;
-    final railHeight = landscape ? 202.0 : 274.0;
+    final cardWidth = landscape ? 256.0 : 146.0;
+    final railHeight = landscape ? 202.0 : 272.0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
           child: Row(
             children: [
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-                    ),
-                    if (subtitle != null)
-                      Text(
-                        subtitle!,
-                        style: const TextStyle(color: VedroTheme.textSecondary, fontSize: 12),
-                      ),
-                  ],
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    color: VedroTheme.fg,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -0.3,
+                  ),
                 ),
               ),
               if (onSeeAll != null)
-                TextButton(onPressed: onSeeAll, child: const Text('查看全部')),
+                GestureDetector(
+                  onTap: onSeeAll,
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('全部', style: TextStyle(color: VedroTheme.fg2, fontSize: 13)),
+                      SizedBox(width: 2),
+                      Icon(Icons.chevron_right_rounded, size: 16, color: VedroTheme.fg3),
+                    ],
+                  ),
+                ),
             ],
           ),
         ),
         SizedBox(
           height: railHeight,
           child: ListView.separated(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
+            padding: const EdgeInsets.symmetric(horizontal: 24),
             scrollDirection: Axis.horizontal,
+            physics: const BouncingScrollPhysics(),
             itemCount: items.length,
             separatorBuilder: (_, __) => const SizedBox(width: 14),
             itemBuilder: (context, idx) {

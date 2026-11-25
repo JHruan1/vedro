@@ -79,7 +79,7 @@ struct RegisteredStream {
 /// - Handles HTTP 429 `Retry-After` backoff cleanly.
 pub struct StreamProxy {
     listen_addr: SocketAddr,
-    http: reqwest::Client,
+    http: RwLock<reqwest::Client>,
     config: StreamProxyConfig,
     cache: ChunkCache,
     streams: Arc<DashMap<String, Arc<RegisteredStream>>>,
@@ -91,26 +91,38 @@ pub struct StreamProxy {
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
+fn build_proxy_http_client(
+    proxy_url: Option<&str>,
+    accept_invalid_certs: bool,
+) -> std::io::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .pool_max_idle_per_host(4)
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(60))
+        .tcp_nodelay(true)
+        .danger_accept_invalid_certs(accept_invalid_certs);
+    if let Some(p) = proxy_url.map(str::trim).filter(|s| !s.is_empty()) {
+        let proxy = reqwest::Proxy::all(p).map_err(std::io::Error::other)?;
+        builder = builder.proxy(proxy);
+    }
+    builder.build().map_err(std::io::Error::other)
+}
+
 impl StreamProxy {
     pub async fn start(config: StreamProxyConfig) -> std::io::Result<Arc<Self>> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let listen_addr = listener.local_addr()?;
 
-        let http = reqwest::Client::builder()
-            .pool_max_idle_per_host(4)
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
-            .tcp_nodelay(true)
-            .build()
-            .map_err(std::io::Error::other)?;
+        let http = build_proxy_http_client(None, false)?;
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let cache = ChunkCache::new(config.cache_bytes, config.chunk_size);
 
         let proxy = Arc::new(Self {
             listen_addr,
-            http,
-            cache: ChunkCache::new(config.cache_bytes, config.chunk_size),
+            http: RwLock::new(http),
             config,
+            cache,
             streams: Arc::new(DashMap::new()),
             active_conns: Arc::new(AtomicUsize::new(0)),
             total_upstream_bytes: Arc::new(AtomicU64::new(0)),
@@ -156,6 +168,17 @@ impl StreamProxy {
 
     pub fn listen_addr(&self) -> SocketAddr {
         self.listen_addr
+    }
+
+    /// Reconfigure upstream HTTP proxy / TLS verification for the local stream proxy.
+    pub fn configure_transport(
+        &self,
+        proxy_url: Option<&str>,
+        accept_invalid_certs: bool,
+    ) -> std::io::Result<()> {
+        let client = build_proxy_http_client(proxy_url, accept_invalid_certs)?;
+        *self.http.write() = client;
+        Ok(())
     }
 
     /// Register an upstream media stream and return the local loopback URL for the player.
@@ -489,7 +512,8 @@ impl StreamProxy {
             );
 
             self.active_conns.fetch_add(1, Ordering::Relaxed);
-            let resp_res = self.http.get(&url).headers(hdrs).send().await;
+            let http_client = self.http.read().clone();
+            let resp_res = http_client.get(&url).headers(hdrs).send().await;
             self.active_conns.fetch_sub(1, Ordering::Relaxed);
 
             match resp_res {

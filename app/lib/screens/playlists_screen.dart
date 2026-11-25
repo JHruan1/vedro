@@ -26,15 +26,21 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     final name = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('新建片单'),
+        title: const Text('新建片单', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
         content: TextField(
           controller: ctrl,
           autofocus: true,
-          decoration: const InputDecoration(hintText: '例如：杜比视界蓝光原盘收藏'),
+          decoration: const InputDecoration(hintText: '片单名称'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('创建')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消', style: TextStyle(color: VedroTheme.fg2)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('创建'),
+          ),
         ],
       ),
     );
@@ -48,36 +54,72 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   @override
   Widget build(BuildContext context) {
     final list = widget.appState.playlists;
+    final wide = MediaQuery.sizeOf(context).width >= 820;
+
     return Scaffold(
+      backgroundColor: VedroTheme.canvas,
       appBar: AppBar(
-        title: const Text('我的片单'),
+        title: const Text('片单'),
         actions: [
-          IconButton(icon: const Icon(Icons.add_rounded), tooltip: '新建片单', onPressed: _createDialog),
+          IconButton(
+            icon: const Icon(Icons.add_rounded, size: 22, color: VedroTheme.fg),
+            tooltip: '新建片单',
+            onPressed: _createDialog,
+          ),
         ],
       ),
       body: list.isEmpty
-          ? const Center(child: Text('暂无片单，点击右上角 + 创建', style: TextStyle(color: VedroTheme.textSecondary)))
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: list.length,
-              itemBuilder: (_, idx) {
-                final pl = list[idx];
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  child: ListTile(
-                    leading: const Icon(Icons.playlist_play_rounded, color: VedroTheme.accent),
-                    title: Text(pl.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: Text('${pl.childCount ?? 0} 部影片'),
-                    trailing: const Icon(Icons.chevron_right_rounded),
-                    onTap: () => widget.onItemTap(pl),
+          ? const Center(
+              child: Text('暂无片单', style: TextStyle(color: VedroTheme.fg3, fontSize: 13.5)),
+            )
+          : ListView(
+              padding: EdgeInsets.fromLTRB(20, 8, 20, wide ? 36 : 104),
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    color: VedroTheme.surface,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: VedroTheme.line, width: 0.7),
                   ),
-                );
-              },
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    children: [
+                      for (var i = 0; i < list.length; i++) ...[
+                        if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16),
+                        InkWell(
+                          onTap: () => widget.onItemTap(list[i]),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.bookmark_outline_rounded, size: 19, color: VedroTheme.fg2),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    list[i].name,
+                                    style: const TextStyle(
+                                      color: VedroTheme.fg,
+                                      fontSize: 14.5,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  '${list[i].unplayedItemCount ?? 0}',
+                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 13),
+                                ),
+                                const SizedBox(width: 6),
+                                const Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
             ),
     );
   }
-}
-
-extension on MediaItemModel {
-  int? get childCount => unplayedItemCount;
 }

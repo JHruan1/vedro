@@ -37,17 +37,46 @@ struct ClientState {
     capabilities: ServerCapabilities,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ClientTransportOptions {
+    /// Explicit HTTP / HTTPS / SOCKS5 proxy URL (e.g. `http://127.0.0.1:7890` or `socks5h://127.0.0.1:7890`).
+    /// When `None`, `reqwest`'s `system-proxy` automatically uses OS / env proxy settings.
+    pub proxy_url: Option<String>,
+    /// Allow self-signed TLS certificates (for private LAN embygo/Emby deployments).
+    pub accept_invalid_certs: bool,
+}
+
 impl EmbyClient {
     /// Create a new client targeting `server_url` (e.g. `https://emby.example.com` or `http://127.0.0.1:8097`).
     pub fn new(server_url: &str, identity: ClientIdentity) -> Result<Self> {
+        Self::with_options(server_url, identity, ClientTransportOptions::default())
+    }
+
+    pub fn with_options(
+        server_url: &str,
+        identity: ClientIdentity,
+        options: ClientTransportOptions,
+    ) -> Result<Self> {
         let normalized = normalize_base_url(server_url)?;
-        let http = Client::builder()
+        let mut builder = Client::builder()
             .pool_max_idle_per_host(8)
             .pool_idle_timeout(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(30))
             .tcp_nodelay(true)
-            .build()?;
+            .danger_accept_invalid_certs(options.accept_invalid_certs);
+
+        if let Some(proxy_str) = options
+            .proxy_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let proxy = reqwest::Proxy::all(proxy_str)?;
+            builder = builder.proxy(proxy);
+        }
+
+        let http = builder.build()?;
 
         Ok(Self {
             http,

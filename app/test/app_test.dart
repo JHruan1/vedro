@@ -9,7 +9,7 @@ import 'package:vedro/main.dart';
 
 class _MockVedroCore implements VedroCoreClient {
   @override
-  String get coreVersion => '0.1.0-test';
+  String get coreVersion => '0.1.1-test';
 
   @override
   Future<dynamic> invoke(String method, [Map<String, dynamic> params = const {}]) async {
@@ -65,7 +65,12 @@ class _MockVedroCore implements VedroCoreClient {
       case 'get_home':
         return <String, dynamic>{
           'views': [
-            <String, dynamic>{'Id': 'lib1', 'Name': '4K 杜比视界电影', 'Type': 'CollectionFolder', 'CollectionType': 'movies'},
+            <String, dynamic>{
+              'Id': 'lib1',
+              'Name': '电影',
+              'Type': 'CollectionFolder',
+              'CollectionType': 'movies',
+            },
           ],
           'popular': [
             <String, dynamic>{
@@ -102,7 +107,7 @@ class _MockVedroCore implements VedroCoreClient {
 }
 
 void main() {
-  test('MediaItemModel infers 4K, Dolby Vision, Dolby Atmos, REMUX badges', () {
+  test('MediaItemModel infers 4K, Dolby Vision, Dolby Atmos, REMUX specs', () {
     final item = MediaItemModel.fromJson({
       'Id': '100',
       'Name': 'Interstellar',
@@ -118,7 +123,7 @@ void main() {
     expect(item.inferredBadges, containsAll(['4K', 'Dolby Vision', 'Dolby Atmos', 'REMUX']));
   });
 
-  testWidgets('ServerConnectScreen renders and logs into embygo home screen', (tester) async {
+  testWidgets('ServerConnectScreen is clean and logs into home screen', (tester) async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('com.vedro.player/hardware'),
       (call) async => <String, dynamic>{
@@ -136,20 +141,19 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Vedro'), findsOneWidget);
-    expect(find.text('embygo DirectPlay'), findsOneWidget);
-    expect(find.text('Dolby Vision'), findsOneWidget);
-    expect(find.text('Dolby Atmos'), findsOneWidget);
+    // Ensure login stays restrained with zero marketing buzzword badges
+    expect(find.text('Rust Core'), findsNothing);
+    expect(find.text('embygo DirectPlay'), findsNothing);
 
     await tester.enterText(find.byType(TextField).at(1), 'admin');
     await tester.enterText(find.byType(TextField).at(2), 'secret');
-    await tester.tap(find.text('连接并登录'));
+    await tester.tap(find.text('登录'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pump(const Duration(milliseconds: 320));
 
     expect(find.text('My EmbyGo'), findsOneWidget);
     expect(find.text('Dune: Part Two'), findsOneWidget);
 
-    // Cleanly unmount so periodic timers are disposed
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();
   });

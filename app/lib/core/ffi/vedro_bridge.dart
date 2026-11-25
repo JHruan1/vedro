@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
+import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
 
@@ -23,11 +24,12 @@ abstract class VedroCoreClient {
   void dispose();
 }
 
-/// Production FFI bridge calling our Rust `VedroRuntime` directly.
+/// Production FFI bridge calling our Rust `VedroRuntime` asynchronously off the UI thread.
 class VedroFfiBridge implements VedroCoreClient {
-  VedroFfiBridge._(this._bindings, this._handle);
+  VedroFfiBridge._(this._bindings, this._handle, this._libraryPath);
 
   final VedroNativeBindings _bindings;
+  final String? _libraryPath;
   Pointer<VedroRuntime> _handle;
   bool _disposed = false;
 
@@ -39,7 +41,7 @@ class VedroFfiBridge implements VedroCoreClient {
       if (handle == nullptr) {
         throw VedroCoreException('vedro_init returned null handle');
       }
-      return VedroFfiBridge._(bindings, handle);
+      return VedroFfiBridge._(bindings, handle, libraryPath);
     } finally {
       if (pathPtr != nullptr) {
         calloc.free(pathPtr);
@@ -55,24 +57,34 @@ class VedroFfiBridge implements VedroCoreClient {
     if (_disposed) {
       throw VedroCoreException('VedroFfiBridge already disposed');
     }
-    final methodPtr = method.toNativeUtf8();
-    final paramsPtr = jsonEncode(params).toNativeUtf8();
-    Pointer<Utf8> resultPtr = nullptr;
-    try {
-      resultPtr = _bindings.invoke(_handle, methodPtr, paramsPtr);
-      final raw = resultPtr.toDartString();
-      final decoded = jsonDecode(raw) as Map<String, dynamic>;
-      if (decoded['ok'] == true) {
-        return decoded['data'];
+    final handleAddr = _handle.address;
+    final paramsJson = jsonEncode(params);
+    final libPath = _libraryPath;
+
+    // Execute blocking Rust Tokio bridge off the Flutter UI thread so animations never jank.
+    final raw = await Isolate.run(() {
+      final bindings = VedroNativeBindings.load(overridePath: libPath);
+      final handle = Pointer<VedroRuntime>.fromAddress(handleAddr);
+      final methodPtr = method.toNativeUtf8();
+      final paramsPtr = paramsJson.toNativeUtf8();
+      Pointer<Utf8> resultPtr = nullptr;
+      try {
+        resultPtr = bindings.invoke(handle, methodPtr, paramsPtr);
+        return resultPtr.toDartString();
+      } finally {
+        calloc.free(methodPtr);
+        calloc.free(paramsPtr);
+        if (resultPtr != nullptr) {
+          bindings.freeString(resultPtr);
+        }
       }
-      throw VedroCoreException(decoded['error']?.toString() ?? 'Unknown Rust core error');
-    } finally {
-      calloc.free(methodPtr);
-      calloc.free(paramsPtr);
-      if (resultPtr != nullptr) {
-        _bindings.freeString(resultPtr);
-      }
+    });
+
+    final decoded = jsonDecode(raw) as Map<String, dynamic>;
+    if (decoded['ok'] == true) {
+      return decoded['data'];
     }
+    throw VedroCoreException(decoded['error']?.toString() ?? 'Unknown Rust core error');
   }
 
   @override

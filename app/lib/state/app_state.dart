@@ -43,6 +43,11 @@ class VedroAppState extends ChangeNotifier {
   // Playback settings mirrored with Rust SQLite store
   Map<String, dynamic> settings = {};
 
+  // Network transport options (auto-detected OS/Android proxy or user override)
+  String systemProxyUrl = '';
+  String customProxyUrl = '';
+  bool acceptInvalidCerts = false;
+
   // EmbyGo Admin dashboard snapshot
   Map<String, dynamic>? embygoAdminDashboard;
 
@@ -66,8 +71,12 @@ class VedroAppState extends ChangeNotifier {
         settings = Map<String, dynamic>.from(cfg);
       }
 
-      // Query native display HDR / Dolby Vision & Atmos hardware capabilities
+      // Query native display HDR / Dolby Vision & Atmos hardware capabilities + Android system proxy
       final hwCaps = await NativePlaybackChannel.queryDisplayAndAudioCapabilities();
+      final detectedProxy = hwCaps['system_proxy_url']?.toString().trim() ?? '';
+      if (detectedProxy.isNotEmpty) {
+        systemProxyUrl = detectedProxy;
+      }
       if (settings['display'] is Map<String, dynamic>) {
         final d = Map<String, dynamic>.from(settings['display'] as Map);
         d['supports_hdr10'] = hwCaps['supports_hdr10'] ?? d['supports_hdr10'];
@@ -97,14 +106,25 @@ class VedroAppState extends ChangeNotifier {
     } catch (_) {}
   }
 
-  Future<ServerCapabilitiesModel> connectServer(String url) async {
+  String get effectiveProxyUrl =>
+      customProxyUrl.trim().isNotEmpty ? customProxyUrl.trim() : systemProxyUrl;
+
+  Future<ServerCapabilitiesModel> connectServer(
+    String url, {
+    String? proxyUrl,
+    bool? acceptInvalidTls,
+  }) async {
     errorMessage = null;
     isBusy = true;
     notifyListeners();
     try {
+      if (proxyUrl != null) customProxyUrl = proxyUrl.trim();
+      if (acceptInvalidTls != null) acceptInvalidCerts = acceptInvalidTls;
       final res = await core.invoke('connect_server', {
         'url': url.trim(),
         'device_name': _platformDeviceName(),
+        if (effectiveProxyUrl.isNotEmpty) 'proxy_url': effectiveProxyUrl,
+        'accept_invalid_certs': acceptInvalidCerts,
       }) as Map<String, dynamic>;
       capabilities = ServerCapabilitiesModel.fromJson(
         res['capabilities'] as Map<String, dynamic>,
@@ -120,12 +140,22 @@ class VedroAppState extends ChangeNotifier {
     }
   }
 
-  Future<void> login(String url, String user, String password) async {
+  Future<void> login(
+    String url,
+    String user,
+    String password, {
+    String? proxyUrl,
+    bool? acceptInvalidTls,
+  }) async {
     errorMessage = null;
     isBusy = true;
     notifyListeners();
     try {
-      await connectServer(url);
+      await connectServer(
+        url,
+        proxyUrl: proxyUrl,
+        acceptInvalidTls: acceptInvalidTls,
+      );
       final res = await core.invoke('login', {
         'username': user.trim(),
         'password': password,
@@ -166,6 +196,8 @@ class VedroAppState extends ChangeNotifier {
         'url': profile.url,
         'access_token': profile.accessToken,
         'user_id': profile.userId,
+        if (effectiveProxyUrl.isNotEmpty) 'proxy_url': effectiveProxyUrl,
+        'accept_invalid_certs': acceptInvalidCerts,
       }) as Map<String, dynamic>;
       connectedUrl = profile.url;
       capabilities = ServerCapabilitiesModel.fromJson(

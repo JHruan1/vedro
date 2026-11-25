@@ -7,7 +7,7 @@ pub mod models;
 pub mod websocket;
 
 pub use auth::ClientIdentity;
-pub use client::EmbyClient;
+pub use client::{ClientTransportOptions, EmbyClient};
 pub use dialect::{ServerCapabilities, ServerDialect};
 pub use discovery::discover_lan_servers;
 pub use error::{ProtocolError, Result};

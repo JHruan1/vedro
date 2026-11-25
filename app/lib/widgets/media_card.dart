@@ -3,8 +3,11 @@ import 'package:flutter/material.dart';
 import '../core/models/models.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
-import 'badge_strip.dart';
+import 'vedro_ui.dart';
 
+/// Clean, Apple TV+ / Infuse style poster or widescreen episode card.
+/// Zero neon badges covering artwork — pure photography, subtle hairline frame,
+/// tactile spring hover/press scale, and restrained typography underneath.
 class MediaCard extends StatelessWidget {
   const MediaCard({
     super.key,
@@ -12,7 +15,7 @@ class MediaCard extends StatelessWidget {
     required this.appState,
     required this.onTap,
     this.onLongPress,
-    this.width = 152,
+    this.width = 148,
     this.landscape = false,
   });
 
@@ -26,7 +29,7 @@ class MediaCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final aspect = landscape ? 16 / 9 : 2 / 3;
-    final imgUrl = item.primaryImageTag != null
+    final imgUrl = item.primaryImageTag != null || item.backdropImageTag != null
         ? appState.buildImageUrl(
             item.id,
             type: landscape && item.backdropImageTag != null ? 'Backdrop' : 'Primary',
@@ -34,12 +37,20 @@ class MediaCard extends StatelessWidget {
             maxWidth: landscape ? 640 : 400,
           )
         : '';
-    final badges = item.inferredBadges.take(2).toList();
+
+    final titleText = item.seriesName != null && item.type == 'Episode'
+        ? item.seriesName!
+        : item.name;
+    final subtitleText = item.type == 'Episode'
+        ? [if (item.episodeCode != null) item.episodeCode!, item.name].join(' · ')
+        : [
+            if (item.productionYear != null) '${item.productionYear}',
+            if (item.communityRating != null) item.communityRating!.toStringAsFixed(1),
+          ].join(' · ');
 
     return SizedBox(
       width: width,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
+      child: PressableScale(
         onTap: onTap,
         onLongPress: onLongPress,
         child: Column(
@@ -47,92 +58,123 @@ class MediaCard extends StatelessWidget {
           children: [
             AspectRatio(
               aspectRatio: aspect,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
+              child: Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  color: VedroTheme.surface,
+                  border: Border.all(color: VedroTheme.line, width: 0.6),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x52000000),
+                      blurRadius: 16,
+                      offset: Offset(0, 8),
+                    ),
+                  ],
+                ),
+                clipBehavior: Clip.antiAlias,
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    Container(
-                      color: VedroTheme.surfaceElevated,
-                      child: imgUrl.isNotEmpty
-                          ? Image.network(
-                              imgUrl,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => _PlaceholderPoster(title: item.name),
-                            )
-                          : _PlaceholderPoster(title: item.name),
-                    ),
-                    // Top-left technical badge (DoVi / Atmos / 4K)
-                    if (badges.isNotEmpty)
-                      Positioned(
-                        top: 6,
-                        left: 6,
-                        child: BadgeStrip(badges: badges, compact: true),
-                      ),
-                    // Top-right unwatched count or played checkmark
+                    if (imgUrl.isNotEmpty)
+                      Image.network(
+                        imgUrl,
+                        fit: BoxFit.cover,
+                        frameBuilder: (_, child, frame, sync) {
+                          if (sync) return child;
+                          return AnimatedOpacity(
+                            opacity: frame == null ? 0 : 1,
+                            duration: const Duration(milliseconds: 220),
+                            curve: Curves.easeOut,
+                            child: child,
+                          );
+                        },
+                        errorBuilder: (_, __, ___) => _PlaceholderPoster(title: item.name),
+                      )
+                    else
+                      _PlaceholderPoster(title: item.name),
+                    // Subtle unwatched count pill for TV series (Apple monochrome glass)
                     if (item.unplayedItemCount != null && item.unplayedItemCount! > 0)
                       Positioned(
-                        top: 6,
-                        right: 6,
+                        top: 7,
+                        right: 7,
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
-                            color: VedroTheme.accent,
-                            borderRadius: BorderRadius.circular(10),
+                            color: const Color(0xB80B0B0D),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: VedroTheme.lineStrong, width: 0.5),
                           ),
                           child: Text(
                             '${item.unplayedItemCount}',
-                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+                            style: const TextStyle(
+                              color: VedroTheme.fg,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                            ),
                           ),
                         ),
-                      )
-                    else if (item.played)
-                      const Positioned(
-                        top: 6,
-                        right: 6,
-                        child: CircleAvatar(
-                          radius: 11,
-                          backgroundColor: VedroTheme.embygoGreen,
-                          child: Icon(Icons.check, size: 14, color: Colors.black),
-                        ),
                       ),
-                    // Bottom resume progress bar
-                    if (item.resumeProgress > 0.01)
+                    // Ultra-thin crisp white progress line ONLY for in-progress items
+                    if (item.resumeProgress > 0.01) ...[
                       Positioned(
                         left: 0,
                         right: 0,
                         bottom: 0,
-                        child: LinearProgressIndicator(
-                          value: item.resumeProgress,
-                          minHeight: 4,
-                          backgroundColor: Colors.black54,
-                          color: VedroTheme.accent,
+                        height: 28,
+                        child: Container(
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [Colors.transparent, Color(0xAA000000)],
+                            ),
+                          ),
                         ),
                       ),
+                      Positioned(
+                        left: 8,
+                        right: 8,
+                        bottom: 8,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(2),
+                          child: LinearProgressIndicator(
+                            value: item.resumeProgress,
+                            minHeight: 2.5,
+                            backgroundColor: const Color(0x45FFFFFF),
+                            color: VedroTheme.fg,
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
             Text(
-              item.seriesName != null && item.type == 'Episode'
-                  ? '${item.seriesName} ${item.episodeCode ?? ''}'.trim()
-                  : item.name,
+              titleText,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+              style: const TextStyle(
+                color: VedroTheme.fg,
+                fontWeight: FontWeight.w500,
+                fontSize: 13.5,
+                letterSpacing: -0.1,
+              ),
             ),
-            Text(
-              item.type == 'Episode'
-                  ? item.name
-                  : [
-                      if (item.productionYear != null) '${item.productionYear}',
-                      if (item.communityRating != null) '★ ${item.communityRating!.toStringAsFixed(1)}',
-                    ].join(' • '),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: VedroTheme.textSecondary, fontSize: 11.5),
-            ),
+            if (subtitleText.isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Text(
+                subtitleText,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: VedroTheme.fg3,
+                  fontSize: 12,
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -147,21 +189,19 @@ class _PlaceholderPoster extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF1A2236), Color(0xFF0D111C)],
-        ),
-      ),
+      color: VedroTheme.surface2,
       alignment: Alignment.center,
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(12),
       child: Text(
         title,
         textAlign: TextAlign.center,
         maxLines: 3,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(color: VedroTheme.textSecondary, fontWeight: FontWeight.w600),
+        style: const TextStyle(
+          color: VedroTheme.fg3,
+          fontSize: 12.5,
+          fontWeight: FontWeight.w500,
+        ),
       ),
     );
   }

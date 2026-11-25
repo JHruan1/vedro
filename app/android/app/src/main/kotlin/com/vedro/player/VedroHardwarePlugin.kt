@@ -7,6 +7,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.MediaCodecList
+import android.net.ConnectivityManager
 import android.os.Build
 import android.util.Rational
 import android.view.Display
@@ -115,6 +116,8 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
             }
         }
 
+        val systemProxyUrl = detectAndroidProxyUrl()
+
         return mapOf(
             "supports_hdr10" to supportsHdr10,
             "supports_hlg" to supportsHlg,
@@ -127,8 +130,27 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
             "supports_dts_hd" to supportsDtsHd,
             "supports_spatial_audio" to supportsSpatializer,
             "max_luminance_nits" to maxLuminance,
-            "refresh_rate_hz" to refreshRate
+            "refresh_rate_hz" to refreshRate,
+            "system_proxy_url" to (systemProxyUrl ?: "")
         )
+    }
+
+    private fun detectAndroidProxyUrl(): String? {
+        try {
+            val cm = activity.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            if (cm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val proxy = cm.defaultProxy
+                if (proxy != null && !proxy.host.isNullOrBlank() && proxy.port > 0) {
+                    return "http://${proxy.host}:${proxy.port}"
+                }
+            }
+        } catch (_: Throwable) {}
+        val host = System.getProperty("http.proxyHost") ?: System.getProperty("https.proxyHost")
+        val port = System.getProperty("http.proxyPort") ?: System.getProperty("https.proxyPort")
+        if (!host.isNullOrBlank() && !port.isNullOrBlank()) {
+            return "http://$host:$port"
+        }
+        return null
     }
 
     private fun hasHardwareCodec(mime: String): Boolean {

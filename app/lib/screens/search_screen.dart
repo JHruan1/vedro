@@ -35,7 +35,7 @@ class _SearchScreenState extends State<SearchScreen> {
       setState(() => _hints = []);
       return;
     }
-    _debounce = Timer(const Duration(milliseconds: 280), () => _runSearch(val.trim()));
+    _debounce = Timer(const Duration(milliseconds: 240), () => _runSearch(val.trim()));
   }
 
   Future<void> _runSearch(String term) async {
@@ -59,46 +59,132 @@ class _SearchScreenState extends State<SearchScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final wide = MediaQuery.sizeOf(context).width >= 820;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('全局搜索')),
+      backgroundColor: VedroTheme.canvas,
+      appBar: AppBar(title: const Text('搜索')),
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
             child: TextField(
               controller: _ctrl,
               onChanged: _onChanged,
-              decoration: const InputDecoration(
-                hintText: '搜索电影、剧集、演员...',
-                prefixIcon: Icon(Icons.search_rounded),
+              style: const TextStyle(color: VedroTheme.fg, fontSize: 14),
+              decoration: InputDecoration(
+                hintText: '片名、原名或演职员',
+                prefixIcon: const Icon(Icons.search_rounded, size: 19, color: VedroTheme.fg3),
+                suffixIcon: _ctrl.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.close_rounded, size: 17, color: VedroTheme.fg3),
+                        onPressed: () {
+                          _ctrl.clear();
+                          setState(() => _hints = []);
+                        },
+                      )
+                    : null,
               ),
             ),
           ),
-          if (_searching) const LinearProgressIndicator(minHeight: 2),
+          if (_searching)
+            const LinearProgressIndicator(
+              minHeight: 1.5,
+              backgroundColor: Colors.transparent,
+              color: VedroTheme.fg2,
+            ),
           Expanded(
             child: _hints.isEmpty
                 ? const Center(
-                    child: Text('输入片名、原名或演员名即时检索', style: TextStyle(color: VedroTheme.textSecondary)),
+                    child: Text(
+                      '输入关键字搜索媒体库',
+                      style: TextStyle(color: VedroTheme.fg3, fontSize: 13.5),
+                    ),
                   )
-                : ListView.builder(
+                : ListView.separated(
+                    padding: EdgeInsets.fromLTRB(20, 4, 20, wide ? 36 : 104),
                     itemCount: _hints.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
                     itemBuilder: (_, idx) {
                       final h = _hints[idx];
                       final id = (h['ItemId'] ?? h['Id'] ?? '').toString();
                       final name = (h['Name'] ?? '').toString();
                       final type = (h['Type'] ?? 'Movie').toString();
-                      return ListTile(
-                        leading: Icon(type == 'Person' ? Icons.person_rounded : Icons.movie_rounded),
-                        title: Text(name),
-                        subtitle: Text([
-                          type,
-                          if (h['ProductionYear'] != null) '${h['ProductionYear']}',
-                          if (h['Series'] != null) '${h['Series']}',
-                        ].join(' • ')),
-                        onTap: () {
-                          if (type == 'Person') return;
-                          widget.onItemTap(MediaItemModel(id: id, name: name, type: type));
-                        },
+                      final imgTag = h['PrimaryImageTag']?.toString();
+                      final thumbUrl = imgTag != null
+                          ? widget.appState.buildImageUrl(id, type: 'Primary', tag: imgTag, maxWidth: 120)
+                          : '';
+                      final sub = [
+                        if (h['ProductionYear'] != null) '${h['ProductionYear']}',
+                        if (h['Series'] != null) '${h['Series']}',
+                        type,
+                      ].join(' · ');
+
+                      return InkWell(
+                        onTap: type == 'Person'
+                            ? null
+                            : () => widget.onItemTap(MediaItemModel(id: id, name: name, type: type)),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 40,
+                                height: 56,
+                                decoration: BoxDecoration(
+                                  color: VedroTheme.surface2,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: VedroTheme.line, width: 0.6),
+                                ),
+                                clipBehavior: Clip.antiAlias,
+                                child: thumbUrl.isNotEmpty
+                                    ? Image.network(
+                                        thumbUrl,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) => Icon(
+                                          type == 'Person' ? Icons.person_outline : Icons.movie_outlined,
+                                          size: 18,
+                                          color: VedroTheme.fg3,
+                                        ),
+                                      )
+                                    : Icon(
+                                        type == 'Person' ? Icons.person_outline : Icons.movie_outlined,
+                                        size: 18,
+                                        color: VedroTheme.fg3,
+                                      ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: VedroTheme.fg,
+                                        fontSize: 14.5,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    if (sub.isNotEmpty) ...[
+                                      const SizedBox(height: 3),
+                                      Text(
+                                        sub,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                              if (type != 'Person')
+                                const Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
+                            ],
+                          ),
+                        ),
                       );
                     },
                   ),

@@ -15,8 +15,8 @@ use vedro_playback::{
     PlaybackStats, ToneMappingAlgorithm,
 };
 use vedro_protocol::{
-    discover_lan_servers, ClientIdentity, EmbyClient, ItemsQuery, MediaBadges, MediaSourceInfo,
-    PlaybackProgressPayload, WebSocketSession,
+    discover_lan_servers, ClientIdentity, ClientTransportOptions, EmbyClient, ItemsQuery,
+    MediaBadges, MediaSourceInfo, PlaybackProgressPayload, WebSocketSession,
 };
 use vedro_storage::{ServerProfile, VedroStore};
 use vedro_stream::{
@@ -234,8 +234,30 @@ impl VedroRuntime {
                 if let Some(dev_name) = params.get("device_name").and_then(Value::as_str) {
                     self.identity.lock().device_name = dev_name.to_string();
                 }
+                let proxy_url = params
+                    .get("proxy_url")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string);
+                let accept_invalid_certs = params
+                    .get("accept_invalid_certs")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let _ = self
+                    .proxy
+                    .configure_transport(proxy_url.as_deref(), accept_invalid_certs);
+
                 let identity = self.identity.lock().clone();
-                let client = EmbyClient::new(&url, identity).map_err(|e| e.to_string())?;
+                let client = EmbyClient::with_options(
+                    &url,
+                    identity,
+                    ClientTransportOptions {
+                        proxy_url,
+                        accept_invalid_certs,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
                 let (info, caps) = client.probe_server().await.map_err(|e| e.to_string())?;
                 *self.client.lock() = Some(client);
                 Ok(json!({
@@ -292,8 +314,30 @@ impl VedroRuntime {
                 let url = str_param(&params, "url")?;
                 let token = str_param(&params, "access_token")?;
                 let user_id = str_param(&params, "user_id")?;
+                let proxy_url = params
+                    .get("proxy_url")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string);
+                let accept_invalid_certs = params
+                    .get("accept_invalid_certs")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let _ = self
+                    .proxy
+                    .configure_transport(proxy_url.as_deref(), accept_invalid_certs);
+
                 let identity = self.identity.lock().clone();
-                let client = EmbyClient::new(&url, identity).map_err(|e| e.to_string())?;
+                let client = EmbyClient::with_options(
+                    &url,
+                    identity,
+                    ClientTransportOptions {
+                        proxy_url,
+                        accept_invalid_certs,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
                 let (info, caps) = client.probe_server().await.map_err(|e| e.to_string())?;
                 client.set_credentials(token, user_id);
                 let user = client.current_user().await.map_err(|e| e.to_string())?;

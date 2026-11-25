@@ -3,8 +3,8 @@ import 'package:flutter/material.dart';
 import '../core/models/models.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
-import '../widgets/badge_strip.dart';
 import '../widgets/horizontal_rail.dart';
+import '../widgets/vedro_ui.dart';
 import 'player_screen.dart';
 
 class DetailScreen extends StatefulWidget {
@@ -44,7 +44,7 @@ class _DetailScreenState extends State<DetailScreen> {
           .map(MediaItemModel.fromJson)
           .toList();
       if (_item.mediaSources.isNotEmpty) {
-        _selectedSourceId = _item.mediaSources.first.id;
+        _selectedSourceId ??= _item.mediaSources.first.id;
       }
       if (_item.isSeries) {
         final sRes = await widget.appState.core.invoke('get_seasons', {'series_id': _item.id})
@@ -69,6 +69,7 @@ class _DetailScreenState extends State<DetailScreen> {
       'season_id': seasonId,
       'limit': 200,
     }) as Map<String, dynamic>;
+    if (!mounted) return;
     setState(() {
       _selectedSeasonId = seasonId;
       _episodes = ((eRes['Items'] as List<dynamic>?) ?? const [])
@@ -90,31 +91,148 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
+  void _openVersionPicker() {
+    showGlassSheet<void>(
+      context: context,
+      builder: (ctx) => ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+        children: [
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Text(
+              '选择版本',
+              style: TextStyle(
+                color: VedroTheme.fg,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          ..._item.mediaSources.map((src) {
+            final selected = src.id == _selectedSourceId;
+            return InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () {
+                setState(() => _selectedSourceId = src.id);
+                Navigator.pop(ctx);
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                decoration: BoxDecoration(
+                  color: selected ? const Color(0x16FFFFFF) : Colors.transparent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            src.displayLabel,
+                            style: const TextStyle(
+                              color: VedroTheme.fg,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          if (src.container != null) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              src.container!.toUpperCase(),
+                              style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    if (selected)
+                      const Icon(Icons.check_rounded, size: 18, color: VedroTheme.accent),
+                  ],
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final bgUrl = _item.backdropImageTag != null
-        ? widget.appState.buildImageUrl(_item.id, type: 'Backdrop', tag: _item.backdropImageTag, maxWidth: 1600)
-        : '';
+        ? widget.appState.buildImageUrl(
+            _item.id,
+            type: 'Backdrop',
+            tag: _item.backdropImageTag,
+            maxWidth: 1920,
+          )
+        : (_item.primaryImageTag != null
+            ? widget.appState.buildImageUrl(
+                _item.id,
+                type: 'Primary',
+                tag: _item.primaryImageTag,
+                maxWidth: 1200,
+              )
+            : '');
+
+    final runtimeMins =
+        _item.runTimeTicks != null && _item.runTimeTicks! > 0 ? _item.runTimeTicks! ~/ 600000000 : null;
+    final metaLine = [
+      if (_item.productionYear != null) '${_item.productionYear}',
+      if (runtimeMins != null) '$runtimeMins 分钟',
+      if (_item.communityRating != null) '★ ${_item.communityRating!.toStringAsFixed(1)}',
+      if (_item.officialRating != null) _item.officialRating!,
+      if (_item.genres.isNotEmpty) _item.genres.take(3).join(' / '),
+    ].join('  ·  ');
 
     return Scaffold(
+      backgroundColor: VedroTheme.canvas,
       body: CustomScrollView(
         slivers: [
           SliverAppBar(
-            expandedHeight: 280,
+            expandedHeight: 340,
             pinned: true,
+            backgroundColor: VedroTheme.canvas,
+            leading: Padding(
+              padding: const EdgeInsets.all(8),
+              child: PressableScale(
+                onTap: () => Navigator.of(context).pop(),
+                child: GlassSurface(
+                  borderRadius: 20,
+                  blur: 18,
+                  color: const Color(0x66141417),
+                  child: const Center(
+                    child: Icon(Icons.arrow_back_ios_new_rounded, size: 16, color: VedroTheme.fg),
+                  ),
+                ),
+              ),
+            ),
             flexibleSpace: FlexibleSpaceBar(
-              title: Text(_item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
               background: Stack(
                 fit: StackFit.expand,
                 children: [
                   if (bgUrl.isNotEmpty)
-                    Image.network(bgUrl, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const SizedBox()),
+                    Image.network(
+                      bgUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(color: VedroTheme.surface),
+                    )
+                  else
+                    Container(color: VedroTheme.surface),
                   Container(
                     decoration: const BoxDecoration(
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
-                        colors: [Color(0x3307090F), VedroTheme.bg],
+                        stops: [0.0, 0.45, 1.0],
+                        colors: [
+                          Color(0x550B0B0D),
+                          Color(0x280B0B0D),
+                          VedroTheme.canvas,
+                        ],
                       ),
                     ),
                   ),
@@ -122,149 +240,251 @@ class _DetailScreenState extends State<DetailScreen> {
               ),
             ),
           ),
+
           SliverToBoxAdapter(
             child: Padding(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  BadgeStrip(badges: [
-                    if (_item.productionYear != null) '${_item.productionYear}',
-                    if (_item.communityRating != null) '★ ${_item.communityRating!.toStringAsFixed(1)}',
-                    if (_item.officialRating != null) _item.officialRating!,
-                    ..._item.inferredBadges,
-                  ]),
-                  const SizedBox(height: 16),
-                  // Action row
+                  Text(
+                    _item.name,
+                    style: const TextStyle(
+                      color: VedroTheme.fg,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.7,
+                      height: 1.15,
+                    ),
+                  ),
+                  if (metaLine.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      metaLine,
+                      style: const TextStyle(color: VedroTheme.fg2, fontSize: 13.5),
+                    ),
+                  ],
+                  if (_item.inferredBadges.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    SpecGlyphRow(specs: _item.inferredBadges),
+                  ],
+                  const SizedBox(height: 20),
+
+                  // Action bar
                   Wrap(
-                    spacing: 12,
+                    spacing: 10,
                     runSpacing: 10,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       if (_item.isPlayable)
-                        FilledButton.icon(
-                          onPressed: () => _play(_item, sourceId: _selectedSourceId),
-                          icon: const Icon(Icons.play_arrow_rounded),
-                          label: Text(_item.playbackPositionTicks > 0 ? '继续播放 (DirectPlay)' : '立即播放 (DirectPlay)'),
+                        PressableScale(
+                          onTap: () => _play(_item, sourceId: _selectedSourceId),
+                          child: Container(
+                            height: 42,
+                            padding: const EdgeInsets.symmetric(horizontal: 22),
+                            decoration: BoxDecoration(
+                              color: VedroTheme.fg,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.play_arrow_rounded, size: 20, color: VedroTheme.canvas),
+                                const SizedBox(width: 5),
+                                Text(
+                                  _item.playbackPositionTicks > 0 ? '继续播放' : '播放',
+                                  style: const TextStyle(
+                                    color: VedroTheme.canvas,
+                                    fontSize: 14.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         )
                       else if (_episodes.isNotEmpty)
-                        FilledButton.icon(
-                          onPressed: () => _play(_episodes.first),
-                          icon: const Icon(Icons.play_arrow_rounded),
-                          label: Text('播放 ${_episodes.first.episodeCode ?? '第 1 集'}'),
+                        PressableScale(
+                          onTap: () => _play(_episodes.first),
+                          child: Container(
+                            height: 42,
+                            padding: const EdgeInsets.symmetric(horizontal: 22),
+                            decoration: BoxDecoration(
+                              color: VedroTheme.fg,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.play_arrow_rounded, size: 20, color: VedroTheme.canvas),
+                                const SizedBox(width: 5),
+                                Text(
+                                  '播放 ${_episodes.first.episodeCode ?? '第 1 集'}',
+                                  style: const TextStyle(
+                                    color: VedroTheme.canvas,
+                                    fontSize: 14.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
-                      OutlinedButton.icon(
-                        onPressed: () async {
+                      _SubtleActionPill(
+                        icon: _item.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                        iconColor: _item.isFavorite ? VedroTheme.danger : VedroTheme.fg2,
+                        label: _item.isFavorite ? '已收藏' : '收藏',
+                        onTap: () async {
                           await widget.appState.toggleFavorite(_item);
                           await _loadDetails();
                         },
-                        icon: Icon(_item.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                            color: _item.isFavorite ? Colors.pinkAccent : null),
-                        label: Text(_item.isFavorite ? '已收藏' : '收藏'),
                       ),
-                      OutlinedButton.icon(
-                        onPressed: () async {
+                      _SubtleActionPill(
+                        icon: _item.played ? Icons.check_circle_rounded : Icons.check_circle_outline_rounded,
+                        iconColor: _item.played ? VedroTheme.fg : VedroTheme.fg2,
+                        label: _item.played ? '已看' : '标为已看',
+                        onTap: () async {
                           await widget.appState.togglePlayed(_item);
                           await _loadDetails();
                         },
-                        icon: Icon(_item.played ? Icons.check_circle_rounded : Icons.check_circle_outline_rounded),
-                        label: Text(_item.played ? '已观看' : '标记已看'),
                       ),
+                      if (_item.mediaSources.length > 1)
+                        _SubtleActionPill(
+                          icon: Icons.layers_outlined,
+                          iconColor: VedroTheme.fg2,
+                          label: '版本 (${_item.mediaSources.length})',
+                          onTap: _openVersionPicker,
+                        ),
                     ],
                   ),
-                  // Multi-version selector (perfect for embygo provider-ID merged local/cloud versions!)
-                  if (_item.mediaSources.length > 1) ...[
-                    const SizedBox(height: 20),
-                    const Text('版本选择（支持 embygo 多版本合并）',
-                        style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-                    const SizedBox(height: 8),
-                    ..._item.mediaSources.map((src) {
-                      final selected = src.id == _selectedSourceId;
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: ListTile(
-                          leading: Icon(
-                            selected ? Icons.radio_button_checked_rounded : Icons.radio_button_off_rounded,
-                            color: selected ? VedroTheme.accent : VedroTheme.textSecondary,
-                          ),
-                          onTap: () => setState(() => _selectedSourceId = src.id),
-                          title: Text(src.displayLabel, style: const TextStyle(fontSize: 13.5)),
-                          subtitle: Text(
-                            '容器: ${src.container?.toUpperCase() ?? '-'} • DirectPlay: ${src.supportsDirectPlay ? '支持' : '否'}',
-                            style: const TextStyle(color: VedroTheme.textSecondary, fontSize: 12),
-                          ),
-                        ),
-                      );
-                    }),
-                  ],
+
                   if (_item.overview != null && _item.overview!.isNotEmpty) ...[
-                    const SizedBox(height: 16),
-                    Text(
-                      _item.overview!,
-                      style: const TextStyle(color: VedroTheme.textSecondary, height: 1.55),
+                    const SizedBox(height: 22),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 740),
+                      child: Text(
+                        _item.overview!,
+                        style: const TextStyle(
+                          color: VedroTheme.fg2,
+                          fontSize: 14,
+                          height: 1.62,
+                        ),
+                      ),
                     ),
                   ],
+
                   if (_seasons.isNotEmpty) ...[
-                    const SizedBox(height: 24),
-                    Wrap(
-                      spacing: 8,
-                      children: _seasons
-                          .map((s) => ChoiceChip(
-                                label: Text(s.name),
-                                selected: s.id == _selectedSeasonId,
-                                onSelected: (_) => _loadEpisodes(s.id),
-                              ))
-                          .toList(),
+                    const SizedBox(height: 28),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: _seasons.map((s) {
+                          final active = s.id == _selectedSeasonId;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: PressableScale(
+                              onTap: () => _loadEpisodes(s.id),
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 160),
+                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: active ? VedroTheme.fg : VedroTheme.surface2,
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: active ? VedroTheme.fg : VedroTheme.line,
+                                    width: 0.7,
+                                  ),
+                                ),
+                                child: Text(
+                                  s.name,
+                                  style: TextStyle(
+                                    color: active ? VedroTheme.canvas : VedroTheme.fg2,
+                                    fontSize: 13,
+                                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
                     ),
-                    const SizedBox(height: 12),
-                    ..._episodes.map((ep) => Card(
-                          margin: const EdgeInsets.only(bottom: 10),
-                          child: ListTile(
-                            leading: CircleAvatar(
-                              backgroundColor: VedroTheme.surfaceElevated,
-                              child: Text(ep.episodeCode ?? '${ep.indexNumber ?? ''}'),
-                            ),
-                            title: Text(ep.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                            subtitle: ep.overview != null
-                                ? Text(ep.overview!, maxLines: 2, overflow: TextOverflow.ellipsis)
-                                : null,
-                            trailing: IconButton(
-                              icon: const Icon(Icons.play_circle_fill_rounded, color: VedroTheme.accent, size: 32),
-                              onPressed: () => _play(ep),
-                            ),
-                            onTap: () => _play(ep),
-                          ),
+                    const SizedBox(height: 14),
+                    ..._episodes.map((ep) => _EpisodeRow(
+                          episode: ep,
+                          appState: widget.appState,
+                          onTap: () => _play(ep),
                         )),
                   ],
+
                   if (_item.people.isNotEmpty) ...[
-                    const SizedBox(height: 24),
-                    const Text('演职员', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 28),
+                    const Text(
+                      '演职员',
+                      style: TextStyle(
+                        color: VedroTheme.fg,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.2,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     SizedBox(
-                      height: 86,
+                      height: 112,
                       child: ListView.separated(
                         scrollDirection: Axis.horizontal,
-                        itemCount: _item.people.take(15).length,
-                        separatorBuilder: (_, __) => const SizedBox(width: 10),
+                        itemCount: _item.people.take(18).length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 14),
                         itemBuilder: (_, idx) {
                           final p = _item.people[idx];
-                          return Container(
-                            width: 160,
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: VedroTheme.surface,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: VedroTheme.border),
-                            ),
+                          final avatarUrl = p.primaryImageTag != null
+                              ? widget.appState.buildImageUrl(
+                                  p.id,
+                                  type: 'Primary',
+                                  tag: p.primaryImageTag,
+                                  maxWidth: 160,
+                                )
+                              : '';
+                          return SizedBox(
+                            width: 82,
                             child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontWeight: FontWeight.w600)),
-                                Text(p.role ?? p.type ?? '',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(color: VedroTheme.textSecondary, fontSize: 12)),
+                                Container(
+                                  width: 60,
+                                  height: 60,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: VedroTheme.surface2,
+                                    border: Border.all(color: VedroTheme.line, width: 0.7),
+                                  ),
+                                  clipBehavior: Clip.antiAlias,
+                                  child: avatarUrl.isNotEmpty
+                                      ? Image.network(
+                                          avatarUrl,
+                                          fit: BoxFit.cover,
+                                          errorBuilder: (_, __, ___) => _InitialsAvatar(name: p.name),
+                                        )
+                                      : _InitialsAvatar(name: p.name),
+                                ),
+                                const SizedBox(height: 7),
+                                Text(
+                                  p.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: VedroTheme.fg,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                Text(
+                                  p.role ?? p.type ?? '',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 11),
+                                ),
                               ],
                             ),
                           );
@@ -276,10 +496,11 @@ class _DetailScreenState extends State<DetailScreen> {
               ),
             ),
           ),
+
           if (_similar.isNotEmpty)
             SliverToBoxAdapter(
               child: HorizontalMediaRail(
-                title: '相似推荐',
+                title: '相关推荐',
                 items: _similar,
                 appState: widget.appState,
                 onItemTap: (other) => Navigator.of(context).push(
@@ -289,15 +510,214 @@ class _DetailScreenState extends State<DetailScreen> {
                 ),
               ),
             ),
+
           if (_loading)
             const SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.all(24),
-                child: Center(child: CircularProgressIndicator()),
+                child: Center(
+                  child: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: VedroTheme.fg2),
+                  ),
+                ),
               ),
             ),
-          const SliverToBoxAdapter(child: SizedBox(height: 40)),
+
+          const SliverToBoxAdapter(child: SizedBox(height: 48)),
         ],
+      ),
+    );
+  }
+}
+
+class _SubtleActionPill extends StatelessWidget {
+  const _SubtleActionPill({
+    required this.icon,
+    required this.iconColor,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return PressableScale(
+      onTap: onTap,
+      child: Container(
+        height: 42,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(
+          color: VedroTheme.surface2,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: VedroTheme.line, width: 0.7),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 17, color: iconColor),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: const TextStyle(
+                color: VedroTheme.fg,
+                fontSize: 13.5,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EpisodeRow extends StatelessWidget {
+  const _EpisodeRow({
+    required this.episode,
+    required this.appState,
+    required this.onTap,
+  });
+
+  final MediaItemModel episode;
+  final VedroAppState appState;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final thumbUrl = episode.primaryImageTag != null
+        ? appState.buildImageUrl(
+            episode.id,
+            type: 'Primary',
+            tag: episode.primaryImageTag,
+            maxWidth: 420,
+          )
+        : '';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: PressableScale(
+        onTap: onTap,
+        hoverScale: 1.01,
+        pressScale: 0.985,
+        child: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: VedroTheme.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: VedroTheme.line, width: 0.6),
+          ),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 128,
+                child: AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: VedroTheme.surface2,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (thumbUrl.isNotEmpty)
+                          Image.network(
+                            thumbUrl,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => const Center(
+                              child: Icon(Icons.play_arrow_rounded, color: VedroTheme.fg3),
+                            ),
+                          )
+                        else
+                          const Center(
+                            child: Icon(Icons.play_arrow_rounded, color: VedroTheme.fg3),
+                          ),
+                        if (episode.resumeProgress > 0.01)
+                          Positioned(
+                            left: 6,
+                            right: 6,
+                            bottom: 6,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(2),
+                              child: LinearProgressIndicator(
+                                value: episode.resumeProgress,
+                                minHeight: 2.5,
+                                backgroundColor: const Color(0x44FFFFFF),
+                                color: VedroTheme.fg,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      [
+                        if (episode.indexNumber != null) '${episode.indexNumber}.',
+                        episode.name,
+                      ].join(' '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: VedroTheme.fg,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    if (episode.overview != null && episode.overview!.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        episode.overview!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: VedroTheme.fg3,
+                          fontSize: 12.5,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.play_arrow_rounded, size: 22, color: VedroTheme.fg2),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InitialsAvatar extends StatelessWidget {
+  const _InitialsAvatar({required this.name});
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    final letter = name.trim().isNotEmpty ? name.trim().substring(0, 1).toUpperCase() : '?';
+    return Center(
+      child: Text(
+        letter,
+        style: const TextStyle(
+          color: VedroTheme.fg2,
+          fontSize: 18,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }

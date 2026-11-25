@@ -54,18 +54,43 @@ class _VedroAppState extends State<VedroApp> {
       title: 'Vedro',
       debugShowCheckedModeBanner: false,
       theme: VedroTheme.dark(),
+      scrollBehavior: const VedroScrollBehavior(),
       home: ListenableBuilder(
         listenable: _appState,
         builder: (context, _) {
+          final Widget child;
           if (!_appState.isInitialized) {
-            return const Scaffold(
-              body: Center(child: CircularProgressIndicator()),
+            child = const Scaffold(
+              key: ValueKey('splash'),
+              backgroundColor: VedroTheme.canvas,
+              body: Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: VedroTheme.fg2,
+                  ),
+                ),
+              ),
+            );
+          } else if (!_appState.isSignedIn) {
+            child = ServerConnectScreen(
+              key: const ValueKey('connect'),
+              appState: _appState,
+            );
+          } else {
+            child = ShellScreen(
+              key: const ValueKey('shell'),
+              appState: _appState,
             );
           }
-          if (!_appState.isSignedIn) {
-            return ServerConnectScreen(appState: _appState);
-          }
-          return ShellScreen(appState: _appState);
+          return AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            child: child,
+          );
         },
       ),
     );

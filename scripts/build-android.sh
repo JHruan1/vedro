@@ -18,6 +18,8 @@ if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -d "${ANDROID_HOME:-}/ndk" ]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+VERSION="${VEDRO_VERSION:-$(awk -F': *' '/^version:/{print $2; exit}' "$ROOT_DIR/app/pubspec.yaml" | cut -d'+' -f1 | tr -d '\r')}"
+VERSION="${VERSION#v}"
 JNI_DIR="$ROOT_DIR/app/android/app/src/main/jniLibs"
 DIST_DIR="$ROOT_DIR/dist"
 mkdir -p "$JNI_DIR" "$DIST_DIR"
@@ -40,9 +42,9 @@ flutter pub get
 flutter build apk --release --split-per-abi
 flutter build apk --release
 
-cp -f "$ROOT_DIR/app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk" "$DIST_DIR/vedro-android-arm64-v8a.apk"
-cp -f "$ROOT_DIR/app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk" "$DIST_DIR/vedro-android-armeabi-v7a.apk"
-cp -f "$ROOT_DIR/app/build/app/outputs/flutter-apk/app-x86_64-release.apk" "$DIST_DIR/vedro-android-x86_64.apk"
-cp -f "$ROOT_DIR/app/build/app/outputs/flutter-apk/app-release.apk" "$DIST_DIR/vedro-android-universal.apk"
+cp -f "$ROOT_DIR/app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk" "$DIST_DIR/vedro-v${VERSION}-android-arm64-v8a.apk"
+cp -f "$ROOT_DIR/app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk" "$DIST_DIR/vedro-v${VERSION}-android-armeabi-v7a.apk"
+cp -f "$ROOT_DIR/app/build/app/outputs/flutter-apk/app-x86_64-release.apk" "$DIST_DIR/vedro-v${VERSION}-android-x86_64.apk"
+cp -f "$ROOT_DIR/app/build/app/outputs/flutter-apk/app-release.apk" "$DIST_DIR/vedro-v${VERSION}-android-universal.apk"
 
-ls -lh "$DIST_DIR"/vedro-android-*.apk
+ls -lh "$DIST_DIR"/vedro-v"${VERSION}"-android-*.apk

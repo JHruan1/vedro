@@ -44,7 +44,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vedro-android-apks
-          path: dist/vedro-android-*.apk
+          path: dist/vedro-v*-android-*.apk
 
   build-windows:
     name: Windows x64 (DXGI HDR + WASAPI Atmos)
@@ -59,7 +59,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vedro-windows-x64
-          path: dist/vedro-windows-x64.zip
+          path: dist/vedro-v*-windows-x64.zip
 
   build-macos:
     name: macOS Universal DMG (Apple Silicon + Intel)
@@ -76,7 +76,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vedro-macos-universal
-          path: dist/vedro-macos-universal.dmg
+          path: dist/vedro-v*-macos-universal.dmg
 
   build-ios:
     name: iOS Unsigned IPA (arm64)
@@ -93,4 +93,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vedro-ios-unsigned
-          path: dist/vedro-ios-unsigned.ipa
+          path: dist/vedro-v*-ios-unsigned.ipa

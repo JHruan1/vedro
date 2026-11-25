@@ -5,6 +5,8 @@ set -euo pipefail
 # bundle into Vedro.app, and package a ready-to-install DMG into dist/.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+VERSION="${VEDRO_VERSION:-$(awk -F': *' '/^version:/{print $2; exit}' "$ROOT_DIR/app/pubspec.yaml" | cut -d'+' -f1 | tr -d '\r')}"
+VERSION="${VERSION#v}"
 OUT_DIR="$ROOT_DIR/app/macos/Frameworks"
 DIST_DIR="$ROOT_DIR/dist"
 mkdir -p "$OUT_DIR" "$DIST_DIR"
@@ -36,7 +38,8 @@ echo "==> Packaging macOS DMG..."
 DMG_STAGE="$(mktemp -d)"
 cp -R "$APP_BUNDLE" "$DMG_STAGE/Vedro.app"
 ln -s /Applications "$DMG_STAGE/Applications"
-hdiutil create -volname "Vedro" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DIST_DIR/vedro-macos-universal.dmg"
+DMG_PATH="$DIST_DIR/vedro-v${VERSION}-macos-universal.dmg"
+hdiutil create -volname "Vedro" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG_PATH"
 rm -rf "$DMG_STAGE"
 
-ls -lh "$DIST_DIR/vedro-macos-universal.dmg"
+ls -lh "$DMG_PATH"

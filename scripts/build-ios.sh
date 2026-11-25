@@ -5,6 +5,8 @@ set -euo pipefail
 # Flutter iOS Runner binary, and package an unsigned installable IPA into dist/.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+VERSION="${VEDRO_VERSION:-$(awk -F': *' '/^version:/{print $2; exit}' "$ROOT_DIR/app/pubspec.yaml" | cut -d'+' -f1 | tr -d '\r')}"
+VERSION="${VERSION#v}"
 OUT_DIR="$ROOT_DIR/app/ios/Frameworks"
 DIST_DIR="$ROOT_DIR/dist"
 mkdir -p "$OUT_DIR" "$DIST_DIR"
@@ -31,7 +33,9 @@ echo "==> Packaging unsigned IPA for TrollStore / Sideloadly / AltStore..."
 STAGE_DIR="$(mktemp -d)"
 mkdir -p "$STAGE_DIR/Payload"
 cp -R "$ROOT_DIR/app/build/ios/iphoneos/Runner.app" "$STAGE_DIR/Payload/"
-(cd "$STAGE_DIR" && zip -qry "$DIST_DIR/vedro-ios-unsigned.ipa" Payload)
+IPA_PATH="$DIST_DIR/vedro-v${VERSION}-ios-unsigned.ipa"
+rm -f "$IPA_PATH"
+(cd "$STAGE_DIR" && zip -qry "$IPA_PATH" Payload)
 rm -rf "$STAGE_DIR"
 
-ls -lh "$DIST_DIR/vedro-ios-unsigned.ipa"
+ls -lh "$IPA_PATH"

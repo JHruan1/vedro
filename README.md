@@ -15,10 +15,10 @@ Supports **Android**, **iOS**, **macOS**, and **Windows**.
 
 Get prebuilt installers from [Releases](https://github.com/JHruan1/vedro/releases):
 
-- **Android**: `vedro-android-arm64-v8a.apk` (recommended) / `armeabi-v7a` / `x86_64` / `universal`
-- **Windows x64**: `vedro-windows-x64.zip`
-- **macOS (Universal)**: `vedro-macos-universal.dmg`
-- **iOS (arm64)**: `vedro-ios-unsigned.ipa`
+- **Android**: `vedro-v<version>-android-arm64-v8a.apk` (recommended) / `armeabi-v7a` / `x86_64` / `universal`
+- **Windows x64**: `vedro-v<version>-windows-x64.zip`
+- **macOS (Universal)**: `vedro-v<version>-macos-universal.dmg`
+- **iOS (arm64)**: `vedro-v<version>-ios-unsigned.ipa`
 
 ## Build from Source
 

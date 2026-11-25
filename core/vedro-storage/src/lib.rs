@@ -1,3 +1,3 @@
 pub mod db;
 
-pub use db::{ServerProfile, StorageError, TrackPreference, VedroStore};
+pub use db::{ServerProfile, ServerRoute, StorageError, TrackPreference, VedroStore};

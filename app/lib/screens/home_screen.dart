@@ -17,6 +17,9 @@ class HomeScreen extends StatefulWidget {
     required this.onItemTap,
     required this.onQuickPlay,
     required this.onLibraryTap,
+    required this.onOpenServerHub,
+    required this.onOpenAddServer,
+    required this.onOpenSettings,
     this.onScrollChanged,
   });
 
@@ -24,6 +27,9 @@ class HomeScreen extends StatefulWidget {
   final void Function(MediaItemModel, {String? heroPrefix}) onItemTap;
   final void Function(MediaItemModel) onQuickPlay;
   final void Function(MediaItemModel) onLibraryTap;
+  final VoidCallback onOpenServerHub;
+  final void Function([String? initialUrl]) onOpenAddServer;
+  final VoidCallback onOpenSettings;
   final ValueChanged<bool>? onScrollChanged;
 
   @override
@@ -85,7 +91,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final key = entry.item.seriesId ?? entry.item.id;
       if (seen.add(key)) unique.add(entry);
     }
-    // Prefer real widescreen backdrops over poster-only items
     final wideOnes = unique.where((e) => app.backdropArt(e.item)?.isPoster == false).toList();
     final rest = unique.where((e) => app.backdropArt(e.item)?.isPoster != false).toList();
     return [...wideOnes, ...rest].take(5).toList();
@@ -96,7 +101,17 @@ class _HomeScreenState extends State<HomeScreen> {
     final app = widget.appState;
     final wide = MediaQuery.sizeOf(context).width >= 820;
 
-    // Immediate gorgeous animated shimmer while Home fetches in parallel!
+    // SenPlayer / Forward Home Server Hub when no server is currently active!
+    if (!app.isSignedIn) {
+      return _ServerWelcomeHub(
+        appState: app,
+        wide: wide,
+        onOpenAddServer: widget.onOpenAddServer,
+        onOpenServerHub: widget.onOpenServerHub,
+        onOpenSettings: widget.onOpenSettings,
+      );
+    }
+
     if (app.isLoadingHome && !app.hasAnyHomeContent) {
       return ListView(
         physics: const NeverScrollableScrollPhysics(),
@@ -122,10 +137,19 @@ class _HomeScreenState extends State<HomeScreen> {
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: VedroTheme.fg2, fontSize: 14),
               ),
-              const SizedBox(height: 16),
-              FilledButton(
-                onPressed: app.refreshHome,
-                child: const Text('重试'),
+              const SizedBox(height: 18),
+              Wrap(
+                spacing: 10,
+                children: [
+                  FilledButton(
+                    onPressed: app.refreshHome,
+                    child: const Text('重试'),
+                  ),
+                  OutlinedButton(
+                    onPressed: widget.onOpenServerHub,
+                    child: const Text('切换线路 / 服务器'),
+                  ),
+                ],
               ),
             ],
           ),
@@ -138,7 +162,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final resumeIds = app.resume.map((e) => e.id).toSet();
     final nextItems = app.nextUp.where((e) => !resumeIds.contains(e.id)).toList();
 
-    // Map library ID -> latest items so LibraryCard gets a lush widescreen backdrop!
     final latestMap = <String, List<MediaItemModel>>{};
     for (final entry in app.latestByLibrary) {
       final lib = MediaItemModel.fromJson(entry['library'] as Map<String, dynamic>);
@@ -168,6 +191,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 showMobileHeader: !wide,
                 onPlay: widget.onQuickPlay,
                 onDetail: (item) => widget.onItemTap(item, heroPrefix: 'hero'),
+                onOpenServerHub: widget.onOpenServerHub,
                 onRefresh: app.refreshHome,
               ),
             )
@@ -197,7 +221,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-          // Continue Watching (dedicated 16:9 ResumeCard with "继续" & remaining time)
           SliverToBoxAdapter(
             child: HorizontalMediaRail(
               title: '继续观看',
@@ -212,7 +235,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-          // Next Up episodes
           SliverToBoxAdapter(
             child: HorizontalMediaRail(
               title: '接下来播放',
@@ -224,7 +246,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-          // Suggestions
           SliverToBoxAdapter(
             child: HorizontalMediaRail(
               title: '猜你喜欢',
@@ -236,7 +257,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-          // Cinematic 16:9 Media Library Tiles (just like Forward / embygo Web!)
           if (app.views.isNotEmpty)
             SliverToBoxAdapter(
               child: CustomHorizontalRail(
@@ -265,7 +285,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-          // Favorites rail
           SliverToBoxAdapter(
             child: HorizontalMediaRail(
               title: '我的收藏',
@@ -277,7 +296,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-          // Recently Added per Library
           ...app.latestByLibrary.map((entry) {
             final lib = MediaItemModel.fromJson(entry['library'] as Map<String, dynamic>);
             final items = ((entry['items'] as List<dynamic>?) ?? const [])
@@ -347,8 +365,249 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-/// Apple TV+ / Forward / SenPlayer full-bleed cinema hero with auto-rotating crossfade,
-/// subtle scroll parallax, real transparent Title Logo, and desktop 16:9 thumbnail switcher.
+/// SenPlayer / Forward Home Server Hub shown on startup when no server is active yet.
+/// Lets users pick a saved server, switch routes, discover LAN servers, add a new server,
+/// or jump right into Player Settings without ever being trapped behind a login wall.
+class _ServerWelcomeHub extends StatelessWidget {
+  const _ServerWelcomeHub({
+    required this.appState,
+    required this.wide,
+    required this.onOpenAddServer,
+    required this.onOpenServerHub,
+    required this.onOpenSettings,
+  });
+
+  final VedroAppState appState;
+  final bool wide;
+  final void Function([String? initialUrl]) onOpenAddServer;
+  final VoidCallback onOpenServerHub;
+  final VoidCallback onOpenSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    final saved = appState.savedServers;
+    final discovered = appState.discoveredServers;
+
+    return SafeArea(
+      child: Center(
+        child: SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(24, wide ? 84 : 28, 24, wide ? 48 : 112),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 620),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Center(child: VedroBrandMark(size: 56)),
+                const SizedBox(height: 18),
+                const Text(
+                  'Vedro',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: VedroTheme.fg,
+                    fontSize: 30,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.7,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  '选择一个媒体服务器开始观影，支持多服务器聚合搜索与多线路测速切换',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: VedroTheme.fg3, fontSize: 13.5),
+                ),
+                const SizedBox(height: 28),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    PressableScale(
+                      onTap: () => onOpenAddServer(),
+                      child: Container(
+                        height: 44,
+                        padding: const EdgeInsets.symmetric(horizontal: 22),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.add_rounded, size: 19, color: VedroTheme.canvas),
+                            SizedBox(width: 6),
+                            Text(
+                              '添加媒体服务器',
+                              style: TextStyle(
+                                color: VedroTheme.canvas,
+                                fontSize: 14.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    PressableScale(
+                      onTap: onOpenSettings,
+                      child: Container(
+                        height: 44,
+                        padding: const EdgeInsets.symmetric(horizontal: 18),
+                        decoration: BoxDecoration(
+                          color: VedroTheme.surface2,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: VedroTheme.line, width: 0.8),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.tune_rounded, size: 17, color: VedroTheme.fg2),
+                            SizedBox(width: 7),
+                            Text(
+                              '播放器设置',
+                              style: TextStyle(
+                                color: VedroTheme.fg,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+
+                if (saved.isNotEmpty) ...[
+                  const SizedBox(height: 36),
+                  Row(
+                    children: [
+                      const Text(
+                        '我的服务器',
+                        style: TextStyle(
+                          color: VedroTheme.fg,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: onOpenServerHub,
+                        child: const Text(
+                          '管理线路',
+                          style: TextStyle(color: VedroTheme.fg2, fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  ...saved.map((srv) => Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: PressableScale(
+                          onTap: () => appState.restoreSavedServer(srv),
+                          hoverScale: 1.01,
+                          pressScale: 0.985,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                            decoration: BoxDecoration(
+                              color: VedroTheme.surface,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: VedroTheme.line, width: 0.8),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: VedroTheme.surface2,
+                                    borderRadius: BorderRadius.circular(11),
+                                    border: Border.all(color: VedroTheme.line, width: 0.6),
+                                  ),
+                                  child: const Icon(Icons.dns_outlined, size: 18, color: VedroTheme.fg2),
+                                ),
+                                const SizedBox(width: 14),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        srv.name,
+                                        style: const TextStyle(
+                                          color: VedroTheme.fg,
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 3),
+                                      Text(
+                                        [
+                                          if (srv.username != null) srv.username!,
+                                          srv.activeRoute?.name ?? '默认线路',
+                                          if (srv.routes.length > 1) '${srv.routes.length} 条线路',
+                                        ].join(' · '),
+                                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const Icon(Icons.chevron_right_rounded, size: 20, color: VedroTheme.fg3),
+                              ],
+                            ),
+                          ),
+                        ),
+                      )),
+                ],
+
+                if (discovered.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  const Text(
+                    '局域网发现',
+                    style: TextStyle(
+                      color: VedroTheme.fg2,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: discovered.map((d) {
+                      final addr = d['address']?.toString() ?? '';
+                      return PressableScale(
+                        onTap: () => onOpenAddServer(addr),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
+                          decoration: BoxDecoration(
+                            color: VedroTheme.surface,
+                            borderRadius: BorderRadius.circular(11),
+                            border: Border.all(color: VedroTheme.line, width: 0.7),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.wifi_tethering_rounded, size: 15, color: VedroTheme.fg2),
+                              const SizedBox(width: 8),
+                              Text(
+                                '${d['name'] ?? addr}',
+                                style: const TextStyle(color: VedroTheme.fg, fontSize: 13),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _CinemaHeroBanner extends StatefulWidget {
   const _CinemaHeroBanner({
     required this.featured,
@@ -357,6 +616,7 @@ class _CinemaHeroBanner extends StatefulWidget {
     required this.showMobileHeader,
     required this.onPlay,
     required this.onDetail,
+    required this.onOpenServerHub,
     required this.onRefresh,
   });
 
@@ -366,6 +626,7 @@ class _CinemaHeroBanner extends StatefulWidget {
   final bool showMobileHeader;
   final void Function(MediaItemModel) onPlay;
   final void Function(MediaItemModel) onDetail;
+  final VoidCallback onOpenServerHub;
   final VoidCallback onRefresh;
 
   @override
@@ -421,9 +682,8 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     final current = widget.featured[_active];
     final item = current.item;
     final logoUrl = widget.appState.logoArtUrl(item);
-    final serverName = widget.appState.capabilities?.serverName.isNotEmpty == true
-        ? widget.appState.capabilities!.serverName
-        : 'Vedro';
+    final serverName = widget.appState.activeServerDisplayName;
+    final routeName = widget.appState.activeRouteDisplayName;
 
     final facts = <String>[
       if (item.type == 'Episode') item.cardSubtitle,
@@ -446,7 +706,6 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // Crossfading full-bleed artwork with subtle vertical parallax
             ClipRect(
               child: Transform.translate(
                 offset: Offset(0, widget.scrollOffset * 0.28),
@@ -471,7 +730,6 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               ),
             ),
 
-            // Left cinema wash for title legibility on wide screens
             if (wide)
               const DecoratedBox(
                 decoration: BoxDecoration(
@@ -484,7 +742,6 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 ),
               ),
 
-            // Bottom gradient fading seamlessly into obsidian canvas
             const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -501,7 +758,6 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               ),
             ),
 
-            // Mobile floating header
             if (widget.showMobileHeader)
               Positioned(
                 top: 0,
@@ -510,18 +766,42 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 child: SafeArea(
                   bottom: false,
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 10, 16, 8),
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
                     child: Row(
                       children: [
-                        const VedroBrandMark(size: 26),
-                        const SizedBox(width: 9),
-                        Text(
-                          serverName,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 17,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: -0.3,
+                        PressableScale(
+                          onTap: widget.onOpenServerHub,
+                          child: GlassSurface(
+                            borderRadius: 18,
+                            blur: 18,
+                            color: const Color(0x58141417),
+                            padding: const EdgeInsets.fromLTRB(6, 5, 10, 5),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const VedroBrandMark(size: 22),
+                                const SizedBox(width: 7),
+                                ConstrainedBox(
+                                  constraints: const BoxConstraints(maxWidth: 160),
+                                  child: Text(
+                                    routeName != null ? '$serverName · $routeName' : serverName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 3),
+                                const Icon(
+                                  Icons.keyboard_arrow_down_rounded,
+                                  size: 16,
+                                  color: Color(0xCCFFFFFF),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                         const Spacer(),
@@ -541,7 +821,6 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 ),
               ),
 
-            // Bottom-left title block with smooth cross-slide transition
             Positioned(
               left: padX,
               right: wide ? size.width * 0.36 : padX,
@@ -694,7 +973,6 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               ),
             ),
 
-            // Desktop 16:9 interactive thumbnail strip / Mobile expanding dots
             if (widget.featured.length > 1)
               Positioned(
                 right: padX,

@@ -14,6 +14,7 @@ class LibraryScreen extends StatefulWidget {
     required this.appState,
     required this.onItemTap,
     this.onQuickPlay,
+    this.onOpenAddServer,
     this.initialLibrary,
     this.topInset = 0,
     this.standalone = false,
@@ -22,6 +23,7 @@ class LibraryScreen extends StatefulWidget {
   final VedroAppState appState;
   final void Function(MediaItemModel) onItemTap;
   final void Function(MediaItemModel)? onQuickPlay;
+  final void Function([String? initialUrl])? onOpenAddServer;
   final MediaItemModel? initialLibrary;
   final double topInset;
   final bool standalone;
@@ -51,7 +53,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _selectedLibrary = widget.initialLibrary ??
         (widget.appState.views.isNotEmpty ? widget.appState.views.first : null);
     _scrollCtrl.addListener(_onScroll);
-    _loadFiltersAndReset();
+    if (widget.appState.isSignedIn) {
+      _loadFiltersAndReset();
+    }
   }
 
   @override
@@ -120,6 +124,29 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!widget.appState.isSignedIn) {
+      return Scaffold(
+        backgroundColor: VedroTheme.canvas,
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.grid_view_rounded, size: 36, color: VedroTheme.fg3),
+              const SizedBox(height: 12),
+              const Text('连接媒体服务器后浏览媒体库', style: TextStyle(color: VedroTheme.fg2, fontSize: 14)),
+              if (widget.onOpenAddServer != null) ...[
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: () => widget.onOpenAddServer!(),
+                  child: const Text('添加媒体服务器'),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 820;
     final padX = wide ? 32.0 : 20.0;

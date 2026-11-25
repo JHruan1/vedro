@@ -108,6 +108,38 @@ class ServerCapabilitiesModel {
   }
 }
 
+class ServerRouteModel {
+  ServerRouteModel({
+    required this.id,
+    required this.name,
+    required this.url,
+    this.proxyUrl,
+    this.acceptInvalidCerts = false,
+  });
+
+  final String id;
+  final String name;
+  final String url;
+  final String? proxyUrl;
+  final bool acceptInvalidCerts;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'url': url,
+        if (proxyUrl != null && proxyUrl!.trim().isNotEmpty) 'proxy_url': proxyUrl!.trim(),
+        'accept_invalid_certs': acceptInvalidCerts,
+      };
+
+  factory ServerRouteModel.fromJson(Map<String, dynamic> j) => ServerRouteModel(
+        id: (j['id'] ?? 'default').toString(),
+        name: (j['name'] ?? '默认线路').toString(),
+        url: (j['url'] ?? '').toString(),
+        proxyUrl: j['proxy_url']?.toString(),
+        acceptInvalidCerts: j['accept_invalid_certs'] == true,
+      );
+}
+
 class SavedServerProfile {
   SavedServerProfile({
     required this.id,
@@ -119,6 +151,8 @@ class SavedServerProfile {
     this.accessToken,
     this.isAdmin = false,
     this.lastConnectedAt = 0,
+    this.routes = const [],
+    this.activeRouteId,
   });
 
   final String id;
@@ -130,17 +164,76 @@ class SavedServerProfile {
   final String? accessToken;
   final bool isAdmin;
   final int lastConnectedAt;
+  final List<ServerRouteModel> routes;
+  final String? activeRouteId;
 
-  factory SavedServerProfile.fromJson(Map<String, dynamic> j) => SavedServerProfile(
-        id: (j['id'] ?? '').toString(),
-        name: (j['name'] ?? '').toString(),
-        url: (j['url'] ?? '').toString(),
-        dialect: (j['dialect'] ?? 'unknown').toString(),
-        userId: j['user_id']?.toString(),
-        username: j['username']?.toString(),
-        accessToken: j['access_token']?.toString(),
-        isAdmin: j['is_admin'] == true,
-        lastConnectedAt: (j['last_connected_at'] as num?)?.toInt() ?? 0,
+  ServerRouteModel? get activeRoute {
+    if (routes.isEmpty) return null;
+    if (activeRouteId != null) {
+      for (final r in routes) {
+        if (r.id == activeRouteId) return r;
+      }
+    }
+    return routes.first;
+  }
+
+  factory SavedServerProfile.fromJson(Map<String, dynamic> j) {
+    final parsedRoutes = ((j['routes'] as List<dynamic>?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(ServerRouteModel.fromJson)
+        .toList();
+    final urlStr = (j['url'] ?? '').toString();
+    final routes = parsedRoutes.isNotEmpty
+        ? parsedRoutes
+        : (urlStr.isNotEmpty
+            ? [ServerRouteModel(id: 'default', name: '默认线路', url: urlStr)]
+            : const <ServerRouteModel>[]);
+    return SavedServerProfile(
+      id: (j['id'] ?? '').toString(),
+      name: (j['name'] ?? '').toString(),
+      url: urlStr,
+      dialect: (j['dialect'] ?? 'unknown').toString(),
+      userId: j['user_id']?.toString(),
+      username: j['username']?.toString(),
+      accessToken: j['access_token']?.toString(),
+      isAdmin: j['is_admin'] == true,
+      lastConnectedAt: (j['last_connected_at'] as num?)?.toInt() ?? 0,
+      routes: routes,
+      activeRouteId: j['active_route_id']?.toString(),
+    );
+  }
+}
+
+class AggregatedSearchHit {
+  AggregatedSearchHit({
+    required this.serverId,
+    required this.serverName,
+    required this.id,
+    required this.name,
+    required this.type,
+    this.productionYear,
+    this.primaryImageTag,
+    this.series,
+  });
+
+  final String serverId;
+  final String serverName;
+  final String id;
+  final String name;
+  final String type;
+  final int? productionYear;
+  final String? primaryImageTag;
+  final String? series;
+
+  factory AggregatedSearchHit.fromJson(Map<String, dynamic> j) => AggregatedSearchHit(
+        serverId: (j['server_id'] ?? '').toString(),
+        serverName: (j['server_name'] ?? '').toString(),
+        id: (j['id'] ?? j['ItemId'] ?? j['Id'] ?? '').toString(),
+        name: (j['name'] ?? j['Name'] ?? '').toString(),
+        type: (j['type'] ?? j['Type'] ?? 'Movie').toString(),
+        productionYear: (j['production_year'] ?? j['ProductionYear'] as num?)?.toInt(),
+        primaryImageTag: (j['primary_image_tag'] ?? j['PrimaryImageTag'])?.toString(),
+        series: (j['series'] ?? j['Series'])?.toString(),
       );
 }
 

@@ -85,6 +85,7 @@ pub struct StreamProxy {
     streams: Arc<DashMap<String, Arc<RegisteredStream>>>,
     image_upstream_base: RwLock<Option<String>>,
     image_upstream_headers: RwLock<HeaderMap>,
+    server_image_upstreams: DashMap<String, (String, HeaderMap)>,
     image_cache: DashMap<String, (String, Bytes)>,
     active_conns: Arc<AtomicUsize>,
     total_upstream_bytes: Arc<AtomicU64>,
@@ -129,6 +130,7 @@ impl StreamProxy {
             streams: Arc::new(DashMap::new()),
             image_upstream_base: RwLock::new(None),
             image_upstream_headers: RwLock::new(HeaderMap::new()),
+            server_image_upstreams: DashMap::new(),
             image_cache: DashMap::new(),
             active_conns: Arc::new(AtomicUsize::new(0)),
             total_upstream_bytes: Arc::new(AtomicU64::new(0)),
@@ -197,6 +199,18 @@ impl StreamProxy {
         if changed {
             self.image_cache.clear();
         }
+    }
+
+    /// Register a server-specific artwork upstream for multi-server aggregated search (`/img-srv/{server_id}/...`).
+    pub fn register_server_image_upstream(
+        &self,
+        server_id: String,
+        base_url: String,
+        headers: HeaderMap,
+    ) {
+        let normalized = base_url.trim_end_matches('/').to_string();
+        self.server_image_upstreams
+            .insert(server_id, (normalized, headers));
     }
 
     /// Register an upstream media stream and return the local loopback URL for the player.
@@ -310,8 +324,18 @@ impl StreamProxy {
         req: Request<Incoming>,
     ) -> std::result::Result<Response<Full<Bytes>>, hyper::Error> {
         let path = req.uri().path();
+        if let Some(srv_rest) = path.strip_prefix("/img-srv/") {
+            if let Some((srv_id, img_rel)) = srv_rest.split_once('/') {
+                return Ok(self
+                    .handle_image_request(Some(srv_id), img_rel, req.uri().query())
+                    .await);
+            }
+            return Ok(simple_response(StatusCode::NOT_FOUND, "invalid image path"));
+        }
         if let Some(img_rel) = path.strip_prefix("/img/") {
-            return Ok(self.handle_image_request(img_rel, req.uri().query()).await);
+            return Ok(self
+                .handle_image_request(None, img_rel, req.uri().query())
+                .await);
         }
         let Some(stream_id) = path.strip_prefix("/stream/") else {
             return Ok(simple_response(StatusCode::NOT_FOUND, "not found"));
@@ -403,12 +427,17 @@ impl StreamProxy {
 
     async fn handle_image_request(
         &self,
+        server_id: Option<&str>,
         rel_path: &str,
         query: Option<&str>,
     ) -> Response<Full<Bytes>> {
-        let cache_key = match query {
+        let rel_with_q = match query {
             Some(q) if !q.is_empty() => format!("{rel_path}?{q}"),
             _ => rel_path.to_string(),
+        };
+        let cache_key = match server_id {
+            Some(sid) => format!("{sid}::{rel_with_q}"),
+            None => rel_with_q.clone(),
         };
         if let Some(hit) = self.image_cache.get(&cache_key) {
             let (ct, body) = hit.value();
@@ -421,11 +450,18 @@ impl StreamProxy {
                 .unwrap();
         }
 
-        let Some(base) = self.image_upstream_base.read().clone() else {
-            return simple_response(StatusCode::SERVICE_UNAVAILABLE, "no image upstream");
+        let (base, hdrs) = if let Some(sid) = server_id {
+            let Some(entry) = self.server_image_upstreams.get(sid) else {
+                return simple_response(StatusCode::NOT_FOUND, "unknown server image upstream");
+            };
+            entry.value().clone()
+        } else {
+            let Some(b) = self.image_upstream_base.read().clone() else {
+                return simple_response(StatusCode::SERVICE_UNAVAILABLE, "no image upstream");
+            };
+            (b, self.image_upstream_headers.read().clone())
         };
-        let url = format!("{base}/{cache_key}");
-        let hdrs = self.image_upstream_headers.read().clone();
+        let url = format!("{base}/{rel_with_q}");
         let client = self.http.read().clone();
 
         let Ok(resp) = client.get(&url).headers(hdrs).send().await else {

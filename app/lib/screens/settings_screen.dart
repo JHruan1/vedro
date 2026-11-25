@@ -4,8 +4,17 @@ import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, required this.appState, this.topInset = 0});
+  const SettingsScreen({
+    super.key,
+    required this.appState,
+    required this.onOpenServerHub,
+    required this.onOpenAddServer,
+    this.topInset = 0,
+  });
+
   final VedroAppState appState;
+  final VoidCallback onOpenServerHub;
+  final void Function([String? initialUrl]) onOpenAddServer;
   final double topInset;
 
   @override
@@ -16,7 +25,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    if (widget.appState.isAdmin) {
+    if (widget.appState.isAdmin && widget.appState.isSignedIn) {
       widget.appState.loadEmbyGoAdminDashboard();
     }
   }
@@ -33,6 +42,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final caps = widget.appState.capabilities;
     final admin = widget.appState.embygoAdminDashboard;
     final wide = MediaQuery.sizeOf(context).width >= 820;
+    final signedIn = widget.appState.isSignedIn;
+    final routeName = widget.appState.activeRouteDisplayName;
 
     return Scaffold(
       backgroundColor: VedroTheme.canvas,
@@ -58,7 +69,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
                   ),
-                const _SectionLabel('服务器'),
+
+                const _SectionLabel('服务器与多线路'),
                 _GroupedCard(
                   children: [
                     Padding(
@@ -70,7 +82,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  caps?.serverName ?? widget.appState.connectedUrl ?? '未连接',
+                                  signedIn
+                                      ? widget.appState.activeServerDisplayName
+                                      : '未连接媒体服务器',
                                   style: const TextStyle(
                                     color: VedroTheme.fg,
                                     fontSize: 15,
@@ -79,29 +93,72 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ),
                                 const SizedBox(height: 3),
                                 Text(
-                                  [
-                                    widget.appState.username ?? '-',
-                                    caps?.dialect ?? '-',
-                                    'v${widget.appState.core.coreVersion}',
-                                  ].join(' · '),
+                                  signedIn
+                                      ? [
+                                          widget.appState.username ?? '-',
+                                          if (routeName != null) routeName,
+                                          '${widget.appState.savedServers.length} 个服务器',
+                                        ].join(' · ')
+                                      : '已保存 ${widget.appState.savedServers.length} 个服务器 · 内核 v${widget.appState.core.coreVersion}',
                                   style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
                                 ),
                               ],
                             ),
                           ),
-                          TextButton(
-                            onPressed: widget.appState.logout,
-                            child: const Text(
-                              '退出登录',
-                              style: TextStyle(color: VedroTheme.danger, fontSize: 13.5),
+                          if (signedIn)
+                            TextButton(
+                              onPressed: widget.appState.logout,
+                              child: const Text(
+                                '断开连接',
+                                style: TextStyle(color: VedroTheme.danger, fontSize: 13.5),
+                              ),
+                            )
+                          else
+                            FilledButton(
+                              onPressed: () => widget.onOpenAddServer(),
+                              child: const Text('添加服务器', style: TextStyle(fontSize: 13)),
                             ),
-                          ),
                         ],
+                      ),
+                    ),
+                    InkWell(
+                      onTap: widget.onOpenServerHub,
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '管理服务器与线路测速',
+                                style: TextStyle(color: VedroTheme.fg, fontSize: 14),
+                              ),
+                            ),
+                            Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
+                          ],
+                        ),
+                      ),
+                    ),
+                    InkWell(
+                      onTap: () => widget.onOpenAddServer(),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '添加新的媒体服务器',
+                                style: TextStyle(color: VedroTheme.accent, fontSize: 14),
+                              ),
+                            ),
+                            Icon(Icons.add_rounded, size: 18, color: VedroTheme.accent),
+                          ],
+                        ),
                       ),
                     ),
                   ],
                 ),
-                const _SectionLabel('视频与 HDR'),
+
+                const _SectionLabel('播放器与画面'),
                 _GroupedCard(
                   children: [
                     _DropdownRow(
@@ -121,7 +178,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       onChanged: (v) => _updateSetting('prefer_native_dolby_vision', v),
                     ),
                     _DropdownRow(
-                      title: '色调映射',
+                      title: 'HDR 色调映射',
                       value: (s['tone_mapping'] ?? 'bt2446a').toString(),
                       items: const {
                         'bt2446a': 'BT.2446a',
@@ -139,7 +196,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ],
                 ),
-                const _SectionLabel('音频'),
+
+                const _SectionLabel('音频与杜比全景声'),
                 _GroupedCard(
                   children: [
                     _DropdownRow(
@@ -166,7 +224,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ],
                 ),
-                if (widget.appState.isAdmin && caps?.isEmbyGo == true) ...[
+
+                if (signedIn && widget.appState.isAdmin && caps?.isEmbyGo == true) ...[
                   const _SectionLabel('媒体库管理'),
                   _GroupedCard(
                     children: [

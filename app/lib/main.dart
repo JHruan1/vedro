@@ -4,7 +4,6 @@ import 'package:path_provider/path_provider.dart';
 
 import 'core/ffi/vedro_bridge.dart';
 import 'core/theme/vedro_theme.dart';
-import 'screens/server_connect_screen.dart';
 import 'screens/shell_screen.dart';
 import 'state/app_state.dart';
 import 'widgets/vedro_ui.dart';
@@ -59,6 +58,8 @@ class _VedroAppState extends State<VedroApp> {
       home: ListenableBuilder(
         listenable: _appState,
         builder: (context, _) {
+          // Never trap users behind a full-screen login wall — launch directly into
+          // the main Shell workspace (Home Server Hub, Settings, Aggregated Search).
           final Widget child;
           if (!_appState.isInitialized || _appState.isAutoRestoring) {
             child = Scaffold(
@@ -71,7 +72,7 @@ class _VedroAppState extends State<VedroApp> {
                     const BreathingBrandMark(size: 50),
                     const SizedBox(height: 18),
                     Text(
-                      _appState.isAutoRestoring ? '正在恢复会话…' : 'Vedro',
+                      _appState.isAutoRestoring ? '正在连接媒体服务器…' : 'Vedro',
                       style: const TextStyle(
                         color: VedroTheme.fg2,
                         fontSize: 13.5,
@@ -82,11 +83,6 @@ class _VedroAppState extends State<VedroApp> {
                 ),
               ),
             );
-          } else if (!_appState.isSignedIn) {
-            child = ServerConnectScreen(
-              key: const ValueKey('connect'),
-              appState: _appState,
-            );
           } else {
             child = ShellScreen(
               key: const ValueKey('shell'),
@@ -94,7 +90,7 @@ class _VedroAppState extends State<VedroApp> {
             );
           }
           return AnimatedSwitcher(
-            duration: const Duration(milliseconds: 300),
+            duration: const Duration(milliseconds: 280),
             switchInCurve: Curves.easeOutCubic,
             switchOutCurve: Curves.easeInCubic,
             child: child,

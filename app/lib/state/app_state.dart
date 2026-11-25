@@ -9,12 +9,11 @@ import '../core/platform/native_playback_channel.dart';
 
 /// Central reactive application state backed directly by the compiled Rust core (`VedroCoreClient`).
 ///
-/// Key responsiveness guarantees:
-/// - Login transitions into ShellScreen the instant authentication returns; home rails
-///   populate asynchronously behind animated shimmer skeletons (never freezing the login card).
-/// - Returning users with a saved session auto-restore silently on startup.
-/// - Artwork resolution mirrors embygo Web's ancestor fallback chain (Thumb -> Episode Primary
-///   -> Backdrop -> ParentThumb -> ParentBackdrop -> FramedPoster -> GeneratedArt).
+/// Architecture aligned with SenPlayer / Forward:
+/// - Never forces a blocking login gate; launches directly into the main workspace.
+/// - First-class multi-server management + per-server multi-route lines with live latency ping.
+/// - Real parallel multi-server aggregated search (`aggregated_search`).
+/// - RAM-cached local Rust loopback image proxy inheriting OS/Clash/SOCKS5 proxy & TLS roots.
 class VedroAppState extends ChangeNotifier {
   VedroAppState(this.core);
 
@@ -32,6 +31,7 @@ class VedroAppState extends ChangeNotifier {
   List<Map<String, dynamic>> discoveredServers = [];
 
   ServerCapabilitiesModel? capabilities;
+  String? activeServerId;
   String? connectedUrl;
   String? proxyAddr;
   String? username;
@@ -68,6 +68,28 @@ class VedroAppState extends ChangeNotifier {
 
   bool get isSignedIn => userId != null && connectedUrl != null;
 
+  SavedServerProfile? get activeServer {
+    if (activeServerId != null) {
+      for (final s in savedServers) {
+        if (s.id == activeServerId) return s;
+      }
+    }
+    if (connectedUrl != null) {
+      for (final s in savedServers) {
+        if (s.url == connectedUrl) return s;
+      }
+    }
+    return null;
+  }
+
+  String get activeServerDisplayName {
+    if (capabilities?.serverName.isNotEmpty == true) return capabilities!.serverName;
+    if (activeServer?.name.isNotEmpty == true) return activeServer!.name;
+    return 'Vedro';
+  }
+
+  String? get activeRouteDisplayName => activeServer?.activeRoute?.name;
+
   bool get hasAnyHomeContent =>
       views.isNotEmpty ||
       popular.isNotEmpty ||
@@ -97,7 +119,6 @@ class VedroAppState extends ChangeNotifier {
         settings = Map<String, dynamic>.from(cfg);
       }
 
-      // Query native display HDR / Dolby Vision & Atmos capabilities + Android system proxy
       final hwCaps = await NativePlaybackChannel.queryDisplayAndAudioCapabilities();
       final detectedProxy = hwCaps['system_proxy_url']?.toString().trim() ?? '';
       if (detectedProxy.isNotEmpty) {
@@ -117,7 +138,7 @@ class VedroAppState extends ChangeNotifier {
       isBusy = false;
       notifyListeners();
 
-      // Seamless auto-restore for returning users (only if a saved session with token exists)
+      // Seamless auto-restore for returning users; fresh users land directly on Home Server Hub
       final recent = savedServers.where((s) => s.accessToken != null && s.userId != null).toList();
       if (recent.isNotEmpty) {
         isAutoRestoring = true;
@@ -128,6 +149,8 @@ class VedroAppState extends ChangeNotifier {
           isAutoRestoring = false;
           notifyListeners();
         }
+      } else {
+        unawaited(discoverLanServers());
       }
     } catch (e) {
       errorMessage = e.toString();
@@ -219,16 +242,20 @@ class VedroAppState extends ChangeNotifier {
           res['capabilities'] as Map<String, dynamic>,
         );
       }
+      if (res['proxy_addr'] != null) proxyAddr = res['proxy_addr'].toString();
+      activeServerId = capabilities?.serverId.isNotEmpty == true
+          ? capabilities!.serverId
+          : (auth['ServerId']?.toString() ?? connectedUrl);
 
-      // Immediately enter ShellScreen with smooth shimmer skeletons instead of stalling on Login!
+      _clearHomeCollections();
       isBusy = false;
       loginStage = null;
       isLoadingHome = true;
       notifyListeners();
 
       _startEventPolling();
+      await _reloadSavedServers();
       unawaited(refreshHome());
-      unawaited(_reloadSavedServers());
     } catch (e) {
       errorMessage = _humanizeError(e.toString());
       isBusy = false;
@@ -249,18 +276,26 @@ class VedroAppState extends ChangeNotifier {
     }
     if (!silentError) errorMessage = null;
     homeError = null;
-    loginStage = '正在恢复会话…';
+    loginStage = '正在连接 ${profile.name}…';
     isBusy = true;
     notifyListeners();
     try {
+      final route = profile.activeRoute;
+      final targetUrl = route?.url.isNotEmpty == true ? route!.url : profile.url;
+      final routeProxy = (route?.proxyUrl?.trim().isNotEmpty == true)
+          ? route!.proxyUrl!.trim()
+          : effectiveProxyUrl;
+      final routeTls = route?.acceptInvalidCerts ?? acceptInvalidCerts;
+
       final res = await core.invoke('restore_session', {
-        'url': profile.url,
+        'url': targetUrl,
         'access_token': profile.accessToken,
         'user_id': profile.userId,
-        if (effectiveProxyUrl.isNotEmpty) 'proxy_url': effectiveProxyUrl,
-        'accept_invalid_certs': acceptInvalidCerts,
+        if (routeProxy.isNotEmpty) 'proxy_url': routeProxy,
+        'accept_invalid_certs': routeTls,
       }) as Map<String, dynamic>;
-      connectedUrl = profile.url;
+      connectedUrl = targetUrl;
+      activeServerId = profile.id;
       if (res['proxy_addr'] != null) proxyAddr = res['proxy_addr'].toString();
       capabilities = ServerCapabilitiesModel.fromJson(
         res['capabilities'] as Map<String, dynamic>,
@@ -270,6 +305,7 @@ class VedroAppState extends ChangeNotifier {
       userId = u['Id']?.toString();
       isAdmin = (u['Policy'] as Map<String, dynamic>?)?['IsAdministrator'] == true;
 
+      _clearHomeCollections();
       isBusy = false;
       loginStage = null;
       isLoadingHome = true;
@@ -288,16 +324,128 @@ class VedroAppState extends ChangeNotifier {
     }
   }
 
+  Future<bool> switchToServerById(String serverId) async {
+    if (serverId == activeServerId && isSignedIn) return true;
+    for (final s in savedServers) {
+      if (s.id == serverId) {
+        await restoreSavedServer(s);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Future<void> saveServerRoutes(
+    String serverId,
+    List<ServerRouteModel> routes, {
+    String? activeRouteId,
+  }) async {
+    await core.invoke('save_server_routes', {
+      'server_id': serverId,
+      'routes': routes.map((r) => r.toJson()).toList(),
+      if (activeRouteId != null) 'active_route_id': activeRouteId,
+    });
+    await _reloadSavedServers();
+  }
+
+  Future<List<Map<String, dynamic>>> testServerRoutes(String serverId) async {
+    final res = await core.invoke('test_server_routes', {'server_id': serverId});
+    if (res is List) {
+      return res.whereType<Map<String, dynamic>>().toList();
+    }
+    return const [];
+  }
+
+  Future<void> switchServerRoute(String serverId, String routeId) async {
+    errorMessage = null;
+    homeError = null;
+    isBusy = true;
+    loginStage = '正在切换线路…';
+    notifyListeners();
+    try {
+      final res = await core.invoke('switch_server_route', {
+        'server_id': serverId,
+        'route_id': routeId,
+      }) as Map<String, dynamic>;
+      if (res['proxy_addr'] != null) proxyAddr = res['proxy_addr'].toString();
+      if (res['capabilities'] is Map<String, dynamic>) {
+        capabilities = ServerCapabilitiesModel.fromJson(
+          res['capabilities'] as Map<String, dynamic>,
+        );
+      }
+      if (res['profile'] is Map<String, dynamic>) {
+        final p = SavedServerProfile.fromJson(res['profile'] as Map<String, dynamic>);
+        connectedUrl = p.url;
+        activeServerId = p.id;
+      }
+      if (res['user'] is Map<String, dynamic>) {
+        final u = res['user'] as Map<String, dynamic>;
+        username = u['Name']?.toString();
+        userId = u['Id']?.toString();
+        isAdmin = (u['Policy'] as Map<String, dynamic>?)?['IsAdministrator'] == true;
+      }
+      await _reloadSavedServers();
+      isBusy = false;
+      loginStage = null;
+      isLoadingHome = true;
+      notifyListeners();
+      _startEventPolling();
+      unawaited(refreshHome());
+    } catch (e) {
+      errorMessage = _humanizeError(e.toString());
+      isBusy = false;
+      loginStage = null;
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  Future<void> deleteServer(String serverId) async {
+    await core.invoke('delete_server', {'id': serverId});
+    if (activeServerId == serverId) {
+      await logout();
+    }
+    await _reloadSavedServers();
+  }
+
+  Future<({List<AggregatedSearchHit> hits, List<Map<String, dynamic>> servers})>
+      aggregatedSearch(String term, {int limit = 24}) async {
+    final res = await core.invoke('aggregated_search', {
+      'term': term,
+      'limit': limit,
+    }) as Map<String, dynamic>;
+    if (res['proxy_addr'] != null) {
+      proxyAddr = res['proxy_addr'].toString();
+    }
+    final hits = ((res['items'] as List<dynamic>?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(AggregatedSearchHit.fromJson)
+        .toList();
+    final servers = ((res['servers'] as List<dynamic>?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    return (hits: hits, servers: servers);
+  }
+
   Future<void> logout() async {
     _wsPollTimer?.cancel();
     try {
       await core.invoke('logout');
     } catch (_) {}
+    activeServerId = null;
+    connectedUrl = null;
+    capabilities = null;
     userId = null;
     username = null;
     isAdmin = false;
     isLoadingHome = false;
     homeError = null;
+    _clearHomeCollections();
+    embygoAdminDashboard = null;
+    notifyListeners();
+  }
+
+  void _clearHomeCollections() {
     views = [];
     popular = [];
     resume = [];
@@ -305,11 +453,10 @@ class VedroAppState extends ChangeNotifier {
     suggestions = [];
     favorites = [];
     latestByLibrary = [];
-    embygoAdminDashboard = null;
-    notifyListeners();
   }
 
   Future<void> refreshHome() async {
+    if (!isSignedIn) return;
     if (!hasAnyHomeContent) {
       isLoadingHome = true;
       homeError = null;
@@ -341,6 +488,11 @@ class VedroAppState extends ChangeNotifier {
   }
 
   Future<void> refreshPlaylists() async {
+    if (!isSignedIn) {
+      playlists = [];
+      notifyListeners();
+      return;
+    }
     final res = await core.invoke('list_playlists') as Map<String, dynamic>;
     playlists = _parseItems(res['Items']);
     notifyListeners();
@@ -363,7 +515,7 @@ class VedroAppState extends ChangeNotifier {
   }
 
   Future<void> loadEmbyGoAdminDashboard() async {
-    if (!isAdmin) return;
+    if (!isAdmin || !isSignedIn) return;
     final res = await core.invoke('get_embygo_admin_dashboard') as Map<String, dynamic>;
     embygoAdminDashboard = res;
     notifyListeners();
@@ -381,7 +533,7 @@ class VedroAppState extends ChangeNotifier {
   }
 
   // ---------------------------------------------------------------------------
-  // Artwork resolution (exact embygo Web ancestor fallback chain)
+  // Artwork resolution (exact embygo Web ancestor fallback chain + RAM proxy)
   // ---------------------------------------------------------------------------
 
   String buildImageUrl(
@@ -397,9 +549,6 @@ class VedroAppState extends ChangeNotifier {
     params.add('quality=88');
     final q = params.isEmpty ? '' : '?${params.join('&')}';
 
-    // Route artwork through the local Rust loopback proxy so every poster/backdrop/logo
-    // inherits OS/Clash/SOCKS5 proxy, native TLS roots, self-signed certs, HTTP/2 pooling,
-    // and instant 0.1ms RAM caching!
     if (proxyAddr != null && proxyAddr!.isNotEmpty) {
       return 'http://$proxyAddr/img/Items/${Uri.encodeComponent(itemId)}/Images/$type$q';
     }
@@ -409,7 +558,26 @@ class VedroAppState extends ChangeNotifier {
     return '$base/Items/${Uri.encodeComponent(itemId)}/Images/$type$q';
   }
 
-  /// 2:3 key art: item's own Primary (non-episode), else parent/series Primary.
+  /// Build artwork URL for a specific server (used in multi-server aggregated search).
+  String buildServerImageUrl(
+    String serverId,
+    String itemId, {
+    String type = 'Primary',
+    String? tag,
+    int? maxWidth,
+  }) {
+    if (itemId.isEmpty) return '';
+    final params = <String>[];
+    if (tag != null && tag.isNotEmpty) params.add('tag=$tag');
+    if (maxWidth != null) params.add('maxWidth=$maxWidth');
+    params.add('quality=86');
+    final q = params.isEmpty ? '' : '?${params.join('&')}';
+    if (proxyAddr != null && proxyAddr!.isNotEmpty && serverId.isNotEmpty) {
+      return 'http://$proxyAddr/img-srv/${Uri.encodeComponent(serverId)}/Items/${Uri.encodeComponent(itemId)}/Images/$type$q';
+    }
+    return buildImageUrl(itemId, type: type, tag: tag, maxWidth: maxWidth);
+  }
+
   String? posterArtUrl(MediaItemModel item, {int width = 420}) {
     if (item.primaryImageTag != null && item.type != 'Episode') {
       return buildImageUrl(item.id, type: 'Primary', tag: item.primaryImageTag, maxWidth: width);
@@ -436,7 +604,6 @@ class VedroAppState extends ChangeNotifier {
     return null;
   }
 
-  /// 16:9 card art: Thumb -> Episode Primary -> Backdrop -> ParentThumb -> ParentBackdrop -> FramedPoster.
   ResolvedArt? wideArt(MediaItemModel item, {int width = 640}) {
     if (item.thumbImageTag != null) {
       return ResolvedArt(
@@ -482,7 +649,6 @@ class VedroAppState extends ChangeNotifier {
     return poster != null ? ResolvedArt(url: poster, isPoster: true) : null;
   }
 
-  /// Full-bleed hero art: Backdrop -> ParentBackdrop -> Thumb -> ParentThumb -> Episode Primary -> FramedPoster.
   ResolvedArt? backdropArt(MediaItemModel item, {int width = 1920}) {
     if (item.backdropImageTag != null) {
       return ResolvedArt(
@@ -528,7 +694,6 @@ class VedroAppState extends ChangeNotifier {
     return poster != null ? ResolvedArt(url: poster, isPoster: true) : null;
   }
 
-  /// Transparent title logo (TMDB ClearLogo) for cinematic Hero & Detail headers.
   String? logoArtUrl(MediaItemModel item, {int width = 640}) {
     if (item.logoImageTag != null) {
       return buildImageUrl(item.id, type: 'Logo', tag: item.logoImageTag, maxWidth: width);
@@ -546,10 +711,6 @@ class VedroAppState extends ChangeNotifier {
 
   Future<void> _reloadSavedServers() async {
     try {
-      final ver = await core.invoke('version');
-      if (ver is Map<String, dynamic> && ver['proxy_addr'] != null) {
-        proxyAddr = ver['proxy_addr'].toString();
-      }
       final list = await core.invoke('list_servers');
       if (list is List) {
         savedServers = list

@@ -18,7 +18,7 @@ use vedro_protocol::{
     discover_lan_servers, ClientIdentity, ClientTransportOptions, EmbyClient, ItemsQuery,
     MediaBadges, MediaSourceInfo, PlaybackProgressPayload, WebSocketSession,
 };
-use vedro_storage::{ServerProfile, VedroStore};
+use vedro_storage::{ServerProfile, ServerRoute, VedroStore};
 use vedro_stream::{
     inspect_media_header, InspectedMedia, StreamProxy, StreamProxyConfig, StreamProxyStats,
 };
@@ -220,6 +220,15 @@ impl VedroRuntime {
 
             "list_servers" => {
                 let list = self.store.list_servers().map_err(|e| e.to_string())?;
+                let id_snap = self.identity.lock().clone();
+                for srv in &list {
+                    let hdrs = id_snap.build_headers(srv.access_token.as_deref());
+                    self.proxy.register_server_image_upstream(
+                        srv.id.clone(),
+                        srv.url.clone(),
+                        hdrs,
+                    );
+                }
                 Ok(serde_json::to_value(list).unwrap())
             }
 
@@ -227,6 +236,188 @@ impl VedroRuntime {
                 let id = str_param(&params, "id")?;
                 self.store.delete_server(&id).map_err(|e| e.to_string())?;
                 Ok(json!({"deleted": id}))
+            }
+
+            "save_server_routes" => {
+                let server_id = str_param(&params, "server_id")?;
+                let mut profile = self
+                    .store
+                    .get_server(&server_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("server not found: {server_id}"))?;
+                let routes: Vec<ServerRoute> = serde_json::from_value(
+                    params.get("routes").cloned().unwrap_or_else(|| json!([])),
+                )
+                .map_err(|e| format!("invalid routes payload: {e}"))?;
+                if routes.is_empty() {
+                    return Err("server must have at least one route".to_string());
+                }
+                profile.routes = routes;
+                if let Some(active_id) = params.get("active_route_id").and_then(Value::as_str) {
+                    if let Some(r) = profile.routes.iter().find(|r| r.id == active_id) {
+                        profile.active_route_id = Some(r.id.clone());
+                        profile.url = r.url.clone();
+                    }
+                } else if !profile
+                    .routes
+                    .iter()
+                    .any(|r| Some(r.id.as_str()) == profile.active_route_id.as_deref())
+                {
+                    let first = profile.routes[0].clone();
+                    profile.active_route_id = Some(first.id);
+                    profile.url = first.url;
+                }
+                self.store
+                    .upsert_server(&profile)
+                    .map_err(|e| e.to_string())?;
+                Ok(serde_json::to_value(profile).unwrap())
+            }
+
+            "test_server_routes" => {
+                let routes: Vec<ServerRoute> =
+                    if let Some(sid) = params.get("server_id").and_then(Value::as_str) {
+                        let profile = self
+                            .store
+                            .get_server(sid)
+                            .map_err(|e| e.to_string())?
+                            .ok_or_else(|| format!("server not found: {sid}"))?;
+                        profile.routes
+                    } else {
+                        serde_json::from_value(
+                            params.get("routes").cloned().unwrap_or_else(|| json!([])),
+                        )
+                        .map_err(|e| format!("invalid routes: {e}"))?
+                    };
+
+                let identity = self.identity.lock().clone();
+                let mut set = tokio::task::JoinSet::new();
+                for (idx, route) in routes.into_iter().enumerate() {
+                    let id_clone = identity.clone();
+                    set.spawn(async move {
+                        let started = std::time::Instant::now();
+                        let res = tokio::time::timeout(Duration::from_secs(5), async {
+                            let client = EmbyClient::with_options(
+                                &route.url,
+                                id_clone,
+                                ClientTransportOptions {
+                                    proxy_url: route.proxy_url.clone(),
+                                    accept_invalid_certs: route.accept_invalid_certs,
+                                },
+                            )
+                            .map_err(|e| e.to_string())?;
+                            client.probe_server().await.map_err(|e| e.to_string())
+                        })
+                        .await;
+                        let elapsed_ms = started.elapsed().as_millis() as u64;
+                        match res {
+                            Ok(Ok(_)) => (
+                                idx,
+                                json!({
+                                    "id": route.id,
+                                    "name": route.name,
+                                    "url": route.url,
+                                    "ok": true,
+                                    "latency_ms": elapsed_ms,
+                                }),
+                            ),
+                            Ok(Err(err)) => (
+                                idx,
+                                json!({
+                                    "id": route.id,
+                                    "name": route.name,
+                                    "url": route.url,
+                                    "ok": false,
+                                    "latency_ms": null,
+                                    "error": err,
+                                }),
+                            ),
+                            Err(_) => (
+                                idx,
+                                json!({
+                                    "id": route.id,
+                                    "name": route.name,
+                                    "url": route.url,
+                                    "ok": false,
+                                    "latency_ms": null,
+                                    "error": "连接超时",
+                                }),
+                            ),
+                        }
+                    });
+                }
+                let mut results = Vec::new();
+                while let Some(joined) = set.join_next().await {
+                    if let Ok(item) = joined {
+                        results.push(item);
+                    }
+                }
+                results.sort_by_key(|(idx, _)| *idx);
+                let out: Vec<Value> = results.into_iter().map(|(_, v)| v).collect();
+                Ok(Value::Array(out))
+            }
+
+            "switch_server_route" => {
+                let server_id = str_param(&params, "server_id")?;
+                let route_id = str_param(&params, "route_id")?;
+                let mut profile = self
+                    .store
+                    .get_server(&server_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("server not found: {server_id}"))?;
+                let route = profile
+                    .routes
+                    .iter()
+                    .find(|r| r.id == route_id)
+                    .cloned()
+                    .ok_or_else(|| format!("route not found: {route_id}"))?;
+                let token = profile
+                    .access_token
+                    .clone()
+                    .ok_or_else(|| "server has no saved token".to_string())?;
+                let user_id = profile
+                    .user_id
+                    .clone()
+                    .ok_or_else(|| "server has no saved user_id".to_string())?;
+
+                let _ = self
+                    .proxy
+                    .configure_transport(route.proxy_url.as_deref(), route.accept_invalid_certs);
+                let identity = self.identity.lock().clone();
+                let client = EmbyClient::with_options(
+                    &route.url,
+                    identity,
+                    ClientTransportOptions {
+                        proxy_url: route.proxy_url.clone(),
+                        accept_invalid_certs: route.accept_invalid_certs,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+                let (info, caps) = client.probe_server().await.map_err(|e| e.to_string())?;
+                client.set_credentials(token, user_id);
+                let user = client.current_user().await.map_err(|e| e.to_string())?;
+
+                profile.url = route.url.clone();
+                profile.active_route_id = Some(route.id.clone());
+                profile.last_connected_at = chrono::Utc::now().timestamp();
+                let _ = self.store.upsert_server(&profile);
+
+                let hdrs = client.auth_headers();
+                self.proxy
+                    .set_image_upstream(client.base_url().to_string(), hdrs.clone());
+                self.proxy.register_server_image_upstream(
+                    profile.id.clone(),
+                    client.base_url().to_string(),
+                    hdrs,
+                );
+                *self.client.lock() = Some(client.clone());
+                self.start_websocket(client);
+                Ok(json!({
+                    "info": info,
+                    "capabilities": caps,
+                    "user": user,
+                    "profile": profile,
+                    "proxy_addr": self.proxy.listen_addr().to_string(),
+                }))
             }
 
             "connect_server" => {
@@ -291,23 +482,60 @@ impl VedroRuntime {
                     .as_ref()
                     .map(|p| p.is_administrator)
                     .unwrap_or(false);
+                let existing = self.store.get_server(&server_id).ok().flatten();
+                let current_url = client.base_url().to_string();
+                let mut routes = existing
+                    .as_ref()
+                    .map(|e| e.routes.clone())
+                    .unwrap_or_default();
+                let active_route_id = if let Some(found) = routes
+                    .iter()
+                    .find(|r| r.url.trim_end_matches('/') == current_url.trim_end_matches('/'))
+                {
+                    Some(found.id.clone())
+                } else {
+                    let rid = if routes.is_empty() {
+                        "default".to_string()
+                    } else {
+                        uuid::Uuid::new_v4().simple().to_string()
+                    };
+                    let rname = if routes.is_empty() {
+                        "默认线路".to_string()
+                    } else {
+                        format!("线路 {}", routes.len() + 1)
+                    };
+                    routes.push(ServerRoute {
+                        id: rid.clone(),
+                        name: rname,
+                        url: current_url.clone(),
+                        proxy_url: None,
+                        accept_invalid_certs: false,
+                    });
+                    Some(rid)
+                };
+
                 let _ = self.store.upsert_server(&ServerProfile {
-                    id: server_id,
+                    id: server_id.clone(),
                     name: if caps.server_name.is_empty() {
-                        client.base_url().to_string()
+                        current_url.clone()
                     } else {
                         caps.server_name.clone()
                     },
-                    url: client.base_url().to_string(),
+                    url: current_url.clone(),
                     dialect: caps.dialect.as_str().to_string(),
                     user_id: Some(auth.user.id.clone()),
                     username: Some(auth.user.name.clone()),
                     access_token: Some(auth.access_token.clone()),
                     is_admin,
                     last_connected_at: chrono::Utc::now().timestamp(),
+                    routes,
+                    active_route_id,
                 });
+                let hdrs = client.auth_headers();
                 self.proxy
-                    .set_image_upstream(client.base_url().to_string(), client.auth_headers());
+                    .set_image_upstream(current_url.clone(), hdrs.clone());
+                self.proxy
+                    .register_server_image_upstream(server_id, current_url, hdrs);
                 self.start_websocket(client.clone());
                 Ok(json!({
                     "auth": auth,
@@ -501,6 +729,153 @@ impl VedroRuntime {
                     .await
                     .map_err(|e| e.to_string())?;
                 Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "aggregated_search" => {
+                let term = str_param(&params, "term")?;
+                let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(24) as u32;
+                let saved = self.store.list_servers().unwrap_or_default();
+                let identity = self.identity.lock().clone();
+                let mut set = tokio::task::JoinSet::new();
+
+                for srv in saved {
+                    let (Some(token), Some(uid)) = (srv.access_token.clone(), srv.user_id.clone())
+                    else {
+                        continue;
+                    };
+                    let active_route = srv.active_route().cloned();
+                    let route_url = active_route
+                        .as_ref()
+                        .map(|r| r.url.clone())
+                        .unwrap_or_else(|| srv.url.clone());
+                    let proxy_url = active_route.as_ref().and_then(|r| r.proxy_url.clone());
+                    let accept_invalid = active_route
+                        .as_ref()
+                        .map(|r| r.accept_invalid_certs)
+                        .unwrap_or(false);
+
+                    let hdrs = identity.build_headers(Some(&token));
+                    self.proxy.register_server_image_upstream(
+                        srv.id.clone(),
+                        route_url.clone(),
+                        hdrs,
+                    );
+
+                    let id_clone = identity.clone();
+                    let term_clone = term.clone();
+                    set.spawn(async move {
+                        let res = tokio::time::timeout(Duration::from_secs(6), async {
+                            let client = EmbyClient::with_options(
+                                &route_url,
+                                id_clone,
+                                ClientTransportOptions {
+                                    proxy_url,
+                                    accept_invalid_certs: accept_invalid,
+                                },
+                            )
+                            .map_err(|e| e.to_string())?;
+                            client.set_credentials(token, uid);
+                            client
+                                .search_hints(&term_clone, None, limit)
+                                .await
+                                .map_err(|e| e.to_string())
+                        })
+                        .await;
+                        (srv, res)
+                    });
+                }
+
+                let mut items_out = Vec::new();
+                let mut servers_out = Vec::new();
+                while let Some(joined) = set.join_next().await {
+                    let Ok((srv, res)) = joined else { continue };
+                    match res {
+                        Ok(Ok(hints)) => {
+                            let count = hints.search_hints.len();
+                            servers_out.push(json!({
+                                "server_id": srv.id,
+                                "server_name": srv.name,
+                                "count": count,
+                                "ok": true,
+                            }));
+                            for h in hints.search_hints {
+                                let item_id = if !h.item_id.is_empty() {
+                                    h.item_id
+                                } else {
+                                    h.id
+                                };
+                                items_out.push(json!({
+                                    "server_id": srv.id,
+                                    "server_name": srv.name,
+                                    "id": item_id,
+                                    "name": h.name,
+                                    "type": h.item_type,
+                                    "production_year": h.production_year,
+                                    "primary_image_tag": h.primary_image_tag,
+                                    "series": h.series,
+                                    "run_time_ticks": h.run_time_ticks,
+                                }));
+                            }
+                        }
+                        _ => {
+                            servers_out.push(json!({
+                                "server_id": srv.id,
+                                "server_name": srv.name,
+                                "count": 0,
+                                "ok": false,
+                            }));
+                        }
+                    }
+                }
+
+                // Fallback to currently connected client if no saved servers were queried
+                if servers_out.is_empty() {
+                    if let Ok(client) = self.require_client() {
+                        if let Ok(hints) = client.search_hints(&term, None, limit).await {
+                            let caps = client.capabilities();
+                            let sid = if caps.server_id.is_empty() {
+                                "active".to_string()
+                            } else {
+                                caps.server_id.clone()
+                            };
+                            let sname = if caps.server_name.is_empty() {
+                                "当前服务器".to_string()
+                            } else {
+                                caps.server_name.clone()
+                            };
+                            servers_out.push(json!({
+                                "server_id": sid,
+                                "server_name": sname,
+                                "count": hints.search_hints.len(),
+                                "ok": true,
+                            }));
+                            for h in hints.search_hints {
+                                let item_id = if !h.item_id.is_empty() {
+                                    h.item_id
+                                } else {
+                                    h.id
+                                };
+                                items_out.push(json!({
+                                    "server_id": sid,
+                                    "server_name": sname,
+                                    "id": item_id,
+                                    "name": h.name,
+                                    "type": h.item_type,
+                                    "production_year": h.production_year,
+                                    "primary_image_tag": h.primary_image_tag,
+                                    "series": h.series,
+                                    "run_time_ticks": h.run_time_ticks,
+                                }));
+                            }
+                        }
+                    }
+                }
+
+                Ok(json!({
+                    "servers": servers_out,
+                    "items": items_out,
+                    "proxy_addr": self.proxy.listen_addr().to_string(),
+                }))
             }
 
             "get_person_credits" => {

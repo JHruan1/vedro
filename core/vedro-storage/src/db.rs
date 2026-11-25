@@ -15,6 +15,17 @@ pub enum StorageError {
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerRoute {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub proxy_url: Option<String>,
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerProfile {
     pub id: String,
@@ -26,6 +37,42 @@ pub struct ServerProfile {
     pub access_token: Option<String>,
     pub is_admin: bool,
     pub last_connected_at: i64,
+    #[serde(default)]
+    pub routes: Vec<ServerRoute>,
+    #[serde(default)]
+    pub active_route_id: Option<String>,
+}
+
+impl ServerProfile {
+    /// Ensure every profile always exposes at least one route matching its active URL.
+    pub fn normalize_routes(&mut self) {
+        if self.routes.is_empty() && !self.url.trim().is_empty() {
+            self.routes.push(ServerRoute {
+                id: "default".to_string(),
+                name: "默认线路".to_string(),
+                url: self.url.clone(),
+                proxy_url: None,
+                accept_invalid_certs: false,
+            });
+        }
+        if self.active_route_id.is_none() {
+            self.active_route_id = self
+                .routes
+                .iter()
+                .find(|r| r.url.trim_end_matches('/') == self.url.trim_end_matches('/'))
+                .or_else(|| self.routes.first())
+                .map(|r| r.id.clone());
+        }
+    }
+
+    pub fn active_route(&self) -> Option<&ServerRoute> {
+        if let Some(id) = &self.active_route_id {
+            if let Some(found) = self.routes.iter().find(|r| &r.id == id) {
+                return Some(found);
+            }
+        }
+        self.routes.first()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,7 +87,7 @@ pub struct TrackPreference {
 }
 
 /// High-speed local SQLite (WAL mode) persistence for Vedro:
-/// - Multi-server profiles (embygo / Emby / Jellyfin)
+/// - Multi-server profiles + per-server multi-route lines (embygo / Emby / Jellyfin)
 /// - App & Dolby Vision / Atmos settings KV
 /// - Per-series/item track & speed preferences
 /// - Fast JSON item cache for instant cold start even on 550k+ libraries
@@ -84,7 +131,9 @@ impl VedroStore {
                 username TEXT,
                 access_token TEXT,
                 is_admin INTEGER NOT NULL DEFAULT 0,
-                last_connected_at INTEGER NOT NULL DEFAULT 0
+                last_connected_at INTEGER NOT NULL DEFAULT 0,
+                routes_json TEXT NOT NULL DEFAULT '[]',
+                active_route_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS settings (
@@ -113,14 +162,24 @@ impl VedroStore {
             );
             ",
         )?;
+
+        // Safe forward migration for existing v0.1.0/v0.1.1 databases
+        let _ = conn.execute(
+            "ALTER TABLE servers ADD COLUMN routes_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE servers ADD COLUMN active_route_id TEXT", []);
         Ok(())
     }
 
     pub fn upsert_server(&self, profile: &ServerProfile) -> Result<()> {
+        let mut normalized = profile.clone();
+        normalized.normalize_routes();
+        let routes_json = serde_json::to_string(&normalized.routes)?;
         let conn = self.conn.lock();
         conn.execute(
-            "INSERT INTO servers (id, name, url, dialect, user_id, username, access_token, is_admin, last_connected_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO servers (id, name, url, dialect, user_id, username, access_token, is_admin, last_connected_at, routes_json, active_route_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name,
                url = excluded.url,
@@ -129,44 +188,54 @@ impl VedroStore {
                username = excluded.username,
                access_token = excluded.access_token,
                is_admin = excluded.is_admin,
-               last_connected_at = excluded.last_connected_at",
+               last_connected_at = excluded.last_connected_at,
+               routes_json = excluded.routes_json,
+               active_route_id = excluded.active_route_id",
             params![
-                profile.id,
-                profile.name,
-                profile.url,
-                profile.dialect,
-                profile.user_id,
-                profile.username,
-                profile.access_token,
-                if profile.is_admin { 1 } else { 0 },
-                profile.last_connected_at,
+                normalized.id,
+                normalized.name,
+                normalized.url,
+                normalized.dialect,
+                normalized.user_id,
+                normalized.username,
+                normalized.access_token,
+                if normalized.is_admin { 1 } else { 0 },
+                normalized.last_connected_at,
+                routes_json,
+                normalized.active_route_id,
             ],
         )?;
         Ok(())
     }
 
+    pub fn get_server(&self, id: &str) -> Result<Option<ServerProfile>> {
+        let conn = self.conn.lock();
+        let row_opt = conn
+            .query_row(
+                "SELECT id, name, url, dialect, user_id, username, access_token, is_admin, last_connected_at, routes_json, active_route_id
+                 FROM servers WHERE id = ?1",
+                params![id],
+                row_to_server_profile,
+            )
+            .optional()?;
+        Ok(row_opt.map(|mut p| {
+            p.normalize_routes();
+            p
+        }))
+    }
+
     pub fn list_servers(&self) -> Result<Vec<ServerProfile>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, name, url, dialect, user_id, username, access_token, is_admin, last_connected_at
+            "SELECT id, name, url, dialect, user_id, username, access_token, is_admin, last_connected_at, routes_json, active_route_id
              FROM servers ORDER BY last_connected_at DESC",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(ServerProfile {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                url: row.get(2)?,
-                dialect: row.get(3)?,
-                user_id: row.get(4)?,
-                username: row.get(5)?,
-                access_token: row.get(6)?,
-                is_admin: row.get::<_, i64>(7)? != 0,
-                last_connected_at: row.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map([], row_to_server_profile)?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r?);
+            let mut p = r?;
+            p.normalize_routes();
+            out.push(p);
         }
         Ok(out)
     }
@@ -288,24 +357,59 @@ impl VedroStore {
     }
 }
 
+fn row_to_server_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerProfile> {
+    let routes_str: String = row.get::<_, Option<String>>(9)?.unwrap_or_default();
+    let routes: Vec<ServerRoute> = serde_json::from_str(&routes_str).unwrap_or_default();
+    Ok(ServerProfile {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        url: row.get(2)?,
+        dialect: row.get(3)?,
+        user_id: row.get(4)?,
+        username: row.get(5)?,
+        access_token: row.get(6)?,
+        is_admin: row.get::<_, i64>(7)? != 0,
+        last_connected_at: row.get(8)?,
+        routes,
+        active_route_id: row.get(10)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn persists_servers_settings_and_cache() {
+    fn persists_servers_routes_settings_and_cache() {
         let store = VedroStore::open_in_memory().unwrap();
         store
             .upsert_server(&ServerProfile {
                 id: "s1".into(),
                 name: "My EmbyGo".into(),
-                url: "http://127.0.0.1:8097".into(),
+                url: "https://cf.example.com".into(),
                 dialect: "embygo".into(),
                 user_id: Some("u1".into()),
                 username: Some("alice".into()),
                 access_token: Some("tok".into()),
                 is_admin: true,
                 last_connected_at: 1000,
+                routes: vec![
+                    ServerRoute {
+                        id: "r1".into(),
+                        name: "主线路".into(),
+                        url: "https://cf.example.com".into(),
+                        proxy_url: None,
+                        accept_invalid_certs: false,
+                    },
+                    ServerRoute {
+                        id: "r2".into(),
+                        name: "香港直连".into(),
+                        url: "https://hk.example.com".into(),
+                        proxy_url: None,
+                        accept_invalid_certs: false,
+                    },
+                ],
+                active_route_id: Some("r1".into()),
             })
             .unwrap();
 
@@ -313,6 +417,8 @@ mod tests {
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].dialect, "embygo");
         assert!(servers[0].is_admin);
+        assert_eq!(servers[0].routes.len(), 2);
+        assert_eq!(servers[0].active_route_id.as_deref(), Some("r1"));
 
         store.set_setting("tone_mapping", &"bt2446a").unwrap();
         let tm: Option<String> = store.get_setting("tone_mapping").unwrap();

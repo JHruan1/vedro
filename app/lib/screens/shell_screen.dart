@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../core/models/models.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
+import '../widgets/server_sheets.dart';
 import '../widgets/spotlight_search_dialog.dart';
 import '../widgets/vedro_ui.dart';
 import 'detail_screen.dart';
@@ -18,10 +19,10 @@ import 'playlists_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 
-/// Full-bleed cinema viewing shell inspired by Apple TV+ / SenPlayer / Forward:
-/// - Desktop: Floating top translucent glass header (clear over full-bleed Hero,
-///   smoothly frosting on scroll) + global Spotlight Search (`⌘K` / `/`).
-/// - Mobile: Floating frosted-glass bottom pill tab bar with smooth active state.
+/// Full-bleed SenPlayer / Forward cinema shell:
+/// - Always accessible from startup (Server Hub, Settings, Aggregated Search, Library).
+/// - Desktop: Floating translucent top glass bar with 1-click Server & Route switcher pill + Spotlight (`⌘K`).
+/// - Mobile: Floating frosted-glass bottom pill tab bar.
 class ShellScreen extends StatefulWidget {
   const ShellScreen({super.key, required this.appState});
   final VedroAppState appState;
@@ -59,6 +60,19 @@ class _ShellScreenState extends State<ShellScreen> {
     );
   }
 
+  Future<void> _openAggregatedHit(AggregatedSearchHit hit) async {
+    if (hit.serverId.isNotEmpty && hit.serverId != widget.appState.activeServerId) {
+      await widget.appState.switchToServerById(hit.serverId);
+    }
+    if (!mounted) return;
+    _openItem(MediaItemModel(
+      id: hit.id,
+      name: hit.name,
+      type: hit.type,
+      primaryImageTag: hit.primaryImageTag,
+    ));
+  }
+
   void _quickPlay(MediaItemModel item) {
     if (item.isPlayable) {
       Navigator.of(context).push(
@@ -85,17 +99,27 @@ class _ShellScreenState extends State<ShellScreen> {
     showSpotlightSearch(
       context: context,
       appState: widget.appState,
-      onSelect: (item) => _openItem(item),
+      onSelectHit: _openAggregatedHit,
+    );
+  }
+
+  void _openServerHub() {
+    showServerHubSheet(context: context, appState: widget.appState);
+  }
+
+  void _openAddServer([String? initialUrl]) {
+    showAddServerSheet(
+      context: context,
+      appState: widget.appState,
+      initialUrl: initialUrl,
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 820;
-    final caps = widget.appState.capabilities;
-    final serverName =
-        caps?.serverName.isNotEmpty == true ? caps!.serverName : 'Vedro';
-    final topBarClear = _index == 0 && !_homeScrolled;
+    final signedIn = widget.appState.isSignedIn;
+    final topBarClear = _index == 0 && signedIn && !_homeScrolled;
 
     final pages = [
       HomeScreen(
@@ -105,6 +129,9 @@ class _ShellScreenState extends State<ShellScreen> {
             _openItem(item, heroPrefix: heroPrefix),
         onQuickPlay: _quickPlay,
         onLibraryTap: _openLibrary,
+        onOpenServerHub: _openServerHub,
+        onOpenAddServer: _openAddServer,
+        onOpenSettings: () => setState(() => _index = 4),
         onScrollChanged: (scrolled) {
           if (scrolled != _homeScrolled) {
             setState(() => _homeScrolled = scrolled);
@@ -116,12 +143,13 @@ class _ShellScreenState extends State<ShellScreen> {
         appState: widget.appState,
         onItemTap: _openItem,
         onQuickPlay: _quickPlay,
+        onOpenAddServer: _openAddServer,
         topInset: wide ? 64 : 0,
       ),
       SearchScreen(
         key: const ValueKey('tab-search'),
         appState: widget.appState,
-        onItemTap: _openItem,
+        onSelectHit: _openAggregatedHit,
       ),
       PlaylistsScreen(
         key: const ValueKey('tab-playlists'),
@@ -132,6 +160,8 @@ class _ShellScreenState extends State<ShellScreen> {
       SettingsScreen(
         key: const ValueKey('tab-settings'),
         appState: widget.appState,
+        onOpenServerHub: _openServerHub,
+        onOpenAddServer: _openAddServer,
         topInset: wide ? 64 : 0,
       ),
     ];
@@ -156,17 +186,17 @@ class _ShellScreenState extends State<ShellScreen> {
             body: Stack(
               children: [
                 Positioned.fill(child: body),
-                // Floating translucent Apple TV+ / Forward top glass bar
                 Positioned(
                   top: 0,
                   left: 0,
                   right: 0,
                   child: _FloatingDesktopHeader(
-                    serverName: serverName,
+                    appState: widget.appState,
                     clear: topBarClear,
                     activeIndex: _index,
                     navItems: _desktopNav,
                     onSelectIndex: (i) => setState(() => _index = i),
+                    onOpenServerHub: _openServerHub,
                     onOpenSearch: _openSpotlight,
                     onRefresh: widget.appState.refreshHome,
                   ),
@@ -214,26 +244,31 @@ class _ShellScreenState extends State<ShellScreen> {
 
 class _FloatingDesktopHeader extends StatelessWidget {
   const _FloatingDesktopHeader({
-    required this.serverName,
+    required this.appState,
     required this.clear,
     required this.activeIndex,
     required this.navItems,
     required this.onSelectIndex,
+    required this.onOpenServerHub,
     required this.onOpenSearch,
     required this.onRefresh,
   });
 
-  final String serverName;
+  final VedroAppState appState;
   final bool clear;
   final int activeIndex;
   final List<(int, String)> navItems;
   final ValueChanged<int> onSelectIndex;
+  final VoidCallback onOpenServerHub;
   final VoidCallback onOpenSearch;
   final VoidCallback onRefresh;
 
   @override
   Widget build(BuildContext context) {
     final macTrafficClearance = !kIsWeb && Platform.isMacOS ? 82.0 : 28.0;
+    final routeName = appState.activeRouteDisplayName;
+    final serverLabel = appState.isSignedIn ? appState.activeServerDisplayName : '选择服务器';
+
     final content = SafeArea(
       bottom: false,
       child: Container(
@@ -241,27 +276,66 @@ class _FloatingDesktopHeader extends StatelessWidget {
         padding: EdgeInsets.fromLTRB(macTrafficClearance, 0, 28, 0),
         child: Row(
           children: [
-            GestureDetector(
-              onTap: () => onSelectIndex(0),
-              behavior: HitTestBehavior.opaque,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const VedroBrandMark(size: 28),
-                  const SizedBox(width: 10),
-                  Text(
-                    serverName,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16.5,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: -0.3,
-                    ),
+            // Interactive Server + Multi-Route Switcher Pill
+            PressableScale(
+              onTap: onOpenServerHub,
+              hoverScale: 1.02,
+              pressScale: 0.97,
+              child: Container(
+                height: 36,
+                padding: const EdgeInsets.fromLTRB(6, 0, 10, 0),
+                decoration: BoxDecoration(
+                  color: clear ? const Color(0x26FFFFFF) : VedroTheme.surface2,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(
+                    color: clear ? const Color(0x2EFFFFFF) : VedroTheme.line,
+                    width: 0.8,
                   ),
-                ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const VedroBrandMark(size: 24),
+                    const SizedBox(width: 8),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 160),
+                      child: Text(
+                        serverLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: -0.2,
+                        ),
+                      ),
+                    ),
+                    if (appState.isSignedIn && routeName != null && routeName.isNotEmpty) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0x1CFFFFFF),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          routeName,
+                          style: const TextStyle(
+                            color: Color(0xCCFFFFFF),
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(width: 4),
+                    const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: Color(0xB8FFFFFF)),
+                  ],
+                ),
               ),
             ),
-            const SizedBox(width: 24),
+            const SizedBox(width: 18),
             for (final (idx, label) in navItems)
               Padding(
                 padding: const EdgeInsets.only(right: 4),
@@ -276,9 +350,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(horizontal: 14),
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
-                      color: activeIndex == idx
-                          ? const Color(0x20FFFFFF)
-                          : Colors.transparent,
+                      color: activeIndex == idx ? const Color(0x20FFFFFF) : Colors.transparent,
                       borderRadius: BorderRadius.circular(17),
                     ),
                     child: Text(
@@ -295,7 +367,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
                 ),
               ),
             const Spacer(),
-            // Spotlight Search trigger pill
+            // Aggregated Spotlight Search pill
             PressableScale(
               onTap: onOpenSearch,
               hoverScale: 1.02,
@@ -322,7 +394,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '搜索',
+                        appState.savedServers.length > 1 ? '聚合搜索' : '搜索',
                         style: TextStyle(
                           color: clear ? const Color(0xCCFFFFFF) : VedroTheme.fg3,
                           fontSize: 13,
@@ -348,29 +420,31 @@ class _FloatingDesktopHeader extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(width: 10),
-            PressableScale(
-              onTap: onRefresh,
-              hoverScale: 1.06,
-              pressScale: 0.92,
-              child: Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: clear ? const Color(0x1EFFFFFF) : VedroTheme.surface2,
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: clear ? const Color(0x24FFFFFF) : VedroTheme.line,
-                    width: 0.7,
+            if (appState.isSignedIn) ...[
+              const SizedBox(width: 10),
+              PressableScale(
+                onTap: onRefresh,
+                hoverScale: 1.06,
+                pressScale: 0.92,
+                child: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: clear ? const Color(0x1EFFFFFF) : VedroTheme.surface2,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: clear ? const Color(0x24FFFFFF) : VedroTheme.line,
+                      width: 0.7,
+                    ),
+                  ),
+                  child: Icon(
+                    Icons.refresh_rounded,
+                    size: 17,
+                    color: clear ? Colors.white : VedroTheme.fg2,
                   ),
                 ),
-                child: Icon(
-                  Icons.refresh_rounded,
-                  size: 17,
-                  color: clear ? Colors.white : VedroTheme.fg2,
-                ),
               ),
-            ),
+            ],
           ],
         ),
       ),

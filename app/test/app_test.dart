@@ -14,6 +14,8 @@ class _MockVedroCore implements VedroCoreClient {
   @override
   Future<dynamic> invoke(String method, [Map<String, dynamic> params = const {}]) async {
     switch (method) {
+      case 'version':
+        return <String, dynamic>{'version': '0.1.2-test'};
       case 'list_servers':
         return <dynamic>[];
       case 'get_settings':
@@ -108,26 +110,28 @@ class _MockVedroCore implements VedroCoreClient {
 }
 
 void main() {
-  test('MediaItemModel infers specs and deterministic GeneratedArt helpers', () {
-    final item = MediaItemModel.fromJson({
-      'Id': '100',
-      'Name': 'Interstellar',
-      'Type': 'Movie',
-      'MediaSources': [
-        {
-          'Id': 'v1',
-          'Name': 'Interstellar.2014.2160p.UHD.REMUX.DV.TrueHD.Atmos.mkv',
-          'Container': 'mkv',
-        },
+  test('Models parse multi-route profiles, aggregated hits, and GeneratedArt helpers', () {
+    final srv = SavedServerProfile.fromJson({
+      'id': 's1',
+      'name': 'Main',
+      'url': 'https://line1.example.com',
+      'dialect': 'embygo',
+      'active_route_id': 'r2',
+      'routes': [
+        {'id': 'r1', 'name': 'CF 线路', 'url': 'https://line1.example.com'},
+        {'id': 'r2', 'name': '香港直连', 'url': 'https://hk.example.com'},
       ],
     });
-    expect(item.inferredBadges, containsAll(['4K', 'Dolby Vision', 'Dolby Atmos', 'REMUX']));
+    expect(srv.routes.length, equals(2));
+    expect(srv.activeRoute?.name, equals('香港直连'));
+
     expect(artworkInitials('沙丘2'), equals('沙丘'));
     expect(artworkInitials('Episode 101'), equals('E101'));
     expect(deterministicHues('abc'), equals(deterministicHues('abc')));
   });
 
-  testWidgets('Clean login transitions immediately to cinema Home with GeneratedArt fallback', (tester) async {
+  testWidgets('Launches directly into Home Server Hub (not a login wall), opens Settings & Add Server',
+      (tester) async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
       const MethodChannel('com.vedro.player/hardware'),
       (call) async => <String, dynamic>{
@@ -144,17 +148,20 @@ void main() {
     await tester.pumpWidget(VedroApp(core: mock));
     await tester.pumpAndSettle();
 
-    expect(find.text('Vedro'), findsOneWidget);
-    expect(find.text('Rust Core'), findsNothing);
-    expect(find.text('embygo DirectPlay'), findsNothing);
+    // Launches straight into Home Server Hub with Player Settings accessible immediately!
+    expect(find.text('添加媒体服务器'), findsOneWidget);
+    expect(find.text('播放器设置'), findsOneWidget);
+
+    // Open Add Server frosted sheet and connect
+    await tester.tap(find.text('添加媒体服务器'));
+    await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField).at(1), 'admin');
     await tester.enterText(find.byType(TextField).at(2), 'secret');
-    await tester.tap(find.text('登录'));
+    await tester.tap(find.text('连接并添加'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 450));
+    await tester.pump(const Duration(milliseconds: 500));
 
-    expect(find.text('My EmbyGo'), findsOneWidget);
     expect(find.text('Dune: Part Two'), findsOneWidget);
     expect(find.text('媒体库'), findsWidgets);
 

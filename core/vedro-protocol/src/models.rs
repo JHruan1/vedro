@@ -502,6 +502,8 @@ pub struct BaseItemDto {
     #[serde(default)]
     pub overview: Option<String>,
     #[serde(default)]
+    pub taglines: Vec<String>,
+    #[serde(default)]
     pub production_year: Option<i32>,
     #[serde(default)]
     pub premiere_date: Option<String>,

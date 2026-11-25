@@ -57,6 +57,32 @@ class _ShellScreenState extends State<ShellScreen> {
         item: item,
         appState: widget.appState,
         heroTag: heroPrefix != null ? '$heroPrefix-${item.id}' : null,
+        onGenreTap: _openGenre,
+      )),
+    );
+  }
+
+  void _openGenre(String genre) {
+    Navigator.of(context).push(
+      vedroRoute(LibraryScreen(
+        appState: widget.appState,
+        initialGenreName: genre,
+        onItemTap: _openItem,
+        onQuickPlay: _quickPlay,
+        standalone: true,
+      )),
+    );
+  }
+
+  void _openFavorites() {
+    Navigator.of(context).push(
+      vedroRoute(LibraryScreen(
+        appState: widget.appState,
+        initialOnlyFavorite: true,
+        customTitle: '我的收藏',
+        onItemTap: _openItem,
+        onQuickPlay: _quickPlay,
+        standalone: true,
       )),
     );
   }
@@ -76,6 +102,18 @@ class _ShellScreenState extends State<ShellScreen> {
 
   void _quickPlay(MediaItemModel item) {
     if (item.isPlayable) {
+      if (widget.appState.prefs.externalPlayer != 'builtin') {
+        widget.appState.launchExternalPlayer(item).then((msg) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+          }
+        }).catchError((Object e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('外部播放器打开失败：$e')));
+          }
+        });
+        return;
+      }
       Navigator.of(context).push(
         vedroRoute(PlayerScreen(item: item, appState: widget.appState)),
       );
@@ -130,6 +168,8 @@ class _ShellScreenState extends State<ShellScreen> {
             _openItem(item, heroPrefix: heroPrefix),
         onQuickPlay: _quickPlay,
         onLibraryTap: _openLibrary,
+        onGenreTap: _openGenre,
+        onOpenFavorites: _openFavorites,
         onOpenServerHub: _openServerHub,
         onOpenAddServer: _openAddServer,
         onOpenSettings: () => setState(() => _index = 4),
@@ -156,6 +196,7 @@ class _ShellScreenState extends State<ShellScreen> {
         key: const ValueKey('tab-playlists'),
         appState: widget.appState,
         onItemTap: _openItem,
+        onQuickPlay: _quickPlay,
         topInset: wide ? 64 : 0,
       ),
       SettingsScreen(
@@ -199,6 +240,7 @@ class _ShellScreenState extends State<ShellScreen> {
                     onSelectIndex: (i) => setState(() => _index = i),
                     onOpenServerHub: _openServerHub,
                     onOpenSearch: _openSpotlight,
+                    onOpenFavorites: _openFavorites,
                     onOpenLayout: () => showHomeLayoutSheet(
                       context: context,
                       appState: widget.appState,
@@ -256,6 +298,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
     required this.onSelectIndex,
     required this.onOpenServerHub,
     required this.onOpenSearch,
+    required this.onOpenFavorites,
     required this.onOpenLayout,
     required this.onRefresh,
   });
@@ -267,6 +310,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
   final ValueChanged<int> onSelectIndex;
   final VoidCallback onOpenServerHub;
   final VoidCallback onOpenSearch;
+  final VoidCallback onOpenFavorites;
   final VoidCallback onOpenLayout;
   final VoidCallback onRefresh;
 
@@ -428,6 +472,32 @@ class _FloatingDesktopHeader extends StatelessWidget {
               ),
             ),
             if (appState.isSignedIn) ...[
+              const SizedBox(width: 8),
+              Tooltip(
+                message: '我的收藏',
+                child: PressableScale(
+                  onTap: onOpenFavorites,
+                  hoverScale: 1.06,
+                  pressScale: 0.92,
+                  child: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: clear ? const Color(0x1EFFFFFF) : VedroTheme.surface2,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: clear ? const Color(0x24FFFFFF) : VedroTheme.line,
+                        width: 0.7,
+                      ),
+                    ),
+                    child: Icon(
+                      Icons.favorite_border_rounded,
+                      size: 16,
+                      color: clear ? Colors.white : VedroTheme.fg2,
+                    ),
+                  ),
+                ),
+              ),
               const SizedBox(width: 8),
               Tooltip(
                 message: '自定义首页布局',

@@ -349,76 +349,56 @@ class _ResumeCardState extends State<ResumeCard> {
                       left: 0,
                       right: 0,
                       bottom: 0,
-                      height: 76,
+                      height: 44,
                       child: DecoratedBox(
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
                             begin: Alignment.topCenter,
                             end: Alignment.bottomCenter,
-                            colors: [Colors.transparent, Color(0xCC000000)],
+                            colors: [Colors.transparent, Color(0xBD000000)],
                           ),
                         ),
                       ),
                     ),
-                    Positioned(
-                      left: 12,
-                      bottom: 16,
+                    // AfuseKt / Apple TV+ centered translucent ring Play button
+                    Center(
                       child: PressableScale(
                         onTap: widget.onResumePlay,
-                        hoverScale: 1.05,
-                        pressScale: 0.93,
-                        child: Container(
-                          height: 30,
-                          padding: const EdgeInsets.only(left: 9, right: 12),
+                        hoverScale: 1.1,
+                        pressScale: 0.9,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          width: 44,
+                          height: 44,
                           decoration: BoxDecoration(
-                            color: const Color(0xEBFFFFFF),
-                            borderRadius: BorderRadius.circular(15),
+                            shape: BoxShape.circle,
+                            color: _hovered ? const Color(0x66000000) : const Color(0x42000000),
+                            border: Border.all(
+                              color: _hovered ? Colors.white : const Color(0xD9FFFFFF),
+                              width: 2.0,
+                            ),
                             boxShadow: const [
-                              BoxShadow(color: Color(0x45000000), blurRadius: 8, offset: Offset(0, 2)),
+                              BoxShadow(color: Color(0x55000000), blurRadius: 12),
                             ],
                           ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.play_arrow_rounded, size: 16, color: VedroTheme.canvas),
-                              const SizedBox(width: 3),
-                              Text(
-                                item.playbackPositionTicks > 0 ? '继续' : '播放',
-                                style: const TextStyle(
-                                  color: VedroTheme.canvas,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
+                          child: const Icon(
+                            Icons.play_arrow_rounded,
+                            size: 26,
+                            color: Colors.white,
                           ),
                         ),
                       ),
                     ),
-                    if (left.isNotEmpty)
-                      Positioned(
-                        right: 12,
-                        bottom: 20,
-                        child: Text(
-                          left,
-                          style: const TextStyle(
-                            color: Color(0xDCFFFFFF),
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w500,
-                            fontFeatures: [FontFeature.tabularFigures()],
-                          ),
-                        ),
-                      ),
                     Positioned(
-                      left: 12,
-                      right: 12,
+                      left: 10,
+                      right: 10,
                       bottom: 8,
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(2),
                         child: LinearProgressIndicator(
                           value: item.resumeProgress.clamp(0.02, 1.0),
-                          minHeight: 3,
-                          backgroundColor: const Color(0x40FFFFFF),
+                          minHeight: 3.5,
+                          backgroundColor: const Color(0x45FFFFFF),
                           color: Colors.white,
                         ),
                       ),
@@ -441,7 +421,11 @@ class _ResumeCardState extends State<ResumeCard> {
             ),
             const SizedBox(height: 2),
             Text(
-              sub.isNotEmpty ? sub : ' ',
+              left.isNotEmpty
+                  ? (item.type == 'Episode' && item.episodeCode != null
+                      ? '${item.episodeCode} · $left'
+                      : left)
+                  : (sub.isNotEmpty ? sub : ' '),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(

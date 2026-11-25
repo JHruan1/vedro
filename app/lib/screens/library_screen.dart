@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
@@ -7,7 +10,7 @@ import '../widgets/media_card.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
 
-/// Infinite-paging library browser supporting large catalogs with shimmer skeletons and sleek pills.
+/// Infinite-paging library & facet browser (supports Library, Genre, Year, Favorites, Type, Grid/List).
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({
     super.key,
@@ -16,6 +19,10 @@ class LibraryScreen extends StatefulWidget {
     this.onQuickPlay,
     this.onOpenAddServer,
     this.initialLibrary,
+    this.initialGenreName,
+    this.initialYear,
+    this.initialOnlyFavorite = false,
+    this.customTitle,
     this.topInset = 0,
     this.standalone = false,
   });
@@ -25,6 +32,10 @@ class LibraryScreen extends StatefulWidget {
   final void Function(MediaItemModel)? onQuickPlay;
   final void Function([String? initialUrl])? onOpenAddServer;
   final MediaItemModel? initialLibrary;
+  final String? initialGenreName;
+  final int? initialYear;
+  final bool initialOnlyFavorite;
+  final String? customTitle;
   final double topInset;
   final bool standalone;
 
@@ -35,14 +46,19 @@ class LibraryScreen extends StatefulWidget {
 class _LibraryScreenState extends State<LibraryScreen> {
   final _scrollCtrl = ScrollController();
   MediaItemModel? _selectedLibrary;
-  String _sortBy = 'DateCreated';
+  late String _sortBy;
   String _sortOrder = 'Descending';
+  String _mediaTypeFilter = 'Movie,Series';
   String? _selectedGenreId;
+  String? _selectedGenreName;
+  int? _selectedYear;
   bool _onlyUnplayed = false;
   bool _onlyFavorite = false;
+  bool _listViewMode = false;
 
   List<MediaItemModel> _items = [];
   List<Map<String, dynamic>> _genres = [];
+  List<int> _years = [];
   int _total = 0;
   bool _loading = false;
   static const int _pageSize = 60;
@@ -50,8 +66,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   void initState() {
     super.initState();
-    _selectedLibrary = widget.initialLibrary ??
-        (widget.appState.views.isNotEmpty ? widget.appState.views.first : null);
+    _sortBy = widget.appState.prefs.defaultSort;
+    _selectedGenreName = widget.initialGenreName;
+    _selectedYear = widget.initialYear;
+    _onlyFavorite = widget.initialOnlyFavorite;
+    if (widget.initialGenreName == null && widget.initialYear == null && !widget.initialOnlyFavorite) {
+      _selectedLibrary = widget.initialLibrary ??
+          (widget.appState.views.isNotEmpty ? widget.appState.views.first : null);
+    } else {
+      _selectedLibrary = widget.initialLibrary;
+    }
     _scrollCtrl.addListener(_onScroll);
     if (widget.appState.isSignedIn) {
       _loadFiltersAndReset();
@@ -80,6 +104,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _genres = ((f['Genres'] as List<dynamic>?) ?? const [])
           .whereType<Map<String, dynamic>>()
           .toList();
+      _years = ((f['Years'] as List<dynamic>?) ?? const [])
+          .map((e) => int.tryParse(e.toString()))
+          .whereType<int>()
+          .toList()
+        ..sort((a, b) => b.compareTo(a));
     } catch (_) {}
     await _resetAndLoad();
   }
@@ -98,13 +127,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
     try {
       final res = await widget.appState.core.invoke('get_items', {
         if (_selectedLibrary != null) 'ParentId': _selectedLibrary!.id,
-        'IncludeItemTypes': 'Movie,Series',
+        'IncludeItemTypes': _mediaTypeFilter,
         'Recursive': true,
         'SortBy': _sortBy,
         'SortOrder': _sortOrder,
         'StartIndex': startIndex,
         'Limit': _pageSize,
         if (_selectedGenreId != null) 'GenreIds': _selectedGenreId,
+        if (_selectedGenreName != null && _selectedGenreId == null) 'Genres': _selectedGenreName,
+        if (_selectedYear != null) 'Years': '$_selectedYear',
         if (_onlyUnplayed) 'IsPlayed': false,
         if (_onlyFavorite) 'IsFavorite': true,
       }) as Map<String, dynamic>;
@@ -150,53 +181,110 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 820;
     final padX = wide ? 32.0 : 20.0;
-    final cols = ((width - padX * 2) / (wide ? 176 : 132)).floor().clamp(3, 9);
+    final isMac = !kIsWeb && Platform.isMacOS;
+    final cardW = widget.appState.prefs.posterCardWidth(wide);
+    final cols = ((width - padX * 2) / (cardW + 16)).floor().clamp(3, 9);
+    final pageTitle = widget.customTitle ??
+        (_selectedGenreName != null
+            ? '类型 · $_selectedGenreName'
+            : (_onlyFavorite && _selectedLibrary == null
+                ? '我的收藏'
+                : (_selectedLibrary?.name ?? '全部媒体')));
 
     return Scaffold(
       backgroundColor: VedroTheme.canvas,
-      appBar: widget.standalone || !wide
+      appBar: !wide && !widget.standalone
           ? AppBar(
-              title: Text(_selectedLibrary?.name ?? '媒体库'),
+              title: Text(pageTitle),
               actions: _sortActions(),
             )
           : null,
       body: Padding(
-        padding: EdgeInsets.only(top: widget.standalone ? 0 : widget.topInset),
+        padding: EdgeInsets.only(top: widget.standalone ? MediaQuery.paddingOf(context).top : widget.topInset),
         child: Column(
           children: [
-            if (wide && !widget.standalone)
+            if (widget.standalone || wide)
               Padding(
-                padding: EdgeInsets.fromLTRB(padX, 18, padX, 6),
+                padding: EdgeInsets.fromLTRB(
+                  widget.standalone && isMac ? 82 : padX,
+                  widget.standalone ? 12 : 18,
+                  padX,
+                  6,
+                ),
                 child: Row(
                   children: [
-                    Text(
-                      _selectedLibrary?.name ?? '媒体库',
-                      style: const TextStyle(
-                        color: VedroTheme.fg,
-                        fontSize: 26,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: -0.5,
+                    if (widget.standalone) ...[
+                      PressableScale(
+                        onTap: () => Navigator.of(context).pop(),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                          decoration: BoxDecoration(
+                            color: VedroTheme.surface2,
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(color: VedroTheme.line, width: 0.7),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.arrow_back_ios_new_rounded, size: 14, color: VedroTheme.fg),
+                              SizedBox(width: 5),
+                              Text('返回', style: TextStyle(color: VedroTheme.fg, fontSize: 13)),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                    ],
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              pageTitle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: VedroTheme.fg,
+                                fontSize: wide ? 24 : 19,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: -0.4,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            '$_total 项',
+                            style: const TextStyle(
+                              color: VedroTheme.fg3,
+                              fontSize: 13,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Text(
-                      '$_total 项',
-                      style: const TextStyle(
-                        color: VedroTheme.fg3,
-                        fontSize: 13.5,
-                        fontFeatures: [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                    const Spacer(),
                     ..._sortActions(),
                   ],
                 ),
               ),
+            // Filter strip: Libraries, Type, Unplayed, Favorite, Genre, Year
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               padding: EdgeInsets.fromLTRB(padX, 6, padX, 12),
               child: Row(
                 children: [
+                  _FilterPill(
+                    label: '全部',
+                    selected: _selectedLibrary == null,
+                    onTap: () {
+                      setState(() {
+                        _selectedLibrary = null;
+                        _selectedGenreId = null;
+                      });
+                      _loadFiltersAndReset();
+                    },
+                  ),
+                  const SizedBox(width: 8),
                   ...widget.appState.views.map((lib) => Padding(
                         padding: const EdgeInsets.only(right: 8),
                         child: _FilterPill(
@@ -211,6 +299,26 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           },
                         ),
                       )),
+                  _FilterPill(
+                    label: '电影',
+                    selected: _mediaTypeFilter == 'Movie',
+                    onTap: () {
+                      setState(() => _mediaTypeFilter =
+                          _mediaTypeFilter == 'Movie' ? 'Movie,Series' : 'Movie');
+                      _resetAndLoad();
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  _FilterPill(
+                    label: '剧集',
+                    selected: _mediaTypeFilter == 'Series',
+                    onTap: () {
+                      setState(() => _mediaTypeFilter =
+                          _mediaTypeFilter == 'Series' ? 'Movie,Series' : 'Series');
+                      _resetAndLoad();
+                    },
+                  ),
+                  const SizedBox(width: 8),
                   _FilterPill(
                     label: '未看',
                     selected: _onlyUnplayed,
@@ -230,50 +338,46 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   ),
                   if (_genres.isNotEmpty) ...[
                     const SizedBox(width: 8),
-                    Container(
-                      height: 32,
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      decoration: BoxDecoration(
-                        color: VedroTheme.surface2,
-                        borderRadius: BorderRadius.circular(9),
-                        border: Border.all(color: VedroTheme.line, width: 0.7),
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String?>(
-                          value: _selectedGenreId,
-                          dropdownColor: VedroTheme.surface2,
-                          style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
-                          hint: const Text('类型', style: TextStyle(color: VedroTheme.fg2, fontSize: 12.5)),
-                          items: [
-                            const DropdownMenuItem<String?>(value: null, child: Text('全部类型')),
-                            ..._genres.take(40).map((g) => DropdownMenuItem<String?>(
-                                  value: g['Id']?.toString(),
-                                  child: Text(g['Name']?.toString() ?? ''),
-                                )),
-                          ],
-                          onChanged: (v) {
-                            setState(() => _selectedGenreId = v);
-                            _resetAndLoad();
-                          },
-                        ),
-                      ),
+                    _MiniDropdown<String?>(
+                      hint: _selectedGenreName ?? '类型',
+                      value: _selectedGenreId,
+                      items: [
+                        const DropdownMenuItem<String?>(value: null, child: Text('全部类型')),
+                        ..._genres.take(40).map((g) => DropdownMenuItem<String?>(
+                              value: g['Id']?.toString(),
+                              child: Text(g['Name']?.toString() ?? ''),
+                            )),
+                      ],
+                      onChanged: (v) {
+                        setState(() {
+                          _selectedGenreId = v;
+                          _selectedGenreName = null;
+                        });
+                        _resetAndLoad();
+                      },
+                    ),
+                  ],
+                  if (_years.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    _MiniDropdown<int?>(
+                      hint: '年份',
+                      value: _selectedYear,
+                      items: [
+                        const DropdownMenuItem<int?>(value: null, child: Text('全部年份')),
+                        ..._years.take(45).map((y) => DropdownMenuItem<int?>(
+                              value: y,
+                              child: Text('$y'),
+                            )),
+                      ],
+                      onChanged: (v) {
+                        setState(() => _selectedYear = v);
+                        _resetAndLoad();
+                      },
                     ),
                   ],
                 ],
               ),
             ),
-            if (!wide || widget.standalone)
-              Padding(
-                padding: EdgeInsets.fromLTRB(padX + 2, 0, padX, 8),
-                child: Row(
-                  children: [
-                    Text(
-                      '共 $_total 项',
-                      style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
-                    ),
-                  ],
-                ),
-              ),
             Expanded(
               child: _loading && _items.isEmpty
                   ? GridView.builder(
@@ -289,46 +393,65 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       itemBuilder: (_, __) => const Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          VedroShimmer(aspectRatio: 2 / 3, borderRadius: 14),
+                          VedroShimmer(aspectRatio: 2 / 3, borderRadius: 12),
                           SizedBox(height: 9),
                           VedroShimmer(width: 100, height: 12, borderRadius: 4),
                         ],
                       ),
                     )
-                  : GridView.builder(
-                      controller: _scrollCtrl,
-                      padding: EdgeInsets.fromLTRB(padX, 4, padX, wide ? 44 : 108),
-                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: cols,
-                        mainAxisSpacing: 20,
-                        crossAxisSpacing: 16,
-                        childAspectRatio: 0.56,
-                      ),
-                      itemCount: _items.length + (_loading ? 1 : 0),
-                      itemBuilder: (context, idx) {
-                        if (idx >= _items.length) {
-                          return const Center(
-                            child: SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: VedroTheme.fg2,
+                  : _items.isEmpty
+                      ? const Center(
+                          child: Text('没有符合筛选条件的内容', style: TextStyle(color: VedroTheme.fg3, fontSize: 14)),
+                        )
+                      : _listViewMode
+                          ? ListView.separated(
+                              controller: _scrollCtrl,
+                              padding: EdgeInsets.fromLTRB(padX, 4, padX, wide ? 44 : 108),
+                              itemCount: _items.length,
+                              separatorBuilder: (_, __) => const SizedBox(height: 10),
+                              itemBuilder: (_, idx) {
+                                final item = _items[idx];
+                                return _LibraryListTile(
+                                  item: item,
+                                  appState: widget.appState,
+                                  onTap: () => widget.onItemTap(item),
+                                );
+                              },
+                            )
+                          : GridView.builder(
+                              controller: _scrollCtrl,
+                              padding: EdgeInsets.fromLTRB(padX, 6, padX, wide ? 44 : 108),
+                              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: cols,
+                                mainAxisSpacing: 20,
+                                crossAxisSpacing: 16,
+                                childAspectRatio: 0.56,
                               ),
+                              itemCount: _items.length + (_loading ? 1 : 0),
+                              itemBuilder: (context, idx) {
+                                if (idx >= _items.length) {
+                                  return const Center(
+                                    child: SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: VedroTheme.fg2,
+                                      ),
+                                    ),
+                                  );
+                                }
+                                final item = _items[idx];
+                                return MediaCard(
+                                  item: item,
+                                  appState: widget.appState,
+                                  onTap: () => widget.onItemTap(item),
+                                  onQuickPlay: widget.onQuickPlay == null
+                                      ? null
+                                      : () => widget.onQuickPlay!(item),
+                                );
+                              },
                             ),
-                          );
-                        }
-                        final item = _items[idx];
-                        return MediaCard(
-                          item: item,
-                          appState: widget.appState,
-                          onTap: () => widget.onItemTap(item),
-                          onQuickPlay: widget.onQuickPlay == null
-                              ? null
-                              : () => widget.onQuickPlay!(item),
-                        );
-                      },
-                    ),
             ),
           ],
         ),
@@ -337,6 +460,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   List<Widget> _sortActions() => [
+        IconButton(
+          tooltip: _listViewMode ? '切换海报墙视图' : '切换列表视图',
+          icon: Icon(
+            _listViewMode ? Icons.grid_view_rounded : Icons.view_list_rounded,
+            size: 20,
+            color: VedroTheme.fg2,
+          ),
+          onPressed: () => setState(() => _listViewMode = !_listViewMode),
+        ),
         PopupMenuButton<String>(
           tooltip: '排序',
           color: VedroTheme.surface2,
@@ -368,6 +500,117 @@ class _LibraryScreenState extends State<LibraryScreen> {
           },
         ),
       ];
+}
+
+class _LibraryListTile extends StatelessWidget {
+  const _LibraryListTile({
+    required this.item,
+    required this.appState,
+    required this.onTap,
+  });
+
+  final MediaItemModel item;
+  final VedroAppState appState;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return PressableScale(
+      onTap: onTap,
+      hoverScale: 1.006,
+      pressScale: 0.985,
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: VedroTheme.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: VedroTheme.line, width: 0.8),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 52,
+              height: 76,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(7),
+                child: VedroArtwork(item: item, appState: appState, width: 160),
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.cardTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: VedroTheme.fg,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    item.cardSubtitle,
+                    style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
+                  ),
+                  if (item.cleanOverview.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      item.cleanOverview,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Color(0xFFB4B6C0), fontSize: 12.5, height: 1.4),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MiniDropdown<T> extends StatelessWidget {
+  const _MiniDropdown({
+    required this.hint,
+    required this.value,
+    required this.items,
+    required this.onChanged,
+  });
+
+  final String hint;
+  final T value;
+  final List<DropdownMenuItem<T>> items;
+  final ValueChanged<T?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 32,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: VedroTheme.surface2,
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: VedroTheme.line, width: 0.7),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<T>(
+          value: value,
+          dropdownColor: VedroTheme.surface2,
+          style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
+          hint: Text(hint, style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5)),
+          items: items,
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
 }
 
 class _FilterPill extends StatelessWidget {

@@ -398,6 +398,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
   final _danmakuApiCtrl = TextEditingController();
   final _fontPathCtrl = TextEditingController();
   final _downloadDirCtrl = TextEditingController();
+  final _mpvConfCtrl = TextEditingController();
   bool _testingAi = false;
   String? _aiTestResult;
 
@@ -420,6 +421,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     _aiModelCtrl.text = p.aiModel;
     _danmakuApiCtrl.text = p.danmakuApiUrl;
     _downloadDirCtrl.text = p.downloadCustomDir;
+    _mpvConfCtrl.text = p.customMpvConf;
   }
 
   @override
@@ -430,6 +432,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     _danmakuApiCtrl.dispose();
     _fontPathCtrl.dispose();
     _downloadDirCtrl.dispose();
+    _mpvConfCtrl.dispose();
     super.dispose();
   }
 
@@ -1078,9 +1081,22 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('播放设置', '内存缓存上限、倍速、跳过片头片尾、画中画与连播行为'),
+        _heading('播放设置', '内存缓存上限、倍速、手势、自定义跳过片头片尾、画中画与外部播放器'),
         _GroupedCard(
           children: [
+            _DropdownRow<String>(
+              title: '默认播放器引擎',
+              value: p.externalPlayer,
+              items: const {
+                'builtin': '内置 Rust + MPV（推荐）',
+                'iina': 'IINA (macOS)',
+                'infuse': 'Infuse (macOS / iOS)',
+                'mpv': '外部 MPV',
+                'vlc': 'VLC',
+                'potplayer': 'PotPlayer (Windows)',
+              },
+              onChanged: (v) => _updatePrefs(p.copyWith(externalPlayer: v)),
+            ),
             _DropdownRow<int>(
               title: '播放器内存缓存大小',
               value: p.bufferSizeMb,
@@ -1105,6 +1121,24 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               items: {0.75: '0.75×', 1.0: '1.0×', 1.25: '1.25×', 1.5: '1.5×', 2.0: '2.0×'},
               onChanged: (v) => _updatePrefs(p.copyWith(defaultSpeed: v)),
             ),
+            _DropdownRow<double>(
+              title: '长按屏幕临时倍速',
+              value: p.longPressSpeed,
+              items: {1.5: '1.5×', 2.0: '2.0×', 2.5: '2.5×', 3.0: '3.0×'},
+              onChanged: (v) => _updatePrefs(p.copyWith(longPressSpeed: v)),
+            ),
+            _SwitchRow(
+              title: '双指捏合缩放画面',
+              subtitle: '播放时支持双指自由缩放，松手保持当前比例',
+              value: p.pinchToZoom,
+              onChanged: (v) => _updatePrefs(p.copyWith(pinchToZoom: v)),
+            ),
+            _SwitchRow(
+              title: '记忆播放器亮度',
+              subtitle: '下次进入播放时自动恢复上次调节的画面亮度',
+              value: p.rememberBrightness,
+              onChanged: (v) => _updatePrefs(p.copyWith(rememberBrightness: v)),
+            ),
             _SwitchRow(
               title: '启用画中画 (PiP)',
               subtitle: '在播放器顶栏显示画中画入口',
@@ -1123,14 +1157,32 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
             ),
             _SwitchRow(
               title: '自动跳过片头',
-              subtitle: '服务器提供片头标记时自动跳转',
+              subtitle: '服务器提供片头标记或设置自定义片头时长时自动跳转',
               value: p.autoSkipIntro,
               onChanged: (v) => _updatePrefs(p.copyWith(autoSkipIntro: v)),
+            ),
+            _SliderRow(
+              title: '自定义跳过片头时长',
+              valueText: p.customSkipIntroSecs == 0 ? '关闭' : '${p.customSkipIntroSecs} 秒',
+              value: p.customSkipIntroSecs.toDouble(),
+              min: 0,
+              max: 180,
+              divisions: 18,
+              onChanged: (v) => _updatePrefs(p.copyWith(customSkipIntroSecs: v.round())),
             ),
             _SwitchRow(
               title: '自动跳过片尾',
               value: p.autoSkipOutro,
               onChanged: (v) => _updatePrefs(p.copyWith(autoSkipOutro: v)),
+            ),
+            _SliderRow(
+              title: '自定义跳过片尾时长',
+              valueText: p.customSkipOutroSecs == 0 ? '关闭' : '${p.customSkipOutroSecs} 秒',
+              value: p.customSkipOutroSecs.toDouble(),
+              min: 0,
+              max: 180,
+              divisions: 18,
+              onChanged: (v) => _updatePrefs(p.copyWith(customSkipOutroSecs: v.round())),
             ),
             _SwitchRow(
               title: '记住播放进度续播',
@@ -1148,7 +1200,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('视频设置', '硬件解码、杜比视界直出、HDR 色调映射与画面比例'),
+        _heading('视频设置', '硬件解码、杜比视界直出、HDR 色调映射、Anime4K 与自定义 mpv.conf'),
         _GroupedCard(
           children: [
             _DropdownRow<String>(
@@ -1211,6 +1263,73 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 'display-resample': '显示器刷新率重采样（防微卡顿）',
               },
               onChanged: (v) => _updatePrefs(p.copyWith(videoSync: v)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        const _GroupHeader('Anime4K 超分与高级 MPV 配置'),
+        _GroupedCard(
+          children: [
+            _SwitchRow(
+              title: '启用 Anime4K 动漫超分锐化',
+              subtitle: '自动启用 LanczosSharp 升频、暗场去色带与线条增强',
+              value: p.anime4kEnabled,
+              onChanged: (v) => _updatePrefs(p.copyWith(anime4kEnabled: v)),
+            ),
+            _DropdownRow<String>(
+              title: 'Anime4K 锐化等级',
+              value: p.anime4kMode,
+              items: const {
+                'A': 'Mode A（高锐度修复）',
+                'B': 'Mode B（均衡推荐）',
+                'C': 'Mode C（柔和自然）',
+                'A+A': 'Mode A+A（强效超分）',
+                'B+B': 'Mode B+B（高质感均衡）',
+              },
+              onChanged: (v) => _updatePrefs(p.copyWith(anime4kMode: v)),
+            ),
+            _SwitchRow(
+              title: '仅对动漫 / 动画片源生效',
+              subtitle: '电影与实拍剧集保持原片质感，不额外锐化',
+              value: p.anime4kOnlyAnime,
+              onChanged: (v) => _updatePrefs(p.copyWith(anime4kOnlyAnime: v)),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '自定义 mpv.conf 参数（每行一条 key=value，# 开头为注释）',
+                    style: TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _mpvConfCtrl,
+                    minLines: 3,
+                    maxLines: 6,
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12.5, color: VedroTheme.fg),
+                    decoration: const InputDecoration(
+                      hintText: '# 示例：\ninterpolation=yes\ntscale=oversample\ndither-depth=auto',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: OutlinedButton(
+                      onPressed: () async {
+                        await _updatePrefs(p.copyWith(customMpvConf: _mpvConfCtrl.text.trim()));
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('已保存自定义 mpv.conf，下次播放生效')),
+                          );
+                        }
+                      },
+                      child: const Text('保存 mpv.conf', style: TextStyle(fontSize: 13)),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -1290,6 +1409,12 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               title: '自动加载服务器外挂字幕',
               value: p.autoLoadExternalSubs,
               onChanged: (v) => _updatePrefs(p.copyWith(autoLoadExternalSubs: v)),
+            ),
+            _SwitchRow(
+              title: '强制覆盖 ASS 字幕样式',
+              subtitle: '使用下方统一字体与字号覆盖特效字幕原有样式',
+              value: p.forceAssOverride,
+              onChanged: (v) => _updatePrefs(p.copyWith(forceAssOverride: v)),
             ),
             _SliderRow(
               title: '默认字号缩放',
@@ -1394,6 +1519,15 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               divisions: 7,
               onChanged: (v) => _updatePrefs(p.copyWith(danmakuFontSize: v)),
             ),
+            _SliderRow(
+              title: '弹幕滚动时长（越小越快）',
+              valueText: '${p.danmakuSpeedSecs.round()} 秒/屏',
+              value: p.danmakuSpeedSecs,
+              min: 5,
+              max: 15,
+              divisions: 10,
+              onChanged: (v) => _updatePrefs(p.copyWith(danmakuSpeedSecs: v)),
+            ),
             _DropdownRow<double>(
               title: '弹幕显示区域',
               value: p.danmakuArea,
@@ -1415,14 +1549,14 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('自定义弹幕源接口（可选）', style: TextStyle(color: VedroTheme.fg2, fontSize: 12.5)),
+                  const Text('自定义弹幕源接口（支持弹弹play 兼容 API 或 B站 XML 链接）', style: TextStyle(color: VedroTheme.fg2, fontSize: 12.5)),
                   const SizedBox(height: 8),
                   Row(
                     children: [
                       Expanded(
                         child: TextField(
                           controller: _danmakuApiCtrl,
-                          decoration: const InputDecoration(hintText: 'https://api.example.com/danmaku'),
+                          decoration: const InputDecoration(hintText: 'https://api.dandanplay.net'),
                         ),
                       ),
                       const SizedBox(width: 10),

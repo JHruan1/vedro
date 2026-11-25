@@ -542,6 +542,7 @@ class MediaItemModel {
     this.originalTitle,
     this.collectionType,
     this.overview,
+    this.taglines = const [],
     this.productionYear,
     this.communityRating,
     this.officialRating,
@@ -589,6 +590,7 @@ class MediaItemModel {
   final String? originalTitle;
   final String? collectionType;
   final String? overview;
+  final List<String> taglines;
   final int? productionYear;
   final double? communityRating;
   final String? officialRating;
@@ -739,6 +741,10 @@ class MediaItemModel {
       originalTitle: j['OriginalTitle']?.toString(),
       collectionType: j['CollectionType']?.toString(),
       overview: j['Overview']?.toString(),
+      taglines: ((j['Taglines'] as List<dynamic>?) ?? const [])
+          .map((e) => e.toString().trim())
+          .where((s) => s.isNotEmpty)
+          .toList(),
       productionYear: (j['ProductionYear'] as num?)?.toInt(),
       communityRating: (j['CommunityRating'] as num?)?.toDouble(),
       officialRating: j['OfficialRating']?.toString(),

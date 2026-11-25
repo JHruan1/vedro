@@ -1626,6 +1626,110 @@ impl VedroRuntime {
                 Ok(json!({ "translated": translated }))
             }
 
+            "delete_playlist" => {
+                let client = self.require_client()?;
+                let playlist_id = str_param(&params, "playlist_id")?;
+                client
+                    .delete_item(&playlist_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({ "deleted": playlist_id }))
+            }
+
+            "external_play_url" => {
+                let client = self.require_client()?;
+                let item_id = str_param(&params, "item_id")?;
+                let media_source_id = params.get("media_source_id").and_then(Value::as_str);
+                let player_id = params.get("player_id").and_then(Value::as_str);
+                let pb = client
+                    .external_play_info(&item_id, media_source_id, player_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let chosen = media_source_id
+                    .and_then(|sid| pb.media_sources.iter().find(|s| s.id == sid))
+                    .or_else(|| pb.media_sources.first())
+                    .ok_or_else(|| "no playable media source".to_string())?;
+                let url = if let Some(ds) = chosen.direct_stream_url.as_deref() {
+                    client.resolve_media_url(ds).map_err(|e| e.to_string())?
+                } else {
+                    let mut fallback = client
+                        .build_fallback_video_url(
+                            &item_id,
+                            &chosen.id,
+                            chosen.container.as_deref(),
+                            &pb.play_session_id,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if let Some(tok) = client.access_token() {
+                        fallback.query_pairs_mut().append_pair("api_key", &tok);
+                    }
+                    fallback
+                };
+                Ok(json!({
+                    "url": url.to_string(),
+                    "media_source_id": chosen.id,
+                }))
+            }
+
+            "danmaku_fetch" => {
+                let api_base = params
+                    .get("api_base")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("https://api.dandanplay.net");
+                let title = str_param(&params, "title")?;
+                let episode = params.get("episode").and_then(Value::as_u64);
+                let http = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(12))
+                    .user_agent("Vedro/0.2.0")
+                    .build()
+                    .map_err(|e| e.to_string())?;
+
+                // If caller passed a direct XML/JSON danmaku URL, fetch it verbatim
+                if api_base.ends_with(".xml") || api_base.contains("/comment/") {
+                    let resp = http.get(api_base).send().await.map_err(|e| e.to_string())?;
+                    let body = resp.text().await.map_err(|e| e.to_string())?;
+                    return Ok(json!({ "raw": body }));
+                }
+
+                // Otherwise query DandanPlay-compatible `/api/v2/search/episodes` -> `/api/v2/comment/{id}`
+                let base = api_base.trim_end_matches('/');
+                let mut search_url = reqwest::Url::parse(&format!("{base}/api/v2/search/episodes"))
+                    .map_err(|e| e.to_string())?;
+                {
+                    let mut qp = search_url.query_pairs_mut();
+                    qp.append_pair("anime", &title);
+                    if let Some(ep) = episode {
+                        qp.append_pair("episode", &ep.to_string());
+                    }
+                }
+                let s_resp = http
+                    .get(search_url)
+                    .send()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let s_json: Value = s_resp.json().await.map_err(|e| e.to_string())?;
+                let ep_id = s_json
+                    .pointer("/animes/0/episodes/0/episodeId")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| "未匹配到对应弹幕库".to_string())?;
+                let ep_title = s_json
+                    .pointer("/animes/0/episodes/0/episodeTitle")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&title)
+                    .to_string();
+
+                let c_url = format!("{base}/api/v2/comment/{ep_id}?withRelated=true");
+                let c_resp = http.get(&c_url).send().await.map_err(|e| e.to_string())?;
+                let c_json: Value = c_resp.json().await.map_err(|e| e.to_string())?;
+                Ok(json!({
+                    "episode_id": ep_id,
+                    "episode_title": ep_title,
+                    "comments": c_json.get("comments").cloned().unwrap_or_else(|| json!([])),
+                }))
+            }
+
             "get_settings" => {
                 let cfg = self.playback_config.lock().clone();
                 Ok(serde_json::to_value(cfg).unwrap())

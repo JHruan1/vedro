@@ -12,6 +12,7 @@ import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
+import '../widgets/danmaku_engine.dart';
 import '../widgets/nerd_stats_hud.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
@@ -78,22 +79,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double _brightness = 1.0;
 
   // Live synced with preferences
+  bool _hwDecodeEnabled = true;
+  int _videoRotate = 0;
+  double _videoZoom = 0.0;
+  double _pinchBaseZoom = 0.0;
+  bool _anime4kActive = false;
   double _subDelaySecs = 0.0;
   double _subScale = 1.0;
   int _subPos = 96;
+  String _subFontFamily = '';
+  bool _forceAssOverride = false;
   String _aspectMode = 'fit';
   String _toneMapping = 'bt.2446a';
   String _audioMode = 'auto';
   bool _nightMode = false;
   bool _dialogueBoost = false;
   bool _danmakuEnabled = false;
+  List<DanmakuComment> _danmakuComments = const [];
+  bool _danmakuLoading = false;
+  String? _danmakuMatchTitle;
+  String? _danmakuError;
+  double _danmakuOpacity = 0.82;
+  double _danmakuFontSize = 18.0;
+  double _danmakuSpeedSecs = 9.0;
+  double _danmakuArea = 0.5;
+  bool _danmakuHideTop = false;
+  bool _danmakuHideBottom = false;
   final Set<String> _autoSkippedSegKeys = {};
+  bool _customIntroSkipped = false;
+  bool _customOutroSkipped = false;
   bool _completedTriggered = false;
 
   // Gesture HUD state
   bool _scrubbing = false;
   double _scrubStartSecs = 0;
   double _scrubTargetSecs = 0;
+  String? _scaleAxis; // 'h' | 'v' | 'pinch'
+  Offset _scaleAnchor = Offset.zero;
   String? _gestureMode;
   String _seekFeedbackText = '';
   Offset _lastTapDownPos = Offset.zero;
@@ -122,10 +144,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
         return seg;
       }
     }
+    final p = widget.appState.prefs;
+    if (p.customSkipIntroSecs > 0 &&
+        _positionSecs >= 1.0 &&
+        _positionSecs < p.customSkipIntroSecs - 1.0) {
+      return MediaSegmentModel(
+        type: 'Intro',
+        startTicks: 0,
+        endTicks: p.customSkipIntroSecs * 10000000,
+      );
+    }
+    if (p.customSkipOutroSecs > 0 &&
+        _durationSecs > p.customSkipOutroSecs + 30 &&
+        _positionSecs >= _durationSecs - p.customSkipOutroSecs &&
+        _positionSecs < _durationSecs - 1.5) {
+      return MediaSegmentModel(
+        type: 'Outro',
+        startTicks: ((_durationSecs - p.customSkipOutroSecs) * 10000000).round(),
+        endTicks: (_durationSecs * 10000000).round(),
+      );
+    }
     return null;
   }
 
   double get _maxVolume => widget.appState.prefs.maxVolumePercent.toDouble().clamp(100.0, 200.0);
+
+  bool _isLikelyAnime(MediaItemModel item) {
+    final text = [
+      ...item.genres,
+      item.displayName,
+      item.seriesName ?? '',
+    ].join(' ').toLowerCase();
+    return text.contains('动画') ||
+        text.contains('动漫') ||
+        text.contains('番剧') ||
+        text.contains('animation') ||
+        text.contains('anime');
+  }
 
   @override
   void initState() {
@@ -138,8 +193,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _subScale = p.subtitleFontScale;
     _subPos = p.subtitlePos;
     _subDelaySecs = p.subtitleDelaySecs;
+    _subFontFamily = p.subtitleFontFamily;
+    _forceAssOverride = p.forceAssOverride;
     _showRemaining = p.showRemainingTime;
     _danmakuEnabled = p.danmakuEnabled;
+    _danmakuOpacity = p.danmakuOpacity;
+    _danmakuFontSize = p.danmakuFontSize;
+    _danmakuSpeedSecs = p.danmakuSpeedSecs;
+    _danmakuArea = p.danmakuArea;
+    _danmakuHideTop = p.danmakuHideTop;
+    _danmakuHideBottom = p.danmakuHideBottom;
+    if (p.rememberBrightness) {
+      _brightness = p.savedBrightness.clamp(0.15, 1.0);
+    }
+    _hwDecodeEnabled = (widget.appState.settings['hwdec'] ?? 'auto_zero_copy') != 'software';
+    _anime4kActive = p.anime4kEnabled && (!p.anime4kOnlyAnime || _isLikelyAnime(_currentItem));
     _audioMode = (widget.appState.settings['audio_mode'] ?? 'auto').toString();
     _nightMode = widget.appState.settings['night_mode'] == true;
     _dialogueBoost = widget.appState.settings['dialogue_boost'] == true;
@@ -199,22 +267,48 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }));
 
     _startPlayback(widget.mediaSourceId);
+    if (_danmakuEnabled) {
+      unawaited(_loadDanmaku());
+    }
   }
 
   void _checkAutoSkipSegments(double secs) {
     final p = widget.appState.prefs;
-    if (!p.autoSkipIntro && !p.autoSkipOutro) return;
-    for (final seg in _segments) {
-      final t = seg.type.toLowerCase();
-      final shouldSkip = (t == 'intro' && p.autoSkipIntro) || (t == 'outro' && p.autoSkipOutro);
-      final key = '${_currentItem.id}:${seg.type}:${seg.startTicks}';
-      if (shouldSkip &&
-          secs >= seg.startSecs &&
-          secs < seg.endSecs - 1.5 &&
-          _autoSkippedSegKeys.add(key)) {
-        _seekTo(seg.endSecs);
-        _flashGestureHud('seek_feedback', text: '已自动${seg.buttonLabel}');
+    if (p.autoSkipIntro || p.autoSkipOutro) {
+      for (final seg in _segments) {
+        final t = seg.type.toLowerCase();
+        final shouldSkip = (t == 'intro' && p.autoSkipIntro) || (t == 'outro' && p.autoSkipOutro);
+        final key = '${_currentItem.id}:${seg.type}:${seg.startTicks}';
+        if (shouldSkip &&
+            secs >= seg.startSecs &&
+            secs < seg.endSecs - 1.5 &&
+            _autoSkippedSegKeys.add(key)) {
+          _seekTo(seg.endSecs);
+          _flashGestureHud('seek_feedback', text: '已自动${seg.buttonLabel}');
+          return;
+        }
       }
+    }
+    if (p.autoSkipIntro &&
+        p.customSkipIntroSecs > 0 &&
+        !_customIntroSkipped &&
+        secs >= 1.0 &&
+        secs < p.customSkipIntroSecs - 1.5) {
+      _customIntroSkipped = true;
+      _seekTo(p.customSkipIntroSecs.toDouble());
+      _flashGestureHud('seek_feedback', text: '已自动跳过片头 (${p.customSkipIntroSecs}s)');
+    } else if (p.autoSkipOutro &&
+        p.customSkipOutroSecs > 0 &&
+        !_customOutroSkipped &&
+        _durationSecs > p.customSkipOutroSecs + 30 &&
+        secs >= _durationSecs - p.customSkipOutroSecs) {
+      _customOutroSkipped = true;
+      if (p.autoPlayNext && _nextEpisode != null) {
+        _switchEpisode(_nextEpisode!);
+      } else {
+        _seekTo(_durationSecs - 0.5);
+      }
+      _flashGestureHud('seek_feedback', text: '已自动跳过片尾');
     }
   }
 
@@ -229,6 +323,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _progressTimer?.cancel();
     _ticketRefreshTimer?.cancel();
     _focusNode.dispose();
+    if (widget.appState.prefs.rememberBrightness) {
+      unawaited(widget.appState.updatePrefs(
+        widget.appState.prefs.copyWith(savedBrightness: _brightness),
+      ));
+    }
     NativePlaybackChannel.setKeepScreenOn(false);
     _reportStoppedAndCleanup();
     _player.dispose();
@@ -285,6 +384,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _switchEpisode(MediaItemModel ep) async {
     await _reportStoppedAndCleanup();
     _completedTriggered = false;
+    _customIntroSkipped = false;
+    _customOutroSkipped = false;
     setState(() {
       _currentItem = ep;
       _segments = const [];
@@ -292,6 +393,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _positionSecs = 0;
       _bufferedSecs = 0;
       _durationSecs = 0;
+      _danmakuComments = const [];
+      _danmakuMatchTitle = null;
+      _danmakuError = null;
     });
     unawaited(() async {
       try {
@@ -307,11 +411,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
       } catch (_) {}
     }());
     await _startPlayback(null);
+    if (_danmakuEnabled) {
+      unawaited(_loadDanmaku());
+    }
   }
 
   Future<void> _applyInitialPreferencesToMpv() async {
     final p = widget.appState.prefs;
-    await _applyMpvProperty('hwdec', 'auto-safe');
+    final hwPref = (widget.appState.settings['hwdec'] ?? 'auto_zero_copy').toString();
+    final hwVal = !_hwDecodeEnabled
+        ? 'no'
+        : (hwPref == 'auto_copy' ? 'auto-copy-safe' : 'auto-safe');
+    await _applyMpvProperty('hwdec', hwVal);
     await _applyMpvProperty('hwdec-codecs', 'all');
     await _applyMpvProperty('target-colorspace-hint', 'yes');
     await _applyMpvProperty('hdr-compute-peak', p.hdrComputePeak ? 'yes' : 'no');
@@ -321,10 +432,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (p.audioDelayMs != 0) {
       await _applyMpvProperty('audio-delay', (p.audioDelayMs / 1000.0).toStringAsFixed(3));
     }
-    if (p.subtitleFontFamily.trim().isNotEmpty) {
-      await _applyMpvProperty('sub-fonts-dir', widget.appState.fontsDirectoryPath);
-      await _applyMpvProperty('sub-font', p.subtitleFontFamily.trim());
+    await _applyMpvProperty('sub-fonts-dir', widget.appState.fontsDirectoryPath);
+    if (_subFontFamily.trim().isNotEmpty) {
+      await _applyMpvProperty('sub-font', _subFontFamily.trim());
     }
+    await _applyMpvProperty('sub-ass-override', _forceAssOverride ? 'force' : 'no');
     await _applyMpvProperty('sub-scale', _subScale.toStringAsFixed(2));
     await _applyMpvProperty('sub-pos', '$_subPos');
     await _applyMpvProperty('sub-color', p.subtitleColorHex);
@@ -339,8 +451,128 @@ class _PlayerScreenState extends State<PlayerScreen> {
       await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
     }
     await _applyAspectMode(_aspectMode);
+    await _applyMpvProperty('video-rotate', '$_videoRotate');
+    await _applyMpvProperty('video-zoom', _videoZoom.toStringAsFixed(3));
+    await _applyAnime4k(_anime4kActive);
+    await _applyCustomMpvConf(p.customMpvConf);
     if ((_speed - 1.0).abs() > 0.01) {
       await _player.setRate(_speed);
+    }
+  }
+
+  Future<void> _applyAnime4k(bool enabled) async {
+    if (!enabled) {
+      await _applyMpvProperty('scale', 'bilinear');
+      await _applyMpvProperty('sharpen', '0.0');
+      await _applyMpvProperty('deband', widget.appState.settings['deband'] == true ? 'yes' : 'no');
+      return;
+    }
+    final mode = widget.appState.prefs.anime4kMode;
+    final sharp = switch (mode) {
+      'A' || 'A+A' => '0.50',
+      'B+B' => '0.42',
+      'C' => '0.24',
+      _ => '0.35',
+    };
+    await _applyMpvProperty('scale', 'ewa_lanczossharp');
+    await _applyMpvProperty('cscale', 'ewa_lanczossharp');
+    await _applyMpvProperty('deband', 'yes');
+    await _applyMpvProperty('sharpen', sharp);
+  }
+
+  Future<void> _applyCustomMpvConf(String raw) async {
+    if (raw.trim().isEmpty) return;
+    const blocked = {'vo', 'ao', 'gpu-context', 'gpu-api'};
+    for (final rawLine in raw.split('\n')) {
+      final line = rawLine.split('#').first.trim();
+      if (line.isEmpty) continue;
+      final eq = line.indexOf('=');
+      if (eq <= 0) continue;
+      final k = line.substring(0, eq).trim();
+      final v = line.substring(eq + 1).trim();
+      if (k.isEmpty || blocked.contains(k)) continue;
+      await _applyMpvProperty(k, v);
+    }
+  }
+
+  Future<void> _toggleHwDecode() async {
+    final next = !_hwDecodeEnabled;
+    setState(() => _hwDecodeEnabled = next);
+    await _applyMpvProperty('hwdec', next ? 'auto-safe' : 'no');
+    _flashGestureHud('seek_feedback', text: next ? '硬件解码 (HW)' : '软件解码 (SW)');
+  }
+
+  Future<void> _rotateVideo([int? targetAngle]) async {
+    final next = targetAngle ?? ((_videoRotate + 90) % 360);
+    setState(() => _videoRotate = next);
+    await _applyMpvProperty('video-rotate', '$next');
+    _flashGestureHud('seek_feedback', text: '旋转 $next°');
+  }
+
+  Future<void> _setVideoZoom(double zoom, {bool showHud = true}) async {
+    final clamped = zoom.clamp(-0.5, 1.5);
+    setState(() => _videoZoom = clamped);
+    await _applyMpvProperty('video-zoom', clamped.toStringAsFixed(3));
+    if (showHud) {
+      _flashGestureHud('seek_feedback', text: '缩放 ${(100 * (1 + clamped)).round()}%');
+    }
+  }
+
+  Future<void> _takeScreenshot() async {
+    try {
+      final bytes = await _player.screenshot(
+        format: 'image/png',
+        includeLibassSubtitles: true,
+      );
+      if (bytes == null || bytes.isEmpty) {
+        _flashGestureHud('seek_feedback', text: '当前画面暂不支持截图');
+        return;
+      }
+      final dir = Directory('${widget.appState.downloadsDirectoryPath}/screenshots');
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      final safeTitle = _currentItem.displayName
+          .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ]+'), '_')
+          .trim();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final file = File('${dir.path}/${safeTitle.isEmpty ? 'vedro' : safeTitle}_$ts.png');
+      await file.writeAsBytes(bytes);
+      _flashGestureHud('seek_feedback', text: '已保存截图');
+    } catch (_) {
+      _flashGestureHud('seek_feedback', text: '截图失败');
+    }
+  }
+
+  Future<void> _loadDanmaku({String? queryOverride}) async {
+    if (_danmakuLoading) return;
+    final query = (queryOverride ?? (_currentItem.seriesName ?? _currentItem.displayName)).trim();
+    if (query.isEmpty) return;
+    setState(() {
+      _danmakuLoading = true;
+      _danmakuError = null;
+    });
+    try {
+      final res = await widget.appState.fetchDanmaku(
+        query,
+        episode: _currentItem.indexNumber,
+      );
+      if (!mounted) return;
+      setState(() {
+        _danmakuComments = res.comments;
+        _danmakuMatchTitle = res.title.isNotEmpty ? res.title : query;
+        _danmakuLoading = false;
+      });
+      if (_danmakuEnabled) {
+        _flashGestureHud(
+          'seek_feedback',
+          text: res.comments.isEmpty ? '未匹配到弹幕' : '已加载 ${res.comments.length} 条弹幕',
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _danmakuLoading = false;
+        _danmakuError = e.toString().replaceFirst('Exception: ', '');
+      });
     }
   }
 
@@ -646,6 +878,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _toggleMute();
     } else if (key == LogicalKeyboardKey.keyI) {
       setState(() => _showStats = !_showStats);
+    } else if (key == LogicalKeyboardKey.keyS) {
+      _takeScreenshot();
+    } else if (key == LogicalKeyboardKey.keyD) {
+      final next = !_danmakuEnabled;
+      setState(() => _danmakuEnabled = next);
+      if (next && _danmakuComments.isEmpty) unawaited(_loadDanmaku());
+      _flashGestureHud('seek_feedback', text: next ? '弹幕已开启' : '弹幕已关闭');
+    } else if (key == LogicalKeyboardKey.keyR) {
+      _rotateVideo();
     } else if (key == LogicalKeyboardKey.keyN && _nextEpisode != null) {
       _switchEpisode(_nextEpisode!);
     } else if (key == LogicalKeyboardKey.bracketRight) {
@@ -711,45 +952,75 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 HapticFeedback.mediumImpact();
                 _preBoostSpeed = _speed;
                 setState(() => _isSpeedBoost = true);
-                _setSpeed(2.0);
+                _setSpeed(widget.appState.prefs.longPressSpeed);
               },
               onLongPressEnd: (_) {
                 setState(() => _isSpeedBoost = false);
                 _setSpeed(_preBoostSpeed);
               },
-              onHorizontalDragStart: (_) {
-                if (_durationSecs <= 0 || _showEpisodeDrawer) return;
-                _hideControlsTimer?.cancel();
-                setState(() {
-                  _scrubbing = true;
-                  _scrubStartSecs = _positionSecs;
-                  _scrubTargetSecs = _positionSecs;
-                });
-              },
-              onHorizontalDragUpdate: (d) {
-                if (!_scrubbing) return;
-                final deltaSecs = (d.delta.dx / size.width) * 180.0;
-                setState(() {
-                  _scrubTargetSecs = (_scrubTargetSecs + deltaSecs).clamp(0.0, _durationSecs);
-                });
-              },
-              onHorizontalDragEnd: (_) {
-                if (!_scrubbing) return;
-                final target = _scrubTargetSecs;
-                setState(() => _scrubbing = false);
-                _seekTo(target);
-                _scheduleHideControls();
-              },
-              onVerticalDragUpdate: (d) {
+              onScaleStart: (d) {
                 if (_showEpisodeDrawer) return;
-                final delta = -d.delta.dy / (size.height * 0.55);
-                if (_lastTapDownPos.dx < size.width * 0.5) {
-                  setState(() => _brightness = (_brightness + delta).clamp(0.15, 1.0));
-                  _flashGestureHud('brightness');
-                } else {
-                  _setVolume(_volume + delta * 100);
-                  _flashGestureHud('volume');
+                _scaleAxis = null;
+                _scaleAnchor = d.localFocalPoint;
+                _pinchBaseZoom = _videoZoom;
+                if (d.pointerCount >= 2 && widget.appState.prefs.pinchToZoom) {
+                  _scaleAxis = 'pinch';
+                  _hideControlsTimer?.cancel();
                 }
+              },
+              onScaleUpdate: (d) {
+                if (_showEpisodeDrawer) return;
+                if ((d.pointerCount >= 2 || _scaleAxis == 'pinch') &&
+                    widget.appState.prefs.pinchToZoom) {
+                  _scaleAxis = 'pinch';
+                  final nextZoom = (_pinchBaseZoom + (d.scale - 1.0) * 0.85).clamp(-0.5, 1.5);
+                  if ((nextZoom - _videoZoom).abs() > 0.015) {
+                    _setVideoZoom(nextZoom);
+                  }
+                  return;
+                }
+                final delta = d.focalPointDelta;
+                if (_scaleAxis == null) {
+                  final totalDx = (d.localFocalPoint.dx - _scaleAnchor.dx).abs();
+                  final totalDy = (d.localFocalPoint.dy - _scaleAnchor.dy).abs();
+                  if (totalDx < 8 && totalDy < 8) return;
+                  if (totalDx >= totalDy) {
+                    if (_durationSecs <= 0) return;
+                    _scaleAxis = 'h';
+                    _hideControlsTimer?.cancel();
+                    setState(() {
+                      _scrubbing = true;
+                      _scrubStartSecs = _positionSecs;
+                      _scrubTargetSecs = _positionSecs;
+                    });
+                  } else {
+                    _scaleAxis = 'v';
+                  }
+                }
+                if (_scaleAxis == 'h' && _scrubbing) {
+                  final deltaSecs = (delta.dx / size.width) * 180.0;
+                  setState(() {
+                    _scrubTargetSecs = (_scrubTargetSecs + deltaSecs).clamp(0.0, _durationSecs);
+                  });
+                } else if (_scaleAxis == 'v') {
+                  final vDelta = -delta.dy / (size.height * 0.55);
+                  if (_scaleAnchor.dx < size.width * 0.5) {
+                    setState(() => _brightness = (_brightness + vDelta).clamp(0.15, 1.0));
+                    _flashGestureHud('brightness');
+                  } else {
+                    _setVolume(_volume + vDelta * 100);
+                    _flashGestureHud('volume');
+                  }
+                }
+              },
+              onScaleEnd: (_) {
+                if (_scrubbing) {
+                  final target = _scrubTargetSecs;
+                  setState(() => _scrubbing = false);
+                  _seekTo(target);
+                  _scheduleHideControls();
+                }
+                _scaleAxis = null;
               },
               child: Stack(
                 fit: StackFit.expand,
@@ -767,15 +1038,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ),
 
-                  // Optional Danmaku overlay (honors opacity, area, font size)
+                  // Real 60fps Canvas Danmaku overlay (DandanPlay JSON & Bilibili XML)
                   if (_danmakuEnabled)
-                    IgnorePointer(
-                      child: _DanmakuOverlay(
-                        positionSecs: _positionSecs,
-                        opacity: widget.appState.prefs.danmakuOpacity,
-                        fontSize: widget.appState.prefs.danmakuFontSize,
-                        areaFraction: widget.appState.prefs.danmakuArea,
-                      ),
+                    DanmakuLayer(
+                      comments: _danmakuComments,
+                      positionSecs: _positionSecs,
+                      opacity: _danmakuOpacity,
+                      fontSize: _danmakuFontSize,
+                      speedSecs: _danmakuSpeedSecs,
+                      areaFraction: _danmakuArea,
+                      hideTop: _danmakuHideTop,
+                      hideBottom: _danmakuHideBottom,
                     ),
 
                   if (_loading)
@@ -852,14 +1125,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         child: GlassSurface(
                           borderRadius: 20,
                           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                          child: const Row(
+                          child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.fast_forward_rounded, size: 15, color: VedroTheme.fg),
-                              SizedBox(width: 6),
+                              const Icon(Icons.fast_forward_rounded, size: 15, color: VedroTheme.fg),
+                              const SizedBox(width: 6),
                               Text(
-                                '2.0×',
-                                style: TextStyle(
+                                '${widget.appState.prefs.longPressSpeed.toStringAsFixed(1)}×',
+                                style: const TextStyle(
                                   color: VedroTheme.fg,
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600,
@@ -991,6 +1264,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                       ),
                                     ),
                                     const SizedBox(width: 12),
+                                    Tooltip(
+                                      message: _hwDecodeEnabled ? '当前硬件解码，点击切至软解' : '当前软件解码，点击切至硬解',
+                                      child: _DeckPillButton(
+                                        label: _hwDecodeEnabled ? 'HW' : 'SW',
+                                        active: _hwDecodeEnabled,
+                                        onTap: _toggleHwDecode,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    _CircleHudButton(
+                                      icon: Icons.camera_alt_outlined,
+                                      tooltip: '截图 (S)',
+                                      onTap: _takeScreenshot,
+                                    ),
+                                    const SizedBox(width: 6),
                                     if (_episodes.length > 1) ...[
                                       _CircleHudButton(
                                         icon: Icons.video_library_outlined,
@@ -1001,7 +1289,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                     ],
                                     _CircleHudButton(
                                       icon: Icons.aspect_ratio_rounded,
-                                      tooltip: '画面比例',
+                                      tooltip: '画面比例 / 旋转 / 缩放',
                                       onTap: _openAspectSheet,
                                     ),
                                     const SizedBox(width: 6),
@@ -1153,10 +1441,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                             ),
                                             const SizedBox(width: 6),
                                             _DeckPillButton(
-                                              label: '弹幕',
+                                              label: _danmakuEnabled && _danmakuComments.isNotEmpty
+                                                  ? '弹幕 ${_danmakuComments.length}'
+                                                  : '弹幕',
                                               active: _danmakuEnabled,
-                                              onTap: () =>
-                                                  setState(() => _danmakuEnabled = !_danmakuEnabled),
+                                              onTap: _openDanmakuSheet,
                                             ),
                                             const SizedBox(width: 6),
                                             _DeckPillButton(
@@ -1398,27 +1687,258 @@ class _PlayerScreenState extends State<PlayerScreen> {
       '21:9': '宽银幕 21:9',
       '4:3': '经典 4:3',
     };
+    const angles = [0, 90, 180, 270];
     showGlassSheet<void>(
       context: context,
-      builder: (ctx) => ListView(
-        shrinkWrap: true,
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
-        children: [
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Text('画面比例', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
-          ),
-          ...modes.entries.map((e) => _SheetOptionRow(
-                label: e.value,
-                selected: e.key == _aspectMode,
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _applyAspectMode(e.key);
-                },
-              )),
-        ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) => ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Text('画面比例、旋转与缩放', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
+            ),
+            ...modes.entries.map((e) => _SheetOptionRow(
+                  label: e.value,
+                  selected: e.key == _aspectMode,
+                  onTap: () {
+                    setModal(() => _aspectMode = e.key);
+                    _applyAspectMode(e.key);
+                  },
+                )),
+            const Divider(height: 20),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Row(
+                children: [
+                  const Text('画面旋转', style: TextStyle(color: VedroTheme.fg2, fontSize: 13.5)),
+                  const Spacer(),
+                  for (final angle in angles) ...[
+                    Padding(
+                      padding: const EdgeInsets.only(left: 6),
+                      child: _DeckPillButton(
+                        label: '$angle°',
+                        active: _videoRotate == angle,
+                        onTap: () {
+                          setModal(() => _videoRotate = angle);
+                          _rotateVideo(angle);
+                        },
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            _StepperRow(
+              label: '画面缩放',
+              valueText: '${(100 * (1 + _videoZoom)).round()}%',
+              onMinus: () {
+                final next = (_videoZoom - 0.1).clamp(-0.5, 1.5);
+                setModal(() => _videoZoom = next);
+                _setVideoZoom(next, showHud: false);
+              },
+              onPlus: () {
+                final next = (_videoZoom + 0.1).clamp(-0.5, 1.5);
+                setModal(() => _videoZoom = next);
+                _setVideoZoom(next, showHud: false);
+              },
+            ),
+            if (_videoZoom.abs() > 0.01 || _videoRotate != 0)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () {
+                      setModal(() {
+                        _videoZoom = 0.0;
+                        _videoRotate = 0;
+                      });
+                      _setVideoZoom(0.0, showHud: false);
+                      _rotateVideo(0);
+                    },
+                    child: const Text('重置旋转与缩放', style: TextStyle(fontSize: 12.5)),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
+  }
+
+  void _openDanmakuSheet() {
+    final queryCtrl = TextEditingController(
+      text: _danmakuMatchTitle ?? _currentItem.seriesName ?? _currentItem.displayName,
+    );
+    showGlassSheet<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) => ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 22),
+          children: [
+            Row(
+              children: [
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8),
+                  child: Text('弹幕设置与匹配', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
+                ),
+                const Spacer(),
+                Switch(
+                  value: _danmakuEnabled,
+                  onChanged: (v) {
+                    setModal(() => _danmakuEnabled = v);
+                    setState(() => _danmakuEnabled = v);
+                    if (v && _danmakuComments.isEmpty && !_danmakuLoading) {
+                      unawaited(_loadDanmaku().then((_) {
+                        if (ctx.mounted) setModal(() {});
+                      }));
+                    }
+                  },
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 2, 8, 12),
+              child: Text(
+                _danmakuLoading
+                    ? '正在从弹幕源匹配…'
+                    : (_danmakuError != null
+                        ? '匹配失败：$_danmakuError'
+                        : (_danmakuComments.isNotEmpty
+                            ? '已匹配：${_danmakuMatchTitle ?? ''}（${_danmakuComments.length} 条弹幕）'
+                            : '输入番剧或电影名手动匹配弹幕（支持弹弹play / B站 XML 接口）')),
+                style: TextStyle(
+                  color: _danmakuError != null ? VedroTheme.danger : VedroTheme.fg3,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: queryCtrl,
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        hintText: '搜索弹幕关键词',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _danmakuLoading
+                        ? null
+                        : () async {
+                            setModal(() => _danmakuEnabled = true);
+                            setState(() => _danmakuEnabled = true);
+                            await _loadDanmaku(queryOverride: queryCtrl.text.trim());
+                            if (ctx.mounted) setModal(() {});
+                          },
+                    child: Text(_danmakuLoading ? '匹配中…' : '匹配弹幕', style: const TextStyle(fontSize: 12.5)),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 22),
+            _StepperRow(
+              label: '不透明度',
+              valueText: '${(_danmakuOpacity * 100).round()}%',
+              onMinus: () {
+                final v = (_danmakuOpacity - 0.1).clamp(0.2, 1.0);
+                setModal(() => _danmakuOpacity = v);
+                setState(() => _danmakuOpacity = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuOpacity: v));
+              },
+              onPlus: () {
+                final v = (_danmakuOpacity + 0.1).clamp(0.2, 1.0);
+                setModal(() => _danmakuOpacity = v);
+                setState(() => _danmakuOpacity = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuOpacity: v));
+              },
+            ),
+            _StepperRow(
+              label: '弹幕字号',
+              valueText: '${_danmakuFontSize.round()} pt',
+              onMinus: () {
+                final v = (_danmakuFontSize - 2).clamp(12.0, 30.0);
+                setModal(() => _danmakuFontSize = v);
+                setState(() => _danmakuFontSize = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuFontSize: v));
+              },
+              onPlus: () {
+                final v = (_danmakuFontSize + 2).clamp(12.0, 30.0);
+                setModal(() => _danmakuFontSize = v);
+                setState(() => _danmakuFontSize = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuFontSize: v));
+              },
+            ),
+            _StepperRow(
+              label: '滚动时长',
+              valueText: '${_danmakuSpeedSecs.round()}s',
+              onMinus: () {
+                final v = (_danmakuSpeedSecs - 1).clamp(5.0, 15.0);
+                setModal(() => _danmakuSpeedSecs = v);
+                setState(() => _danmakuSpeedSecs = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuSpeedSecs: v));
+              },
+              onPlus: () {
+                final v = (_danmakuSpeedSecs + 1).clamp(5.0, 15.0);
+                setModal(() => _danmakuSpeedSecs = v);
+                setState(() => _danmakuSpeedSecs = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuSpeedSecs: v));
+              },
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Row(
+                children: [
+                  const Text('显示区域', style: TextStyle(color: VedroTheme.fg2, fontSize: 13.5)),
+                  const Spacer(),
+                  for (final (frac, lbl) in [(0.25, '1/4'), (0.5, '半屏'), (0.75, '3/4'), (1.0, '全屏')])
+                    Padding(
+                      padding: const EdgeInsets.only(left: 6),
+                      child: _DeckPillButton(
+                        label: lbl,
+                        active: (_danmakuArea - frac).abs() < 0.05,
+                        onTap: () {
+                          setModal(() => _danmakuArea = frac);
+                          setState(() => _danmakuArea = frac);
+                          widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuArea: frac));
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            SwitchListTile(
+              dense: true,
+              title: const Text('屏蔽顶部固定弹幕', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+              value: _danmakuHideTop,
+              onChanged: (v) {
+                setModal(() => _danmakuHideTop = v);
+                setState(() => _danmakuHideTop = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuHideTop: v));
+              },
+            ),
+            SwitchListTile(
+              dense: true,
+              title: const Text('屏蔽底部固定弹幕', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+              value: _danmakuHideBottom,
+              onChanged: (v) {
+                setModal(() => _danmakuHideBottom = v);
+                setState(() => _danmakuHideBottom = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuHideBottom: v));
+              },
+            ),
+          ],
+        ),
+      ),
+    ).whenComplete(queryCtrl.dispose);
   }
 
   void _openSpeedSheet() {
@@ -1479,29 +1999,49 @@ class _PlayerScreenState extends State<PlayerScreen> {
     };
     showGlassSheet<void>(
       context: context,
-      builder: (ctx) => ListView(
-        shrinkWrap: true,
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
-        children: [
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 8),
-            child: Text('画面与 HDR 色调映射', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
-          ),
-          if (_prepared != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-              child: Text(_prepared!.hdrExplanation, style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5)),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) => ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8),
+              child: Text('画面增强与 HDR 色调映射', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
             ),
-          ...algos.entries.map((e) => _SheetOptionRow(
-                label: e.value,
-                selected: e.key == _toneMapping,
-                onTap: () async {
-                  Navigator.pop(ctx);
-                  setState(() => _toneMapping = e.key);
-                  await _applyMpvProperty('tone-mapping', e.key);
-                },
-              )),
-        ],
+            if (_prepared != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 8, 10),
+                child: Text(_prepared!.hdrExplanation, style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5)),
+              ),
+            SwitchListTile(
+              dense: true,
+              title: Text(
+                'Anime4K 动漫超分锐化 (${widget.appState.prefs.anime4kMode})',
+                style: const TextStyle(color: VedroTheme.fg, fontSize: 13.5),
+              ),
+              subtitle: const Text(
+                '启用 LanczosSharp 升频、暗场去色带与线条锐化',
+                style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+              ),
+              value: _anime4kActive,
+              onChanged: (v) async {
+                setModal(() => _anime4kActive = v);
+                setState(() => _anime4kActive = v);
+                await _applyAnime4k(v);
+              },
+            ),
+            const Divider(height: 16),
+            ...algos.entries.map((e) => _SheetOptionRow(
+                  label: e.value,
+                  selected: e.key == _toneMapping,
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    setState(() => _toneMapping = e.key);
+                    await _applyMpvProperty('tone-mapping', e.key);
+                  },
+                )),
+          ],
+        ),
       ),
     );
   }
@@ -1688,6 +2228,59 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 setModal(() => _subDelaySecs += 0.2);
                 await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
               },
+            ),
+            SwitchListTile(
+              dense: true,
+              title: const Text('强制覆盖 ASS 字幕样式', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+              value: _forceAssOverride,
+              onChanged: (v) async {
+                setModal(() => _forceAssOverride = v);
+                setState(() => _forceAssOverride = v);
+                await _applyMpvProperty('sub-ass-override', v ? 'force' : 'no');
+              },
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('字幕字体', style: TextStyle(color: VedroTheme.fg2, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (final (family, lbl) in [
+                          ('', '系统默认'),
+                          ('PingFang SC', '苹方'),
+                          ('Hiragino Sans GB', '冬青黑'),
+                          ('Noto Sans CJK SC', '思源黑体'),
+                          ...widget.appState.prefs.customFontPaths.map((fp) {
+                            final stem = fp
+                                .split('/')
+                                .last
+                                .replaceAll(RegExp(r'\.(ttf|otf|ttc)$', caseSensitive: false), '');
+                            return (stem, stem);
+                          }),
+                        ])
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: _DeckPillButton(
+                              label: lbl,
+                              active: _subFontFamily == family,
+                              onTap: () async {
+                                setModal(() => _subFontFamily = family);
+                                setState(() => _subFontFamily = family);
+                                await _applyMpvProperty('sub-fonts-dir', widget.appState.fontsDirectoryPath);
+                                await _applyMpvProperty('sub-font', family.isEmpty ? 'sans-serif' : family);
+                              },
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -2169,36 +2762,6 @@ class _DeckPillButtonState extends State<_DeckPillButton> {
             fontWeight: FontWeight.w500,
             fontFeatures: const [FontFeature.tabularFigures()],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Lightweight GPU-friendly Danmaku overlay honoring user opacity, font size, and screen area.
-class _DanmakuOverlay extends StatelessWidget {
-  const _DanmakuOverlay({
-    required this.positionSecs,
-    required this.opacity,
-    required this.fontSize,
-    required this.areaFraction,
-  });
-
-  final double positionSecs;
-  final double opacity;
-  final double fontSize;
-  final double areaFraction;
-
-  @override
-  Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.topCenter,
-      child: FractionallySizedBox(
-        heightFactor: areaFraction.clamp(0.2, 1.0),
-        widthFactor: 1.0,
-        child: Opacity(
-          opacity: opacity.clamp(0.15, 1.0),
-          child: const SizedBox.expand(),
         ),
       ),
     );

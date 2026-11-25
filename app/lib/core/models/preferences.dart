@@ -142,15 +142,26 @@ class VedroPreferences {
     this.autoPlayNext = true,
     this.autoSkipIntro = false,
     this.autoSkipOutro = false,
+    this.customSkipIntroSecs = 0,
+    this.customSkipOutroSecs = 0,
     this.rememberPosition = true,
+    this.rememberBrightness = false,
+    this.savedBrightness = 1.0,
     this.defaultSpeed = 1.0,
+    this.longPressSpeed = 2.0,
     this.seekStepSecs = 10,
+    this.pinchToZoom = true,
     this.enablePip = true,
     this.backgroundAudio = false,
+    this.externalPlayer = 'builtin', // builtin | iina | infuse | mpv | vlc | potplayer
     // 视频设置
     this.defaultAspect = 'fit',
     this.videoSync = 'audio',
     this.hdrComputePeak = true,
+    this.anime4kEnabled = false,
+    this.anime4kMode = 'B', // A | B | C | A+A | B+B
+    this.anime4kOnlyAnime = true,
+    this.customMpvConf = '',
     // 音频设置
     this.preferredAudioLang = 'auto',
     this.maxVolumePercent = 150,
@@ -158,6 +169,7 @@ class VedroPreferences {
     // 字幕设置
     this.preferredSubLang = 'zh',
     this.autoLoadExternalSubs = true,
+    this.forceAssOverride = false,
     this.subtitleFontFamily = '',
     this.subtitleFontScale = 1.0,
     this.subtitlePos = 96,
@@ -190,8 +202,9 @@ class VedroPreferences {
     this.downloadWifiOnly = true,
     this.downloadMaxConcurrent = 2,
     this.downloadCustomDir = '',
-    // 字体管理 (imported custom font file paths)
+    // 字体管理 & 搜索历史
     this.customFontPaths = const [],
+    this.searchHistory = const [],
   });
 
   final String accentId;
@@ -215,15 +228,26 @@ class VedroPreferences {
   final bool autoPlayNext;
   final bool autoSkipIntro;
   final bool autoSkipOutro;
+  final int customSkipIntroSecs;
+  final int customSkipOutroSecs;
   final bool rememberPosition;
+  final bool rememberBrightness;
+  final double savedBrightness;
   final double defaultSpeed;
+  final double longPressSpeed;
   final int seekStepSecs;
+  final bool pinchToZoom;
   final bool enablePip;
   final bool backgroundAudio;
+  final String externalPlayer;
 
   final String defaultAspect;
   final String videoSync;
   final bool hdrComputePeak;
+  final bool anime4kEnabled;
+  final String anime4kMode;
+  final bool anime4kOnlyAnime;
+  final String customMpvConf;
 
   final String preferredAudioLang;
   final int maxVolumePercent;
@@ -231,6 +255,7 @@ class VedroPreferences {
 
   final String preferredSubLang;
   final bool autoLoadExternalSubs;
+  final bool forceAssOverride;
   final String subtitleFontFamily;
   final double subtitleFontScale;
   final int subtitlePos;
@@ -265,6 +290,7 @@ class VedroPreferences {
   final String downloadCustomDir;
 
   final List<String> customFontPaths;
+  final List<String> searchHistory;
 
   AccentPalette get accentPalette => AccentPalette.byId(accentId);
 
@@ -301,19 +327,31 @@ class VedroPreferences {
     bool? autoPlayNext,
     bool? autoSkipIntro,
     bool? autoSkipOutro,
+    int? customSkipIntroSecs,
+    int? customSkipOutroSecs,
     bool? rememberPosition,
+    bool? rememberBrightness,
+    double? savedBrightness,
     double? defaultSpeed,
+    double? longPressSpeed,
     int? seekStepSecs,
+    bool? pinchToZoom,
     bool? enablePip,
     bool? backgroundAudio,
+    String? externalPlayer,
     String? defaultAspect,
     String? videoSync,
     bool? hdrComputePeak,
+    bool? anime4kEnabled,
+    String? anime4kMode,
+    bool? anime4kOnlyAnime,
+    String? customMpvConf,
     String? preferredAudioLang,
     int? maxVolumePercent,
     int? audioDelayMs,
     String? preferredSubLang,
     bool? autoLoadExternalSubs,
+    bool? forceAssOverride,
     String? subtitleFontFamily,
     double? subtitleFontScale,
     int? subtitlePos,
@@ -343,6 +381,7 @@ class VedroPreferences {
     int? downloadMaxConcurrent,
     String? downloadCustomDir,
     List<String>? customFontPaths,
+    List<String>? searchHistory,
   }) =>
       VedroPreferences(
         accentId: accentId ?? this.accentId,
@@ -363,19 +402,31 @@ class VedroPreferences {
         autoPlayNext: autoPlayNext ?? this.autoPlayNext,
         autoSkipIntro: autoSkipIntro ?? this.autoSkipIntro,
         autoSkipOutro: autoSkipOutro ?? this.autoSkipOutro,
+        customSkipIntroSecs: customSkipIntroSecs ?? this.customSkipIntroSecs,
+        customSkipOutroSecs: customSkipOutroSecs ?? this.customSkipOutroSecs,
         rememberPosition: rememberPosition ?? this.rememberPosition,
+        rememberBrightness: rememberBrightness ?? this.rememberBrightness,
+        savedBrightness: savedBrightness ?? this.savedBrightness,
         defaultSpeed: defaultSpeed ?? this.defaultSpeed,
+        longPressSpeed: longPressSpeed ?? this.longPressSpeed,
         seekStepSecs: seekStepSecs ?? this.seekStepSecs,
+        pinchToZoom: pinchToZoom ?? this.pinchToZoom,
         enablePip: enablePip ?? this.enablePip,
         backgroundAudio: backgroundAudio ?? this.backgroundAudio,
+        externalPlayer: externalPlayer ?? this.externalPlayer,
         defaultAspect: defaultAspect ?? this.defaultAspect,
         videoSync: videoSync ?? this.videoSync,
         hdrComputePeak: hdrComputePeak ?? this.hdrComputePeak,
+        anime4kEnabled: anime4kEnabled ?? this.anime4kEnabled,
+        anime4kMode: anime4kMode ?? this.anime4kMode,
+        anime4kOnlyAnime: anime4kOnlyAnime ?? this.anime4kOnlyAnime,
+        customMpvConf: customMpvConf ?? this.customMpvConf,
         preferredAudioLang: preferredAudioLang ?? this.preferredAudioLang,
         maxVolumePercent: maxVolumePercent ?? this.maxVolumePercent,
         audioDelayMs: audioDelayMs ?? this.audioDelayMs,
         preferredSubLang: preferredSubLang ?? this.preferredSubLang,
         autoLoadExternalSubs: autoLoadExternalSubs ?? this.autoLoadExternalSubs,
+        forceAssOverride: forceAssOverride ?? this.forceAssOverride,
         subtitleFontFamily: subtitleFontFamily ?? this.subtitleFontFamily,
         subtitleFontScale: subtitleFontScale ?? this.subtitleFontScale,
         subtitlePos: subtitlePos ?? this.subtitlePos,
@@ -405,6 +456,7 @@ class VedroPreferences {
         downloadMaxConcurrent: downloadMaxConcurrent ?? this.downloadMaxConcurrent,
         downloadCustomDir: downloadCustomDir ?? this.downloadCustomDir,
         customFontPaths: customFontPaths ?? this.customFontPaths,
+        searchHistory: searchHistory ?? this.searchHistory,
       );
 
   Map<String, dynamic> toJson() => {
@@ -426,19 +478,31 @@ class VedroPreferences {
         'auto_play_next': autoPlayNext,
         'auto_skip_intro': autoSkipIntro,
         'auto_skip_outro': autoSkipOutro,
+        'custom_skip_intro_secs': customSkipIntroSecs,
+        'custom_skip_outro_secs': customSkipOutroSecs,
         'remember_position': rememberPosition,
+        'remember_brightness': rememberBrightness,
+        'saved_brightness': savedBrightness,
         'default_speed': defaultSpeed,
+        'long_press_speed': longPressSpeed,
         'seek_step_secs': seekStepSecs,
+        'pinch_to_zoom': pinchToZoom,
         'enable_pip': enablePip,
         'background_audio': backgroundAudio,
+        'external_player': externalPlayer,
         'default_aspect': defaultAspect,
         'video_sync': videoSync,
         'hdr_compute_peak': hdrComputePeak,
+        'anime4k_enabled': anime4kEnabled,
+        'anime4k_mode': anime4kMode,
+        'anime4k_only_anime': anime4kOnlyAnime,
+        'custom_mpv_conf': customMpvConf,
         'preferred_audio_lang': preferredAudioLang,
         'max_volume_percent': maxVolumePercent,
         'audio_delay_ms': audioDelayMs,
         'preferred_sub_lang': preferredSubLang,
         'auto_load_external_subs': autoLoadExternalSubs,
+        'force_ass_override': forceAssOverride,
         'subtitle_font_family': subtitleFontFamily,
         'subtitle_font_scale': subtitleFontScale,
         'subtitle_pos': subtitlePos,
@@ -468,6 +532,7 @@ class VedroPreferences {
         'download_max_concurrent': downloadMaxConcurrent,
         'download_custom_dir': downloadCustomDir,
         'custom_font_paths': customFontPaths,
+        'search_history': searchHistory,
       };
 
   factory VedroPreferences.fromJson(Map<String, dynamic> j) => VedroPreferences(
@@ -489,19 +554,31 @@ class VedroPreferences {
         autoPlayNext: j['auto_play_next'] != false,
         autoSkipIntro: j['auto_skip_intro'] == true,
         autoSkipOutro: j['auto_skip_outro'] == true,
+        customSkipIntroSecs: (j['custom_skip_intro_secs'] as num?)?.toInt() ?? 0,
+        customSkipOutroSecs: (j['custom_skip_outro_secs'] as num?)?.toInt() ?? 0,
         rememberPosition: j['remember_position'] != false,
+        rememberBrightness: j['remember_brightness'] == true,
+        savedBrightness: (j['saved_brightness'] as num?)?.toDouble() ?? 1.0,
         defaultSpeed: (j['default_speed'] as num?)?.toDouble() ?? 1.0,
+        longPressSpeed: (j['long_press_speed'] as num?)?.toDouble() ?? 2.0,
         seekStepSecs: (j['seek_step_secs'] as num?)?.toInt() ?? 10,
+        pinchToZoom: j['pinch_to_zoom'] != false,
         enablePip: j['enable_pip'] != false,
         backgroundAudio: j['background_audio'] == true,
+        externalPlayer: (j['external_player'] ?? 'builtin').toString(),
         defaultAspect: (j['default_aspect'] ?? 'fit').toString(),
         videoSync: (j['video_sync'] ?? 'audio').toString(),
         hdrComputePeak: j['hdr_compute_peak'] != false,
+        anime4kEnabled: j['anime4k_enabled'] == true,
+        anime4kMode: (j['anime4k_mode'] ?? 'B').toString(),
+        anime4kOnlyAnime: j['anime4k_only_anime'] != false,
+        customMpvConf: (j['custom_mpv_conf'] ?? '').toString(),
         preferredAudioLang: (j['preferred_audio_lang'] ?? 'auto').toString(),
         maxVolumePercent: (j['max_volume_percent'] as num?)?.toInt() ?? 150,
         audioDelayMs: (j['audio_delay_ms'] as num?)?.toInt() ?? 0,
         preferredSubLang: (j['preferred_sub_lang'] ?? 'zh').toString(),
         autoLoadExternalSubs: j['auto_load_external_subs'] != false,
+        forceAssOverride: j['force_ass_override'] == true,
         subtitleFontFamily: (j['subtitle_font_family'] ?? '').toString(),
         subtitleFontScale: (j['subtitle_font_scale'] as num?)?.toDouble() ?? 1.0,
         subtitlePos: (j['subtitle_pos'] as num?)?.toInt() ?? 96,
@@ -533,6 +610,11 @@ class VedroPreferences {
         customFontPaths: ((j['custom_font_paths'] as List<dynamic>?) ?? const [])
             .map((e) => e.toString())
             .where((s) => s.isNotEmpty)
+            .toList(),
+        searchHistory: ((j['search_history'] as List<dynamic>?) ?? const [])
+            .map((e) => e.toString())
+            .where((s) => s.isNotEmpty)
+            .take(15)
             .toList(),
       );
 }

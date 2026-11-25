@@ -8,19 +8,20 @@ import 'package:vedro/core/models/models.dart';
 import 'package:vedro/core/models/preferences.dart';
 import 'package:vedro/main.dart';
 import 'package:vedro/state/app_state.dart';
+import 'package:vedro/widgets/danmaku_engine.dart';
 
 class _MockVedroCore implements VedroCoreClient {
   _MockVedroCore({this.isAdmin = false});
   final bool isAdmin;
 
   @override
-  String get coreVersion => '0.1.3-test';
+  String get coreVersion => '0.2.0-test';
 
   @override
   Future<dynamic> invoke(String method, [Map<String, dynamic> params = const {}]) async {
     switch (method) {
       case 'version':
-        return <String, dynamic>{'version': '0.1.3-test'};
+        return <String, dynamic>{'version': '0.2.0-test'};
       case 'list_servers':
         return <dynamic>[];
       case 'get_settings':
@@ -164,23 +165,69 @@ void main() {
     expect(app.libraryCoverUrl(lib), contains('/Items/lib1/Images/Primary?tag=cover123'));
     expect(app.wideArt(lib)?.isPoster, isFalse);
 
-    // 5. VedroPreferences roundtrip & passcode hashing
+    // 5. VedroPreferences roundtrip & passcode hashing (including v0.2.0 pro fields)
     const orig = VedroPreferences(
       accentId: 'emerald',
       bufferSizeMb: 256,
       aiEnabled: true,
       aiModel: 'deepseek-chat',
       danmakuEnabled: true,
+      danmakuSpeedSecs: 7.0,
       passcodeEnabled: true,
       passcodeHash: 'abc',
+      customSkipIntroSecs: 85,
+      customSkipOutroSecs: 90,
+      rememberBrightness: true,
+      savedBrightness: 0.72,
+      longPressSpeed: 2.5,
+      pinchToZoom: true,
+      externalPlayer: 'iina',
+      anime4kEnabled: true,
+      anime4kMode: 'A+A',
+      anime4kOnlyAnime: false,
+      customMpvConf: 'interpolation=yes',
+      forceAssOverride: true,
+      searchHistory: ['沙丘', '进击的巨人'],
     );
     final decoded = VedroPreferences.fromJson(orig.toJson());
     expect(decoded.accentId, equals('emerald'));
     expect(decoded.bufferSizeMb, equals(256));
     expect(decoded.aiModel, equals('deepseek-chat'));
     expect(decoded.danmakuEnabled, isTrue);
+    expect(decoded.danmakuSpeedSecs, equals(7.0));
+    expect(decoded.customSkipIntroSecs, equals(85));
+    expect(decoded.customSkipOutroSecs, equals(90));
+    expect(decoded.rememberBrightness, isTrue);
+    expect(decoded.savedBrightness, closeTo(0.72, 0.001));
+    expect(decoded.longPressSpeed, equals(2.5));
+    expect(decoded.externalPlayer, equals('iina'));
+    expect(decoded.anime4kEnabled, isTrue);
+    expect(decoded.anime4kMode, equals('A+A'));
+    expect(decoded.anime4kOnlyAnime, isFalse);
+    expect(decoded.customMpvConf, equals('interpolation=yes'));
+    expect(decoded.forceAssOverride, isTrue);
+    expect(decoded.searchHistory, equals(['沙丘', '进击的巨人']));
     expect(hashPasscode('1234'), equals(hashPasscode('1234')));
     expect(hashPasscode('1234'), isNot(equals(hashPasscode('4321'))));
+
+    // 6. Real Danmaku parsers (DandanPlay JSON & Bilibili XML)
+    final dandan = DanmakuComment.parseDandanComments([
+      {'p': '12.5,1,16777215', 'm': '高能预警'},
+      {'p': '4.2,5,16711680', 'm': 'OP神曲'},
+    ]);
+    expect(dandan.length, equals(2));
+    expect(dandan.first.text, equals('OP神曲'));
+    expect(dandan.first.mode, equals(5));
+    expect(dandan.last.timeSecs, closeTo(12.5, 0.01));
+
+    final bili = DanmakuComment.parseBilibiliXml(
+      '<i><d p="20.0,4,25,65280,1700000000,0,abc,1">字幕组辛苦 &amp; 感谢</d>'
+      '<d p="3.5,1,25,16777215,1700000000,0,def,2">前排打卡</d></i>',
+    );
+    expect(bili.length, equals(2));
+    expect(bili.first.text, equals('前排打卡'));
+    expect(bili.last.text, equals('字幕组辛苦 & 感谢'));
+    expect(bili.last.mode, equals(4));
   });
 
   testWidgets(

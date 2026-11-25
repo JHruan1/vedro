@@ -6,8 +6,13 @@ import '../core/models/models.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/vedro_artwork.dart';
+import '../widgets/vedro_ui.dart';
 
-/// Multi-server Aggregated Search screen (queries all saved servers concurrently in Rust).
+/// AfuseKt-caliber Multi-Server Aggregated Search screen:
+/// - Server underline tabs (`所有` | Server A | Server B...)
+/// - Media type filter pills (`全部` | `电影` | `剧集` | `演员`)
+/// - Grouped horizontal 2:3 Poster Carousels per server
+/// - Persisted Search History chips when idle
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key, required this.appState, required this.onSelectHit});
 
@@ -24,6 +29,7 @@ class _SearchScreenState extends State<SearchScreen> {
   List<AggregatedSearchHit> _hits = [];
   List<Map<String, dynamic>> _servers = [];
   String? _filterServerId;
+  String _typeFilter = 'all'; // all | Movie | Series | Person
   bool _searching = false;
 
   @override
@@ -43,13 +49,16 @@ class _SearchScreenState extends State<SearchScreen> {
       });
       return;
     }
-    _debounce = Timer(const Duration(milliseconds: 220), () => _runSearch(val.trim()));
+    _debounce = Timer(const Duration(milliseconds: 240), () => _runSearch(val.trim()));
   }
 
-  Future<void> _runSearch(String term) async {
+  Future<void> _runSearch(String term, {bool saveHistory = false}) async {
     setState(() => _searching = true);
+    if (saveHistory) {
+      unawaited(widget.appState.addSearchHistory(term));
+    }
     try {
-      final res = await widget.appState.aggregatedSearch(term, limit: 30);
+      final res = await widget.appState.aggregatedSearch(term, limit: 36);
       if (mounted) {
         setState(() {
           _hits = res.hits;
@@ -68,10 +77,24 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 820;
-    final filtered = _filterServerId == null
-        ? _hits
-        : _hits.where((h) => h.serverId == _filterServerId).toList();
-    final multiServer = _servers.length > 1;
+    final padX = wide ? 32.0 : 18.0;
+    final accent = Theme.of(context).colorScheme.secondary;
+
+    final filtered = _hits.where((h) {
+      if (_filterServerId != null && h.serverId != _filterServerId) return false;
+      if (_typeFilter != 'all' && h.type != _typeFilter) return false;
+      return true;
+    }).toList();
+
+    // Group results by server for AfuseKt-style horizontal poster rows
+    final grouped = <String, ({String name, List<AggregatedSearchHit> items})>{};
+    for (final h in filtered) {
+      final key = h.serverId.isNotEmpty ? h.serverId : 'active';
+      final name = h.serverName.isNotEmpty ? h.serverName : widget.appState.activeServerDisplayName;
+      grouped.putIfAbsent(key, () => (name: name, items: [])).items.add(h);
+    }
+
+    final history = widget.appState.prefs.searchHistory;
 
     return Scaffold(
       backgroundColor: VedroTheme.canvas,
@@ -81,15 +104,18 @@ class _SearchScreenState extends State<SearchScreen> {
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+            padding: EdgeInsets.fromLTRB(padX, 4, padX, 10),
             child: TextField(
               controller: _ctrl,
               onChanged: _onChanged,
-              style: const TextStyle(color: VedroTheme.fg, fontSize: 14),
+              onSubmitted: (v) {
+                if (v.trim().isNotEmpty) _runSearch(v.trim(), saveHistory: true);
+              },
+              style: const TextStyle(color: VedroTheme.fg, fontSize: 14.5),
               decoration: InputDecoration(
                 hintText: widget.appState.savedServers.length > 1
                     ? '跨 ${widget.appState.savedServers.length} 个服务器聚合搜索…'
-                    : '片名、原名或演职员',
+                    : '输入片名、原名或演职员',
                 prefixIcon: const Icon(Icons.search_rounded, size: 19, color: VedroTheme.fg3),
                 suffixIcon: _ctrl.text.isNotEmpty
                     ? IconButton(
@@ -107,155 +133,303 @@ class _SearchScreenState extends State<SearchScreen> {
               ),
             ),
           ),
-          if (multiServer)
-            SizedBox(
-              height: 36,
+
+          // Server underline tabs (AfuseKt style)
+          if (_servers.length > 1)
+            Container(
+              height: 38,
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: VedroTheme.line, width: 0.7)),
+              ),
               child: ListView(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
+                padding: EdgeInsets.symmetric(horizontal: padX),
                 scrollDirection: Axis.horizontal,
                 children: [
-                  _FilterChip(
-                    label: '全部 (${_hits.length})',
+                  _ServerTab(
+                    label: '所有 (${_hits.length})',
                     selected: _filterServerId == null,
+                    accent: accent,
                     onTap: () => setState(() => _filterServerId = null),
                   ),
                   ..._servers.map((s) {
                     final sid = s['server_id']?.toString() ?? '';
                     final sname = s['server_name']?.toString() ?? sid;
                     final cnt = (s['count'] as num?)?.toInt() ?? 0;
-                    return Padding(
-                      padding: const EdgeInsets.only(left: 8),
-                      child: _FilterChip(
-                        label: '$sname ($cnt)',
-                        selected: _filterServerId == sid,
-                        onTap: () => setState(() => _filterServerId = sid),
-                      ),
+                    return _ServerTab(
+                      label: '$sname ($cnt)',
+                      selected: _filterServerId == sid,
+                      accent: accent,
+                      onTap: () => setState(() => _filterServerId = sid),
                     );
                   }),
                 ],
               ),
             ),
-          if (_searching)
-            const Padding(
-              padding: EdgeInsets.only(top: 6),
-              child: LinearProgressIndicator(
-                minHeight: 1.5,
-                backgroundColor: Colors.transparent,
-                color: VedroTheme.fg2,
+
+          // Type filter pills
+          if (_hits.isNotEmpty)
+            SizedBox(
+              height: 46,
+              child: ListView(
+                padding: EdgeInsets.fromLTRB(padX, 10, padX, 4),
+                scrollDirection: Axis.horizontal,
+                children: [
+                  for (final (id, label) in const [
+                    ('all', '全部'),
+                    ('Movie', '电影'),
+                    ('Series', '电视剧'),
+                    ('Person', '演员'),
+                  ])
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: _TypePill(
+                        label: label,
+                        selected: _typeFilter == id,
+                        onTap: () => setState(() => _typeFilter = id),
+                      ),
+                    ),
+                ],
               ),
             ),
-          Expanded(
-            child: filtered.isEmpty
-                ? Center(
-                    child: Text(
-                      widget.appState.savedServers.isEmpty && !widget.appState.isSignedIn
-                          ? '请先在首页添加媒体服务器'
-                          : (_ctrl.text.trim().isEmpty
-                              ? '支持跨多个已保存服务器并行聚合检索'
-                              : '没有找到匹配结果'),
-                      style: const TextStyle(color: VedroTheme.fg3, fontSize: 13.5),
-                    ),
-                  )
-                : ListView.separated(
-                    padding: EdgeInsets.fromLTRB(20, 8, 20, wide ? 36 : 108),
-                    itemCount: filtered.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (_, idx) {
-                      final h = filtered[idx];
-                      final thumbUrl = h.primaryImageTag != null
-                          ? widget.appState.buildServerImageUrl(
-                              h.serverId,
-                              h.id,
-                              type: 'Primary',
-                              tag: h.primaryImageTag,
-                              maxWidth: 120,
-                            )
-                          : '';
-                      final sub = [
-                        if (h.productionYear != null) '${h.productionYear}',
-                        if (h.series != null) h.series!,
-                        h.type,
-                      ].join(' · ');
 
-                      return InkWell(
-                        onTap: () => widget.onSelectHit(h),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 42,
-                                height: 60,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(7),
-                                  border: Border.all(color: VedroTheme.line, width: 0.6),
-                                ),
-                                clipBehavior: Clip.antiAlias,
-                                child: Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    GeneratedArt(seed: h.id, label: h.name),
-                                    if (thumbUrl.isNotEmpty) FadeNetworkImage(url: thumbUrl),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 14),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      h.name,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: VedroTheme.fg,
-                                        fontSize: 14.5,
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                    if (sub.isNotEmpty) ...[
-                                      const SizedBox(height: 3),
+          if (_searching)
+            LinearProgressIndicator(
+              minHeight: 1.5,
+              backgroundColor: Colors.transparent,
+              color: accent,
+            ),
+
+          Expanded(
+            child: _ctrl.text.trim().isEmpty
+                ? _buildIdleHistory(padX, history)
+                : grouped.isEmpty
+                    ? Center(
+                        child: Text(
+                          _searching ? '正在跨服务器检索…' : '没有找到匹配结果',
+                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 13.5),
+                        ),
+                      )
+                    : ListView(
+                        padding: EdgeInsets.fromLTRB(0, 12, 0, wide ? 44 : 112),
+                        children: grouped.values.map((group) {
+                          final posterW = wide ? 148.0 : 114.0;
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 24),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Padding(
+                                  padding: EdgeInsets.fromLTRB(padX, 0, padX, 10),
+                                  child: Row(
+                                    children: [
                                       Text(
-                                        sub,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
+                                        group.name,
+                                        style: const TextStyle(
+                                          color: VedroTheme.fg,
+                                          fontSize: 16.5,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        '${group.items.length}',
+                                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
                                       ),
                                     ],
-                                  ],
-                                ),
-                              ),
-                              if (multiServer)
-                                Container(
-                                  margin: const EdgeInsets.only(right: 8),
-                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
-                                  decoration: BoxDecoration(
-                                    color: VedroTheme.surface2,
-                                    borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(color: VedroTheme.line, width: 0.6),
-                                  ),
-                                  child: Text(
-                                    h.serverName,
-                                    style: const TextStyle(color: VedroTheme.fg2, fontSize: 11),
                                   ),
                                 ),
-                              const Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+                                SizedBox(
+                                  height: (posterW / (2 / 3)) + 54,
+                                  child: ListView.separated(
+                                    padding: EdgeInsets.symmetric(horizontal: padX),
+                                    scrollDirection: Axis.horizontal,
+                                    clipBehavior: Clip.none,
+                                    itemCount: group.items.length,
+                                    separatorBuilder: (_, __) => const SizedBox(width: 14),
+                                    itemBuilder: (_, idx) {
+                                      final hit = group.items[idx];
+                                      final url = hit.primaryImageTag != null
+                                          ? widget.appState.buildServerImageUrl(
+                                              hit.serverId,
+                                              hit.id,
+                                              type: 'Primary',
+                                              tag: hit.primaryImageTag,
+                                              maxWidth: 320,
+                                            )
+                                          : '';
+                                      return SizedBox(
+                                        width: posterW,
+                                        child: PressableScale(
+                                          onTap: () {
+                                            unawaited(widget.appState.addSearchHistory(_ctrl.text.trim()));
+                                            widget.onSelectHit(hit);
+                                          },
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              AspectRatio(
+                                                aspectRatio: 2 / 3,
+                                                child: Container(
+                                                  foregroundDecoration: BoxDecoration(
+                                                    borderRadius: BorderRadius.circular(11),
+                                                    border: Border.all(color: VedroTheme.line, width: 0.8),
+                                                  ),
+                                                  decoration: BoxDecoration(
+                                                    borderRadius: BorderRadius.circular(11),
+                                                    color: VedroTheme.surface2,
+                                                  ),
+                                                  clipBehavior: Clip.antiAlias,
+                                                  child: Stack(
+                                                    fit: StackFit.expand,
+                                                    children: [
+                                                      GeneratedArt(seed: hit.id, label: hit.name),
+                                                      if (url.isNotEmpty) FadeNetworkImage(url: url),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(height: 7),
+                                              Text(
+                                                hit.name,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                  color: VedroTheme.fg,
+                                                  fontSize: 13,
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              ),
+                                              Text(
+                                                hit.productionYear != null
+                                                    ? '${hit.productionYear}'
+                                                    : (hit.series ?? hit.type),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }).toList(),
+                      ),
           ),
         ],
       ),
     );
   }
+
+  Widget _buildIdleHistory(double padX, List<String> history) {
+    if (history.isEmpty) {
+      return Center(
+        child: Text(
+          widget.appState.savedServers.isEmpty && !widget.appState.isSignedIn
+              ? '请先在首页添加媒体服务器'
+              : '支持跨多个已保存服务器并行聚合检索',
+          style: const TextStyle(color: VedroTheme.fg3, fontSize: 13.5),
+        ),
+      );
+    }
+    return ListView(
+      padding: EdgeInsets.fromLTRB(padX, 14, padX, 40),
+      children: [
+        Row(
+          children: [
+            const Text(
+              '最近搜索',
+              style: TextStyle(color: VedroTheme.fg2, fontSize: 13.5, fontWeight: FontWeight.w600),
+            ),
+            const Spacer(),
+            TextButton(
+              onPressed: widget.appState.clearSearchHistory,
+              child: const Text('清空', style: TextStyle(color: VedroTheme.fg3, fontSize: 12)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: history.map((term) {
+            return PressableScale(
+              onTap: () {
+                _ctrl.text = term;
+                _runSearch(term);
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: VedroTheme.surface,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: VedroTheme.line, width: 0.8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.history_rounded, size: 14, color: VedroTheme.fg3),
+                    const SizedBox(width: 6),
+                    Text(term, style: const TextStyle(color: VedroTheme.fg2, fontSize: 13)),
+                  ],
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
 }
 
-class _FilterChip extends StatelessWidget {
-  const _FilterChip({required this.label, required this.selected, required this.onTap});
+class _ServerTab extends StatelessWidget {
+  const _ServerTab({
+    required this.label,
+    required this.selected,
+    required this.accent,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final Color accent;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(right: 18),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: selected ? accent : Colors.transparent,
+              width: 2.2,
+            ),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? Colors.white : VedroTheme.fg3,
+            fontSize: 13.5,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TypePill extends StatelessWidget {
+  const _TypePill({required this.label, required this.selected, required this.onTap});
   final String label;
   final bool selected;
   final VoidCallback onTap;
@@ -265,20 +439,28 @@ class _FilterChip extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 11),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
           color: selected ? VedroTheme.fg : VedroTheme.surface2,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(9),
           border: Border.all(color: selected ? VedroTheme.fg : VedroTheme.line, width: 0.7),
         ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: selected ? VedroTheme.canvas : VedroTheme.fg2,
-            fontSize: 12,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-          ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (selected) ...[
+              const Icon(Icons.check_rounded, size: 13, color: VedroTheme.canvas),
+              const SizedBox(width: 4),
+            ],
+            Text(
+              label,
+              style: TextStyle(
+                color: selected ? VedroTheme.canvas : VedroTheme.fg2,
+                fontSize: 12.5,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              ),
+            ),
+          ],
         ),
       ),
     );

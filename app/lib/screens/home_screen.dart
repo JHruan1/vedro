@@ -18,6 +18,8 @@ class HomeScreen extends StatefulWidget {
     required this.onItemTap,
     required this.onQuickPlay,
     required this.onLibraryTap,
+    this.onGenreTap,
+    this.onOpenFavorites,
     required this.onOpenServerHub,
     required this.onOpenAddServer,
     required this.onOpenSettings,
@@ -28,6 +30,8 @@ class HomeScreen extends StatefulWidget {
   final void Function(MediaItemModel, {String? heroPrefix}) onItemTap;
   final void Function(MediaItemModel) onQuickPlay;
   final void Function(MediaItemModel) onLibraryTap;
+  final ValueChanged<String>? onGenreTap;
+  final VoidCallback? onOpenFavorites;
   final VoidCallback onOpenServerHub;
   final void Function([String? initialUrl]) onOpenAddServer;
   final VoidCallback onOpenSettings;
@@ -326,6 +330,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 showMobileHeader: !wide,
                 onPlay: widget.onQuickPlay,
                 onDetail: (item) => widget.onItemTap(item, heroPrefix: 'hero'),
+                onGenreTap: widget.onGenreTap,
+                onOpenFavorites: widget.onOpenFavorites,
                 onOpenServerHub: widget.onOpenServerHub,
                 onRefresh: app.refreshHome,
               ),
@@ -696,6 +702,8 @@ class _CinemaHeroBanner extends StatefulWidget {
     required this.showMobileHeader,
     required this.onPlay,
     required this.onDetail,
+    this.onGenreTap,
+    this.onOpenFavorites,
     required this.onOpenServerHub,
     required this.onRefresh,
   });
@@ -706,6 +714,8 @@ class _CinemaHeroBanner extends StatefulWidget {
   final bool showMobileHeader;
   final void Function(MediaItemModel) onPlay;
   final void Function(MediaItemModel) onDetail;
+  final ValueChanged<String>? onGenreTap;
+  final VoidCallback? onOpenFavorites;
   final VoidCallback onOpenServerHub;
   final VoidCallback onRefresh;
 
@@ -891,6 +901,19 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                           ),
                         ),
                         const Spacer(),
+                        if (widget.onOpenFavorites != null) ...[
+                          PressableScale(
+                            onTap: widget.onOpenFavorites,
+                            child: GlassSurface(
+                              borderRadius: 18,
+                              blur: 18,
+                              color: const Color(0x52141417),
+                              padding: const EdgeInsets.all(8),
+                              child: const Icon(Icons.favorite_border_rounded, size: 17, color: Colors.white),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                        ],
                         PressableScale(
                           onTap: widget.onRefresh,
                           child: GlassSurface(
@@ -957,17 +980,58 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                       )
                     else
                       _HeroTitleText(text: item.cardTitle, wide: wide),
-                    if (facts.isNotEmpty) ...[
+                    if (facts.isNotEmpty || item.genres.isNotEmpty) ...[
                       const SizedBox(height: 10),
-                      Text(
-                        facts.join('  ·  '),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Color(0xD4FFFFFF),
-                          fontSize: 13.5,
-                          fontFeatures: [FontFeature.tabularFigures()],
-                        ),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          if (item.type == 'Episode' && item.cardSubtitle.isNotEmpty)
+                            Text(
+                              item.cardSubtitle,
+                              style: const TextStyle(color: Color(0xD9FFFFFF), fontSize: 13.5),
+                            ),
+                          if (item.communityRating != null)
+                            Text(
+                              '★ ${item.communityRating!.toStringAsFixed(1)}',
+                              style: const TextStyle(
+                                color: Color(0xF2FFFFFF),
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w600,
+                                fontFeatures: [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                          if (item.productionYear != null)
+                            Text(
+                              '${item.productionYear}',
+                              style: const TextStyle(
+                                color: Color(0xD9FFFFFF),
+                                fontSize: 13.5,
+                                fontFeatures: [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                          for (final g in item.genres.take(4))
+                            GestureDetector(
+                              onTap: widget.onGenreTap == null ? null : () => widget.onGenreTap!(g),
+                              child: MouseRegion(
+                                cursor: widget.onGenreTap != null
+                                    ? SystemMouseCursors.click
+                                    : MouseCursor.defer,
+                                child: Text(
+                                  g,
+                                  style: TextStyle(
+                                    color: const Color(0xE0FFFFFF),
+                                    fontSize: 13.5,
+                                    decoration: widget.onGenreTap != null
+                                        ? TextDecoration.underline
+                                        : TextDecoration.none,
+                                    decorationColor: const Color(0x88FFFFFF),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ],
                     if (item.cleanOverview.isNotEmpty) ...[

@@ -8,6 +8,7 @@ import '../core/ffi/vedro_bridge.dart';
 import '../core/models/models.dart';
 import '../core/models/preferences.dart';
 import '../core/platform/native_playback_channel.dart';
+import '../widgets/danmaku_engine.dart';
 
 /// Central reactive application state backed directly by the compiled Rust core (`VedroCoreClient`).
 ///
@@ -814,6 +815,100 @@ class VedroAppState extends ChangeNotifier {
     if (!isAdmin) return;
     await core.invoke('admin_set_library_covers', {'id': id, 'enabled': enabled});
     await loadEmbyGoAdminDashboard();
+  }
+
+  Future<void> addSearchHistory(String term) async {
+    final cleaned = term.trim();
+    if (cleaned.isEmpty) return;
+    final next = [
+      cleaned,
+      ...prefs.searchHistory.where((t) => t != cleaned),
+    ].take(12).toList();
+    await updatePrefs(prefs.copyWith(searchHistory: next));
+  }
+
+  Future<void> clearSearchHistory() async {
+    await updatePrefs(prefs.copyWith(searchHistory: const []));
+  }
+
+  DownloadTaskModel? findDownloadForItem(String itemId) {
+    for (final d in downloads) {
+      if (d.itemId == itemId) return d;
+    }
+    return null;
+  }
+
+  Future<void> deletePlaylist(String playlistId) async {
+    await core.invoke('delete_playlist', {'playlist_id': playlistId});
+    await refreshPlaylists();
+  }
+
+  /// Launch an item in an external player (IINA / Infuse / MPV / VLC / PotPlayer) using a direct URL.
+  Future<String> launchExternalPlayer(
+    MediaItemModel item, {
+    String? mediaSourceId,
+    String? playerOverride,
+  }) async {
+    final targetPlayer = (playerOverride ?? prefs.externalPlayer).toLowerCase();
+    final res = await core.invoke('external_play_url', {
+      'item_id': item.id,
+      if (mediaSourceId != null) 'media_source_id': mediaSourceId,
+      if (targetPlayer != 'builtin') 'player_id': targetPlayer,
+    }) as Map<String, dynamic>;
+    final streamUrl = (res['url'] ?? '').toString();
+    if (streamUrl.isEmpty) throw Exception('无法获取外部播放直链');
+
+    if (!kIsWeb && Platform.isMacOS) {
+      switch (targetPlayer) {
+        case 'iina':
+          await Process.start('open', ['iina://weblink?url=${Uri.encodeComponent(streamUrl)}']);
+          return '已通过 IINA 打开';
+        case 'infuse':
+          await Process.start('open', ['infuse://x-callback-url/play?url=${Uri.encodeComponent(streamUrl)}']);
+          return '已通过 Infuse 打开';
+        case 'vlc':
+          await Process.start('open', ['-a', 'VLC', streamUrl]);
+          return '已通过 VLC 打开';
+        case 'mpv':
+          await Process.start('open', ['-a', 'mpv', streamUrl]);
+          return '已通过 MPV 打开';
+        default:
+          await Process.start('open', [streamUrl]);
+          return '已交由系统播放器打开';
+      }
+    } else if (!kIsWeb && Platform.isWindows) {
+      await Process.start('cmd', ['/c', 'start', '', streamUrl], runInShell: true);
+      return '已调用外部播放器';
+    } else if (!kIsWeb && Platform.isLinux) {
+      await Process.start('xdg-open', [streamUrl]);
+      return '已调用外部播放器';
+    }
+    return streamUrl;
+  }
+
+  /// Fetch real danmaku comments from DandanPlay-compatible API or custom XML/JSON URL via Rust.
+  Future<({String title, List<DanmakuComment> comments})> fetchDanmaku(
+    String title, {
+    int? episode,
+    String? apiOverride,
+  }) async {
+    final res = await core.invoke('danmaku_fetch', {
+      'title': title,
+      if (episode != null) 'episode': episode,
+      if ((apiOverride ?? prefs.danmakuApiUrl).trim().isNotEmpty)
+        'api_base': (apiOverride ?? prefs.danmakuApiUrl).trim(),
+    }) as Map<String, dynamic>;
+    if (res['raw'] is String) {
+      return (
+        title: title,
+        comments: DanmakuComment.parseBilibiliXml(res['raw'].toString()),
+      );
+    }
+    final list = (res['comments'] as List<dynamic>?) ?? const [];
+    return (
+      title: (res['episode_title'] ?? title).toString(),
+      comments: DanmakuComment.parseDandanComments(list),
+    );
   }
 
   // ---------------------------------------------------------------------------

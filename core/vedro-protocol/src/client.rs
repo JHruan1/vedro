@@ -12,7 +12,7 @@ use crate::dialect::{ServerCapabilities, ServerDialect};
 use crate::error::{ProtocolError, Result};
 use crate::models::*;
 
-const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,Overview,ChildCount,RecursiveItemCount,People,Genres,Tags,Studios,ProviderIds,OriginalTitle,DateCreated,ProductionLocations";
+const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,Overview,Taglines,ChildCount,RecursiveItemCount,People,Genres,Tags,Studios,ProviderIds,OriginalTitle,DateCreated,ProductionLocations";
 
 /// High-performance async REST client supporting `embygo`, `Emby`, and `Jellyfin`.
 ///
@@ -954,6 +954,45 @@ impl EmbyClient {
             None,
         )
         .await
+    }
+
+    pub async fn delete_item(&self, item_id: &str) -> Result<()> {
+        self.request_empty(Method::DELETE, &format!("Items/{item_id}"), &[], None)
+            .await
+    }
+
+    /// Mint a long-lived direct stream URL for external players (IINA / Infuse / MPV / VLC / PotPlayer).
+    /// On embygo uses `/emby-compat/external-play/{id}`, falling back cleanly to `playback_info`.
+    pub async fn external_play_info(
+        &self,
+        item_id: &str,
+        media_source_id: Option<&str>,
+        player_id: Option<&str>,
+    ) -> Result<PlaybackInfoResponse> {
+        let uid = self.require_user_id()?;
+        let body = serde_json::json!({
+            "UserId": uid,
+            "MediaSourceId": media_source_id,
+        });
+        let mut q = Vec::new();
+        if let Some(p) = player_id.filter(|s| !s.is_empty()) {
+            q.push(("player", p.to_string()));
+        }
+        match self
+            .request_json::<PlaybackInfoResponse>(
+                Method::POST,
+                &format!("emby-compat/external-play/{item_id}"),
+                &q,
+                Some(body),
+            )
+            .await
+        {
+            Ok(resp) if !resp.media_sources.is_empty() => Ok(resp),
+            _ => {
+                self.playback_info(item_id, media_source_id, None, None)
+                    .await
+            }
+        }
     }
 
     // -------------------------------------------------------------------------

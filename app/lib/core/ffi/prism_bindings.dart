@@ -77,12 +77,14 @@ class PrismNativeBindings {
       return PrismNativeBindings(DynamicLibrary.open('libprism_ffi.so'));
     }
     // Linux desktop / test environment
+    final envPath = Platform.environment['PRISM_FFI_PATH'];
     return PrismNativeBindings(_openFirst([
+      if (envPath != null && envPath.isNotEmpty) envPath,
       'libprism_ffi.so',
       '../target/release/libprism_ffi.so',
       '../target/debug/libprism_ffi.so',
-      '/root/player/target/release/libprism_ffi.so',
-      '/root/player/target/debug/libprism_ffi.so',
+      'target/release/libprism_ffi.so',
+      'target/debug/libprism_ffi.so',
     ]));
   }
 

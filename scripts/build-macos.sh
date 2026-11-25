@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build Universal macOS binary (Apple Silicon arm64 + Intel x86_64) for Rust core (`libprism_ffi.dylib`)
-# and bundle into the Flutter macOS app.
+# Build Universal macOS binary (Apple Silicon arm64 + Intel x86_64) for Rust core (`libprism_ffi.dylib`),
+# bundle into Prism Player.app, and package a ready-to-install DMG into dist/.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="$ROOT_DIR/app/macos/Frameworks"
-mkdir -p "$OUT_DIR"
+DIST_DIR="$ROOT_DIR/dist"
+mkdir -p "$OUT_DIR" "$DIST_DIR"
 
 cd "$ROOT_DIR"
 echo "==> Building Rust prism-ffi universal dylib (arm64 + x86_64)..."
@@ -19,10 +20,23 @@ lipo -create \
   -output "$OUT_DIR/libprism_ffi.dylib"
 
 install_name_tool -id "@rpath/libprism_ffi.dylib" "$OUT_DIR/libprism_ffi.dylib"
+ls -lh "$OUT_DIR/libprism_ffi.dylib"
 
 echo "==> Building Flutter macOS release app..."
 cd "$ROOT_DIR/app"
 flutter pub get
 flutter build macos --release
-cp "$OUT_DIR/libprism_ffi.dylib" "$ROOT_DIR/app/build/macos/Build/Products/Release/prism_player.app/Contents/Frameworks/"
-echo "Done! macOS .app ready."
+
+APP_BUNDLE="$ROOT_DIR/app/build/macos/Build/Products/Release/prism_player.app"
+mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+cp -f "$OUT_DIR/libprism_ffi.dylib" "$APP_BUNDLE/Contents/Frameworks/libprism_ffi.dylib"
+codesign --force --deep --sign - "$APP_BUNDLE" || true
+
+echo "==> Packaging macOS DMG..."
+DMG_STAGE="$(mktemp -d)"
+cp -R "$APP_BUNDLE" "$DMG_STAGE/Prism Player.app"
+ln -s /Applications "$DMG_STAGE/Applications"
+hdiutil create -volname "Prism Player" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DIST_DIR/prism-player-macos-universal.dmg"
+rm -rf "$DMG_STAGE"
+
+ls -lh "$DIST_DIR/prism-player-macos-universal.dmg"

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export PATH="/root/.cargo/bin:/opt/flutter/bin:/usr/local/go/bin:$PATH"
+export PATH="$HOME/.cargo/bin:/opt/flutter/bin:/usr/local/go/bin:$PATH"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 echo "=== [1/4] Rust format, clippy & unit tests ==="
+cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build --release -p prism-ffi -p prism-cli
@@ -17,7 +18,8 @@ echo "=== [3/4] Prism CLI platform profile matrix check ==="
 "$ROOT_DIR/target/release/prism-cli" profile-matrix >/dev/null
 echo "profile-matrix OK"
 
-if [ -d /root/embygo-dev ]; then
+EMBYGO_DIR="${EMBYGO_SRC_DIR:-}"
+if [ -n "$EMBYGO_DIR" ] && [ -d "$EMBYGO_DIR" ]; then
   echo "=== [4/4] Live End-to-End Integration Test against real isolated embygo ==="
   TMP_DIR="$(mktemp -d /tmp/prism-embygo-e2e.XXXXXX)"
   EMBYGO_PID=""
@@ -29,7 +31,6 @@ if [ -d /root/embygo-dev ]; then
 
   mkdir -p "$TMP_DIR/media/movies/Dune Part Two (2024)" "$TMP_DIR/data"
 
-  # Generate a real valid 3-second H.264 + AAC MKV sample + NFO + sidecar SRT subtitle
   ffmpeg -y -v error \
     -f lavfi -i testsrc2=duration=3:size=1280x720:rate=24 \
     -f lavfi -i sine=frequency=440:duration=3 \
@@ -52,13 +53,11 @@ EOF
   cat > "$TMP_DIR/media/movies/Dune Part Two (2024)/Dune.Part.Two.2024.2160p.DV.Atmos.zh.default.srt" <<'EOF'
 1
 00:00:00,200 --> 00:00:02,500
-Prism Player embygo 端到端实测字幕
+Prism Player embygo E2E Subtitle
 EOF
 
-  # Build isolated embygo binary from /root/embygo-dev
-  (cd /root/embygo-dev && go build -o "$TMP_DIR/embygo-test" ./cmd/embygo)
+  (cd "$EMBYGO_DIR" && go build -o "$TMP_DIR/embygo-test" ./cmd/embygo)
 
-  # Pick an unused ephemeral loopback port (never touches 8096 or production embygo!)
   TEST_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); p=s.getsockname()[1]; s.close(); print(p)')"
   PW_HASH="$(printf '%s' 'prism-e2e-pass' | "$TMP_DIR/embygo-test" -hash-password)"
 

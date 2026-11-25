@@ -155,7 +155,7 @@ void main() {
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libprism_ffi.so', () async {
-    const soPath = '/root/player/target/release/libprism_ffi.so';
+    final soPath = Platform.environment['PRISM_FFI_PATH'] ?? '../target/release/libprism_ffi.so';
     if (!File(soPath).existsSync()) {
       return;
     }

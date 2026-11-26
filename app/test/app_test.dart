@@ -13,11 +13,13 @@ import 'package:vedro/core/theme/vedro_theme.dart';
 import 'package:vedro/main.dart';
 import 'package:vedro/screens/detail_screen.dart';
 import 'package:vedro/screens/home_screen.dart';
+import 'package:vedro/screens/library_screen.dart';
 import 'package:vedro/screens/settings_screen.dart';
 import 'package:vedro/screens/shell_screen.dart';
 import 'package:vedro/state/app_state.dart';
 import 'package:vedro/widgets/admin_console_pane.dart';
 import 'package:vedro/widgets/danmaku_engine.dart';
+import 'package:vedro/widgets/media_card.dart';
 import 'package:vedro/widgets/server_card_grid.dart';
 import 'package:vedro/widgets/skin_studio_pane.dart';
 import 'package:vedro/widgets/vedro_ui.dart';
@@ -576,6 +578,34 @@ class _MockVedroCore implements VedroCoreClient {
           'direct_ip': params['direct_ip'] == true,
         };
       case 'fetch_proxy_subscription':
+        final reqUrl = (params['url'] ?? '').toString();
+        if (reqUrl.contains('sub2.example.com')) {
+          return <String, dynamic>{
+            'count': 2,
+            'userinfo': <String, dynamic>{
+              'used': 5368709120,
+              'total': 53687091200,
+            },
+            'nodes': <Map<String, dynamic>>[
+              <String, dynamic>{
+                'id': 'node_jp_01',
+                'name': '🇯🇵 东京专线 01',
+                'protocol': 'vless',
+                'server': 'jp1.sub2.example.com',
+                'port': 443,
+                'native_supported': true,
+              },
+              <String, dynamic>{
+                'id': 'node_tw_02',
+                'name': '🇹🇼 台北 Hinet 02',
+                'protocol': 'trojan',
+                'server': 'tw2.sub2.example.com',
+                'port': 443,
+                'native_supported': true,
+              },
+            ],
+          };
+        }
         return <String, dynamic>{
           'count': 3,
           'userinfo': <String, dynamic>{
@@ -616,7 +646,25 @@ class _MockVedroCore implements VedroCoreClient {
             'node_us_slow': 240,
             'node_hk_01': 26,
             'node_sg_02': 48,
+            'node_jp_01': 32,
+            'node_tw_02': 44,
           },
+        };
+      case 'get_items':
+        final items = List<Map<String, dynamic>>.generate(12, (i) {
+          final n = i + 1;
+          return <String, dynamic>{
+            'Id': 'lib-movie-$n',
+            'Name': '星际远航：超长测试片名第 $n 部典藏版',
+            'Type': 'Movie',
+            'ProductionYear': 2024,
+            'CommunityRating': 8.6,
+            'MediaSourceCount': 2,
+          };
+        });
+        return <String, dynamic>{
+          'Items': items,
+          'TotalRecordCount': items.length,
         };
       case 'activate_proxy_node':
         final n = Map<String, dynamic>.from(params['node'] as Map);
@@ -2046,6 +2094,248 @@ void main() {
     await tester.pumpAndSettle();
     expect(app.prefs.posterScale, closeTo(0.80, 0.01));
     expect(app.prefs.posterCardWidth(false), closeTo(84.8, 0.5));
+  });
+
+  testWidgets(
+      'Multi-subscription proxy management, default rating ON / 2x OFF badges, and zero-overlap adaptive Library grid across PPI & TextScaler',
+      (tester) async {
+    // 1. Legacy single-subscription JSON migrates cleanly to ProxySubscriptionProfile
+    final migrated = VedroPreferences.fromJson({
+      'proxy_subscription_url': 'https://legacy-airport.example.com/api/v1/client/subscribe?token=xyz',
+      'proxy_nodes': [
+        {'id': 'n1', 'name': 'Legacy HK', 'protocol': 'vless', 'server': 'hk.example.com', 'port': 443},
+      ],
+    });
+    expect(migrated.proxySubscriptions.length, equals(1));
+    expect(migrated.proxySubscriptions.first.name, equals('legacy-airport.example.com'));
+    expect(migrated.activeProxySubId, equals('sub_default'));
+    expect(migrated.showRatings, isTrue);
+    expect(migrated.showMultiVersionBadge, isFalse);
+    for (final s in VedroSkin.presets) {
+      expect(s.showCardRating, isTrue, reason: 'Preset ${s.id} must show card rating by default');
+    }
+
+    // 2. Default Poster Badges: Rating star badge ON ('8.6'), Multi-version '2×' OFF by default
+    tester.view.physicalSize = const Size(1280, 960);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final mock = _MockVedroCore();
+    final app = VedroAppState(mock)
+      ..userId = 'u1'
+      ..connectedUrl = 'https://embygo.example.com'
+      ..views = [
+        MediaItemModel(id: 'lib1', name: '电影', type: 'CollectionFolder'),
+      ];
+
+    final sampleMovie = MediaItemModel(
+      id: 'm1',
+      name: '沙丘2',
+      type: 'Movie',
+      productionYear: 2024,
+      communityRating: 8.6,
+      mediaSourceCount: 2,
+    );
+
+    await tester.pumpWidget(
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) => MaterialApp(
+          theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+          home: Scaffold(
+            body: Center(
+              child: MediaCard(
+                item: sampleMovie,
+                appState: app,
+                width: 140,
+                onTap: () {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('8.6'), findsOneWidget);
+    expect(find.textContaining('★'), findsNothing); // Not duplicated in subtitle text!
+    expect(find.text('2×'), findsNothing); // Hidden by default!
+
+    // Explicitly toggling showMultiVersionBadge ON displays '2×', and OFF hides it again
+    await app.updatePrefs(app.prefs.copyWith(showMultiVersionBadge: true));
+    await tester.pumpAndSettle();
+    expect(find.text('2×'), findsOneWidget);
+    await app.updatePrefs(app.prefs.copyWith(showMultiVersionBadge: false));
+    await tester.pumpAndSettle();
+    expect(find.text('2×'), findsNothing);
+
+    // 3. Multi-Subscription Proxy Management: Save 2 named subscriptions, switch, refresh all, delete
+    await tester.pumpWidget(
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) => MaterialApp(
+          theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+          home: SettingsScreen(
+            appState: app,
+            onOpenServerHub: () {},
+            onOpenAddServer: ([_]) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('网络代理'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('proxy-mode-sub')));
+    await tester.pumpAndSettle();
+
+    // Save Subscription #1 ("主力机场")
+    await tester.enterText(find.byKey(const ValueKey('proxy-sub-name-field')), '主力机场');
+    await tester.enterText(
+      find.byKey(const ValueKey('proxy-sub-url-field')),
+      'https://sub1.example.com/api/v1/client/subscribe?token=111',
+    );
+    await tester.tap(find.byKey(const ValueKey('proxy-sub-fetch-btn')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.proxySubscriptions.length, equals(1));
+    expect(find.text('主力机场'), findsOneWidget);
+    expect(find.text('🇭🇰 香港 IEPL 01'), findsOneWidget);
+
+    // Add Subscription #2 ("日本专线") via '添加订阅' button
+    await tester.tap(find.byKey(const ValueKey('proxy-sub-show-add-btn')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('proxy-sub-name-field')), '日本专线');
+    await tester.enterText(
+      find.byKey(const ValueKey('proxy-sub-url-field')),
+      'https://sub2.example.com/api/v1/client/subscribe?token=222',
+    );
+    await tester.tap(find.byKey(const ValueKey('proxy-sub-fetch-btn')));
+    await tester.pumpAndSettle();
+
+    expect(app.prefs.proxySubscriptions.length, equals(2));
+    expect(find.text('已存订阅 (2)'), findsOneWidget);
+    expect(find.text('🇯🇵 东京专线 01'), findsOneWidget);
+    expect(find.text('🇭🇰 香港 IEPL 01'), findsNothing);
+
+    final sub1Id = app.prefs.proxySubscriptions.first.id;
+    final sub2Id = app.prefs.proxySubscriptions.last.id;
+
+    // Tap Subscription #1 card -> switches active node list back to HK/SG/US live!
+    await tester.tap(find.byKey(ValueKey('proxy-sub-card-$sub1Id')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.activeProxySubId, equals(sub1Id));
+    expect(find.text('🇭🇰 香港 IEPL 01'), findsOneWidget);
+    expect(find.text('🇯🇵 东京专线 01'), findsNothing);
+
+    // Refresh all subscriptions & delete Subscription #2
+    await tester.tap(find.byKey(const ValueKey('proxy-sub-refresh-all-btn')));
+    await tester.pumpAndSettle();
+    expect(find.text('已刷新 2 个订阅'), findsOneWidget);
+
+    await tester.tap(find.byKey(ValueKey('proxy-sub-delete-$sub2Id')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.proxySubscriptions.length, equals(1));
+
+    // 4. Mathematical Zero-Overlap Proof for LibraryScreen across Extreme Resolutions, PPI & OS TextScaler
+    Future<void> verifyZeroGridOverlap({
+      required Size physicalSize,
+      required double dpr,
+      required String density,
+      required double posterScale,
+      required double textScale,
+    }) async {
+      tester.view.physicalSize = physicalSize;
+      tester.view.devicePixelRatio = dpr;
+      await app.updatePrefs(
+        app.prefs.copyWith(listDensity: density, posterScale: posterScale),
+      );
+      await tester.pumpWidget(
+        MediaQuery(
+          data: MediaQueryData(
+            size: physicalSize / dpr,
+            devicePixelRatio: dpr,
+            textScaler: TextScaler.linear(textScale),
+          ),
+          child: MaterialApp(
+            builder: (ctx, child) => MediaQuery(
+              data: MediaQuery.of(ctx).copyWith(
+                textScaler: TextScaler.linear(textScale),
+              ),
+              child: child!,
+            ),
+            theme: VedroTheme.fromSkin(app.prefs.activeSkinFor(isMobile: physicalSize.width / dpr < 600)),
+            home: LibraryScreen(
+              appState: app,
+              onItemTap: (_) {},
+              onQuickPlay: (_) {},
+              onOpenAddServer: ([_]) {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Verify zero Flutter overflow exceptions occurred
+      expect(tester.takeException(), isNull);
+
+      final cards = find.descendant(
+        of: find.byKey(const ValueKey('library-poster-grid')),
+        matching: find.byType(MediaCard),
+      );
+      final cardCount = cards.evaluate().length;
+      expect(cardCount, greaterThanOrEqualTo(5));
+
+      // Group visible MediaCards into rows by top Y coordinate
+      final rects = List<Rect>.generate(cardCount, (i) => tester.getRect(cards.at(i)));
+      final row0Top = rects.first.top;
+      final row0Cards = rects.where((r) => (r.top - row0Top).abs() < 2.0).toList();
+      final row1Cards = rects.where((r) => r.top > row0Top + 20.0).toList();
+      expect(row0Cards.length, greaterThanOrEqualTo(2));
+      expect(row1Cards, isNotEmpty);
+
+      final row0Bottom = row0Cards.first.bottom;
+      final row1Top = row1Cards.first.top;
+      // Row 0's card (including title + '2024' year text) MUST end strictly above Row 1's poster with full spacing!
+      expect(row0Bottom, lessThanOrEqualTo(row1Top - 6.0));
+
+      // Also directly measure the '2024' year Text widget inside Row 0's first MediaCard!
+      final row0YearFinder = find.descendant(
+        of: cards.first,
+        matching: find.text('2024'),
+      );
+      expect(row0YearFinder, findsOneWidget);
+      final yearRect = tester.getRect(row0YearFinder);
+      expect(yearRect.bottom, lessThanOrEqualTo(row0Bottom + 0.5));
+      expect(yearRect.bottom, lessThanOrEqualTo(row1Top - 6.0));
+    }
+
+    // Case A: Ultra-compact 320x640 @ 2.0x phone + compact density + 75% card scale + 135% Large OS Font!
+    await verifyZeroGridOverlap(
+      physicalSize: const Size(640, 1280),
+      dpr: 2.0,
+      density: 'compact',
+      posterScale: 0.75,
+      textScale: 1.35,
+    );
+
+    // Case B: Standard 390x844 @ 3.0x phone + compact density + 80% card scale (4 columns!) + 115% OS Font!
+    await verifyZeroGridOverlap(
+      physicalSize: const Size(1170, 2532),
+      dpr: 3.0,
+      density: 'compact',
+      posterScale: 0.80,
+      textScale: 1.15,
+    );
+
+    // Case C: 2560x1440 @ 2.0x HiDPI Desktop + compact density + 85% card scale!
+    await verifyZeroGridOverlap(
+      physicalSize: const Size(2560, 1440),
+      dpr: 2.0,
+      density: 'compact',
+      posterScale: 0.85,
+      textScale: 1.0,
+    );
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {

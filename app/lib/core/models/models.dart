@@ -1227,7 +1227,9 @@ class MediaItemModel {
 
   String get cardTitle => type == 'Episode' ? (seriesName ?? displayName) : name;
 
-  String get cardSubtitle {
+  String get cardSubtitle => cardSubtitleFor();
+
+  String cardSubtitleFor({bool showYear = true, bool showRatingInText = true}) {
     switch (type) {
       case 'Episode':
         return [if (episodeCode != null) episodeCode!, displayName].join(' · ');
@@ -1235,14 +1237,17 @@ class MediaItemModel {
         return seriesName ?? '';
       case 'Series':
         return [
-          if (productionYear != null) '$productionYear',
+          if (showYear && productionYear != null) '$productionYear',
           if (childCount != null && childCount! > 0) '$childCount 季',
           if (recursiveItemCount != null && recursiveItemCount! > 0) '$recursiveItemCount 集',
+          if (showRatingInText && communityRating != null && communityRating! > 0)
+            '★ ${communityRating!.toStringAsFixed(1)}',
         ].join(' · ');
       default:
         return [
-          if (productionYear != null) '$productionYear',
-          if (communityRating != null) '★ ${communityRating!.toStringAsFixed(1)}',
+          if (showYear && productionYear != null) '$productionYear',
+          if (showRatingInText && communityRating != null && communityRating! > 0)
+            '★ ${communityRating!.toStringAsFixed(1)}',
         ].join(' · ');
     }
   }

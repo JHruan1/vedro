@@ -814,6 +814,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
   final _proxyUrlCtrl = TextEditingController();
   final _proxyBinCtrl = TextEditingController();
   final _proxyCfgCtrl = TextEditingController();
+  final _subNameCtrl = TextEditingController();
   final _subUrlCtrl = TextEditingController();
   final _nodeSearchCtrl = TextEditingController();
   bool _testingAi = false;
@@ -822,6 +823,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
   bool _applyingProxy = false;
   bool _testingProxy = false;
   bool _fetchingSub = false;
+  bool _addingNewSub = false;
   bool _pingingNodes = false;
   bool _installingCore = false;
   bool _needsSingboxCore = false;
@@ -852,7 +854,9 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     _proxyUrlCtrl.text = p.inAppProxyUrl.isEmpty ? 'socks5h://127.0.0.1:7890' : p.inAppProxyUrl;
     _proxyBinCtrl.text = p.inAppProxyCorePath;
     _proxyCfgCtrl.text = p.inAppProxyConfigText;
-    _subUrlCtrl.text = p.proxySubscriptionUrl;
+    if (p.proxySubscriptions.isEmpty) {
+      _subUrlCtrl.text = p.proxySubscriptionUrl;
+    }
   }
 
   @override
@@ -867,6 +871,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     _proxyUrlCtrl.dispose();
     _proxyBinCtrl.dispose();
     _proxyCfgCtrl.dispose();
+    _subNameCtrl.dispose();
     _subUrlCtrl.dispose();
     _nodeSearchCtrl.dispose();
     super.dispose();
@@ -1114,49 +1119,274 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            key: const ValueKey('proxy-sub-url-field'),
-                            controller: _subUrlCtrl,
-                            style: TextStyle(color: skin.fg, fontSize: 13),
-                            decoration: const InputDecoration(
-                              hintText: '订阅链接 https://... 或粘贴节点 URI / Clash 配置',
+                    if (p.proxySubscriptions.isNotEmpty) ...[
+                      Row(
+                        children: [
+                          Text(
+                            '已存订阅 (${p.proxySubscriptions.length})',
+                            style: TextStyle(
+                              color: skin.fg2,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        FilledButton.icon(
-                          key: const ValueKey('proxy-sub-fetch-btn'),
-                          onPressed: _fetchingSub
-                              ? null
-                              : () async {
-                                  setState(() {
-                                    _fetchingSub = true;
-                                    _proxyStatusMsg = null;
-                                  });
-                                  try {
-                                    final res = await app.fetchProxySubscription(_subUrlCtrl.text);
-                                    if (mounted) {
-                                      setState(() => _proxyStatusMsg = '已更新 ${res['count']} 个节点');
-                                    }
-                                  } catch (e) {
-                                    if (mounted) {
-                                      setState(() => _proxyStatusMsg = e
-                                          .toString()
-                                          .replaceFirst('VedroCoreException: ', '')
-                                          .replaceFirst('Exception: ', ''));
-                                    }
-                                  } finally {
-                                    if (mounted) setState(() => _fetchingSub = false);
+                          const Spacer(),
+                          if (p.proxySubscriptions.length > 1) ...[
+                            TextButton.icon(
+                              key: const ValueKey('proxy-sub-refresh-all-btn'),
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(horizontal: 8),
+                              ),
+                              onPressed: _fetchingSub
+                                  ? null
+                                  : () async {
+                                      setState(() {
+                                        _fetchingSub = true;
+                                        _proxyStatusMsg = null;
+                                      });
+                                      try {
+                                        final cnt = await app.refreshAllProxySubscriptions();
+                                        if (mounted) {
+                                          setState(() => _proxyStatusMsg = '已刷新 $cnt 个订阅');
+                                        }
+                                      } finally {
+                                        if (mounted) setState(() => _fetchingSub = false);
+                                      }
+                                    },
+                              icon: const Icon(Icons.sync_rounded, size: 14),
+                              label: const Text('全部更新', style: TextStyle(fontSize: 12)),
+                            ),
+                            const SizedBox(width: 4),
+                          ],
+                          SizedBox(
+                            height: 30,
+                            child: OutlinedButton.icon(
+                              key: const ValueKey('proxy-sub-show-add-btn'),
+                              style: OutlinedButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(horizontal: 10),
+                              ),
+                              onPressed: () {
+                                setState(() {
+                                  _addingNewSub = !_addingNewSub;
+                                  if (_addingNewSub) {
+                                    _subNameCtrl.clear();
+                                    _subUrlCtrl.clear();
                                   }
-                                },
-                          icon: const Icon(Icons.sync_rounded, size: 15),
-                          label: Text(_fetchingSub ? '更新中' : '更新订阅'),
-                        ),
-                      ],
-                    ),
+                                });
+                              },
+                              icon: Icon(
+                                _addingNewSub ? Icons.expand_less_rounded : Icons.add_rounded,
+                                size: 15,
+                              ),
+                              label: Text(
+                                _addingNewSub ? '收起' : '添加订阅',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: p.proxySubscriptions.map((sub) {
+                          final isActive = sub.id == p.activeProxySubId;
+                          final subUsed =
+                              ((sub.userinfo?['used'] ?? sub.userinfo?['used_bytes']) as num?)
+                                      ?.toInt() ??
+                                  0;
+                          final subTotal =
+                              ((sub.userinfo?['total'] ?? sub.userinfo?['total_bytes']) as num?)
+                                      ?.toInt() ??
+                                  0;
+                          return PressableScale(
+                            key: ValueKey('proxy-sub-card-${sub.id}'),
+                            onTap: () => app.selectProxySubscription(sub.id),
+                            hoverScale: 1.01,
+                            pressScale: 0.98,
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 160),
+                              padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+                              decoration: BoxDecoration(
+                                color: skin.unifiedTileColor(selected: isActive),
+                                borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 13.0)),
+                                border: Border.all(
+                                  color: isActive ? skin.accent : skin.border,
+                                  width: isActive ? 1.2 : 0.75,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.rss_feed_rounded,
+                                    size: 15,
+                                    color: isActive ? skin.accent : skin.fg3,
+                                  ),
+                                  const SizedBox(width: 7),
+                                  ConstrainedBox(
+                                    constraints: const BoxConstraints(maxWidth: 165),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          sub.name,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: isActive ? skin.fg : skin.fg2,
+                                            fontSize: 13,
+                                            fontWeight:
+                                                isActive ? FontWeight.w600 : FontWeight.w500,
+                                          ),
+                                        ),
+                                        Text(
+                                          subTotal > 0
+                                              ? '${sub.nodes.length} 节点 · ${fmtFileSize(subUsed)}/${fmtFileSize(subTotal)}'
+                                              : '${sub.nodes.length} 节点',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: skin.fg3,
+                                            fontSize: 10.5,
+                                            fontFeatures: const [FontFeature.tabularFigures()],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  SizedBox(
+                                    width: 26,
+                                    height: 26,
+                                    child: IconButton(
+                                      key: ValueKey('proxy-sub-refresh-${sub.id}'),
+                                      padding: EdgeInsets.zero,
+                                      tooltip: '刷新订阅',
+                                      icon: Icon(Icons.sync_rounded, size: 14, color: skin.fg3),
+                                      onPressed: _fetchingSub
+                                          ? null
+                                          : () async {
+                                              setState(() {
+                                                _fetchingSub = true;
+                                                _proxyStatusMsg = null;
+                                              });
+                                              try {
+                                                final res = await app.fetchProxySubscription(
+                                                  sub.url,
+                                                  name: sub.name,
+                                                  subscriptionId: sub.id,
+                                                );
+                                                if (mounted) {
+                                                  setState(() => _proxyStatusMsg =
+                                                      '${sub.name} 已更新 ${res['count']} 个节点');
+                                                }
+                                              } catch (e) {
+                                                if (mounted) {
+                                                  setState(() => _proxyStatusMsg = e
+                                                      .toString()
+                                                      .replaceFirst('VedroCoreException: ', '')
+                                                      .replaceFirst('Exception: ', ''));
+                                                }
+                                              } finally {
+                                                if (mounted) setState(() => _fetchingSub = false);
+                                              }
+                                            },
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: 26,
+                                    height: 26,
+                                    child: IconButton(
+                                      key: ValueKey('proxy-sub-delete-${sub.id}'),
+                                      padding: EdgeInsets.zero,
+                                      tooltip: '删除订阅',
+                                      icon: Icon(
+                                        Icons.close_rounded,
+                                        size: 14,
+                                        color: skin.fg3,
+                                      ),
+                                      onPressed: () => app.deleteProxySubscription(sub.id),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ],
+                    if (p.proxySubscriptions.isEmpty || _addingNewSub) ...[
+                      if (p.proxySubscriptions.isNotEmpty) const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: isMobileOs ? 104 : 148,
+                            child: TextField(
+                              key: const ValueKey('proxy-sub-name-field'),
+                              controller: _subNameCtrl,
+                              style: TextStyle(color: skin.fg, fontSize: 13),
+                              decoration: const InputDecoration(
+                                hintText: '名称（可选）',
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextField(
+                              key: const ValueKey('proxy-sub-url-field'),
+                              controller: _subUrlCtrl,
+                              style: TextStyle(color: skin.fg, fontSize: 13),
+                              decoration: const InputDecoration(
+                                hintText: '订阅链接 https://... 或节点 URI / Clash',
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          FilledButton.icon(
+                            key: const ValueKey('proxy-sub-fetch-btn'),
+                            onPressed: _fetchingSub
+                                ? null
+                                : () async {
+                                    setState(() {
+                                      _fetchingSub = true;
+                                      _proxyStatusMsg = null;
+                                    });
+                                    try {
+                                      final res = await app.fetchProxySubscription(
+                                        _subUrlCtrl.text,
+                                        name: _subNameCtrl.text,
+                                      );
+                                      if (mounted) {
+                                        _subNameCtrl.clear();
+                                        _subUrlCtrl.clear();
+                                        setState(() {
+                                          _addingNewSub = false;
+                                          _proxyStatusMsg =
+                                              '已保存「${res['subscription_name']}」（${res['count']} 个节点）';
+                                        });
+                                      }
+                                    } catch (e) {
+                                      if (mounted) {
+                                        setState(() => _proxyStatusMsg = e
+                                            .toString()
+                                            .replaceFirst('VedroCoreException: ', '')
+                                            .replaceFirst('Exception: ', ''));
+                                      }
+                                    } finally {
+                                      if (mounted) setState(() => _fetchingSub = false);
+                                    }
+                                  },
+                            icon: const Icon(Icons.add_link_rounded, size: 15),
+                            label: Text(_fetchingSub ? '拉取中' : '保存订阅'),
+                          ),
+                        ],
+                      ),
+                    ],
                     if (totalBytes > 0) ...[
                       const SizedBox(height: 12),
                       Row(
@@ -2735,6 +2965,12 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               title: '显示发行年份',
               value: p.showYear,
               onChanged: (v) => _updatePrefs(p.copyWith(showYear: v)),
+            ),
+            _SwitchRow(
+              key: const ValueKey('pref-show-multiversion-badge'),
+              title: '显示多版本角标 (2×)',
+              value: p.showMultiVersionBadge,
+              onChanged: (v) => _updatePrefs(p.copyWith(showMultiVersionBadge: v)),
             ),
           ],
         ),

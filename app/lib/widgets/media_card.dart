@@ -77,348 +77,381 @@ class _MediaCardState extends State<MediaCard> {
     final isMinimalClean = effectiveStyle == 'minimal_clean';
     final showBelowCaption = !isOverlayCard && !isHoverReveal && !isMinimalClean;
     final hideBadges = skin.badgeStyle == 'hidden';
+    final showRatingBadge =
+        !hideBadges && prefs.showRatings && skin.showCardRating && (item.communityRating ?? 0) > 0;
+    final showVersionBadge =
+        !hideBadges && prefs.showMultiVersionBadge && item.versionCount > 1;
+    final subtitleText = item.cardSubtitleFor(
+      showYear: prefs.showYear,
+      showRatingInText: prefs.showRatings && !showRatingBadge,
+    );
     final pressScale = skin.touchFeedbackStyle == 'clean_static'
         ? 1.0
         : (skin.touchFeedbackStyle == 'subtle_scale' ? 0.988 : 0.965);
+    final profile = DisplayMetricsProfile.of(context);
+    final textScaler = MediaQuery.textScalerOf(context);
 
     return SizedBox(
       width: widget.width,
-      child: PressableScale(
-        onTap: widget.onTap,
-        onLongPress: widget.onLongPress,
-        onSecondaryTap: widget.onLongPress,
-        onHoverChanged: (v) => setState(() => _hovered = v),
-        hoverScale: touchPrimary || skin.cardHoverEffect == 'zoom_art' ? 1.0 : 1.02,
-        pressScale: pressScale,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            AspectRatio(
-              aspectRatio: aspect,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                curve: VedroTheme.easeOut,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(radius),
-                  color: skin.surface2,
-                  boxShadow: skin.posterShadow(hovered: _hovered),
-                ),
-                foregroundDecoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(radius),
-                  border: skin.cardBorder(hovered: _hovered),
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    artBox,
-                    if (isOverlayCard || isHoverReveal)
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        child: IgnorePointer(
-                          child: AnimatedOpacity(
-                            opacity: isOverlayCard ? 1.0 : (_hovered ? 1.0 : 0.0),
-                            duration: const Duration(milliseconds: 190),
-                            curve: Curves.easeOut,
-                            child: Container(
-                              padding: EdgeInsets.fromLTRB(
-                                10,
-                                28,
-                                showPlayFab && _hovered ? 48 : 10,
-                                item.resumeProgress > 0.01 ? 14 : 9,
-                              ),
-                              decoration: const BoxDecoration(
-                                gradient: LinearGradient(
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                  stops: [0.0, 0.45, 1.0],
-                                  colors: [
-                                    Colors.transparent,
-                                    Color(0x9005060A),
-                                    Color(0xEB05060A),
-                                  ],
-                                ),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    item.cardTitle,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                      letterSpacing: -0.1,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final actualW = constraints.hasBoundedWidth && constraints.maxWidth > 0
+              ? constraints.maxWidth
+              : widget.width;
+          final metrics = PosterCardLayout.forCardWidth(
+            cardWidth: actualW,
+            aspectRatio: aspect,
+            showBelowCaption: showBelowCaption,
+            textScaler: textScaler,
+            devicePixelRatio: profile.devicePixelRatio,
+          );
+          return PressableScale(
+            onTap: widget.onTap,
+            onLongPress: widget.onLongPress,
+            onSecondaryTap: widget.onLongPress,
+            onHoverChanged: (v) => setState(() => _hovered = v),
+            hoverScale: touchPrimary || skin.cardHoverEffect == 'zoom_art' ? 1.0 : 1.02,
+            pressScale: pressScale,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                AspectRatio(
+                  aspectRatio: aspect,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    curve: VedroTheme.easeOut,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(radius),
+                      color: skin.surface2,
+                      boxShadow: skin.posterShadow(hovered: _hovered),
+                    ),
+                    foregroundDecoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(radius),
+                      border: skin.cardBorder(hovered: _hovered),
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        artBox,
+                        if (isOverlayCard || isHoverReveal)
+                          Positioned(
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            child: IgnorePointer(
+                              child: AnimatedOpacity(
+                                opacity: isOverlayCard ? 1.0 : (_hovered ? 1.0 : 0.0),
+                                duration: const Duration(milliseconds: 190),
+                                curve: Curves.easeOut,
+                                child: Container(
+                                  padding: EdgeInsets.fromLTRB(
+                                    10,
+                                    28,
+                                    showPlayFab && _hovered ? 48 : 10,
+                                    item.resumeProgress > 0.01 ? 14 : 9,
+                                  ),
+                                  decoration: const BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topCenter,
+                                      end: Alignment.bottomCenter,
+                                      stops: [0.0, 0.45, 1.0],
+                                      colors: [
+                                        Colors.transparent,
+                                        Color(0x9005060A),
+                                        Color(0xEB05060A),
+                                      ],
                                     ),
                                   ),
-                                  if (item.cardSubtitle.isNotEmpty) ...[
-                                    const SizedBox(height: 1.5),
-                                    Text(
-                                      item.cardSubtitle,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Color(0xBDFFFFFF),
-                                        fontSize: 11,
-                                        fontFeatures: [FontFeature.tabularFigures()],
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        item.cardTitle,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: metrics.titleFontSize,
+                                          fontWeight: FontWeight.w600,
+                                          letterSpacing: -0.1,
+                                        ),
                                       ),
-                                    ),
-                                  ],
-                                ],
+                                      if (subtitleText.isNotEmpty) ...[
+                                        const SizedBox(height: 1.5),
+                                        Text(
+                                          subtitleText,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: const Color(0xBDFFFFFF),
+                                            fontSize: metrics.metaFontSize,
+                                            fontFeatures: const [FontFeature.tabularFigures()],
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                      ),
-                    if (!hideBadges && prefs.showWatchedBadge && item.played)
-                      Positioned(
-                        top: skin.badgeStyle == 'accent_ribbon' ? 0 : 7,
-                        right: skin.badgeStyle == 'accent_ribbon' ? 0 : 7,
-                        child: skin.badgeStyle == 'minimal_dot'
-                            ? Container(
-                                width: 9,
-                                height: 9,
-                                decoration: BoxDecoration(
-                                  color: skin.accent,
-                                  shape: BoxShape.circle,
-                                  boxShadow: const [
-                                    BoxShadow(color: Color(0x88000000), blurRadius: 4),
-                                  ],
-                                ),
-                              )
-                            : _CornerBadge(
-                                accentRibbon: skin.badgeStyle == 'accent_ribbon',
-                                accentColor: skin.accent,
-                                child: Icon(
-                                  Icons.check_rounded,
-                                  size: 12,
-                                  color: skin.badgeStyle == 'accent_ribbon'
-                                      ? highContrastOn(skin.accent)
-                                      : Colors.white,
-                                ),
-                              ),
-                      )
-                    else if (!hideBadges &&
-                        prefs.showUnplayedCount &&
-                        item.unplayedItemCount != null &&
-                        item.unplayedItemCount! > 0)
-                      Positioned(
-                        top: skin.badgeStyle == 'accent_ribbon' ? 0 : 7,
-                        right: skin.badgeStyle == 'accent_ribbon' ? 0 : 7,
-                        child: skin.badgeStyle == 'minimal_dot'
-                            ? Container(
-                                width: 9,
-                                height: 9,
-                                decoration: BoxDecoration(
-                                  color: skin.accent,
-                                  shape: BoxShape.circle,
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: skin.accent.withValues(alpha: 0.6),
-                                      blurRadius: 6,
+                        if (!hideBadges && prefs.showWatchedBadge && item.played)
+                          Positioned(
+                            top: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
+                            right: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
+                            child: skin.badgeStyle == 'minimal_dot'
+                                ? Container(
+                                    width: 9,
+                                    height: 9,
+                                    decoration: BoxDecoration(
+                                      color: skin.accent,
+                                      shape: BoxShape.circle,
+                                      boxShadow: const [
+                                        BoxShadow(color: Color(0x88000000), blurRadius: 4),
+                                      ],
                                     ),
-                                  ],
-                                ),
-                              )
-                            : _CornerBadge(
-                                accentRibbon: skin.badgeStyle == 'accent_ribbon',
-                                accentColor: skin.accent,
-                                child: Text(
-                                  '${item.unplayedItemCount}',
-                                  style: TextStyle(
-                                    color: skin.badgeStyle == 'accent_ribbon'
-                                        ? highContrastOn(skin.accent)
-                                        : Colors.white,
-                                    fontSize: 10.5,
-                                    fontWeight: FontWeight.w700,
-                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  )
+                                : _CornerBadge(
+                                    accentRibbon: skin.badgeStyle == 'accent_ribbon',
+                                    accentColor: skin.accent,
+                                    child: Icon(
+                                      Icons.check_rounded,
+                                      size: 11.5,
+                                      color: skin.badgeStyle == 'accent_ribbon'
+                                          ? highContrastOn(skin.accent)
+                                          : Colors.white,
+                                    ),
                                   ),
-                                ),
-                              ),
-                      ),
-                    if (!hideBadges &&
-                        (item.isFavorite ||
-                            item.versionCount > 1 ||
-                            (skin.showCardRating && (item.communityRating ?? 0) > 0)))
-                      Positioned(
-                        top: 7,
-                        left: 7,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (skin.showCardRating && (item.communityRating ?? 0) > 0) ...[
-                              _CornerBadge(
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(
-                                      Icons.star_rounded,
-                                      size: 11,
-                                      color: Color(0xFFFBBF24),
+                          )
+                        else if (!hideBadges &&
+                            prefs.showUnplayedCount &&
+                            item.unplayedItemCount != null &&
+                            item.unplayedItemCount! > 0)
+                          Positioned(
+                            top: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
+                            right: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
+                            child: skin.badgeStyle == 'minimal_dot'
+                                ? Container(
+                                    width: 9,
+                                    height: 9,
+                                    decoration: BoxDecoration(
+                                      color: skin.accent,
+                                      shape: BoxShape.circle,
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: skin.accent.withValues(alpha: 0.6),
+                                          blurRadius: 6,
+                                        ),
+                                      ],
                                     ),
-                                    const SizedBox(width: 2),
-                                    Text(
-                                      item.communityRating!.toStringAsFixed(1),
+                                  )
+                                : _CornerBadge(
+                                    accentRibbon: skin.badgeStyle == 'accent_ribbon',
+                                    accentColor: skin.accent,
+                                    child: Text(
+                                      '${item.unplayedItemCount}',
+                                      style: TextStyle(
+                                        color: skin.badgeStyle == 'accent_ribbon'
+                                            ? highContrastOn(skin.accent)
+                                            : Colors.white,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        fontFeatures: const [FontFeature.tabularFigures()],
+                                      ),
+                                    ),
+                                  ),
+                          ),
+                        if (!hideBadges && (item.isFavorite || showVersionBadge || showRatingBadge))
+                          Positioned(
+                            top: 6,
+                            left: 6,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (showRatingBadge) ...[
+                                  _CornerBadge(
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(
+                                          Icons.star_rounded,
+                                          size: 10.5,
+                                          color: Color(0xFFFBBF24),
+                                        ),
+                                        const SizedBox(width: 2),
+                                        Text(
+                                          item.communityRating!.toStringAsFixed(1),
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w700,
+                                            fontFeatures: [FontFeature.tabularFigures()],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (item.isFavorite || showVersionBadge) const SizedBox(width: 4),
+                                ],
+                                if (item.isFavorite)
+                                  const _CornerBadge(
+                                    child: Icon(Icons.favorite_rounded, size: 11, color: Colors.white),
+                                  ),
+                                if (item.isFavorite && showVersionBadge) const SizedBox(width: 4),
+                                if (showVersionBadge)
+                                  _CornerBadge(
+                                    child: Text(
+                                      '${item.versionCount}×',
                                       style: const TextStyle(
                                         color: Colors.white,
                                         fontSize: 10,
-                                        fontWeight: FontWeight.w700,
+                                        fontWeight: FontWeight.w600,
                                         fontFeatures: [FontFeature.tabularFigures()],
                                       ),
                                     ),
-                                  ],
-                                ),
-                              ),
-                              if (item.isFavorite || item.versionCount > 1)
-                                const SizedBox(width: 4),
-                            ],
-                            if (item.isFavorite)
-                              const _CornerBadge(
-                                child: Icon(Icons.favorite_rounded, size: 11, color: Colors.white),
-                              ),
-                            if (item.isFavorite && item.versionCount > 1) const SizedBox(width: 4),
-                            if (item.versionCount > 1)
-                              _CornerBadge(
-                                child: Text(
-                                  '${item.versionCount}×',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 10.5,
-                                    fontWeight: FontWeight.w600,
-                                    fontFeatures: [FontFeature.tabularFigures()],
+                                  ),
+                              ],
+                            ),
+                          ),
+                        if (item.resumeProgress > 0.01) ...[
+                          if (skin.progressStyle != 'edge_flush')
+                            const Positioned(
+                              left: 0,
+                              right: 0,
+                              bottom: 0,
+                              height: 30,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [Colors.transparent, Color(0xB3000000)],
                                   ),
                                 ),
                               ),
-                          ],
-                        ),
-                      ),
-                    if (item.resumeProgress > 0.01) ...[
-                      if (skin.progressStyle != 'edge_flush')
-                        const Positioned(
-                          left: 0,
-                          right: 0,
-                          bottom: 0,
-                          height: 30,
-                          child: DecoratedBox(
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                                colors: [Colors.transparent, Color(0xB3000000)],
+                            ),
+                          Positioned(
+                            left: skin.progressStyle == 'edge_flush' ? 0 : 8,
+                            right: skin.progressStyle == 'edge_flush' ? 0 : 8,
+                            bottom: skin.progressStyle == 'edge_flush' ? 0 : 8,
+                            child: Container(
+                              decoration: skin.progressStyle == 'glow_accent'
+                                  ? BoxDecoration(
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: skin.accent.withValues(alpha: 0.75),
+                                          blurRadius: 8,
+                                        ),
+                                      ],
+                                    )
+                                  : null,
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(
+                                  skin.progressStyle == 'edge_flush' ? 0 : 2.5,
+                                ),
+                                child: LinearProgressIndicator(
+                                  value: item.resumeProgress,
+                                  minHeight: skin.progressStyle == 'edge_flush' ? 3.5 : 3,
+                                  backgroundColor: const Color(0x45FFFFFF),
+                                  color: (skin.ctaStyle == 'contrast' &&
+                                          skin.progressStyle != 'glow_accent')
+                                      ? Colors.white
+                                      : skin.accent,
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                      Positioned(
-                        left: skin.progressStyle == 'edge_flush' ? 0 : 8,
-                        right: skin.progressStyle == 'edge_flush' ? 0 : 8,
-                        bottom: skin.progressStyle == 'edge_flush' ? 0 : 8,
-                        child: Container(
-                          decoration: skin.progressStyle == 'glow_accent'
-                              ? BoxDecoration(
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: skin.accent.withValues(alpha: 0.75),
-                                      blurRadius: 8,
-                                    ),
-                                  ],
-                                )
-                              : null,
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(
-                              skin.progressStyle == 'edge_flush' ? 0 : 2.5,
-                            ),
-                            child: LinearProgressIndicator(
-                              value: item.resumeProgress,
-                              minHeight: skin.progressStyle == 'edge_flush' ? 3.5 : 3,
-                              backgroundColor: const Color(0x45FFFFFF),
-                              color: (skin.ctaStyle == 'contrast' &&
-                                      skin.progressStyle != 'glow_accent')
-                                  ? Colors.white
-                                  : skin.accent,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                    if (showPlayFab)
-                      Positioned(
-                        right: 10,
-                        bottom: item.resumeProgress > 0.01 ? 16 : 10,
-                        child: IgnorePointer(
-                          ignoring: !_hovered,
-                          child: AnimatedOpacity(
-                            opacity: _hovered ? 1.0 : 0.0,
-                            duration: const Duration(milliseconds: 180),
-                            curve: Curves.easeOut,
-                            child: AnimatedScale(
-                              scale: _hovered ? 1.0 : 0.85,
-                              duration: const Duration(milliseconds: 200),
-                              curve: VedroTheme.springCurve,
-                              child: GestureDetector(
-                                onTap: widget.onQuickPlay,
-                                child: Container(
-                                  width: 38,
-                                  height: 38,
-                                  decoration: BoxDecoration(
-                                    color: skin.primaryCtaBg,
-                                    gradient: skin.primaryCtaGradient,
-                                    shape: BoxShape.circle,
-                                    boxShadow: const [
-                                      BoxShadow(
-                                        color: Color(0x70000000),
-                                        blurRadius: 14,
-                                        offset: Offset(0, 4),
+                        ],
+                        if (showPlayFab)
+                          Positioned(
+                            right: 10,
+                            bottom: item.resumeProgress > 0.01 ? 16 : 10,
+                            child: IgnorePointer(
+                              ignoring: !_hovered,
+                              child: AnimatedOpacity(
+                                opacity: _hovered ? 1.0 : 0.0,
+                                duration: const Duration(milliseconds: 180),
+                                curve: Curves.easeOut,
+                                child: AnimatedScale(
+                                  scale: _hovered ? 1.0 : 0.85,
+                                  duration: const Duration(milliseconds: 200),
+                                  curve: VedroTheme.springCurve,
+                                  child: GestureDetector(
+                                    onTap: widget.onQuickPlay,
+                                    child: Container(
+                                      width: 38,
+                                      height: 38,
+                                      decoration: BoxDecoration(
+                                        color: skin.primaryCtaBg,
+                                        gradient: skin.primaryCtaGradient,
+                                        shape: BoxShape.circle,
+                                        boxShadow: const [
+                                          BoxShadow(
+                                            color: Color(0x70000000),
+                                            blurRadius: 14,
+                                            offset: Offset(0, 4),
+                                          ),
+                                        ],
                                       ),
-                                    ],
-                                  ),
-                                  child: Icon(
-                                    Icons.play_arrow_rounded,
-                                    size: 21,
-                                    color: skin.primaryCtaFg,
+                                      child: Icon(
+                                        Icons.play_arrow_rounded,
+                                        size: 21,
+                                        color: skin.primaryCtaFg,
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ),
                             ),
                           ),
-                        ),
-                      ),
-                  ],
+                      ],
+                    ),
+                  ),
                 ),
-              ),
+                if (showBelowCaption) ...[
+                  SizedBox(height: metrics.captionTopGap),
+                  Text(
+                    item.cardTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    strutStyle: StrutStyle(
+                      fontSize: metrics.titleFontSize,
+                      height: PosterCardLayout.kStrutHeight,
+                      forceStrutHeight: true,
+                    ),
+                    style: TextStyle(
+                      color: skin.fg,
+                      fontWeight: FontWeight.w500,
+                      fontSize: metrics.titleFontSize,
+                      height: PosterCardLayout.kStrutHeight,
+                      letterSpacing: -0.1,
+                    ),
+                  ),
+                  SizedBox(height: metrics.captionMidGap),
+                  Text(
+                    subtitleText.isNotEmpty ? subtitleText : ' ',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    strutStyle: StrutStyle(
+                      fontSize: metrics.metaFontSize,
+                      height: PosterCardLayout.kStrutHeight,
+                      forceStrutHeight: true,
+                    ),
+                    style: TextStyle(
+                      color: skin.fg3,
+                      fontSize: metrics.metaFontSize,
+                      height: PosterCardLayout.kStrutHeight,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ],
             ),
-            if (showBelowCaption) ...[
-              SizedBox(height: widget.width < 128 ? 5.5 : 8),
-              Text(
-                item.cardTitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: skin.fg,
-                  fontWeight: FontWeight.w500,
-                  fontSize: widget.width < 128 ? 12.5 : 13.5,
-                  letterSpacing: -0.1,
-                ),
-              ),
-              const SizedBox(height: 1.5),
-              Text(
-                item.cardSubtitle.isNotEmpty ? item.cardSubtitle : ' ',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: skin.fg3,
-                  fontSize: widget.width < 128 ? 11.0 : 12.0,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-            ],
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -574,19 +607,25 @@ class _ResumeCardState extends State<ResumeCard> {
                 ),
               ),
             ),
-            SizedBox(height: widget.width < 235 ? 6 : 8),
+            SizedBox(height: widget.width < 128 ? 6 : 8),
             Text(
               item.cardTitle,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
+              strutStyle: StrutStyle(
+                fontSize: widget.width < 128 ? 12.5 : 13.5,
+                height: PosterCardLayout.kStrutHeight,
+                forceStrutHeight: true,
+              ),
               style: TextStyle(
                 color: skin.fg,
                 fontWeight: FontWeight.w500,
-                fontSize: widget.width < 235 ? 12.5 : 13.5,
+                fontSize: widget.width < 128 ? 12.5 : 13.5,
+                height: PosterCardLayout.kStrutHeight,
                 letterSpacing: -0.1,
               ),
             ),
-            const SizedBox(height: 1.5),
+            const SizedBox(height: 2),
             Text(
               left.isNotEmpty
                   ? (item.type == 'Episode' && item.episodeCode != null
@@ -595,9 +634,15 @@ class _ResumeCardState extends State<ResumeCard> {
                   : (sub.isNotEmpty ? sub : ' '),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
+              strutStyle: StrutStyle(
+                fontSize: widget.width < 128 ? 11.0 : 12.0,
+                height: PosterCardLayout.kStrutHeight,
+                forceStrutHeight: true,
+              ),
               style: TextStyle(
                 color: skin.fg3,
-                fontSize: widget.width < 235 ? 11.0 : 12.0,
+                fontSize: widget.width < 128 ? 11.0 : 12.0,
+                height: PosterCardLayout.kStrutHeight,
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
@@ -737,9 +782,15 @@ class _LibraryCardState extends State<LibraryCard> {
                     widget.library.name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
+                    strutStyle: StrutStyle(
+                      fontSize: widget.width < 195 ? 12.5 : 13.5,
+                      height: PosterCardLayout.kStrutHeight,
+                      forceStrutHeight: true,
+                    ),
                     style: TextStyle(
                       color: skin.fg,
                       fontSize: widget.width < 195 ? 12.5 : 13.5,
+                      height: PosterCardLayout.kStrutHeight,
                       fontWeight: FontWeight.w500,
                       letterSpacing: -0.1,
                     ),

@@ -49,7 +49,7 @@ class CustomSkinSpec {
     this.osdStyle = 'floating_island', // floating_island | cinema_gradient | minimal_glass
     this.mobileNavStyle = 'floating_dock', // floating_dock | full_tab_bar | compact_icon_only
     this.touchFeedbackStyle = 'spring_haptic', // spring_haptic | subtle_scale | clean_static
-    this.showCardRating = false,
+    this.showCardRating = true,
     this.preferClearLogo = true,
   });
 
@@ -218,7 +218,7 @@ class CustomSkinSpec {
       osdStyle: (j['osd_style'] ?? 'floating_island').toString(),
       mobileNavStyle: (j['mobile_nav_style'] ?? 'floating_dock').toString(),
       touchFeedbackStyle: (j['touch_feedback'] ?? 'spring_haptic').toString(),
-      showCardRating: j['show_card_rating'] == true,
+      showCardRating: j['show_card_rating'] != false,
       preferClearLogo: j['prefer_clear_logo'] != false,
     );
   }
@@ -302,7 +302,7 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     this.touchFeedbackStyle = 'spring_haptic', // spring_haptic | subtle_scale | clean_static
     this.themeFamily = 'immersive_cinema', // immersive_cinema | ios_frosted | ios_liquid_glass | material_design
     this.liquidSpecular = 'standard', // subtle | standard | vivid
-    this.showCardRating = false,
+    this.showCardRating = true,
     this.preferClearLogo = true,
     this.isCustom = false,
   });

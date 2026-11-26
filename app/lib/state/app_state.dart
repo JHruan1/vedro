@@ -211,9 +211,17 @@ class VedroAppState extends ChangeNotifier {
         if (prefs.selectedProxyNodeId == 'auto') {
           unawaited(autoSelectFastestProxyNode().catchError((_) => <String, dynamic>{}));
         } else {
-          final chosen = prefs.proxyNodes
+          Map<String, dynamic>? chosen = prefs.proxyNodes
               .where((n) => n['id']?.toString() == prefs.selectedProxyNodeId)
               .firstOrNull;
+          if (chosen == null) {
+            for (final sub in prefs.proxySubscriptions) {
+              chosen = sub.nodes
+                  .where((n) => n['id']?.toString() == prefs.selectedProxyNodeId)
+                  .firstOrNull;
+              if (chosen != null) break;
+            }
+          }
           if (chosen != null) {
             unawaited(activateProxyNode(chosen).catchError((_) => <String, dynamic>{}));
           }
@@ -1529,13 +1537,19 @@ class VedroAppState extends ChangeNotifier {
     return models;
   }
 
-  /// Fetch & parse proxy subscription URL (or pasted Clash/Sing-box/Base64 URI links).
-  Future<Map<String, dynamic>> fetchProxySubscription(String urlOrRaw) async {
+  /// Fetch & parse proxy subscription URL (or pasted Clash/Sing-box/Base64 URI links),
+  /// persisting into `prefs.proxySubscriptions` so multiple subscriptions can be saved & switched.
+  Future<Map<String, dynamic>> fetchProxySubscription(
+    String urlOrRaw, {
+    String? name,
+    String? subscriptionId,
+  }) async {
     final trimmed = urlOrRaw.trim();
     if (trimmed.isEmpty) throw Exception('请输入订阅链接或节点内容');
-    final isHttpUrl = trimmed.startsWith('http://') || trimmed.startsWith('https://');
+    final isHttpUrl =
+        (trimmed.startsWith('http://') || trimmed.startsWith('https://')) && !trimmed.contains('\n');
     final res = await core.invoke('fetch_proxy_subscription', {
-      if (isHttpUrl && !trimmed.contains('\n')) 'url': trimmed else 'raw_content': trimmed,
+      if (isHttpUrl) 'url': trimmed else 'raw_content': trimmed,
     }) as Map<String, dynamic>;
     final nodes = ((res['nodes'] as List<dynamic>?) ?? const [])
         .whereType<Map<String, dynamic>>()
@@ -1543,15 +1557,160 @@ class VedroAppState extends ChangeNotifier {
     final userinfo = res['userinfo'] is Map
         ? Map<String, dynamic>.from(res['userinfo'] as Map)
         : null;
+
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final nextSubs = List<ProxySubscriptionProfile>.from(prefs.proxySubscriptions);
+    int existingIdx = -1;
+    if (subscriptionId != null && subscriptionId.isNotEmpty) {
+      existingIdx = nextSubs.indexWhere((s) => s.id == subscriptionId);
+    }
+    if (existingIdx < 0 && isHttpUrl) {
+      existingIdx = nextSubs.indexWhere((s) => s.url.trim() == trimmed);
+    }
+
+    late final ProxySubscriptionProfile savedSub;
+    if (existingIdx >= 0) {
+      final prev = nextSubs[existingIdx];
+      savedSub = prev.copyWith(
+        name: (name != null && name.trim().isNotEmpty) ? name.trim() : prev.name,
+        url: trimmed,
+        nodes: nodes,
+        userinfo: userinfo,
+        clearUserinfo: userinfo == null,
+        updatedAt: nowMs,
+      );
+      nextSubs[existingIdx] = savedSub;
+    } else {
+      final resolvedName = (name != null && name.trim().isNotEmpty)
+          ? name.trim()
+          : ProxySubscriptionProfile.inferName(trimmed, nextSubs.length + 1);
+      savedSub = ProxySubscriptionProfile(
+        id: 'sub_${nowMs}_${nextSubs.length + 1}',
+        name: resolvedName,
+        url: trimmed,
+        nodes: nodes,
+        userinfo: userinfo,
+        updatedAt: nowMs,
+      );
+      nextSubs.add(savedSub);
+    }
+
     await updatePrefs(prefs.copyWith(
       inAppProxyMode: 'sub',
-      proxySubscriptionUrl: isHttpUrl && !trimmed.contains('\n') ? trimmed : prefs.proxySubscriptionUrl,
+      proxySubscriptionUrl: isHttpUrl ? trimmed : prefs.proxySubscriptionUrl,
+      proxySubscriptions: nextSubs,
+      activeProxySubId: savedSub.id,
       proxyNodes: nodes,
       proxySubUserinfo: userinfo,
       clearProxySubUserinfo: userinfo == null,
     ));
     unawaited(pingProxyNodes());
-    return res;
+    return {
+      ...res,
+      'subscription_id': savedSub.id,
+      'subscription_name': savedSub.name,
+    };
+  }
+
+  /// Switch active subscription tab instantly using its cached nodes, and trigger background ping if needed.
+  Future<void> selectProxySubscription(String subId) async {
+    final target = prefs.proxySubscriptions.where((s) => s.id == subId).firstOrNull;
+    if (target == null) return;
+    await updatePrefs(prefs.copyWith(
+      inAppProxyMode: 'sub',
+      activeProxySubId: target.id,
+      proxySubscriptionUrl: target.url,
+      proxyNodes: target.nodes,
+      proxySubUserinfo: target.userinfo,
+      clearProxySubUserinfo: target.userinfo == null,
+    ));
+    final needsPing = target.nodes.any(
+      (n) => !proxyNodeLatencies.containsKey((n['id'] ?? '').toString()),
+    );
+    if (needsPing) {
+      unawaited(pingProxyNodes());
+    }
+  }
+
+  Future<void> renameProxySubscription(String subId, String newName) async {
+    final cleaned = newName.trim();
+    if (cleaned.isEmpty) return;
+    final nextSubs = prefs.proxySubscriptions
+        .map((s) => s.id == subId ? s.copyWith(name: cleaned) : s)
+        .toList();
+    await updatePrefs(prefs.copyWith(proxySubscriptions: nextSubs));
+  }
+
+  Future<void> deleteProxySubscription(String subId) async {
+    final nextSubs = prefs.proxySubscriptions.where((s) => s.id != subId).toList();
+    if (nextSubs.isEmpty) {
+      if (prefs.inAppProxyMode == 'sub') {
+        try {
+          await core.invoke('configure_in_app_proxy', {'mode': 'off'});
+        } catch (_) {}
+      }
+      autoProxyResolvedNodeId = null;
+      await updatePrefs(prefs.copyWith(
+        proxySubscriptions: const [],
+        activeProxySubId: '',
+        proxySubscriptionUrl: '',
+        proxyNodes: const [],
+        selectedProxyNodeId: '',
+        clearProxySubUserinfo: true,
+      ));
+      return;
+    }
+    final nextActive = nextSubs.any((s) => s.id == prefs.activeProxySubId)
+        ? nextSubs.firstWhere((s) => s.id == prefs.activeProxySubId)
+        : nextSubs.first;
+    await updatePrefs(prefs.copyWith(
+      proxySubscriptions: nextSubs,
+      activeProxySubId: nextActive.id,
+      proxySubscriptionUrl: nextActive.url,
+      proxyNodes: nextActive.nodes,
+      proxySubUserinfo: nextActive.userinfo,
+      clearProxySubUserinfo: nextActive.userinfo == null,
+    ));
+  }
+
+  /// Refresh all saved HTTP-URL proxy subscriptions sequentially and sync the active subscription's nodes.
+  Future<int> refreshAllProxySubscriptions() async {
+    if (prefs.proxySubscriptions.isEmpty) return 0;
+    var updatedCount = 0;
+    final nextSubs = List<ProxySubscriptionProfile>.from(prefs.proxySubscriptions);
+    for (var i = 0; i < nextSubs.length; i++) {
+      final sub = nextSubs[i];
+      final u = sub.url.trim();
+      final isHttp = (u.startsWith('http://') || u.startsWith('https://')) && !u.contains('\n');
+      try {
+        final res = await core.invoke('fetch_proxy_subscription', {
+          if (isHttp) 'url': u else 'raw_content': u,
+        }) as Map<String, dynamic>;
+        final nodes = ((res['nodes'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+        final userinfo = res['userinfo'] is Map
+            ? Map<String, dynamic>.from(res['userinfo'] as Map)
+            : sub.userinfo;
+        nextSubs[i] = sub.copyWith(
+          nodes: nodes,
+          userinfo: userinfo,
+          updatedAt: DateTime.now().millisecondsSinceEpoch,
+        );
+        updatedCount += 1;
+      } catch (_) {}
+    }
+    final activeSub = nextSubs.where((s) => s.id == prefs.activeProxySubId).firstOrNull ??
+        nextSubs.first;
+    await updatePrefs(prefs.copyWith(
+      proxySubscriptions: nextSubs,
+      activeProxySubId: activeSub.id,
+      proxyNodes: activeSub.nodes,
+      proxySubUserinfo: activeSub.userinfo,
+      clearProxySubUserinfo: activeSub.userinfo == null,
+    ));
+    unawaited(pingProxyNodes());
+    return updatedCount;
   }
 
   Future<Map<String, int?>> pingProxyNodes() async {

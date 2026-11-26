@@ -2962,7 +2962,8 @@ class _DetailScreenState extends State<DetailScreen> {
                                   right: 4,
                                   child: Icon(Icons.check_rounded, size: 11, color: skin.fg3),
                                 )
-                              else if (ep.versionCount > 1)
+                              else if (widget.appState.prefs.showMultiVersionBadge &&
+                                  ep.versionCount > 1)
                                 Positioned(
                                   top: 3,
                                   right: 5,

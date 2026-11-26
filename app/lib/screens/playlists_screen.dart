@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -320,12 +321,16 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    final width = MediaQuery.sizeOf(context).width;
-    final wide = width >= 820;
-    final padX = wide ? 36.0 : 20.0;
+    final profile = DisplayMetricsProfile.of(context);
+    final prefs = widget.appState.prefs;
+    final wide = !profile.usesMobileChrome;
+    final padX = prefs.horizontalMargin(wide);
+    final gridGap = prefs.cardGap(wide);
     final isMac = !kIsWeb && Platform.isMacOS;
-    final cardW = widget.appState.prefs.posterCardWidth(wide);
-    final cols = ((width - padX * 2) / (cardW + 16)).floor().clamp(3, 9);
+    final effDensity = prefs
+            .overridesForPlatform(isMobile: profile.isMobileOs)['grid_density']
+            ?.toString() ??
+        prefs.listDensity;
 
     return Scaffold(
       backgroundColor: skin.canvas,
@@ -394,25 +399,48 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
                             child: Text('此片单还没有影片，可在任意详情页点击「片单」添加',
                                 style: TextStyle(color: skin.fg3, fontSize: 13.5)),
                           )
-                      : GridView.builder(
-                          padding: EdgeInsets.fromLTRB(padX, 6, padX, 40),
-                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: cols,
-                            mainAxisSpacing: 20,
-                            crossAxisSpacing: 16,
-                            childAspectRatio: 0.56,
-                          ),
-                          itemCount: _items.length,
-                          itemBuilder: (_, idx) {
-                            final item = _items[idx];
-                            return MediaCard(
-                              item: item,
-                              appState: widget.appState,
-                              onTap: () => widget.onItemTap(item),
-                              onQuickPlay: widget.onQuickPlay == null
-                                  ? null
-                                  : () => widget.onQuickPlay!(item),
-                              onLongPress: () => _removeEntry(item),
+                      : LayoutBuilder(
+                          builder: (context, constraints) {
+                            final effectiveStyle =
+                                (skin.cardStyle == 'hover_reveal' && profile.isTouchPrimary)
+                                    ? 'overlay_poster'
+                                    : skin.cardStyle;
+                            final showBelowCaption = effectiveStyle != 'overlay_poster' &&
+                                effectiveStyle != 'hover_reveal' &&
+                                effectiveStyle != 'minimal_clean';
+                            final gridLayout = PosterCardLayout.forGrid(
+                              profile: profile,
+                              availableWidth:
+                                  (constraints.maxWidth - padX * 2).clamp(140.0, 8000.0),
+                              density: effDensity,
+                              scale: prefs.posterScale,
+                              aspectRatio: skin.mediaAspectRatio,
+                              showBelowCaption: showBelowCaption,
+                              crossSpacing: gridGap,
+                              textScaler: MediaQuery.textScalerOf(context),
+                            );
+                            return GridView.builder(
+                              padding: EdgeInsets.fromLTRB(padX, 6, padX, 40),
+                              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: gridLayout.columns,
+                                mainAxisSpacing: gridLayout.mainSpacing,
+                                crossAxisSpacing: gridLayout.crossSpacing,
+                                mainAxisExtent: gridLayout.cardHeight,
+                              ),
+                              itemCount: _items.length,
+                              itemBuilder: (_, idx) {
+                                final item = _items[idx];
+                                return MediaCard(
+                                  width: gridLayout.cardWidth,
+                                  item: item,
+                                  appState: widget.appState,
+                                  onTap: () => widget.onItemTap(item),
+                                  onQuickPlay: widget.onQuickPlay == null
+                                      ? null
+                                      : () => widget.onQuickPlay!(item),
+                                  onLongPress: () => _removeEntry(item),
+                                );
+                              },
                             );
                           },
                         ),

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../state/app_state.dart';
 import '../widgets/vedro_artwork.dart';
@@ -239,17 +240,26 @@ class _SearchScreenState extends State<SearchScreen> {
                         ),
                       )
                     : ListView(
-                        padding: EdgeInsets.fromLTRB(0, 12, 0, wide ? 44 : 112),
+                        padding: EdgeInsets.fromLTRB(0, 10, 0, wide ? 44 : 112),
                         children: grouped.values.map((group) {
-                          final posterW = wide ? 148.0 : 114.0;
-                          final r = widget.appState.prefs.effectiveCardRadius(skin);
+                          final profile = DisplayMetricsProfile.of(context);
+                          final prefs = widget.appState.prefs;
+                          final posterW = prefs.posterCardWidth(wide, profile);
+                          final cardMetrics = PosterCardLayout.forCardWidth(
+                            cardWidth: posterW,
+                            aspectRatio: 2 / 3,
+                            showBelowCaption: true,
+                            textScaler: MediaQuery.textScalerOf(context),
+                            devicePixelRatio: profile.devicePixelRatio,
+                          );
+                          final r = prefs.effectiveCardRadius(skin);
                           return Padding(
-                            padding: const EdgeInsets.only(bottom: 24),
+                            padding: EdgeInsets.only(bottom: wide ? 22 : 16),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Padding(
-                                  padding: EdgeInsets.fromLTRB(padX, 0, padX, 10),
+                                  padding: EdgeInsets.fromLTRB(padX, 0, padX, 8),
                                   child: Row(
                                     children: [
                                       Text(
@@ -269,13 +279,13 @@ class _SearchScreenState extends State<SearchScreen> {
                                   ),
                                 ),
                                 SizedBox(
-                                  height: (posterW / (2 / 3)) + 54,
+                                  height: cardMetrics.cardHeight + 4,
                                   child: ListView.separated(
-                                    padding: EdgeInsets.symmetric(horizontal: padX),
+                                    padding: EdgeInsets.symmetric(horizontal: padX, vertical: 2),
                                     scrollDirection: Axis.horizontal,
                                     clipBehavior: Clip.none,
                                     itemCount: group.items.length,
-                                    separatorBuilder: (_, __) => const SizedBox(width: 14),
+                                    separatorBuilder: (_, __) => SizedBox(width: prefs.cardGap(wide)),
                                     itemBuilder: (_, idx) {
                                       final hit = group.items[idx];
                                       final url = hit.primaryImageTag != null
@@ -295,6 +305,7 @@ class _SearchScreenState extends State<SearchScreen> {
                                             widget.onSelectHit(hit);
                                           },
                                           child: Column(
+                                            mainAxisSize: MainAxisSize.min,
                                             crossAxisAlignment: CrossAxisAlignment.start,
                                             children: [
                                               AspectRatio(
@@ -319,24 +330,40 @@ class _SearchScreenState extends State<SearchScreen> {
                                                   ),
                                                 ),
                                               ),
-                                              const SizedBox(height: 7),
+                                              SizedBox(height: cardMetrics.captionTopGap),
                                               Text(
                                                 hit.name,
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
+                                                strutStyle: StrutStyle(
+                                                  fontSize: cardMetrics.titleFontSize,
+                                                  height: PosterCardLayout.kStrutHeight,
+                                                  forceStrutHeight: true,
+                                                ),
                                                 style: TextStyle(
                                                   color: skin.fg,
-                                                  fontSize: 13,
+                                                  fontSize: cardMetrics.titleFontSize,
+                                                  height: PosterCardLayout.kStrutHeight,
                                                   fontWeight: FontWeight.w500,
                                                 ),
                                               ),
+                                              SizedBox(height: cardMetrics.captionMidGap),
                                               Text(
                                                 hit.productionYear != null
                                                     ? '${hit.productionYear}'
                                                     : (hit.series ?? hit.type),
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(color: skin.fg3, fontSize: 11.5),
+                                                strutStyle: StrutStyle(
+                                                  fontSize: cardMetrics.metaFontSize,
+                                                  height: PosterCardLayout.kStrutHeight,
+                                                  forceStrutHeight: true,
+                                                ),
+                                                style: TextStyle(
+                                                  color: skin.fg3,
+                                                  fontSize: cardMetrics.metaFontSize,
+                                                  height: PosterCardLayout.kStrutHeight,
+                                                ),
                                               ),
                                             ],
                                           ),

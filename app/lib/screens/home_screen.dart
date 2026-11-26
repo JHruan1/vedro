@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -197,13 +198,20 @@ class _HomeScreenState extends State<HomeScreen> {
       latestMap[lib.id] = items;
     }
 
+    final profile = DisplayMetricsProfile.of(context);
+    final textScaler = MediaQuery.textScalerOf(context);
     final prefs = app.prefs;
     final padX = prefs.horizontalMargin(wide);
     final gap = prefs.cardGap(wide);
     final topGap = prefs.sectionTopGap(wide);
     final libCardW = (wide ? 248.0 : 164.0) * prefs.posterScale.clamp(0.75, 1.25);
     final libStripVPad = wide ? 18.0 : 4.0;
-    final libRailH = (libCardW / (16 / 9)) + (wide ? 32.0 : 27.0) + libStripVPad;
+    final libRailH = PosterCardLayout.libraryCardHeight(
+          cardWidth: libCardW,
+          textScaler: textScaler,
+          devicePixelRatio: profile.devicePixelRatio,
+        ) +
+        libStripVPad;
 
     final dynamicSectionSlivers = <Widget>[];
     for (final sec in app.homeSections) {

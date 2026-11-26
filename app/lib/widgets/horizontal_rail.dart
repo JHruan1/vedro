@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -53,8 +54,10 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
   Widget build(BuildContext context) {
     if (widget.items.isEmpty) return const SizedBox.shrink();
     final skin = VedroSkin.of(context);
+    final profile = DisplayMetricsProfile.of(context);
+    final textScaler = MediaQuery.textScalerOf(context);
     final prefs = widget.appState.prefs;
-    final wide = MediaQuery.sizeOf(context).width >= 820;
+    final wide = !profile.usesMobileChrome;
     final padX = prefs.horizontalMargin(wide);
     final gap = prefs.cardGap(wide);
     final topGap = prefs.sectionTopGap(wide);
@@ -64,16 +67,24 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
         ? ((wide ? 292.0 : 216.0) * scale)
         : (isLandscapePoster
             ? ((wide ? 272.0 : 204.0) * scale)
-            : prefs.posterCardWidth(wide));
-    final artHeight = widget.isResume
-        ? (cardWidth / (16 / 9))
-        : (isLandscapePoster
-            ? (cardWidth / (16 / 9))
-            : (cardWidth / skin.mediaAspectRatio));
-    final textBelow = widget.isResume || skin.cardStyle == 'classic_below';
+            : prefs.posterCardWidth(wide, profile));
+    final aspect = (widget.isResume || isLandscapePoster) ? (16 / 9) : skin.mediaAspectRatio;
+    final artHeight = cardWidth / aspect;
+    final effectiveStyle =
+        (skin.cardStyle == 'hover_reveal' && profile.isTouchPrimary) ? 'overlay_poster' : skin.cardStyle;
+    final textBelow = widget.isResume ||
+        (effectiveStyle != 'overlay_poster' &&
+            effectiveStyle != 'hover_reveal' &&
+            effectiveStyle != 'minimal_clean');
+    final cardMetrics = PosterCardLayout.forCardWidth(
+      cardWidth: cardWidth,
+      aspectRatio: aspect,
+      showBelowCaption: textBelow,
+      textScaler: textScaler,
+      devicePixelRatio: profile.devicePixelRatio,
+    );
     final vPad = wide ? 18.0 : 4.0;
-    final captionClearance = textBelow ? (cardWidth < 128 ? 46.0 : 52.0) : 2.0;
-    final railHeight = artHeight + captionClearance + vPad;
+    final railHeight = cardMetrics.cardHeight + vPad;
 
     final titleStyle = skin.applyHeadlineMood(
       TextStyle(

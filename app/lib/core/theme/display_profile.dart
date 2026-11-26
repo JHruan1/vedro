@@ -282,3 +282,154 @@ class DisplayMetricsProfile {
     }
   }
 }
+
+/// Deterministic, resolution-, PPI-, and OS-`TextScaler`-aware card & grid layout metrics.
+///
+/// Replaces fragile constant `childAspectRatio` guesses across all `GridView` and horizontal rail
+/// containers with an exact two-term geometric identity:
+/// `cardHeight = (cardWidth / aspectRatio) + captionHeight(cardWidth, dpr, textScaler)`
+/// Paired with `StrutStyle(forceStrutHeight: true)` on card labels, captions (`2024` year, episode
+/// counts, etc.) NEVER clip, overflow, or overlap adjacent rows at any resolution, PPI, column count,
+/// or system font accessibility scale.
+class PosterCardLayout {
+  const PosterCardLayout({
+    required this.columns,
+    required this.cardWidth,
+    required this.aspectRatio,
+    required this.cardHeight,
+    required this.crossSpacing,
+    required this.mainSpacing,
+    required this.titleFontSize,
+    required this.metaFontSize,
+    required this.captionTopGap,
+    required this.captionMidGap,
+    required this.lineHeightMultiplier,
+  });
+
+  final int columns;
+  final double cardWidth;
+  final double aspectRatio;
+  final double cardHeight;
+  final double crossSpacing;
+  final double mainSpacing;
+  final double titleFontSize;
+  final double metaFontSize;
+  final double captionTopGap;
+  final double captionMidGap;
+  final double lineHeightMultiplier;
+
+  static const double kStrutHeight = 1.28;
+
+  /// Compute exact typography & vertical height for a single card of width `cardWidth`.
+  static PosterCardLayout forCardWidth({
+    required double cardWidth,
+    required double aspectRatio,
+    required bool showBelowCaption,
+    required TextScaler textScaler,
+    double devicePixelRatio = 2.0,
+    int columns = 1,
+    double crossSpacing = 12.0,
+    double mainSpacing = 14.0,
+  }) {
+    final safeW = math.max(64.0, cardWidth);
+    final double titleFs = safeW < 98
+        ? 11.8
+        : (safeW < 128 ? 12.5 : 13.5);
+    final double metaFs = safeW < 98
+        ? 10.5
+        : (safeW < 128 ? 11.0 : 12.0);
+    final double topGap = safeW < 98 ? 5.0 : (safeW < 128 ? 6.0 : 8.0);
+    const double midGap = 2.0;
+
+    final double artH = safeW / aspectRatio;
+    if (!showBelowCaption) {
+      return PosterCardLayout(
+        columns: columns,
+        cardWidth: safeW,
+        aspectRatio: aspectRatio,
+        cardHeight: artH.ceilToDouble(),
+        crossSpacing: crossSpacing,
+        mainSpacing: mainSpacing,
+        titleFontSize: titleFs,
+        metaFontSize: metaFs,
+        captionTopGap: 0,
+        captionMidGap: 0,
+        lineHeightMultiplier: kStrutHeight,
+      );
+    }
+
+    final double titleLineH = (textScaler.scale(titleFs) * kStrutHeight).ceilToDouble();
+    final double metaLineH = (textScaler.scale(metaFs) * kStrutHeight).ceilToDouble();
+    final double safetyPx = devicePixelRatio < 1.5 ? 4.0 : 3.0;
+    final double totalH =
+        (artH + topGap + titleLineH + midGap + metaLineH + safetyPx).ceilToDouble();
+
+    return PosterCardLayout(
+      columns: columns,
+      cardWidth: safeW,
+      aspectRatio: aspectRatio,
+      cardHeight: totalH,
+      crossSpacing: crossSpacing,
+      mainSpacing: mainSpacing,
+      titleFontSize: titleFs,
+      metaFontSize: metaFs,
+      captionTopGap: topGap,
+      captionMidGap: midGap,
+      lineHeightMultiplier: kStrutHeight,
+    );
+  }
+
+  /// Compute exact height for a 16:9 `LibraryCard` (`artHeight + single-line title`).
+  static double libraryCardHeight({
+    required double cardWidth,
+    required TextScaler textScaler,
+    double devicePixelRatio = 2.0,
+  }) {
+    final safeW = math.max(100.0, cardWidth);
+    final artH = safeW / (16 / 9);
+    final fs = safeW < 195 ? 12.5 : 13.5;
+    final topGap = safeW < 195 ? 5.0 : 8.0;
+    final lineH = (textScaler.scale(fs) * kStrutHeight).ceilToDouble();
+    final safetyPx = devicePixelRatio < 1.5 ? 4.0 : 3.0;
+    return (artH + topGap + lineH + safetyPx).ceilToDouble();
+  }
+
+  /// Compute complete adaptive Grid metrics (`columns`, `cardWidth`, `cardHeight` for `mainAxisExtent`,
+  /// `crossSpacing`, `mainSpacing`) from live `DisplayMetricsProfile`, `availableWidth`, and `TextScaler`.
+  static PosterCardLayout forGrid({
+    required DisplayMetricsProfile profile,
+    required double availableWidth,
+    required String density,
+    required double scale,
+    required double aspectRatio,
+    required bool showBelowCaption,
+    required double crossSpacing,
+    required TextScaler textScaler,
+  }) {
+    final safeAvail = math.max(140.0, availableWidth);
+    final isWideAspect = aspectRatio > 1.2;
+    final baseCols = profile.optimalGridColumns(
+      safeAvail,
+      density,
+      scale: scale,
+      gapOverride: crossSpacing,
+    );
+    final cols = isWideAspect
+        ? (baseCols ~/ 1.65).clamp(2, 6)
+        : baseCols;
+    final exactCardW = (safeAvail - crossSpacing * (cols - 1)) / cols;
+    final mainSpacing = profile.usesMobileChrome
+        ? (crossSpacing + 4.0).clamp(10.0, 18.0)
+        : (crossSpacing + 6.0).clamp(14.0, 26.0);
+    return forCardWidth(
+      cardWidth: exactCardW,
+      aspectRatio: aspectRatio,
+      showBelowCaption: showBelowCaption,
+      textScaler: textScaler,
+      devicePixelRatio: profile.devicePixelRatio,
+      columns: cols,
+      crossSpacing: crossSpacing,
+      mainSpacing: mainSpacing,
+    );
+  }
+}

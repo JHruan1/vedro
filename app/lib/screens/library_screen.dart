@@ -192,12 +192,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
             .overridesForPlatform(isMobile: metrics.isMobileOs)['grid_density']
             ?.toString() ??
         prefs.listDensity;
-    final cols = metrics.optimalGridColumns(
-      width - padX * 2,
-      effDensity,
-      scale: prefs.posterScale,
-      gapOverride: gridGap,
-    );
     final pageTitle = widget.customTitle ??
         (_selectedGenreName != null
             ? '类型 · $_selectedGenreName'
@@ -394,67 +388,88 @@ class _LibraryScreenState extends State<LibraryScreen> {
               ),
             ),
             Expanded(
-              child: _loading && _items.isEmpty
-                  ? GridView.builder(
+              child: LayoutBuilder(
+                builder: (context, gridConstraints) {
+                  final textScaler = MediaQuery.textScalerOf(context);
+                  final availW = (gridConstraints.maxWidth - padX * 2).clamp(140.0, 8000.0);
+                  final effectiveStyle =
+                      (skin.cardStyle == 'hover_reveal' && metrics.isTouchPrimary)
+                          ? 'overlay_poster'
+                          : skin.cardStyle;
+                  final showBelowCaption = effectiveStyle != 'overlay_poster' &&
+                      effectiveStyle != 'hover_reveal' &&
+                      effectiveStyle != 'minimal_clean';
+                  final isWideThumb = skin.mediaAspectRatio >= 1.2;
+                  final gridLayout = PosterCardLayout.forGrid(
+                    profile: metrics,
+                    availableWidth: availW,
+                    density: effDensity,
+                    scale: prefs.posterScale,
+                    aspectRatio: skin.mediaAspectRatio,
+                    showBelowCaption: showBelowCaption,
+                    crossSpacing: gridGap,
+                    textScaler: textScaler,
+                  );
+
+                  if (_loading && _items.isEmpty) {
+                    return GridView.builder(
                       padding: EdgeInsets.fromLTRB(padX, 4, padX, wide ? 44 : 108),
                       physics: const NeverScrollableScrollPhysics(),
                       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: cols,
-                        mainAxisSpacing: 20,
-                        crossAxisSpacing: 16,
-                        childAspectRatio: 0.56,
+                        crossAxisCount: gridLayout.columns,
+                        mainAxisSpacing: gridLayout.mainSpacing,
+                        crossAxisSpacing: gridLayout.crossSpacing,
+                        mainAxisExtent: gridLayout.cardHeight,
                       ),
-                      itemCount: cols * 3,
-                      itemBuilder: (_, __) => const Column(
+                      itemCount: gridLayout.columns * 3,
+                      itemBuilder: (_, __) => Column(
+                        mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          VedroShimmer(aspectRatio: 2 / 3, borderRadius: 12),
-                          SizedBox(height: 9),
-                          VedroShimmer(width: 100, height: 12, borderRadius: 4),
+                          VedroShimmer(aspectRatio: skin.mediaAspectRatio, borderRadius: 12),
+                          if (showBelowCaption) ...[
+                            SizedBox(height: gridLayout.captionTopGap),
+                            const VedroShimmer(width: 84, height: 11, borderRadius: 4),
+                          ],
                         ],
                       ),
-                    )
-                  : _items.isEmpty
-                      ? Center(
-                          child: Text('没有符合筛选条件的内容', style: TextStyle(color: skin.fg3, fontSize: 14)),
-                        )
-                      : _listViewMode
-                          ? ListView.separated(
-                              controller: _scrollCtrl,
-                              padding: EdgeInsets.fromLTRB(padX, 4, padX, wide ? 44 : 108),
-                              itemCount: _items.length,
-                              separatorBuilder: (_, __) => const SizedBox(height: 10),
-                              itemBuilder: (_, idx) {
-                                final item = _items[idx];
-                                return _LibraryListTile(
-                                  item: item,
-                                  appState: widget.appState,
-                                  onTap: () => widget.onItemTap(item),
-                                );
-                              },
-                            )
-                          : Builder(
-                              builder: (context) {
-                                final isWideThumb = skin.posterAspect == 'landscape_16_9';
-                                final textBelow = skin.cardStyle == 'classic_below';
-                                final gridCols = isWideThumb
-                                    ? (cols ~/ 1.65).clamp(1, 6)
-                                    : cols;
-                                final double gridAspect = isWideThumb
-                                    ? (textBelow ? 1.24 : 1.68)
-                                    : (skin.posterAspect == 'cinema_4_5'
-                                        ? (textBelow ? 0.65 : 0.78)
-                                        : (textBelow ? 0.56 : 0.66));
-                                return GridView.builder(
-                                  controller: _scrollCtrl,
-                                  padding: EdgeInsets.fromLTRB(padX, 6, padX, wide ? 44 : 108),
-                                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: gridCols,
-                                    mainAxisSpacing: wide ? gridGap + 4 : gridGap + 2,
-                                    crossAxisSpacing: gridGap,
-                                    childAspectRatio: gridAspect,
-                                  ),
-                                  itemCount: _items.length + (_loading ? 1 : 0),
+                    );
+                  }
+                  if (_items.isEmpty) {
+                    return Center(
+                      child: Text(
+                        '没有符合筛选条件的内容',
+                        style: TextStyle(color: skin.fg3, fontSize: 14),
+                      ),
+                    );
+                  }
+                  if (_listViewMode) {
+                    return ListView.separated(
+                      controller: _scrollCtrl,
+                      padding: EdgeInsets.fromLTRB(padX, 4, padX, wide ? 44 : 108),
+                      itemCount: _items.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      itemBuilder: (_, idx) {
+                        final item = _items[idx];
+                        return _LibraryListTile(
+                          item: item,
+                          appState: widget.appState,
+                          onTap: () => widget.onItemTap(item),
+                        );
+                      },
+                    );
+                  }
+                  return GridView.builder(
+                    key: const ValueKey('library-poster-grid'),
+                    controller: _scrollCtrl,
+                    padding: EdgeInsets.fromLTRB(padX, 6, padX, wide ? 44 : 108),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: gridLayout.columns,
+                      mainAxisSpacing: gridLayout.mainSpacing,
+                      crossAxisSpacing: gridLayout.crossSpacing,
+                      mainAxisExtent: gridLayout.cardHeight,
+                    ),
+                    itemCount: _items.length + (_loading ? 1 : 0),
                                   itemBuilder: (context, idx) {
                                     if (idx >= _items.length) {
                                       return Center(
@@ -472,6 +487,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                     return MediaCard(
                                       item: item,
                                       appState: widget.appState,
+                                      width: gridLayout.cardWidth,
                                       landscape: isWideThumb,
                                       onTap: () => widget.onItemTap(item),
                                       onQuickPlay: widget.onQuickPlay == null

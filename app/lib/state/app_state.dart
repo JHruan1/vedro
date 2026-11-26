@@ -765,19 +765,6 @@ class VedroAppState extends ChangeNotifier {
     return localMax;
   }
 
-  Future<String> copyableDownloadUrl(MediaItemModel item, {String? mediaSourceId}) async {
-    if (!canDownloadItem(item)) {
-      throw Exception('当前账号未开放下载权限，请联系管理员');
-    }
-    final prep = await core.invoke('prepare_download', {
-      'item_id': item.id,
-      if (mediaSourceId != null) 'media_source_id': mediaSourceId,
-    }) as Map<String, dynamic>;
-    final url = (prep['url'] ?? '').toString();
-    if (url.isEmpty) throw Exception('无法获取原文件下载地址');
-    return url;
-  }
-
   Future<void> enqueueDownload(
     MediaItemModel item, {
     String? mediaSourceId,

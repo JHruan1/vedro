@@ -724,12 +724,22 @@ void main() {
     expect(find.textContaining('下载流量包'), findsNothing);
     expect(find.textContaining('530.00 GB'), findsNothing);
 
-    // 2b. Tapping download on multi-version movie opens Version Download Picker cleanly (still zero quota clutter)
+    // 2b. Tapping download on multi-version movie opens Version Download Picker cleanly
+    //     (still zero quota clutter & NEVER exposes raw direct download links!)
     await tester.tap(find.byKey(const ValueKey('detail-download-button')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('detail-version-download-sheet')), findsOneWidget);
     expect(find.text('选择下载版本 (2)'), findsOneWidget);
     expect(find.textContaining('下载流量包'), findsNothing);
+    expect(find.byIcon(Icons.link_rounded), findsNothing);
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+
+    // 2c. More sheet also NEVER exposes raw direct download links
+    await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('下载直链'), findsNothing);
+    expect(find.byIcon(Icons.link_rounded), findsNothing);
     await tester.tapAt(const Offset(10, 10));
     await tester.pumpAndSettle();
 

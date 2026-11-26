@@ -506,31 +506,6 @@ class _DetailScreenState extends State<DetailScreen> {
     }
   }
 
-  Future<void> _copyDirectDownloadLink(MediaItemModel target, {String? sourceId}) async {
-    try {
-      final url = await widget.appState.copyableDownloadUrl(target, mediaSourceId: sourceId);
-      await Clipboard.setData(ClipboardData(text: url));
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('已复制原文件下载直链（可粘贴至浏览器 / ADM / 1DM / IDM 下载）'),
-          duration: Duration(seconds: 3),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: const Color(0xFF991B1B),
-          content: Text(
-            e.toString().replaceFirst('Exception: ', ''),
-            style: const TextStyle(color: Colors.white),
-          ),
-        ),
-      );
-    }
-  }
-
   void _openVersionDownloadSheet(MediaItemModel target) {
     if (!widget.appState.canDownloadItem(target)) return;
     final sources = target.mediaSources;
@@ -649,16 +624,7 @@ class _DetailScreenState extends State<DetailScreen> {
                         ],
                       ),
                     ),
-                    IconButton(
-                      tooltip: '复制下载直链（ADM/1DM/IDM）',
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(Icons.link_rounded, size: 18, color: VedroTheme.fg2),
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        _copyDirectDownloadLink(target, sourceId: s.id);
-                      },
-                    ),
-                    const SizedBox(width: 4),
+                    const SizedBox(width: 10),
                     FilledButton(
                       style: FilledButton.styleFrom(
                         backgroundColor: alreadyDone ? const Color(0xFF1F2937) : accent,
@@ -731,7 +697,7 @@ class _DetailScreenState extends State<DetailScreen> {
                 _launchExternal(playable, sourceId: _resolveDownloadSource(playable)?.id ?? _selectedSourceId);
               },
             ),
-            if (canDownload) ...[
+            if (canDownload)
               ListTile(
                 leading: const Icon(Icons.download_rounded, color: VedroTheme.fg2),
                 title: Text(
@@ -745,19 +711,6 @@ class _DetailScreenState extends State<DetailScreen> {
                   _startDownload();
                 },
               ),
-              ListTile(
-                leading: const Icon(Icons.link_rounded, color: VedroTheme.fg2),
-                title: const Text('复制原文件下载直链', style: TextStyle(color: VedroTheme.fg, fontSize: 14)),
-                subtitle: const Text('可粘贴至浏览器 / ADM / 1DM / IDM 断点续传', style: TextStyle(color: VedroTheme.fg3, fontSize: 12)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _copyDirectDownloadLink(
-                    playable,
-                    sourceId: _resolveDownloadSource(playable)?.id ?? _selectedSourceId,
-                  );
-                },
-              ),
-            ],
           ],
           if (_item.type != 'Person')
             ListTile(

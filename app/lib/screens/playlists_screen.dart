@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/media_card.dart';
@@ -77,154 +78,161 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final list = widget.appState.playlists;
     final wide = MediaQuery.sizeOf(context).width >= 820;
 
     return Scaffold(
-      backgroundColor: VedroTheme.canvas,
-      body: Padding(
-        padding: EdgeInsets.only(top: wide ? widget.topInset : MediaQuery.paddingOf(context).top),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 780),
-            child: Column(
-              children: [
-                Padding(
-                  padding: EdgeInsets.fromLTRB(wide ? 24 : 20, wide ? 20 : 10, wide ? 24 : 16, 14),
-                  child: Row(
-                    children: [
-                      const Text(
-                        '片单',
-                        style: TextStyle(
-                          color: VedroTheme.fg,
-                          fontSize: 26,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: -0.6,
-                        ),
-                      ),
-                      const Spacer(),
-                      PressableScale(
-                        onTap: widget.appState.isSignedIn ? _createDialog : null,
-                        child: Container(
-                          height: 36,
-                          padding: const EdgeInsets.symmetric(horizontal: 15),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(18),
+      backgroundColor: skin.canvas,
+      body: VedroSkinCanvas(
+        child: Padding(
+          padding: EdgeInsets.only(top: wide ? widget.topInset : MediaQuery.paddingOf(context).top),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 780),
+              child: Column(
+                children: [
+                  Padding(
+                    padding: EdgeInsets.fromLTRB(wide ? 24 : 20, wide ? 20 : 10, wide ? 24 : 16, 14),
+                    child: Row(
+                      children: [
+                        Text(
+                          '片单',
+                          style: skin.applyHeadlineMood(
+                            TextStyle(
+                              color: skin.fg,
+                              fontSize: 26,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -0.6,
+                            ),
                           ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
+                        ),
+                        const Spacer(),
+                        PressableScale(
+                          onTap: widget.appState.isSignedIn ? _createDialog : null,
+                          child: Container(
+                            height: 36,
+                            padding: const EdgeInsets.symmetric(horizontal: 15),
+                            decoration: BoxDecoration(
+                              color: skin.primaryCtaBg,
+                              gradient: skin.primaryCtaGradient,
+                              borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
+                              border: skin.primaryCtaBorder,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.add_rounded, size: 17, color: skin.primaryCtaFg),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '新建片单',
+                                  style: TextStyle(
+                                    color: skin.primaryCtaFg,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: list.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.bookmarks_outlined, size: 36, color: skin.fg3),
+                                const SizedBox(height: 10),
+                                Text(
+                                  widget.appState.isSignedIn ? '暂无片单，点击右上角新建' : '连接服务器后管理片单',
+                                  style: TextStyle(color: skin.fg3, fontSize: 13.5),
+                                ),
+                              ],
+                            ),
+                          )
+                        : ListView(
+                            padding: EdgeInsets.fromLTRB(20, 8, 20, wide ? 44 : 108),
                             children: [
-                              Icon(Icons.add_rounded, size: 17, color: VedroTheme.canvas),
-                              SizedBox(width: 4),
-                              Text(
-                                '新建片单',
-                                style: TextStyle(
-                                  color: VedroTheme.canvas,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
+                              Container(
+                                decoration: BoxDecoration(
+                                  color: skin.surface,
+                                  borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 18.0)),
+                                  border: skin.cardBorder(),
+                                ),
+                                clipBehavior: Clip.antiAlias,
+                                child: Column(
+                                  children: [
+                                    for (var i = 0; i < list.length; i++) ...[
+                                      if (i > 0) Divider(height: 1, indent: 16, endIndent: 16, color: skin.border),
+                                      InkWell(
+                                        onTap: () => _openPlaylist(list[i]),
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 16,
+                                            vertical: 14,
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              Container(
+                                                width: 34,
+                                                height: 34,
+                                                decoration: BoxDecoration(
+                                                  color: skin.surface2,
+                                                  borderRadius: BorderRadius.circular(9),
+                                                ),
+                                                child: Icon(
+                                                  Icons.bookmark_rounded,
+                                                  size: 18,
+                                                  color: skin.accent,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 14),
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      list[i].name,
+                                                      style: TextStyle(
+                                                        color: skin.fg,
+                                                        fontSize: 15,
+                                                        fontWeight: FontWeight.w500,
+                                                      ),
+                                                    ),
+                                                    if (list[i].childCount != null ||
+                                                        list[i].recursiveItemCount != null)
+                                                      Text(
+                                                        '${list[i].recursiveItemCount ?? list[i].childCount ?? 0} 部影片',
+                                                        style: TextStyle(
+                                                          color: skin.fg3,
+                                                          fontSize: 12,
+                                                        ),
+                                                      ),
+                                                  ],
+                                                ),
+                                              ),
+                                              Icon(
+                                                Icons.chevron_right_rounded,
+                                                size: 18,
+                                                color: skin.fg3,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
                                 ),
                               ),
                             ],
                           ),
-                        ),
-                      ),
-                    ],
                   ),
-                ),
-                Expanded(
-                  child: list.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.bookmarks_outlined, size: 36, color: VedroTheme.fg3),
-                              const SizedBox(height: 10),
-                              Text(
-                                widget.appState.isSignedIn ? '暂无片单，点击右上角新建' : '连接服务器后管理片单',
-                                style: const TextStyle(color: VedroTheme.fg3, fontSize: 13.5),
-                              ),
-                            ],
-                          ),
-                        )
-                      : ListView(
-                          padding: EdgeInsets.fromLTRB(20, 8, 20, wide ? 44 : 108),
-                          children: [
-                            Container(
-                              decoration: BoxDecoration(
-                                color: VedroTheme.surface,
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(color: VedroTheme.line, width: 0.8),
-                              ),
-                              clipBehavior: Clip.antiAlias,
-                              child: Column(
-                                children: [
-                                  for (var i = 0; i < list.length; i++) ...[
-                                    if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16),
-                                    InkWell(
-                                      onTap: () => _openPlaylist(list[i]),
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 16,
-                                          vertical: 14,
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            Container(
-                                              width: 34,
-                                              height: 34,
-                                              decoration: BoxDecoration(
-                                                color: VedroTheme.surface2,
-                                                borderRadius: BorderRadius.circular(9),
-                                              ),
-                                              child: const Icon(
-                                                Icons.bookmark_rounded,
-                                                size: 18,
-                                                color: VedroTheme.fg2,
-                                              ),
-                                            ),
-                                            const SizedBox(width: 14),
-                                            Expanded(
-                                              child: Column(
-                                                crossAxisAlignment: CrossAxisAlignment.start,
-                                                children: [
-                                                  Text(
-                                                    list[i].name,
-                                                    style: const TextStyle(
-                                                      color: VedroTheme.fg,
-                                                      fontSize: 15,
-                                                      fontWeight: FontWeight.w500,
-                                                    ),
-                                                  ),
-                                                  if (list[i].childCount != null ||
-                                                      list[i].recursiveItemCount != null)
-                                                    Text(
-                                                      '${list[i].recursiveItemCount ?? list[i].childCount ?? 0} 部影片',
-                                                      style: const TextStyle(
-                                                        color: VedroTheme.fg3,
-                                                        fontSize: 12,
-                                                      ),
-                                                    ),
-                                                ],
-                                              ),
-                                            ),
-                                            const Icon(
-                                              Icons.chevron_right_rounded,
-                                              size: 18,
-                                              color: VedroTheme.fg3,
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),

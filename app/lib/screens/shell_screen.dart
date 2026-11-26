@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/home_layout_sheet.dart';
@@ -21,10 +22,9 @@ import 'playlists_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 
-/// Full-bleed SenPlayer / Forward cinema shell:
-/// - Always accessible from startup (Server Hub, Settings, Aggregated Search, Library).
-/// - Desktop: Floating translucent top glass bar with 1-click Server & Route switcher pill + Spotlight (`⌘K`).
-/// - Mobile: Floating frosted-glass bottom pill tab bar.
+/// Skin-adaptive full-bleed cinema shell:
+/// - Desktop: Floating translucent top bar adapting to active `VedroSkin` (light, dark, neon, film).
+/// - Mobile: Floating frosted-glass bottom dock adapting geometry & colors to `VedroSkin`.
 class ShellScreen extends StatefulWidget {
   const ShellScreen({super.key, required this.appState});
   final VedroAppState appState;
@@ -52,7 +52,6 @@ class _ShellScreenState extends State<ShellScreen> {
 
   void _onGlobalFilesDropped() {
     if (!mounted) return;
-    // If PlayerScreen is on top of navigator, let PlayerScreen consume the drop itself.
     if (ModalRoute.of(context)?.isCurrent != true) return;
     final paths = NativePlaybackChannel.droppedFilesNotifier.value;
     if (paths.isEmpty) return;
@@ -223,9 +222,10 @@ class _ShellScreenState extends State<ShellScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final wide = MediaQuery.sizeOf(context).width >= 820;
     final signedIn = widget.appState.isSignedIn;
-    final topBarClear = _index == 0 && signedIn && !_homeScrolled;
+    final topBarClear = _index == 0 && signedIn && !_homeScrolled && !skin.isLight;
 
     final pages = [
       HomeScreen(
@@ -276,21 +276,23 @@ class _ShellScreenState extends State<ShellScreen> {
       ),
     ];
 
-    final body = AnimatedSwitcher(
-      duration: Duration(milliseconds: widget.appState.prefs.reduceMotion ? 0 : 260),
-      switchInCurve: VedroTheme.easeOut,
-      switchOutCurve: Curves.easeInCubic,
-      transitionBuilder: (child, anim) => FadeTransition(
-        opacity: anim,
-        child: SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0, 0.014),
-            end: Offset.zero,
-          ).animate(anim),
-          child: child,
+    final body = VedroSkinCanvas(
+      child: AnimatedSwitcher(
+        duration: Duration(milliseconds: widget.appState.prefs.reduceMotion ? 0 : 260),
+        switchInCurve: VedroTheme.easeOut,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, anim) => FadeTransition(
+          opacity: anim,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.014),
+              end: Offset.zero,
+            ).animate(anim),
+            child: child,
+          ),
         ),
+        child: pages[_index],
       ),
-      child: pages[_index],
     );
 
     if (wide) {
@@ -302,7 +304,7 @@ class _ShellScreenState extends State<ShellScreen> {
         child: Focus(
           autofocus: true,
           child: Scaffold(
-            backgroundColor: VedroTheme.canvas,
+            backgroundColor: skin.canvas,
             body: Stack(
               children: [
                 Positioned.fill(child: body),
@@ -334,8 +336,9 @@ class _ShellScreenState extends State<ShellScreen> {
       );
     }
 
+    final dockR = skin.pillRadius >= 100 ? 28.0 : skin.pillRadius.clamp(10.0, 24.0);
     return Scaffold(
-      backgroundColor: VedroTheme.canvas,
+      backgroundColor: skin.canvas,
       extendBody: true,
       body: body,
       bottomNavigationBar: SafeArea(
@@ -343,10 +346,10 @@ class _ShellScreenState extends State<ShellScreen> {
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
           child: GlassSurface(
-            borderRadius: 28,
+            borderRadius: dockR,
             blur: 36,
-            color: const Color(0xC4161619),
-            borderColor: const Color(0x16FFFFFF),
+            color: skin.glass,
+            borderColor: skin.borderStrong,
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -398,6 +401,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     NativePlaybackChannel.ensureWindowListener();
     return ValueListenableBuilder<bool>(
       valueListenable: NativePlaybackChannel.fullscreenNotifier,
@@ -408,285 +412,253 @@ class _FloatingDesktopHeader extends StatelessWidget {
         final activeSrv = appState.activeServer;
         final cardStyle = activeSrv != null ? appState.serverCardStyleFor(activeSrv.id) : null;
         final cardTheme = activeSrv != null ? cardStyle?.resolveTheme(activeSrv.id) : null;
+        final pillR = skin.radiusForPill(36);
+        final isRoundBtn = skin.pillRadius >= 20;
+
+        Widget headerCircleBtn({
+          required String tooltip,
+          required IconData icon,
+          required VoidCallback onTap,
+        }) {
+          return Tooltip(
+            message: tooltip,
+            child: PressableScale(
+              onTap: onTap,
+              hoverScale: 1.06,
+              pressScale: 0.92,
+              child: Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: clear ? const Color(0x1EFFFFFF) : skin.surface2,
+                  shape: isRoundBtn ? BoxShape.circle : BoxShape.rectangle,
+                  borderRadius: isRoundBtn ? null : BorderRadius.circular(pillR),
+                  border: Border.all(
+                    color: clear ? const Color(0x24FFFFFF) : skin.border,
+                    width: 0.7,
+                  ),
+                ),
+                child: Icon(
+                  icon,
+                  size: 16,
+                  color: clear ? Colors.white : skin.fg2,
+                ),
+              ),
+            ),
+          );
+        }
 
         final content = SafeArea(
           bottom: false,
           child: Container(
             height: 58,
             padding: EdgeInsets.fromLTRB(macTrafficClearance, 0, 28, 0),
-        child: Row(
-          children: [
-            // Interactive Server + Multi-Route Switcher Pill
-            PressableScale(
-              onTap: onOpenServerHub,
-              hoverScale: 1.02,
-              pressScale: 0.97,
-              child: Container(
-                height: 36,
-                padding: const EdgeInsets.fromLTRB(6, 0, 10, 0),
-                decoration: BoxDecoration(
-                  color: clear ? const Color(0x26FFFFFF) : VedroTheme.surface2,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(
-                    color: clear ? const Color(0x2EFFFFFF) : VedroTheme.line,
-                    width: 0.8,
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (appState.isSignedIn && cardStyle != null && cardTheme != null)
-                      Container(
-                        width: 24,
-                        height: 24,
-                        decoration: BoxDecoration(
-                          color: cardTheme.accent.withValues(alpha: 0.22),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(cardStyle.iconData, size: 13.5, color: cardTheme.accent),
-                      )
-                    else
-                      const VedroBrandMark(size: 24),
-                    const SizedBox(width: 8),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 160),
-                      child: Text(
-                        serverLabel,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: -0.2,
-                        ),
+            child: Row(
+              children: [
+                PressableScale(
+                  onTap: onOpenServerHub,
+                  hoverScale: 1.02,
+                  pressScale: 0.97,
+                  child: Container(
+                    height: 36,
+                    padding: const EdgeInsets.fromLTRB(6, 0, 10, 0),
+                    decoration: BoxDecoration(
+                      color: clear ? const Color(0x26FFFFFF) : skin.surface2,
+                      borderRadius: BorderRadius.circular(pillR),
+                      border: Border.all(
+                        color: clear ? const Color(0x2EFFFFFF) : skin.border,
+                        width: 0.8,
                       ),
                     ),
-                    if (appState.isSignedIn && routeName != null && routeName.isNotEmpty) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (appState.isSignedIn && cardStyle != null && cardTheme != null)
+                          Container(
+                            width: 24,
+                            height: 24,
+                            decoration: BoxDecoration(
+                              color: cardTheme.accent.withValues(alpha: 0.22),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(cardStyle.iconData, size: 13.5, color: cardTheme.accent),
+                          )
+                        else
+                          const VedroBrandMark(size: 24),
+                        const SizedBox(width: 8),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 160),
+                          child: Text(
+                            serverLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: clear ? Colors.white : skin.fg,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: -0.2,
+                            ),
+                          ),
+                        ),
+                        if (appState.isSignedIn && routeName != null && routeName.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: clear ? const Color(0x1CFFFFFF) : skin.subtleChipBg,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              routeName,
+                              style: TextStyle(
+                                color: clear ? const Color(0xCCFFFFFF) : skin.fg2,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(width: 4),
+                        Icon(
+                          Icons.keyboard_arrow_down_rounded,
+                          size: 16,
+                          color: clear ? const Color(0xB8FFFFFF) : skin.fg3,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 18),
+                for (final (idx, label) in navItems)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: PressableScale(
+                      onTap: () => onSelectIndex(idx),
+                      hoverScale: 1.03,
+                      pressScale: 0.96,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 180),
+                        curve: VedroTheme.easeOut,
+                        height: 34,
+                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                        alignment: Alignment.center,
                         decoration: BoxDecoration(
-                          color: const Color(0x1CFFFFFF),
-                          borderRadius: BorderRadius.circular(6),
+                          color: activeIndex == idx
+                              ? (clear
+                                  ? const Color(0x28FFFFFF)
+                                  : (skin.ctaStyle == 'contrast'
+                                      ? skin.subtleChipHoverBg
+                                      : skin.accent.withValues(alpha: skin.isLight ? 0.14 : 0.22)))
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(skin.radiusForPill(34)),
+                          border: (activeIndex == idx && skin.frameStyle == 'neon' && !clear)
+                              ? Border.all(color: skin.accent.withValues(alpha: 0.55), width: 0.8)
+                              : null,
                         ),
                         child: Text(
-                          routeName,
-                          style: const TextStyle(
-                            color: Color(0xCCFFFFFF),
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.w500,
+                          label,
+                          style: TextStyle(
+                            color: activeIndex == idx
+                                ? (clear
+                                    ? Colors.white
+                                    : (skin.ctaStyle == 'contrast' ? skin.fg : skin.accent))
+                                : (clear ? const Color(0xCCFFFFFF) : skin.fg2),
+                            fontSize: 13.5,
+                            fontWeight: activeIndex == idx ? FontWeight.w600 : FontWeight.w500,
                           ),
                         ),
                       ),
-                    ],
-                    const SizedBox(width: 4),
-                    const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: Color(0xB8FFFFFF)),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(width: 18),
-            for (final (idx, label) in navItems)
-              Padding(
-                padding: const EdgeInsets.only(right: 4),
-                child: PressableScale(
-                  onTap: () => onSelectIndex(idx),
-                  hoverScale: 1.03,
-                  pressScale: 0.96,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    curve: VedroTheme.easeOut,
-                    height: 34,
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: activeIndex == idx ? const Color(0x20FFFFFF) : Colors.transparent,
-                      borderRadius: BorderRadius.circular(17),
                     ),
-                    child: Text(
-                      label,
-                      style: TextStyle(
-                        color: activeIndex == idx
-                            ? Colors.white
-                            : (clear ? const Color(0xCCFFFFFF) : VedroTheme.fg2),
-                        fontSize: 13.5,
-                        fontWeight: activeIndex == idx ? FontWeight.w600 : FontWeight.w500,
+                  ),
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onDoubleTap: NativePlaybackChannel.toggleZoom,
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+                PressableScale(
+                  onTap: onOpenSearch,
+                  hoverScale: 1.02,
+                  pressScale: 0.97,
+                  child: Container(
+                    width: 224,
+                    height: 36,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: clear ? const Color(0x24FFFFFF) : skin.surface2,
+                      borderRadius: BorderRadius.circular(pillR),
+                      border: Border.all(
+                        color: clear ? const Color(0x28FFFFFF) : skin.border,
+                        width: 0.8,
                       ),
                     ),
-                  ),
-                ),
-              ),
-            Expanded(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onDoubleTap: NativePlaybackChannel.toggleZoom,
-                child: const SizedBox.expand(),
-              ),
-            ),
-            // Aggregated Spotlight Search pill
-            PressableScale(
-              onTap: onOpenSearch,
-              hoverScale: 1.02,
-              pressScale: 0.97,
-              child: Container(
-                width: 224,
-                height: 36,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                decoration: BoxDecoration(
-                  color: clear ? const Color(0x24FFFFFF) : VedroTheme.surface2,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(
-                    color: clear ? const Color(0x28FFFFFF) : VedroTheme.line,
-                    width: 0.8,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.search_rounded,
-                      size: 16,
-                      color: clear ? const Color(0xD9FFFFFF) : VedroTheme.fg3,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        appState.savedServers.length > 1 ? '聚合搜索' : '搜索',
-                        style: TextStyle(
-                          color: clear ? const Color(0xCCFFFFFF) : VedroTheme.fg3,
-                          fontSize: 13,
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.search_rounded,
+                          size: 16,
+                          color: clear ? const Color(0xD9FFFFFF) : skin.fg3,
                         ),
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 5.5, vertical: 1.5),
-                      decoration: BoxDecoration(
-                        color: const Color(0x1CFFFFFF),
-                        borderRadius: BorderRadius.circular(5),
-                      ),
-                      child: const Text(
-                        '⌘K',
-                        style: TextStyle(
-                          color: Color(0xB8FFFFFF),
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w500,
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            appState.savedServers.length > 1 ? '聚合搜索' : '搜索',
+                            style: TextStyle(
+                              color: clear ? const Color(0xCCFFFFFF) : skin.fg3,
+                              fontSize: 13,
+                            ),
+                          ),
                         ),
-                      ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5.5, vertical: 1.5),
+                          decoration: BoxDecoration(
+                            color: clear ? const Color(0x1CFFFFFF) : skin.subtleChipBg,
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                          child: Text(
+                            '⌘K',
+                            style: TextStyle(
+                              color: clear ? const Color(0xB8FFFFFF) : skin.fg3,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                headerCircleBtn(
+                  tooltip: '打开本地视频 / 文件夹（也支持直接拖入窗口）',
+                  icon: Icons.folder_open_rounded,
+                  onTap: onOpenLocalMedia,
+                ),
+                if (appState.isSignedIn) ...[
+                  const SizedBox(width: 8),
+                  headerCircleBtn(
+                    tooltip: '我的收藏',
+                    icon: Icons.favorite_border_rounded,
+                    onTap: onOpenFavorites,
+                  ),
+                  const SizedBox(width: 8),
+                  headerCircleBtn(
+                    tooltip: '自定义首页布局',
+                    icon: Icons.dashboard_customize_outlined,
+                    onTap: onOpenLayout,
+                  ),
+                  const SizedBox(width: 8),
+                  headerCircleBtn(
+                    tooltip: '刷新首页',
+                    icon: Icons.refresh_rounded,
+                    onTap: onRefresh,
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(width: 8),
-            Tooltip(
-              message: '打开本地视频 / 文件夹（也支持直接拖入窗口）',
-              child: PressableScale(
-                onTap: onOpenLocalMedia,
-                hoverScale: 1.06,
-                pressScale: 0.92,
-                child: Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: clear ? const Color(0x1EFFFFFF) : VedroTheme.surface2,
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: clear ? const Color(0x24FFFFFF) : VedroTheme.line,
-                      width: 0.7,
-                    ),
-                  ),
-                  child: Icon(
-                    Icons.folder_open_rounded,
-                    size: 16,
-                    color: clear ? Colors.white : VedroTheme.fg2,
-                  ),
-                ),
-              ),
-            ),
-            if (appState.isSignedIn) ...[
-              const SizedBox(width: 8),
-              Tooltip(
-                message: '我的收藏',
-                child: PressableScale(
-                  onTap: onOpenFavorites,
-                  hoverScale: 1.06,
-                  pressScale: 0.92,
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: clear ? const Color(0x1EFFFFFF) : VedroTheme.surface2,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: clear ? const Color(0x24FFFFFF) : VedroTheme.line,
-                        width: 0.7,
-                      ),
-                    ),
-                    child: Icon(
-                      Icons.favorite_border_rounded,
-                      size: 16,
-                      color: clear ? Colors.white : VedroTheme.fg2,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Tooltip(
-                message: '自定义首页布局',
-                child: PressableScale(
-                  onTap: onOpenLayout,
-                  hoverScale: 1.06,
-                  pressScale: 0.92,
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: clear ? const Color(0x1EFFFFFF) : VedroTheme.surface2,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: clear ? const Color(0x24FFFFFF) : VedroTheme.line,
-                        width: 0.7,
-                      ),
-                    ),
-                    child: Icon(
-                      Icons.dashboard_customize_outlined,
-                      size: 16,
-                      color: clear ? Colors.white : VedroTheme.fg2,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Tooltip(
-                message: '刷新首页',
-                child: PressableScale(
-                  onTap: onRefresh,
-                  hoverScale: 1.06,
-                  pressScale: 0.92,
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: clear ? const Color(0x1EFFFFFF) : VedroTheme.surface2,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: clear ? const Color(0x24FFFFFF) : VedroTheme.line,
-                        width: 0.7,
-                      ),
-                    ),
-                    child: Icon(
-                      Icons.refresh_rounded,
-                      size: 17,
-                      color: clear ? Colors.white : VedroTheme.fg2,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
+          ),
+        );
 
         if (clear) {
           return DecoratedBox(
@@ -705,9 +677,9 @@ class _FloatingDesktopHeader extends StatelessWidget {
           child: BackdropFilter(
             filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
             child: DecoratedBox(
-              decoration: const BoxDecoration(
-                color: Color(0xCC121216),
-                border: Border(bottom: BorderSide(color: VedroTheme.line, width: 0.8)),
+              decoration: BoxDecoration(
+                color: skin.glass,
+                border: Border(bottom: BorderSide(color: skin.border, width: 0.8)),
               ),
               child: content,
             ),
@@ -733,6 +705,8 @@ class _BottomTabButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final activeColor = skin.ctaStyle == 'contrast' ? skin.fg : skin.accent;
     return Expanded(
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
@@ -742,8 +716,12 @@ class _BottomTabButton extends StatelessWidget {
           curve: VedroTheme.easeOut,
           padding: const EdgeInsets.symmetric(vertical: 7),
           decoration: BoxDecoration(
-            color: selected ? const Color(0x20FFFFFF) : Colors.transparent,
-            borderRadius: BorderRadius.circular(22),
+            color: selected
+                ? (skin.ctaStyle == 'contrast'
+                    ? skin.subtleChipHoverBg
+                    : skin.accent.withValues(alpha: skin.isLight ? 0.14 : 0.20))
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(skin.radiusForPill(44)),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -755,7 +733,7 @@ class _BottomTabButton extends StatelessWidget {
                 child: Icon(
                   selected ? tab.activeIcon : tab.icon,
                   size: 20,
-                  color: selected ? Colors.white : VedroTheme.fg3,
+                  color: selected ? activeColor : skin.fg3,
                 ),
               ),
               const SizedBox(height: 2.5),
@@ -764,7 +742,7 @@ class _BottomTabButton extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 10.5,
                   fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                  color: selected ? Colors.white : VedroTheme.fg3,
+                  color: selected ? activeColor : skin.fg3,
                 ),
               ),
             ],

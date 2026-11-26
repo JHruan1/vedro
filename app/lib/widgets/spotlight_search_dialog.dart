@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'vedro_artwork.dart';
@@ -99,6 +100,7 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final topPad = MediaQuery.sizeOf(context).height * 0.10;
     final filtered = _filterServerId == null
         ? _hits
@@ -117,11 +119,15 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
         ),
         child: Container(
           decoration: BoxDecoration(
-            color: const Color(0xFF161821),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: const Color(0xFF2D3142), width: 1.0),
-            boxShadow: const [
-              BoxShadow(color: Color(0xB8000000), blurRadius: 36, offset: Offset(0, 14)),
+            color: skin.surface,
+            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(12.0, 22.0)),
+            border: Border.all(color: skin.borderStrong, width: 1.0),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: skin.isLight ? 0.22 : 0.72),
+                blurRadius: 36,
+                offset: const Offset(0, 14),
+              ),
             ],
           ),
           clipBehavior: Clip.antiAlias,
@@ -132,14 +138,14 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                     padding: const EdgeInsets.fromLTRB(18, 14, 12, 12),
                     child: Row(
                       children: [
-                        const Icon(Icons.search_rounded, size: 20, color: VedroTheme.fg2),
+                        Icon(Icons.search_rounded, size: 20, color: skin.fg2),
                         const SizedBox(width: 12),
                         Expanded(
                           child: TextField(
                             controller: _ctrl,
                             autofocus: true,
                             onChanged: _onChanged,
-                            style: const TextStyle(color: VedroTheme.fg, fontSize: 16),
+                            style: TextStyle(color: skin.fg, fontSize: 16),
                             decoration: InputDecoration(
                               filled: false,
                               border: InputBorder.none,
@@ -149,24 +155,24 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                               hintText: widget.appState.savedServers.length > 1
                                   ? '跨 ${widget.appState.savedServers.length} 个服务器聚合搜索…'
                                   : '搜索电影、剧集、演职员…',
-                              hintStyle: const TextStyle(color: VedroTheme.fg3, fontSize: 16),
+                              hintStyle: TextStyle(color: skin.fg3, fontSize: 16),
                             ),
                           ),
                         ),
                         if (_searching)
-                          const Padding(
-                            padding: EdgeInsets.only(right: 8),
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
                             child: SizedBox(
                               width: 16,
                               height: 16,
                               child: CircularProgressIndicator(
                                 strokeWidth: 1.8,
-                                color: VedroTheme.fg2,
+                                color: skin.fg2,
                               ),
                             ),
                           ),
                         IconButton(
-                          icon: const Icon(Icons.close_rounded, size: 18, color: VedroTheme.fg3),
+                          icon: Icon(Icons.close_rounded, size: 18, color: skin.fg3),
                           onPressed: () => Navigator.of(context).pop(),
                         ),
                       ],
@@ -262,8 +268,8 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                                           h.name,
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: VedroTheme.fg,
+                                          style: TextStyle(
+                                            color: skin.fg,
                                             fontSize: 14.5,
                                             fontWeight: FontWeight.w500,
                                           ),
@@ -274,8 +280,8 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                                             sub,
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: VedroTheme.fg3,
+                                            style: TextStyle(
+                                              color: skin.fg3,
                                               fontSize: 12,
                                             ),
                                           ),
@@ -291,22 +297,22 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                                         vertical: 2.5,
                                       ),
                                       decoration: BoxDecoration(
-                                        color: const Color(0x16FFFFFF),
+                                        color: skin.surface2,
                                         borderRadius: BorderRadius.circular(6),
-                                        border: Border.all(color: VedroTheme.line, width: 0.6),
+                                        border: Border.all(color: skin.border, width: 0.6),
                                       ),
                                       child: Text(
                                         h.serverName,
-                                        style: const TextStyle(
-                                          color: VedroTheme.fg2,
+                                        style: TextStyle(
+                                          color: skin.fg2,
                                           fontSize: 11,
                                         ),
                                       ),
                                     ),
-                                  const Icon(
+                                  Icon(
                                     Icons.chevron_right_rounded,
                                     size: 18,
-                                    color: VedroTheme.fg3,
+                                    color: skin.fg3,
                                   ),
                                 ],
                               ),
@@ -324,7 +330,7 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                                 ? '添加媒体服务器后即可跨服聚合搜索'
                                 : '输入片名、原名或演员名即时聚合检索')
                             : '没有找到匹配内容',
-                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 13),
+                        style: TextStyle(color: skin.fg3, fontSize: 13),
                       ),
                     ),
                 ],

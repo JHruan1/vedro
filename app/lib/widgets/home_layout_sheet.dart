@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
-import '../core/theme/vedro_theme.dart';
+import '../core/theme/vedro_skin.dart';
 import '../state/app_state.dart';
 import 'vedro_ui.dart';
 
@@ -43,6 +43,7 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 16, 18, 20),
       child: Column(
@@ -51,23 +52,23 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       '自定义首页布局',
                       style: TextStyle(
-                        color: VedroTheme.fg,
+                        color: skin.fg,
                         fontSize: 17,
                         fontWeight: FontWeight.w600,
                         letterSpacing: -0.2,
                       ),
                     ),
-                    SizedBox(height: 2),
+                    const SizedBox(height: 2),
                     Text(
                       '拖动右侧手柄调整上下顺序，开关控制模块显示',
-                      style: TextStyle(color: VedroTheme.fg3, fontSize: 12),
+                      style: TextStyle(color: skin.fg3, fontSize: 12),
                     ),
                   ],
                 ),
@@ -80,41 +81,40 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
                   });
                   widget.appState.resetHomeLayout();
                 },
-                child: const Text(
+                child: Text(
                   '恢复默认',
-                  style: TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
+                  style: TextStyle(color: skin.fg2, fontSize: 12.5),
                 ),
               ),
             ],
           ),
           const SizedBox(height: 14),
-          // Hero banner toggle
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
-              color: VedroTheme.surface,
+              color: skin.surface2,
               borderRadius: BorderRadius.circular(13),
-              border: Border.all(color: VedroTheme.line, width: 0.8),
+              border: Border.all(color: skin.border, width: 0.8),
             ),
             child: Row(
               children: [
-                const Icon(Icons.panorama_wide_angle_outlined, size: 18, color: VedroTheme.fg2),
+                Icon(Icons.panorama_wide_angle_outlined, size: 18, color: skin.fg2),
                 const SizedBox(width: 12),
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
                         '顶部横幅轮播',
                         style: TextStyle(
-                          color: VedroTheme.fg,
+                          color: skin.fg,
                           fontSize: 14,
                           fontWeight: FontWeight.w500,
                         ),
                       ),
                       Text(
                         '仅选取带横版背景图的影片展示',
-                        style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                        style: TextStyle(color: skin.fg3, fontSize: 11.5),
                       ),
                     ],
                   ),
@@ -158,9 +158,9 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
                   child: Container(
                     padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
                     decoration: BoxDecoration(
-                      color: sec.visible ? VedroTheme.surface : const Color(0x88141417),
+                      color: sec.visible ? skin.surface2 : skin.surface2.withValues(alpha: 0.5),
                       borderRadius: BorderRadius.circular(13),
-                      border: Border.all(color: VedroTheme.line, width: 0.8),
+                      border: Border.all(color: skin.border, width: 0.8),
                     ),
                     child: Row(
                       children: [
@@ -168,10 +168,10 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
                           width: 20,
                           child: Text(
                             '${idx + 1}',
-                            style: const TextStyle(
-                              color: VedroTheme.fg3,
+                            style: TextStyle(
+                              color: skin.fg3,
                               fontSize: 12,
-                              fontFeatures: [FontFeature.tabularFigures()],
+                              fontFeatures: const [FontFeature.tabularFigures()],
                             ),
                           ),
                         ),
@@ -183,7 +183,7 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
                               Text(
                                 sec.title,
                                 style: TextStyle(
-                                  color: sec.visible ? VedroTheme.fg : VedroTheme.fg3,
+                                  color: sec.visible ? skin.fg : skin.fg3,
                                   fontSize: 14,
                                   fontWeight: FontWeight.w500,
                                 ),
@@ -193,7 +193,7 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
                                   sec.subtitle,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                                  style: TextStyle(color: skin.fg3, fontSize: 11.5),
                                 ),
                             ],
                           ),
@@ -210,14 +210,14 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
                         const SizedBox(width: 4),
                         ReorderableDragStartListener(
                           index: idx,
-                          child: const MouseRegion(
+                          child: MouseRegion(
                             cursor: SystemMouseCursors.grab,
                             child: Padding(
-                              padding: EdgeInsets.all(6),
+                              padding: const EdgeInsets.all(6),
                               child: Icon(
                                 Icons.drag_handle_rounded,
                                 size: 19,
-                                color: VedroTheme.fg3,
+                                color: skin.fg3,
                               ),
                             ),
                           ),

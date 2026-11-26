@@ -6,6 +6,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vedro/core/ffi/vedro_bridge.dart';
 import 'package:vedro/core/models/models.dart';
 import 'package:vedro/core/models/preferences.dart';
+import 'package:vedro/core/theme/vedro_skin.dart';
+import 'package:vedro/core/theme/vedro_theme.dart';
 import 'package:vedro/main.dart';
 import 'package:vedro/screens/detail_screen.dart';
 import 'package:vedro/screens/settings_screen.dart';
@@ -129,6 +131,85 @@ class _MockVedroCore implements VedroCoreClient {
           'latest_by_library': <dynamic>[],
         };
       case 'get_item':
+        if (params['item_id'] == 'm-5ver') {
+          return <String, dynamic>{
+            'item': <String, dynamic>{
+              'Id': 'm-5ver',
+              'Name': '奥本海默',
+              'OriginalTitle': 'Oppenheimer',
+              'Type': 'Movie',
+              'CanDownload': canDownload,
+              'Overview': '五版本同源碰撞（空 Id + 相同 Name + 未探测字幕）回归测试。',
+              'ProductionYear': 2023,
+              'CommunityRating': 8.9,
+              'MediaSources': <dynamic>[
+                <String, dynamic>{
+                  'Id': '',
+                  'Name': 'MKV',
+                  'Path': '/mnt/media/Movies/Oppenheimer.2023.UHD.BluRay.REMUX.DV.TrueHD.Atmos-Framestor/Oppenheimer.mkv',
+                  'Container': 'mkv',
+                  'Size': 84000000000,
+                  'Bitrate': 71000000,
+                  'MediaStreams': <dynamic>[],
+                },
+                <String, dynamic>{
+                  'Id': '',
+                  'Name': 'MKV',
+                  'Path': '/mnt/media/Movies/Oppenheimer.2023.2160p.WEB-DL.DoVi.HDR10.DDP5.1-FLUX/Oppenheimer.mkv',
+                  'Container': 'mkv',
+                  'Size': 29500000000,
+                  'Bitrate': 24800000,
+                  'MediaStreams': <dynamic>[],
+                },
+                <String, dynamic>{
+                  'Id': '',
+                  'Name': 'MKV',
+                  'Path': '/mnt/media/Movies/Oppenheimer.2023.IMAX.1080p.BluRay.x265.10bit-Tigole/Oppenheimer.mkv',
+                  'Container': 'mkv',
+                  'Size': 16200000000,
+                  'Bitrate': 13200000,
+                  'MediaStreams': <dynamic>[],
+                },
+                <String, dynamic>{
+                  'Id': '',
+                  'Name': 'MKV',
+                  'Path': '/mnt/media/Movies/Oppenheimer.2023.1080p.BluRay.x264.CHS.ENG-BtsHD/Oppenheimer.mkv',
+                  'Container': 'mkv',
+                  'Size': 12800000000,
+                  'Bitrate': 10400000,
+                  'MediaStreams': <dynamic>[],
+                },
+                <String, dynamic>{
+                  'Id': '',
+                  'Name': 'MP4',
+                  'Path': '/mnt/media/Movies/Oppenheimer.2023.720p.AAC.Mobile/Oppenheimer.mp4',
+                  'Container': 'mp4',
+                  'Size': 3800000000,
+                  'Bitrate': 3100000,
+                  'MediaStreams': <dynamic>[],
+                },
+              ],
+            },
+            'similar': <dynamic>[],
+            'segments': <dynamic>[],
+          };
+        }
+        if (params['item_id'] == 'tv-5ver') {
+          return <String, dynamic>{
+            'item': <String, dynamic>{
+              'Id': 'tv-5ver',
+              'Name': '幕府将军',
+              'OriginalTitle': 'Shōgun',
+              'Type': 'Series',
+              'CanDownload': canDownload,
+              'Overview': '五版本剧集（相同 Name: S01E01 + 空 MediaStreams）单选与字幕测试。',
+              'ProductionYear': 2024,
+              'CommunityRating': 9.1,
+            },
+            'similar': <dynamic>[],
+            'segments': <dynamic>[],
+          };
+        }
         if (params['item_id'] == 'm1') {
           return <String, dynamic>{
             'item': <String, dynamic>{
@@ -222,6 +303,67 @@ class _MockVedroCore implements VedroCoreClient {
           ],
         };
       case 'get_episodes':
+        if (params['series_id'] == 'tv-5ver') {
+          return <String, dynamic>{
+            'Items': List<Map<String, dynamic>>.generate(5, (i) {
+              final epNum = i + 1;
+              final epCode = 'S01E0$epNum';
+              return <String, dynamic>{
+                'Id': 'shogun-ep$epNum',
+                'Name': '第 $epNum 章',
+                'Type': 'Episode',
+                'CanDownload': canDownload,
+                'SeriesId': 'tv-5ver',
+                'SeriesName': '幕府将军',
+                'ParentIndexNumber': 1,
+                'IndexNumber': epNum,
+                'MediaSourceCount': 5,
+                'MediaSources': <dynamic>[
+                  <String, dynamic>{
+                    'Id': '',
+                    'Name': epCode,
+                    'Path': '/mnt/tv/Shogun.2024.2160p.DSNP.WEB-DL.DV.HDR.DDP5.1.Atmos-FLUX/Season 1/$epCode.mkv',
+                    'Container': 'mkv',
+                    'Size': 9200000000,
+                    'Bitrate': 26500000,
+                  },
+                  <String, dynamic>{
+                    'Id': '',
+                    'Name': epCode,
+                    'Path': '/mnt/tv/Shogun.2024.2160p.SDR.HEVC-NTb/Season 1/$epCode.mkv',
+                    'Container': 'mkv',
+                    'Size': 7400000000,
+                    'Bitrate': 21000000,
+                  },
+                  <String, dynamic>{
+                    'Id': '',
+                    'Name': epCode,
+                    'Path': '/mnt/tv/Shogun.2024.1080p.WEB-DL.x265.10bit-HHWEB/Season 1/$epCode.mkv',
+                    'Container': 'mkv',
+                    'Size': 3100000000,
+                    'Bitrate': 8500000,
+                  },
+                  <String, dynamic>{
+                    'Id': '',
+                    'Name': epCode,
+                    'Path': '/mnt/tv/Shogun.2024.1080p.CHS.JPN.Bilingual-Nekomoe/Season 1/$epCode.mkv',
+                    'Container': 'mkv',
+                    'Size': 2400000000,
+                    'Bitrate': 6800000,
+                  },
+                  <String, dynamic>{
+                    'Id': '',
+                    'Name': epCode,
+                    'Path': '/mnt/tv/Shogun.2024.720p.AAC.Mini/Season 1/$epCode.mp4',
+                    'Container': 'mp4',
+                    'Size': 980000000,
+                    'Bitrate': 2600000,
+                  },
+                ],
+              };
+            }),
+          };
+        }
         return <String, dynamic>{
           'Items': List<Map<String, dynamic>>.generate(120, (i) {
             final epNum = i + 1;
@@ -912,6 +1054,171 @@ void main() {
     );
     expect(targetRes.comments.length, equals(1));
     expect(targetRes.comments.first.text, equals('B站弹幕加载成功'));
+  });
+
+  testWidgets(
+      '5-version Movie & Series enforce strict single-selection (never multi-select) and surface visible Audio/Subtitle panel even when unprobed',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 1100);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final app = VedroAppState(_MockVedroCore(enableContentDownloading: true))
+      ..userId = 'u1'
+      ..connectedUrl = 'https://embygo.example.com'
+      ..enableContentDownloading = true;
+
+    // 1. 5-version Movie with colliding Name="MKV" & empty Id="" & empty MediaStreams=[]
+    await tester.pumpWidget(MaterialApp(
+      theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+      home: DetailScreen(
+        key: const ValueKey('detail-5ver-movie'),
+        item: MediaItemModel(id: 'm-5ver', name: '奥本海默', type: 'Movie', canDownload: true),
+        appState: app,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
+    expect(find.text('选择片源版本 (5)'), findsOneWidget);
+    // Strictly ONE active version badge initially!
+    expect(find.text('当前'), findsOneWidget);
+
+    // Always-visible Audio & Subtitle control bar even when MediaStreams is empty (embygo unprobed)
+    expect(find.byKey(const ValueKey('detail-audio-subtitle-panel')), findsOneWidget);
+    expect(find.byKey(const ValueKey('detail-mount-local-sub-btn')), findsOneWidget);
+    expect(find.text('音轨与字幕'), findsOneWidget);
+    expect(find.text('关闭字幕'), findsOneWidget);
+
+    // Tap through versions #2, #3, #4, #5 — strictly ONE '当前' badge at every single step!
+    for (final idx in [1, 2, 3, 4, 0]) {
+      final card = find.byKey(ValueKey('movie-version-card-$idx'));
+      await tester.ensureVisible(card);
+      await tester.tap(card);
+      await tester.pumpAndSettle();
+      expect(find.text('当前'), findsOneWidget);
+    }
+
+    // Tap '繁体中文' & '关闭字幕' on unprobed Movie DetailScreen -> updates preferredSubLang
+    await tester.ensureVisible(find.text('繁体中文'));
+    await tester.tap(find.text('繁体中文'));
+    await tester.pumpAndSettle();
+    expect(app.prefs.preferredSubLang, equals('zh-Hant'));
+
+    await tester.tap(find.text('关闭字幕'));
+    await tester.pumpAndSettle();
+    expect(app.prefs.preferredSubLang, equals('off'));
+
+    // 2. 5-version Series with colliding Name="S01E01" & empty Id="" & empty MediaStreams=[]
+    await tester.pumpWidget(MaterialApp(
+      theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+      home: DetailScreen(
+        key: const ValueKey('detail-5ver-series'),
+        item: MediaItemModel(id: 'tv-5ver', name: '幕府将军', type: 'Series', canDownload: true),
+        appState: app,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
+    expect(find.text('选择剧集片源版本 (5)'), findsOneWidget);
+    expect(find.text('当前'), findsOneWidget);
+    // Series also surfaces Audio & Subtitle panel directly on DetailScreen!
+    expect(find.byKey(const ValueKey('detail-audio-subtitle-panel')), findsOneWidget);
+    expect(find.byKey(const ValueKey('detail-mount-local-sub-btn')), findsOneWidget);
+
+    for (final idx in [1, 2, 3, 4, 2]) {
+      final card = find.byKey(ValueKey('series-version-card-$idx'));
+      await tester.ensureVisible(card);
+      await tester.tap(card);
+      await tester.pumpAndSettle();
+      expect(find.text('当前'), findsOneWidget);
+    }
+  });
+
+  testWidgets('VedroSkin 9 presets (Light & Dark), share code roundtrip & DIY Custom Skin Studio',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 960);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    // 1. Verify all 9 bold presets & CustomSkinSpec share code roundtrip
+    expect(VedroSkin.presets.length, equals(9));
+    expect(VedroSkin.byId('daylight').isLight, isTrue);
+    expect(VedroSkin.byId('editorial_paper').isLight, isTrue);
+    expect(VedroSkin.byId('editorial_paper').editorialSerif, isTrue);
+    expect(VedroSkin.byId('cyber_neon').frameStyle, equals('neon'));
+    expect(VedroSkin.byId('cyber_neon').ctaStyle, equals('gradient'));
+
+    const diy = CustomSkinSpec(
+      id: 'custom_test_1',
+      name: '落日琥珀馆',
+      isLight: false,
+      canvasHex: '#140D08',
+      surfaceHex: '#22160E',
+      accentHex: '#F59E0B',
+      accentSecondaryHex: '#EF4444',
+      ctaStyle: 'gradient',
+      frameStyle: 'hairline',
+      cardRadius: 16,
+      pillRadius: 999,
+      ambientGlow: true,
+      editorialSerif: true,
+    );
+    final code = diy.encodeShareCode();
+    expect(code, startsWith('VEDRO-SKIN:'));
+    final decoded = CustomSkinSpec.tryDecodeShareCode(code);
+    expect(decoded, isNotNull);
+    expect(decoded!.name, equals('落日琥珀馆'));
+    expect(decoded.accentHex, equals('#F59E0B'));
+    expect(decoded.editorialSerif, isTrue);
+
+    // 2. SettingsScreen -> 应用风格 switches live between Light/Dark presets & creates a DIY skin
+    final app = VedroAppState(_MockVedroCore());
+    await tester.pumpWidget(
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) => MaterialApp(
+          theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+          home: SettingsScreen(
+            appState: app,
+            onOpenServerHub: () {},
+            onOpenAddServer: ([_]) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('应用风格'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('skin-preset-obsidian')), findsOneWidget);
+    expect(find.byKey(const ValueKey('skin-preset-daylight')), findsOneWidget);
+    expect(find.byKey(const ValueKey('skin-preset-cyber_neon')), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(const ValueKey('skin-preset-daylight')));
+    await tester.tap(find.byKey(const ValueKey('skin-preset-daylight')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.skinId, equals('daylight'));
+    expect(app.prefs.activeSkin.isLight, isTrue);
+
+    await tester.ensureVisible(find.byKey(const ValueKey('skin-preset-cyber_neon')));
+    await tester.tap(find.byKey(const ValueKey('skin-preset-cyber_neon')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.skinId, equals('cyber_neon'));
+    expect(app.prefs.activeSkin.frameStyle, equals('neon'));
+
+    // Open DIY Custom Skin Studio & save a new custom skin
+    await tester.ensureVisible(find.byKey(const ValueKey('open-diy-skin-editor-btn')));
+    await tester.tap(find.byKey(const ValueKey('open-diy-skin-editor-btn')));
+    await tester.pumpAndSettle();
+    expect(find.text('保存并启用皮肤'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('save-diy-skin-btn')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.customSkins.length, equals(1));
+    expect(app.prefs.skinId, equals(app.prefs.customSkins.first.id));
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {

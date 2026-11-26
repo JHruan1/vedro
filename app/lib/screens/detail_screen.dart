@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/models/models.dart';
+import '../core/platform/native_playback_channel.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/horizontal_rail.dart';
@@ -47,10 +49,11 @@ class _DetailScreenState extends State<DetailScreen> {
   List<MediaItemModel> _episodes = [];
   List<MediaItemModel> _personCredits = [];
   String? _selectedSeasonId;
-  String? _selectedSourceId;
-  String? _selectedSeriesVersionKey;
+  int _selectedSourceIndex = 0;
+  int _selectedSeriesVersionIndex = 0;
   int? _selectedAudioIndex;
   int? _selectedSubtitleIndex;
+  String? _localExternalSubPath;
   bool _loading = true;
   String _episodeViewMode = 'cards'; // 'grid' | 'cards' | 'list'
   bool _episodeModeUserChosen = false;
@@ -116,8 +119,8 @@ class _DetailScreenState extends State<DetailScreen> {
             .whereType<Map<String, dynamic>>()
             .map(MediaSegmentModel.fromJson)
             .toList();
-        if (_item.mediaSources.isNotEmpty) {
-          _selectedSourceId ??= _item.mediaSources.first.id;
+        if (_selectedSourceIndex >= _item.mediaSources.length) {
+          _selectedSourceIndex = 0;
         }
         if (_item.isSeries) {
           final sRes = await widget.appState.core.invoke('get_seasons', {'series_id': _item.id})
@@ -178,59 +181,117 @@ class _DetailScreenState extends State<DetailScreen> {
     return _seasons.first;
   }
 
+  List<ResolvedMediaVersion> get _resolvedPlayableVersions =>
+      MediaSourceModel.resolveVersions(_item.mediaSources);
+
   MediaSourceModel? get _activeSource {
-    if (_item.mediaSources.isEmpty) return null;
-    for (final s in _item.mediaSources) {
-      if (s.id == _selectedSourceId) return s;
-    }
-    return _item.mediaSources.first;
+    final vers = _resolvedPlayableVersions;
+    if (vers.isEmpty) return null;
+    final idx = _selectedSourceIndex.clamp(0, vers.length - 1);
+    return vers[idx].source;
   }
 
-  /// Build a stable human-readable version key for matching sources across episodes of a Series.
-  String _sourceVersionKey(MediaSourceModel s) {
-    final name = (s.name ?? '').trim();
-    if (name.isNotEmpty) return name;
-    final parts = <String>[
-      if (s.videoStreams.isNotEmpty && s.videoStreams.first.height != null)
-        '${s.videoStreams.first.height}p',
-      if (s.container != null && s.container!.isNotEmpty) s.container!.toUpperCase(),
-    ];
-    return parts.isNotEmpty ? parts.join(' · ') : s.id;
-  }
-
-  /// Collect representative multi-version sources for a Series from its loaded episodes.
+  /// Collect representative multi-version sources for a Series from the episode with the most versions.
   List<MediaSourceModel> get _seriesSampleSources {
-    if (!_item.isSeries) return const [];
+    if (!_item.isSeries || _episodes.isEmpty) return const [];
+    List<MediaSourceModel> best = const [];
     for (final ep in _episodes) {
-      if (ep.mediaSources.length > 1) return ep.mediaSources;
+      if (ep.mediaSources.length > best.length) {
+        best = ep.mediaSources;
+      }
     }
-    return const [];
+    return best;
   }
 
-  String? _matchingSourceIdForEpisode(MediaItemModel ep) {
-    if (ep.mediaSources.length <= 1) return null;
-    final key = _selectedSeriesVersionKey;
-    if (key == null || key.isEmpty) return ep.mediaSources.first.id;
-    for (final s in ep.mediaSources) {
-      if (_sourceVersionKey(s) == key) return s.id;
+  List<ResolvedMediaVersion> get _resolvedSeriesVersions =>
+      MediaSourceModel.resolveVersions(_seriesSampleSources);
+
+  MediaSourceModel? _matchingSourceForEpisode(MediaItemModel ep) {
+    if (ep.mediaSources.isEmpty) return null;
+    if (ep.mediaSources.length == 1) return ep.mediaSources.first;
+    final sampleVers = _resolvedSeriesVersions;
+    if (sampleVers.isEmpty) return ep.mediaSources.first;
+    final chosen = sampleVers[_selectedSeriesVersionIndex.clamp(0, sampleVers.length - 1)];
+    final epVers = MediaSourceModel.resolveVersions(ep.mediaSources);
+
+    // 1. Exact directory + release signature match across episodes
+    for (final ev in epVers) {
+      if (ev.seriesMatchSignature == chosen.seriesMatchSignature) {
+        return ev.source;
+      }
     }
-    // Fuzzy match on resolution/codec tokens when filenames differ per episode (e.g. S01E01 vs S01E02)
-    final keyTokens = key.toLowerCase().split(RegExp(r'[\s._\-·/]+')).where((t) => t.length >= 2).toSet();
-    MediaSourceModel? best;
+
+    // 2. Token overlap on disambiguated title + signature
+    final keyTokens = '${chosen.seriesMatchSignature} ${chosen.displayTitle}'
+        .toLowerCase()
+        .split(RegExp(r'[\s._\-·/|:\[\]]+'))
+        .where((t) => t.length >= 2)
+        .toSet();
+    ResolvedMediaVersion? best;
     var bestScore = 0;
-    for (final s in ep.mediaSources) {
-      final sTokens = _sourceVersionKey(s)
+    for (final ev in epVers) {
+      final sTokens = '${ev.seriesMatchSignature} ${ev.displayTitle}'
           .toLowerCase()
-          .split(RegExp(r'[\s._\-·/]+'))
+          .split(RegExp(r'[\s._\-·/|:\[\]]+'))
           .where((t) => t.length >= 2)
           .toSet();
       final score = keyTokens.intersection(sTokens).length;
       if (score > bestScore) {
         bestScore = score;
-        best = s;
+        best = ev;
       }
     }
-    return best?.id ?? ep.mediaSources.first.id;
+    if (best != null && bestScore > 0) return best.source;
+
+    // 3. Deterministic slot fallback
+    return ep.mediaSources[_selectedSeriesVersionIndex.clamp(0, ep.mediaSources.length - 1)];
+  }
+
+  String? _matchingSourceIdForEpisode(MediaItemModel ep) =>
+      _matchingSourceForEpisode(ep)?.id;
+
+  Future<void> _pickExternalSubtitleForDetail() async {
+    final picked = await NativePlaybackChannel.pickFiles(
+      extensions: NativePlaybackChannel.subtitleExtensions.toList(),
+      title: '选择外挂字幕文件 (.srt / .ass / .ssa / .vtt)',
+    );
+    if (picked.isNotEmpty) {
+      if (mounted) {
+        setState(() {
+          _localExternalSubPath = picked.first;
+          if (_selectedSubtitleIndex == -1) _selectedSubtitleIndex = null;
+        });
+      }
+      return;
+    }
+    if (!mounted) return;
+    final isDesktop = !kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux);
+    if (!isDesktop) {
+      final ctrl = TextEditingController();
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('挂载本地外挂字幕'),
+          content: TextField(
+            controller: ctrl,
+            autofocus: true,
+            decoration: const InputDecoration(hintText: '/path/to/subtitle.ass'),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('确定')),
+          ],
+        ),
+      );
+      final p = ctrl.text.trim();
+      ctrl.dispose();
+      if (ok == true && p.isNotEmpty && mounted) {
+        setState(() {
+          _localExternalSubPath = p;
+          if (_selectedSubtitleIndex == -1) _selectedSubtitleIndex = null;
+        });
+      }
+    }
   }
 
   Future<void> _openEpisodeVersionSheet(MediaItemModel ep) async {
@@ -243,13 +304,17 @@ class _DetailScreenState extends State<DetailScreen> {
       } catch (_) {}
     }
     if (!mounted) return;
-    final sources = target.mediaSources;
-    if (sources.isEmpty) {
+    final resolved = MediaSourceModel.resolveVersions(target.mediaSources);
+    if (resolved.isEmpty) {
       _openItemDetail(target);
       return;
     }
-    final activeId = _matchingSourceIdForEpisode(target) ?? sources.first.id;
-    final accent = Theme.of(context).colorScheme.secondary;
+    final matchedSrc = _matchingSourceForEpisode(target);
+    var activeIdx = resolved.indexWhere((r) => identical(r.source, matchedSrc));
+    if (activeIdx < 0) {
+      activeIdx = _selectedSeriesVersionIndex.clamp(0, resolved.length - 1);
+    }
+    final skin = VedroSkin.of(context);
     showGlassSheet<void>(
       context: context,
       builder: (ctx) => ListView(
@@ -262,9 +327,9 @@ class _DetailScreenState extends State<DetailScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '选择片源版本 (${sources.length})',
-                  style: const TextStyle(
-                    color: Colors.white,
+                  '选择片源版本 (${resolved.length})',
+                  style: TextStyle(
+                    color: skin.fg,
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                   ),
@@ -272,28 +337,27 @@ class _DetailScreenState extends State<DetailScreen> {
                 const SizedBox(height: 3),
                 Text(
                   '${target.episodeCode ?? ''} ${target.displayName}'.trim(),
-                  style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
+                  style: TextStyle(color: skin.fg2, fontSize: 12.5),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 8),
-          ...sources.map((s) {
-            final on = s.id == activeId;
-            return Padding(
+          for (var i = 0; i < resolved.length; i++)
+            Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: _VersionOptionTile(
-                source: s,
-                selected: on,
-                accent: accent,
+                version: resolved[i],
+                totalCount: resolved.length,
+                selected: i == activeIdx,
+                accent: skin.accent,
                 onTap: () {
                   Navigator.pop(ctx);
-                  setState(() => _selectedSeriesVersionKey = _sourceVersionKey(s));
-                  _play(target, sourceId: s.id);
+                  setState(() => _selectedSeriesVersionIndex = i);
+                  _play(target, sourceId: resolved[i].source.id);
                 },
               ),
-            );
-          }),
+            ),
         ],
       ),
     );
@@ -371,8 +435,9 @@ class _DetailScreenState extends State<DetailScreen> {
         mediaSourceId: sourceId,
         playlistEpisodes: _episodes.isNotEmpty ? _episodes : null,
         segments: target.id == _item.id ? _segments : null,
-        initialAudioStreamIndex: target.id == _item.id ? _selectedAudioIndex : null,
-        initialSubtitleStreamIndex: target.id == _item.id ? _selectedSubtitleIndex : null,
+        initialAudioStreamIndex: _selectedAudioIndex,
+        initialSubtitleStreamIndex: _selectedSubtitleIndex,
+        initialExternalSubtitlePath: _localExternalSubPath,
         localFilePath: localPath,
       )),
     );
@@ -440,14 +505,7 @@ class _DetailScreenState extends State<DetailScreen> {
   MediaSourceModel? _resolveDownloadSource(MediaItemModel? target) {
     if (target == null) return null;
     if (target.id == _item.id) return _activeSource;
-    if (target.mediaSources.isEmpty) return null;
-    final matchedId = _matchingSourceIdForEpisode(target);
-    if (matchedId != null) {
-      for (final s in target.mediaSources) {
-        if (s.id == matchedId) return s;
-      }
-    }
-    return target.mediaSources.first;
+    return _matchingSourceForEpisode(target);
   }
 
   Future<void> _startDownload() async {
@@ -480,7 +538,7 @@ class _DetailScreenState extends State<DetailScreen> {
     try {
       await widget.appState.enqueueDownload(
         target,
-        mediaSourceId: source?.id ?? (target.id == _item.id ? _selectedSourceId : null),
+        mediaSourceId: source?.id ?? (target.id == _item.id ? _activeSource?.id : null),
         versionLabel: source?.name ?? source?.container?.toUpperCase(),
         expectedBytes: source?.size,
       );
@@ -508,9 +566,11 @@ class _DetailScreenState extends State<DetailScreen> {
 
   void _openVersionDownloadSheet(MediaItemModel target) {
     if (!widget.appState.canDownloadItem(target)) return;
-    final sources = target.mediaSources;
-    if (sources.isEmpty) return;
+    final resolved = MediaSourceModel.resolveVersions(target.mediaSources);
+    if (resolved.isEmpty) return;
     final dq = widget.appState.meQuota?.downloadQuota;
+    final activeIdx = _selectedSourceIndex.clamp(0, resolved.length - 1);
+    final skin = VedroSkin.of(context);
 
     showGlassSheet<void>(
       context: context,
@@ -521,131 +581,150 @@ class _DetailScreenState extends State<DetailScreen> {
         children: [
           Row(
             children: [
-              const Icon(Icons.download_rounded, size: 19, color: Colors.white),
+              Icon(Icons.download_rounded, size: 19, color: skin.fg),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '选择下载版本 (${sources.length})',
-                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                  '选择下载版本 (${resolved.length})',
+                  style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w600),
                 ),
               ),
               IconButton(
                 visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.close_rounded, color: VedroTheme.fg2, size: 19),
+                icon: Icon(Icons.close_rounded, color: skin.fg2, size: 19),
                 onPressed: () => Navigator.pop(ctx),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          ...sources.map((s) {
-            final existing = widget.appState.findDownloadForItem(target.id, mediaSourceId: s.id);
-            final alreadyDone = existing != null && existing.status == 'completed';
-            final inProgress = existing != null && existing.isActive;
-            final tooLarge = dq != null &&
-                dq.enabled &&
-                !dq.adminExempt &&
-                s.size != null &&
-                s.size! > 0 &&
-                !dq.canFitBytes(s.size);
-            final selected = s.id == _selectedSourceId;
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: selected ? const Color(0xFF222228) : const Color(0xFF18181C),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            (s.name?.trim().isNotEmpty == true)
-                                ? s.name!.trim()
-                                : (s.container?.toUpperCase() ?? '原画版本'),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 13.5,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 4,
+          for (var i = 0; i < resolved.length; i++) ...[
+            Builder(
+              builder: (_) {
+                final ver = resolved[i];
+                final s = ver.source;
+                final existing = widget.appState.findDownloadForItem(target.id, mediaSourceId: s.id);
+                final alreadyDone = existing != null && existing.status == 'completed';
+                final inProgress = existing != null && existing.isActive;
+                final tooLarge = dq != null &&
+                    dq.enabled &&
+                    !dq.adminExempt &&
+                    s.size != null &&
+                    s.size! > 0 &&
+                    !dq.canFitBytes(s.size);
+                final selected = i == activeIdx;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: selected ? skin.surface3 : skin.surface2,
+                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 16.0)),
+                      border: skin.cardBorder(selected: selected),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              if (fmtFileSize(s.size).isNotEmpty)
-                                Text(
-                                  fmtFileSize(s.size),
-                                  style: TextStyle(
-                                    color: tooLarge ? const Color(0xFFFCA5A5) : VedroTheme.fg2,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    fontFeatures: const [FontFeature.tabularFigures()],
-                                  ),
+                              Text(
+                                ver.displayTitle,
+                                style: TextStyle(
+                                  color: skin.fg,
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w600,
                                 ),
-                              if (s.container != null && s.container!.isNotEmpty)
-                                Text(
-                                  s.container!.toUpperCase(),
-                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
-                                ),
-                              if (s.bitrate != null && s.bitrate! > 0)
-                                Text(
-                                  '${(s.bitrate! / 1000000).toStringAsFixed(1)} Mbps',
-                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
-                                ),
-                              if (tooLarge)
-                                const Text(
-                                  '余额不足',
-                                  style: TextStyle(color: Color(0xFFFCA5A5), fontSize: 11.5, fontWeight: FontWeight.w600),
-                                ),
-                              if (alreadyDone)
-                                const Text(
-                                  '已下载',
-                                  style: TextStyle(color: Color(0xFF34D399), fontSize: 11.5, fontWeight: FontWeight.w600),
-                                )
-                              else if (inProgress)
-                                const Text(
-                                  '下载队列中',
-                                  style: TextStyle(color: Color(0xFF60A5FA), fontSize: 11.5, fontWeight: FontWeight.w600),
-                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 4,
+                                children: [
+                                  if (fmtFileSize(s.size).isNotEmpty)
+                                    Text(
+                                      fmtFileSize(s.size),
+                                      style: TextStyle(
+                                        color: tooLarge ? const Color(0xFFEF4444) : skin.fg2,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        fontFeatures: const [FontFeature.tabularFigures()],
+                                      ),
+                                    ),
+                                  if (s.container != null && s.container!.isNotEmpty)
+                                    Text(
+                                      s.container!.toUpperCase(),
+                                      style: TextStyle(color: skin.fg3, fontSize: 12),
+                                    ),
+                                  if (s.bitrate != null && s.bitrate! > 0)
+                                    Text(
+                                      '${(s.bitrate! / 1000000).toStringAsFixed(1)} Mbps',
+                                      style: TextStyle(color: skin.fg3, fontSize: 12),
+                                    ),
+                                  if (tooLarge)
+                                    const Text(
+                                      '余额不足',
+                                      style: TextStyle(
+                                        color: Color(0xFFEF4444),
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  if (alreadyDone)
+                                    const Text(
+                                      '已下载',
+                                      style: TextStyle(
+                                        color: Color(0xFF10B981),
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    )
+                                  else if (inProgress)
+                                    Text(
+                                      '下载队列中',
+                                      style: TextStyle(
+                                        color: skin.accent,
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ],
                           ),
-                        ],
-                      ),
+                        ),
+                        const SizedBox(width: 10),
+                        FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: alreadyDone ? skin.surface3 : skin.activePillBg,
+                            foregroundColor: alreadyDone ? skin.fg : skin.activePillFg,
+                            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
+                            minimumSize: const Size(0, 34),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(skin.radiusForPill(34)),
+                            ),
+                          ),
+                          onPressed: (tooLarge || inProgress)
+                              ? null
+                              : () {
+                                  Navigator.pop(ctx);
+                                  if (alreadyDone && existing.filePath.isNotEmpty) {
+                                    _play(target, localPath: existing.filePath);
+                                  } else {
+                                    _enqueueSingleDownload(target, s);
+                                  }
+                                },
+                          child: Text(
+                            alreadyDone ? '播放' : (inProgress ? '队列中' : '下载'),
+                            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 10),
-                    FilledButton(
-                      style: FilledButton.styleFrom(
-                        backgroundColor: alreadyDone ? const Color(0xFF28282E) : Colors.white,
-                        foregroundColor: alreadyDone ? Colors.white : VedroTheme.canvas,
-                        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
-                        minimumSize: const Size(0, 34),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(17)),
-                      ),
-                      onPressed: (tooLarge || inProgress)
-                          ? null
-                          : () {
-                              Navigator.pop(ctx);
-                              if (alreadyDone && existing.filePath.isNotEmpty) {
-                                _play(target, localPath: existing.filePath);
-                              } else {
-                                _enqueueSingleDownload(target, s);
-                              }
-                            },
-                      child: Text(
-                        alreadyDone ? '播放' : (inProgress ? '队列中' : '下载'),
-                        style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }),
+                  ),
+                );
+              },
+            ),
+          ],
         ],
       ),
     );
@@ -662,9 +741,8 @@ class _DetailScreenState extends State<DetailScreen> {
         seasons: _seasons,
         initialSeasonId: _selectedSeasonId ?? (_seasons.isNotEmpty ? _seasons.first.id : null),
         initialEpisodes: _episodes,
-        initialVersionKey: _selectedSeriesVersionKey,
+        initialVersionIndex: _selectedSeriesVersionIndex,
         appState: widget.appState,
-        sourceVersionKeyOf: _sourceVersionKey,
       ),
     );
   }
@@ -672,34 +750,49 @@ class _DetailScreenState extends State<DetailScreen> {
   void _openMoreSheet() {
     final playable = _resolveDownloadTarget();
     final canDownload = widget.appState.canDownloadItem(playable);
+    final skin = VedroSkin.of(context);
     showGlassSheet<void>(
       context: context,
       builder: (ctx) => ListView(
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
         children: [
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Text('更多操作', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Text('更多操作', style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w600)),
           ),
           if (playable != null) ...[
             ListTile(
-              leading: const Icon(Icons.open_in_new_rounded, color: VedroTheme.fg2),
-              title: const Text('使用外部播放器打开', style: TextStyle(color: VedroTheme.fg, fontSize: 14)),
-              subtitle: const Text('IINA / Infuse / MPV / VLC', style: TextStyle(color: VedroTheme.fg3, fontSize: 12)),
+              leading: Icon(Icons.subtitles_outlined, color: skin.fg2),
+              title: Text('挂载本地外挂字幕 (.srt / .ass)', style: TextStyle(color: skin.fg, fontSize: 14)),
+              subtitle: Text(
+                _localExternalSubPath != null
+                    ? '已选：${_localExternalSubPath!.split(Platform.pathSeparator).last}'
+                    : '开播时自动加载指定本地字幕文件',
+                style: TextStyle(color: skin.fg3, fontSize: 12),
+              ),
               onTap: () {
                 Navigator.pop(ctx);
-                _launchExternal(playable, sourceId: _resolveDownloadSource(playable)?.id ?? _selectedSourceId);
+                _pickExternalSubtitleForDetail();
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.open_in_new_rounded, color: skin.fg2),
+              title: Text('使用外部播放器打开', style: TextStyle(color: skin.fg, fontSize: 14)),
+              subtitle: Text('IINA / Infuse / MPV / VLC', style: TextStyle(color: skin.fg3, fontSize: 12)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _launchExternal(playable, sourceId: _resolveDownloadSource(playable)?.id ?? _activeSource?.id);
               },
             ),
             if (canDownload)
               ListTile(
-                leading: const Icon(Icons.download_rounded, color: VedroTheme.fg2),
+                leading: Icon(Icons.download_rounded, color: skin.fg2),
                 title: Text(
                   _item.isSeries
                       ? '批量下载剧集（选集与版本）'
                       : (_item.mediaSources.length > 1 ? '离线下载到本地（选择版本）' : '离线下载到本地'),
-                  style: const TextStyle(color: VedroTheme.fg, fontSize: 14),
+                  style: TextStyle(color: skin.fg, fontSize: 14),
                 ),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -709,8 +802,8 @@ class _DetailScreenState extends State<DetailScreen> {
           ],
           if (_item.type != 'Person')
             ListTile(
-              leading: const Icon(Icons.playlist_add_rounded, color: VedroTheme.fg2),
-              title: const Text('加入片单', style: TextStyle(color: VedroTheme.fg, fontSize: 14)),
+              leading: Icon(Icons.playlist_add_rounded, color: skin.fg2),
+              title: Text('加入片单', style: TextStyle(color: skin.fg, fontSize: 14)),
               onTap: () {
                 Navigator.pop(ctx);
                 _openPlaylistSheet();
@@ -718,10 +811,10 @@ class _DetailScreenState extends State<DetailScreen> {
             ),
           if (widget.appState.prefs.isAiReady && _item.cleanOverview.isNotEmpty)
             ListTile(
-              leading: const Icon(Icons.auto_awesome_rounded, color: VedroTheme.fg2),
+              leading: Icon(Icons.auto_awesome_rounded, color: skin.fg2),
               title: Text(
                 _translatedOverview != null ? '还原原始简介' : 'AI 翻译简介',
-                style: const TextStyle(color: VedroTheme.fg, fontSize: 14),
+                style: TextStyle(color: skin.fg, fontSize: 14),
               ),
               onTap: () {
                 Navigator.pop(ctx);
@@ -793,6 +886,7 @@ class _DetailScreenState extends State<DetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final size = MediaQuery.sizeOf(context);
     final wide = size.width >= 820;
     final ultraWide = size.width >= 1080;
@@ -801,7 +895,7 @@ class _DetailScreenState extends State<DetailScreen> {
     final topSafe = MediaQuery.paddingOf(context).top;
     final logoUrl = _item.type == 'Episode' ? null : widget.appState.logoArtUrl(_item);
     final src = _activeSource;
-    final accent = Theme.of(context).colorScheme.secondary;
+    final accent = skin.accent;
     final showSpecs = widget.appState.prefs.showSpecBadges;
     final overviewText = _translatedOverview?.isNotEmpty == true
         ? _translatedOverview!
@@ -849,10 +943,13 @@ class _DetailScreenState extends State<DetailScreen> {
       );
     }
 
-    final seriesSources = _seriesSampleSources;
-    if (seriesSources.length > 1 && _selectedSeriesVersionKey == null) {
-      _selectedSeriesVersionKey = _sourceVersionKey(seriesSources.first);
+    final playableVersions = _resolvedPlayableVersions;
+    final seriesVersions = _resolvedSeriesVersions;
+    if (_selectedSeriesVersionIndex >= seriesVersions.length && seriesVersions.isNotEmpty) {
+      _selectedSeriesVersionIndex = 0;
     }
+    final activeSeriesEpSource =
+        nextEpToPlay != null ? _matchingSourceForEpisode(nextEpToPlay) : null;
 
     final isEpisodeWithStill = _item.type == 'Episode' && _item.primaryImageTag != null;
     final coverW = _item.type == 'Person'
@@ -864,7 +961,7 @@ class _DetailScreenState extends State<DetailScreen> {
         ? 1.0
         : (isEpisodeWithStill ? 16 / 9 : 2 / 3);
 
-    // Editorial eyebrow (Studio + Type, Apple TV+ style)
+    // Editorial eyebrow (Studio + Type)
     final typeWord = _item.isSeries
         ? '剧集'
         : (_item.type == 'Movie' ? '电影' : (_item.type == 'Episode' ? '单集' : ''));
@@ -895,7 +992,7 @@ class _DetailScreenState extends State<DetailScreen> {
         if (_item.isPlayable) {
           _play(
             _item,
-            sourceId: _selectedSourceId,
+            sourceId: _activeSource?.id,
             localPath: localReady ? dlTask.filePath : null,
           );
         } else if (nextEpToPlay != null) {
@@ -922,17 +1019,17 @@ class _DetailScreenState extends State<DetailScreen> {
             label: '从头',
             tooltip: '从头播放',
             active: false,
-            color: Colors.white,
-            onTap: () => _play(_item, sourceId: _selectedSourceId, fromBeginning: true),
+            color: skin.fg,
+            onTap: () => _play(_item, sourceId: _activeSource?.id, fromBeginning: true),
           ),
         if (_item.type != 'Person')
           (
             key: null,
-            icon: _item.played ? Icons.check_rounded : Icons.check_rounded,
+            icon: Icons.check_rounded,
             label: _item.played ? '已看' : '标已看',
             tooltip: _item.played ? '已看（点击取消）' : '标为已看',
             active: _item.played,
-            color: _item.played ? accent : Colors.white,
+            color: _item.played ? accent : skin.fg,
             onTap: () async {
               await widget.appState.togglePlayed(_item);
               await _loadDetails();
@@ -944,7 +1041,7 @@ class _DetailScreenState extends State<DetailScreen> {
           label: _item.isFavorite ? '已收藏' : '收藏',
           tooltip: _item.isFavorite ? '取消收藏' : '收藏',
           active: _item.isFavorite,
-          color: _item.isFavorite ? VedroTheme.danger : Colors.white,
+          color: _item.isFavorite ? VedroTheme.danger : skin.fg,
           onTap: () async {
             await widget.appState.toggleFavorite(_item);
             await _loadDetails();
@@ -957,7 +1054,7 @@ class _DetailScreenState extends State<DetailScreen> {
             label: localReady ? '已缓存' : (_item.isSeries ? '下载' : '缓存'),
             tooltip: localReady ? '播放已缓存文件' : '离线下载',
             active: localReady,
-            color: localReady ? const Color(0xFF34D399) : Colors.white,
+            color: localReady ? const Color(0xFF10B981) : skin.fg,
             onTap: localReady
                 ? () => _play(downloadTarget ?? _item, localPath: dlTask.filePath)
                 : _startDownload,
@@ -966,9 +1063,9 @@ class _DetailScreenState extends State<DetailScreen> {
           key: null,
           icon: Icons.more_horiz_rounded,
           label: '更多',
-          tooltip: '更多（外部播放器 / 片单 / AI 翻译）',
+          tooltip: '更多（字幕挂载 / 外部播放器 / 片单 / AI 翻译）',
           active: false,
-          color: Colors.white,
+          color: skin.fg,
           onTap: _openMoreSheet,
         ),
       ];
@@ -977,8 +1074,6 @@ class _DetailScreenState extends State<DetailScreen> {
         builder: (ctx, constraints) {
           final singleLine = constraints.maxWidth >= 460;
           if (singleLine) {
-            // Apple TV+ Desktop / iPad Action Row:
-            // Pure solid white Play capsule + individual borderless frosted circular buttons (zero weird vertical lines!)
             return Wrap(
               spacing: 10,
               runSpacing: 10,
@@ -1020,19 +1115,19 @@ class _DetailScreenState extends State<DetailScreen> {
                             child: LinearProgressIndicator(
                               value: playProgress.clamp(0.04, 1.0),
                               minHeight: 3,
-                              backgroundColor: const Color(0x24FFFFFF),
-                              color: Colors.white,
+                              backgroundColor: skin.fg.withValues(alpha: 0.16),
+                              color: skin.ctaStyle == 'contrast' ? skin.fg : accent,
                             ),
                           ),
                         ),
                         const SizedBox(width: 8),
                         Text(
                           '已看 ${(playProgress * 100).round()}%',
-                          style: const TextStyle(
-                            color: Color(0xFFA1A1AA),
+                          style: TextStyle(
+                            color: skin.fg2,
                             fontSize: 12,
                             fontWeight: FontWeight.w500,
-                            fontFeatures: [FontFeature.tabularFigures()],
+                            fontFeatures: const [FontFeature.tabularFigures()],
                           ),
                         ),
                       ],
@@ -1042,7 +1137,6 @@ class _DetailScreenState extends State<DetailScreen> {
             );
           }
 
-          // iOS & Android Portrait: Full-width solid white Play CTA + 4 separate borderless frosted action tiles
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -1064,18 +1158,18 @@ class _DetailScreenState extends State<DetailScreen> {
                           child: LinearProgressIndicator(
                             value: playProgress.clamp(0.04, 1.0),
                             minHeight: 2.5,
-                            backgroundColor: const Color(0x22FFFFFF),
-                            color: Colors.white,
+                            backgroundColor: skin.fg.withValues(alpha: 0.16),
+                            color: skin.ctaStyle == 'contrast' ? skin.fg : accent,
                           ),
                         ),
                       ),
                       const SizedBox(width: 10),
                       Text(
                         '已观看 ${(playProgress * 100).round()}%',
-                        style: const TextStyle(
-                          color: Color(0xFFA1A1AA),
+                        style: TextStyle(
+                          color: skin.fg2,
                           fontSize: 11.5,
-                          fontFeatures: [FontFeature.tabularFigures()],
+                          fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                       ),
                     ],
@@ -1098,8 +1192,11 @@ class _DetailScreenState extends State<DetailScreen> {
                           decoration: BoxDecoration(
                             color: actions[i].active
                                 ? actions[i].color.withValues(alpha: 0.18)
-                                : const Color(0x14FFFFFF),
-                            borderRadius: BorderRadius.circular(13),
+                                : skin.subtleChipBg,
+                            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
+                            border: skin.frameStyle == 'borderless'
+                                ? null
+                                : Border.all(color: skin.border, width: 0.7),
                           ),
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
@@ -1111,9 +1208,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  color: actions[i].active
-                                      ? actions[i].color
-                                      : const Color(0xFFD4D4DA),
+                                  color: actions[i].active ? actions[i].color : skin.fg2,
                                   fontSize: 11,
                                   fontWeight: FontWeight.w500,
                                 ),
@@ -1139,8 +1234,8 @@ class _DetailScreenState extends State<DetailScreen> {
           if (tagline != null) ...[
             Text(
               tagline,
-              style: const TextStyle(
-                color: Color(0xFFE5E5EA),
+              style: TextStyle(
+                color: skin.fg,
                 fontSize: 14.5,
                 fontWeight: FontWeight.w600,
                 letterSpacing: -0.1,
@@ -1151,7 +1246,7 @@ class _DetailScreenState extends State<DetailScreen> {
           if (overviewText.isNotEmpty)
             _ExpandableOverview(
               text: overviewText,
-              collapsedLines: wide ? 3 : 3,
+              collapsedLines: 3,
               accent: accent,
               aiReady: widget.appState.prefs.isAiReady,
               translating: _translating,
@@ -1164,13 +1259,12 @@ class _DetailScreenState extends State<DetailScreen> {
       );
     }
 
-    // Build clean dot-separated Apple TV+ editorial fact widgets (zero underlines!)
     final dotFacts = <Widget>[];
     void addDotFact(Widget w) {
       if (dotFacts.isNotEmpty) {
-        dotFacts.add(const Text(
+        dotFacts.add(Text(
           ' · ',
-          style: TextStyle(color: Color(0xFF71717A), fontSize: 13.5),
+          style: TextStyle(color: skin.fg3, fontSize: 13.5),
         ));
       }
       dotFacts.add(w);
@@ -1179,21 +1273,21 @@ class _DetailScreenState extends State<DetailScreen> {
     if (premiere.isNotEmpty) {
       addDotFact(Text(
         premiere,
-        style: const TextStyle(
-          color: Color(0xFFD4D4DA),
+        style: TextStyle(
+          color: skin.fg2,
           fontSize: 13.5,
           fontWeight: FontWeight.w500,
-          fontFeatures: [FontFeature.tabularFigures()],
+          fontFeatures: const [FontFeature.tabularFigures()],
         ),
       ));
     } else if (_item.productionYear != null) {
       addDotFact(Text(
         '${_item.productionYear}',
-        style: const TextStyle(
-          color: Color(0xFFD4D4DA),
+        style: TextStyle(
+          color: skin.fg2,
           fontSize: 13.5,
           fontWeight: FontWeight.w500,
-          fontFeatures: [FontFeature.tabularFigures()],
+          fontFeatures: const [FontFeature.tabularFigures()],
         ),
       ));
     }
@@ -1206,8 +1300,8 @@ class _DetailScreenState extends State<DetailScreen> {
             cursor: widget.onGenreTap != null ? SystemMouseCursors.click : MouseCursor.defer,
             child: Text(
               g,
-              style: const TextStyle(
-                color: Color(0xFFD4D4DA),
+              style: TextStyle(
+                color: skin.fg2,
                 fontSize: 13.5,
                 fontWeight: FontWeight.w500,
               ),
@@ -1220,30 +1314,29 @@ class _DetailScreenState extends State<DetailScreen> {
     if (_item.isSeries && (_seasons.isNotEmpty || (_item.childCount ?? 0) > 0)) {
       addDotFact(Text(
         '共 ${_seasons.isNotEmpty ? _seasons.length : _item.childCount} 季${(_item.recursiveItemCount ?? 0) > 0 ? ' ${_item.recursiveItemCount} 集' : ''}',
-        style: const TextStyle(color: Color(0xFFD4D4DA), fontSize: 13.5),
+        style: TextStyle(color: skin.fg2, fontSize: 13.5),
       ));
     }
 
     if (!_item.isFolderish && fmtDurationTicks(_item.runTimeTicks).isNotEmpty) {
       addDotFact(Text(
         fmtDurationTicks(_item.runTimeTicks),
-        style: const TextStyle(color: Color(0xFFD4D4DA), fontSize: 13.5),
+        style: TextStyle(color: skin.fg2, fontSize: 13.5),
       ));
     } else if (_item.isSeries && fmtDurationTicks(_item.runTimeTicks).isNotEmpty) {
       addDotFact(Text(
         '单集 ${fmtDurationTicks(_item.runTimeTicks)}',
-        style: const TextStyle(color: Color(0xFFA1A1AA), fontSize: 13.5),
+        style: TextStyle(color: skin.fg3, fontSize: 13.5),
       ));
     }
 
     if (_item.productionLocations.isNotEmpty) {
       addDotFact(Text(
         _item.productionLocations.take(2).join(' / '),
-        style: const TextStyle(color: Color(0xFFA1A1AA), fontSize: 13.5),
+        style: TextStyle(color: skin.fg3, fontSize: 13.5),
       ));
     }
 
-    // Apple TV+ Right-Side Editorial Credits Column (for wide macOS / desktop windows)
     final heroCreditRows = <(String role, String names)>[
       if (directors.isNotEmpty) ('导演', directors.take(2).join('、')),
       if (castNames.isNotEmpty) ('主演', castNames.join('、')),
@@ -1251,6 +1344,7 @@ class _DetailScreenState extends State<DetailScreen> {
       if (statusLabel.isNotEmpty) ('状态', statusLabel),
     ];
 
+    final posterRadius = widget.appState.prefs.effectiveCardRadius(skin);
     Widget coverCard = GestureDetector(
       onTap: _openPosterLightbox,
       child: MouseRegion(
@@ -1259,19 +1353,13 @@ class _DetailScreenState extends State<DetailScreen> {
           key: const ValueKey('detail-poster-cover'),
           width: coverW,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(wide ? 14 : 12),
-            color: VedroTheme.surface2,
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0xCC000000),
-                blurRadius: 38,
-                offset: Offset(0, 16),
-              ),
-            ],
+            borderRadius: BorderRadius.circular(posterRadius),
+            color: skin.surface2,
+            boxShadow: skin.posterShadow(hovered: true),
           ),
           foregroundDecoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(wide ? 14 : 12),
-            border: Border.all(color: const Color(0x20FFFFFF), width: 0.6),
+            borderRadius: BorderRadius.circular(posterRadius),
+            border: skin.cardBorder(hovered: false),
           ),
           clipBehavior: Clip.antiAlias,
           child: AspectRatio(
@@ -1290,614 +1378,596 @@ class _DetailScreenState extends State<DetailScreen> {
       coverCard = Hero(tag: widget.heroTag!, child: coverCard);
     }
 
+    final c = skin.canvas;
+    final heroVertStops = skin.isLight
+        ? const [0.0, 0.24, 0.54, 0.82, 1.0]
+        : const [0.0, 0.22, 0.56, 0.84, 1.0];
+    final heroVertColors = skin.isLight
+        ? [
+            c.withValues(alpha: 0.58),
+            c.withValues(alpha: 0.68),
+            c.withValues(alpha: 0.89),
+            c.withValues(alpha: 0.98),
+            c,
+          ]
+        : [
+            c.withValues(alpha: 0.35),
+            c.withValues(alpha: 0.10),
+            c.withValues(alpha: 0.64),
+            c.withValues(alpha: 0.92),
+            c,
+          ];
+
     return Scaffold(
-      backgroundColor: VedroTheme.canvas,
-      body: Stack(
-        children: [
-          CustomScrollView(
-            slivers: [
-              // 1. Seamless Full-Stage Apple TV+ Immersive Hero (Positioned.fill -> ZERO horizontal cut-off seam!)
-              SliverToBoxAdapter(
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: ClipRect(
-                        key: const ValueKey('detail-backdrop-banner'),
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            VedroArtwork(
-                              item: _item,
-                              appState: widget.appState,
-                              isHero: true,
-                              alignment: const Alignment(0, -0.32),
-                              showInitials: false,
-                            ),
-                            if (wide)
-                              const DecoratedBox(
+      backgroundColor: skin.canvas,
+      body: VedroSkinCanvas(
+        child: Stack(
+          children: [
+            CustomScrollView(
+              slivers: [
+                // 1. Seamless Full-Stage Immersive Hero dissolving smoothly into active skin canvas
+                SliverToBoxAdapter(
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: ClipRect(
+                          key: const ValueKey('detail-backdrop-banner'),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              VedroArtwork(
+                                item: _item,
+                                appState: widget.appState,
+                                isHero: true,
+                                alignment: const Alignment(0, -0.32),
+                                showInitials: false,
+                              ),
+                              if (wide)
+                                DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.centerLeft,
+                                      end: Alignment.centerRight,
+                                      stops: const [0.0, 0.55, 1.0],
+                                      colors: [
+                                        c.withValues(alpha: skin.isLight ? 0.86 : 0.78),
+                                        c.withValues(alpha: skin.isLight ? 0.55 : 0.40),
+                                        c.withValues(alpha: skin.isLight ? 0.25 : 0.22),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              DecoratedBox(
                                 decoration: BoxDecoration(
                                   gradient: LinearGradient(
-                                    begin: Alignment.centerLeft,
-                                    end: Alignment.centerRight,
-                                    stops: [0.0, 0.55, 1.0],
-                                    colors: [
-                                      Color(0xC809090B),
-                                      Color(0x6609090B),
-                                      Color(0x3809090B),
-                                    ],
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    stops: heroVertStops,
+                                    colors: heroVertColors,
                                   ),
                                 ),
                               ),
-                            const DecoratedBox(
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  begin: Alignment.topCenter,
-                                  end: Alignment.bottomCenter,
-                                  stops: [0.0, 0.22, 0.56, 0.84, 1.0],
-                                  colors: [
-                                    Color(0x5809090B),
-                                    Color(0x1809090B),
-                                    Color(0x9E09090B),
-                                    Color(0xEB09090B),
-                                    VedroTheme.canvas,
-                                  ],
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          padX,
+                          wide ? (topSafe + 148) : (topSafe + 118),
+                          padX,
+                          wide ? 32 : 24,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              crossAxisAlignment: wide ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                              children: [
+                                coverCard,
+                                SizedBox(width: wide ? 32 : 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      if (eyebrowText.isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(bottom: 6),
+                                          child: Text(
+                                            eyebrowText.toUpperCase(),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              color: skin.ctaStyle == 'contrast' ? skin.fg3 : skin.accent,
+                                              fontSize: 11.5,
+                                              fontWeight: FontWeight.w600,
+                                              letterSpacing: 0.6,
+                                            ),
+                                          ),
+                                        ),
+
+                                      if (wide && logoUrl != null && !skin.isLight)
+                                        ConstrainedBox(
+                                          constraints: const BoxConstraints(
+                                            maxHeight: 74,
+                                            maxWidth: 400,
+                                          ),
+                                          child: Image.network(
+                                            logoUrl,
+                                            fit: BoxFit.contain,
+                                            alignment: Alignment.centerLeft,
+                                            errorBuilder: (_, __, ___) =>
+                                                _TitleHeadline(_item.displayName, wide),
+                                          ),
+                                        )
+                                      else
+                                        _TitleHeadline(_item.displayName, wide),
+
+                                      if (_item.originalTitle != null &&
+                                          _item.originalTitle != _item.name) ...[
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          _item.originalTitle!,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: skin.fg3,
+                                            fontSize: 13.5,
+                                            fontWeight: FontWeight.w400,
+                                          ),
+                                        ),
+                                      ],
+
+                                      if (dotFacts.isNotEmpty) ...[
+                                        const SizedBox(height: 10),
+                                        Wrap(
+                                          crossAxisAlignment: WrapCrossAlignment.center,
+                                          runSpacing: 4,
+                                          children: dotFacts,
+                                        ),
+                                      ],
+
+                                      if ((_item.communityRating ?? 0) > 0 ||
+                                          (_item.criticRating ?? 0) > 0 ||
+                                          (_item.officialRating?.isNotEmpty == true) ||
+                                          statusLabel.isNotEmpty ||
+                                          specChips.isNotEmpty) ...[
+                                        const SizedBox(height: 10),
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 6,
+                                          crossAxisAlignment: WrapCrossAlignment.center,
+                                          children: [
+                                            if (_item.communityRating != null &&
+                                                _item.communityRating! > 0)
+                                              Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  const Icon(Icons.star_rounded,
+                                                      size: 15.5, color: Color(0xFFF59E0B)),
+                                                  const SizedBox(width: 3),
+                                                  Text(
+                                                    _item.communityRating!.toStringAsFixed(1),
+                                                    style: TextStyle(
+                                                      color: skin.fg,
+                                                      fontSize: 13.5,
+                                                      fontWeight: FontWeight.w700,
+                                                      fontFeatures: const [FontFeature.tabularFigures()],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            if (_item.criticRating != null &&
+                                                _item.criticRating! > 0)
+                                              Text(
+                                                '${_item.criticRating!.round()}% 好评',
+                                                style: TextStyle(
+                                                  color: skin.fg2,
+                                                  fontSize: 12.5,
+                                                  fontWeight: FontWeight.w600,
+                                                  fontFeatures: const [FontFeature.tabularFigures()],
+                                                ),
+                                              ),
+                                            if (_item.officialRating != null &&
+                                                _item.officialRating!.isNotEmpty)
+                                              _AppleMicroBadge(_item.officialRating!),
+                                            if (statusLabel.isNotEmpty && !ultraWide)
+                                              _AppleMicroBadge(statusLabel),
+                                            if (specChips.isNotEmpty) SpecGlyphRow(specs: specChips),
+                                          ],
+                                        ),
+                                      ],
+
+                                      if (wide) ...[
+                                        if (tagline != null || overviewText.isNotEmpty) ...[
+                                          const SizedBox(height: 14),
+                                          ConstrainedBox(
+                                            constraints: const BoxConstraints(maxWidth: 680),
+                                            child: buildOverviewBlock(),
+                                          ),
+                                        ],
+                                        const SizedBox(height: 22),
+                                        VedroStaggeredEntrance(
+                                          index: 1,
+                                          reduceMotion: widget.appState.prefs.reduceMotion,
+                                          child: buildActionRow(),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
                                 ),
-                              ),
+
+                                if (ultraWide && heroCreditRows.isNotEmpty) ...[
+                                  const SizedBox(width: 36),
+                                  SizedBox(
+                                    width: 228,
+                                    child: Padding(
+                                      padding: const EdgeInsets.only(bottom: 4),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          for (var i = 0; i < heroCreditRows.length; i++) ...[
+                                            if (i > 0) const SizedBox(height: 10),
+                                            Text.rich(
+                                              TextSpan(
+                                                children: [
+                                                  TextSpan(
+                                                    text: '${heroCreditRows[i].$1}  ',
+                                                    style: TextStyle(
+                                                      color: skin.fg3,
+                                                      fontSize: 12.5,
+                                                      fontWeight: FontWeight.w500,
+                                                      height: 1.45,
+                                                    ),
+                                                  ),
+                                                  TextSpan(
+                                                    text: heroCreditRows[i].$2,
+                                                    style: TextStyle(
+                                                      color: skin.fg2,
+                                                      fontSize: 12.5,
+                                                      fontWeight: FontWeight.w500,
+                                                      height: 1.45,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
+
+                            if (!wide) ...[
+                              const SizedBox(height: 20),
+                              VedroStaggeredEntrance(
+                                index: 1,
+                                reduceMotion: widget.appState.prefs.reduceMotion,
+                                child: buildActionRow(),
+                              ),
+                              if (tagline != null || overviewText.isNotEmpty) ...[
+                                const SizedBox(height: 16),
+                                buildOverviewBlock(),
+                              ],
+                            ],
                           ],
                         ),
                       ),
-                    ),
+                    ],
+                  ),
+                ),
 
-                    Padding(
-                      padding: EdgeInsets.fromLTRB(
-                        padX,
-                        wide ? (topSafe + 148) : (topSafe + 118),
-                        padX,
-                        wide ? 32 : 24,
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            crossAxisAlignment: wide ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                // 2. Body Content: Strictly Single-Select Version Grid + Always-Visible Audio & Subtitle Selector!
+                SliverToBoxAdapter(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (_item.isPlayable || _item.isSeries) ...[
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: padX),
+                          child: _TracksPanel(
+                            isSeries: _item.isSeries,
+                            versions: _item.isSeries ? seriesVersions : playableVersions,
+                            selectedVersionIndex: _item.isSeries
+                                ? _selectedSeriesVersionIndex
+                                : _selectedSourceIndex,
+                            activeStreamSource: _item.isSeries ? activeSeriesEpSource : src,
+                            selectedAudioIndex: _selectedAudioIndex,
+                            selectedSubtitleIndex: _selectedSubtitleIndex,
+                            localExternalSubPath: _localExternalSubPath,
+                            appState: widget.appState,
+                            onSelectVersionIndex: (idx) => setState(() {
+                              if (_item.isSeries) {
+                                _selectedSeriesVersionIndex = idx;
+                              } else {
+                                _selectedSourceIndex = idx;
+                              }
+                              _selectedAudioIndex = null;
+                              if (_selectedSubtitleIndex != -1) {
+                                _selectedSubtitleIndex = null;
+                              }
+                            }),
+                            onSelectAudio: (idx) => setState(() => _selectedAudioIndex = idx),
+                            onSelectSubtitle: (idx) => setState(() {
+                              _selectedSubtitleIndex = idx;
+                              if (idx != null) _localExternalSubPath = null;
+                            }),
+                            onPickExternalSubtitle: _pickExternalSubtitleForDetail,
+                            onClearExternalSubtitle: () =>
+                                setState(() => _localExternalSubPath = null),
+                          ),
+                        ),
+                        const SizedBox(height: 30),
+                      ],
+
+                      // 2c. TV Series Seasons & Scalable Episode Selector
+                      if (_seasons.isNotEmpty) ...[
+                        _buildEpisodeSection(
+                          wide: wide,
+                          padX: padX,
+                          accent: accent,
+                          nextEpToPlay: nextEpToPlay,
+                        ),
+                        const SizedBox(height: 34),
+                      ],
+
+                      // 2d. Circular Cast & Crew Medallions
+                      if (_item.people.isNotEmpty) ...[
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: padX),
+                          child: Row(
                             children: [
-                              coverCard,
-                              SizedBox(width: wide ? 32 : 16),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    if (eyebrowText.isNotEmpty)
-                                      Padding(
-                                        padding: const EdgeInsets.only(bottom: 6),
-                                        child: Text(
-                                          eyebrowText.toUpperCase(),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            color: Color(0xFFA1A1AA),
-                                            fontSize: 11.5,
-                                            fontWeight: FontWeight.w600,
-                                            letterSpacing: 0.6,
-                                          ),
-                                        ),
-                                      ),
-
-                                    if (wide && logoUrl != null)
-                                      ConstrainedBox(
-                                        constraints: const BoxConstraints(
-                                          maxHeight: 74,
-                                          maxWidth: 400,
-                                        ),
-                                        child: Image.network(
-                                          logoUrl,
-                                          fit: BoxFit.contain,
-                                          alignment: Alignment.centerLeft,
-                                          errorBuilder: (_, __, ___) =>
-                                              _TitleHeadline(_item.displayName, wide),
-                                        ),
-                                      )
-                                    else
-                                      _TitleHeadline(_item.displayName, wide),
-
-                                    if (_item.originalTitle != null &&
-                                        _item.originalTitle != _item.name) ...[
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        _item.originalTitle!,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          color: Color(0xFF98989F),
-                                          fontSize: 13.5,
-                                          fontWeight: FontWeight.w400,
-                                        ),
-                                      ),
-                                    ],
-
-                                    if (dotFacts.isNotEmpty) ...[
-                                      const SizedBox(height: 10),
-                                      Wrap(
-                                        crossAxisAlignment: WrapCrossAlignment.center,
-                                        runSpacing: 4,
-                                        children: dotFacts,
-                                      ),
-                                    ],
-
-                                    // Monochrome Apple TV+ Ratings + Certification + Technical Badges
-                                    if ((_item.communityRating ?? 0) > 0 ||
-                                        (_item.criticRating ?? 0) > 0 ||
-                                        (_item.officialRating?.isNotEmpty == true) ||
-                                        statusLabel.isNotEmpty ||
-                                        specChips.isNotEmpty) ...[
-                                      const SizedBox(height: 10),
-                                      Wrap(
-                                        spacing: 8,
-                                        runSpacing: 6,
-                                        crossAxisAlignment: WrapCrossAlignment.center,
-                                        children: [
-                                          if (_item.communityRating != null &&
-                                              _item.communityRating! > 0)
-                                            Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                const Icon(Icons.star_rounded,
-                                                    size: 15.5, color: Color(0xFFFBBF24)),
-                                                const SizedBox(width: 3),
-                                                Text(
-                                                  _item.communityRating!.toStringAsFixed(1),
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 13.5,
-                                                    fontWeight: FontWeight.w700,
-                                                    fontFeatures: [FontFeature.tabularFigures()],
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          if (_item.criticRating != null &&
-                                              _item.criticRating! > 0)
-                                            Text(
-                                              '${_item.criticRating!.round()}% 好评',
-                                              style: const TextStyle(
-                                                color: Color(0xFFD4D4DA),
-                                                fontSize: 12.5,
-                                                fontWeight: FontWeight.w600,
-                                                fontFeatures: [FontFeature.tabularFigures()],
-                                              ),
-                                            ),
-                                          if (_item.officialRating != null &&
-                                              _item.officialRating!.isNotEmpty)
-                                            _AppleMicroBadge(_item.officialRating!),
-                                          if (statusLabel.isNotEmpty && !ultraWide)
-                                            _AppleMicroBadge(statusLabel),
-                                          if (specChips.isNotEmpty) SpecGlyphRow(specs: specChips),
-                                        ],
-                                      ),
-                                    ],
-
-                                    if (wide) ...[
-                                      if (tagline != null || overviewText.isNotEmpty) ...[
-                                        const SizedBox(height: 14),
-                                        ConstrainedBox(
-                                          constraints: const BoxConstraints(maxWidth: 680),
-                                          child: buildOverviewBlock(),
-                                        ),
-                                      ],
-                                      const SizedBox(height: 22),
-                                      VedroStaggeredEntrance(
-                                        index: 1,
-                                        reduceMotion: widget.appState.prefs.reduceMotion,
-                                        child: buildActionRow(),
-                                      ),
-                                    ],
-                                  ],
+                              Text(
+                                '演职人员',
+                                style: skin.applyHeadlineMood(
+                                  TextStyle(
+                                    color: skin.fg,
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: -0.4,
+                                  ),
                                 ),
                               ),
-
-                              // Apple TV+ Desktop Right-Side Editorial Credits Column
-                              if (ultraWide && heroCreditRows.isNotEmpty) ...[
-                                const SizedBox(width: 36),
-                                SizedBox(
-                                  width: 228,
-                                  child: Padding(
-                                    padding: const EdgeInsets.only(bottom: 4),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        for (var i = 0; i < heroCreditRows.length; i++) ...[
-                                          if (i > 0) const SizedBox(height: 10),
-                                          Text.rich(
-                                            TextSpan(
-                                              children: [
-                                                TextSpan(
-                                                  text: '${heroCreditRows[i].$1}  ',
-                                                  style: const TextStyle(
-                                                    color: Color(0xFF71717A),
-                                                    fontSize: 12.5,
-                                                    fontWeight: FontWeight.w500,
-                                                    height: 1.45,
-                                                  ),
-                                                ),
-                                                TextSpan(
-                                                  text: heroCreditRows[i].$2,
-                                                  style: const TextStyle(
-                                                    color: Color(0xFFD4D4DA),
-                                                    fontSize: 12.5,
-                                                    fontWeight: FontWeight.w500,
-                                                    height: 1.45,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ],
-                                      ],
-                                    ),
+                              if (directors.isNotEmpty && !ultraWide) ...[
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    '导演：${directors.take(2).join(' · ')}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.right,
+                                    style: TextStyle(color: skin.fg3, fontSize: 13),
                                   ),
                                 ),
                               ],
                             ],
                           ),
+                        ),
+                        const SizedBox(height: 12),
+                        SmoothHorizontalStrip(
+                          height: 152,
+                          padX: padX,
+                          paddleCenterY: 48,
+                          spacing: 18,
+                          itemCount: _item.people.take(36).length,
+                          itemBuilder: (_, idx) {
+                            final p = _item.people[idx];
+                            final avatarUrl = p.primaryImageTag != null
+                                ? widget.appState.buildImageUrl(
+                                    p.id,
+                                    type: 'Primary',
+                                    tag: p.primaryImageTag,
+                                    maxWidth: 240,
+                                  )
+                                : '';
+                            final roleLabel = (p.role ?? '').trim().isNotEmpty
+                                ? p.role!.trim()
+                                : localizePersonRole(p.type);
+                            return SizedBox(
+                              width: 90,
+                              child: PressableScale(
+                                onTap: () => _openItemDetail(MediaItemModel(
+                                  id: p.id,
+                                  name: p.name,
+                                  type: 'Person',
+                                  primaryImageTag: p.primaryImageTag,
+                                )),
+                                hoverScale: 1.04,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.center,
+                                  children: [
+                                    Container(
+                                      width: 86,
+                                      height: 86,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: skin.surface2,
+                                        boxShadow: skin.posterShadow(),
+                                      ),
+                                      clipBehavior: Clip.antiAlias,
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          GeneratedArt(seed: p.id, label: p.name),
+                                          if (avatarUrl.isNotEmpty)
+                                            FadeNetworkImage(
+                                              url: avatarUrl,
+                                              alignment: const Alignment(0, -0.35),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      p.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: skin.fg,
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 1),
+                                    Text(
+                                      roleLabel,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(color: skin.fg3, fontSize: 11.5),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 28),
+                      ],
 
-                          if (!wide) ...[
-                            const SizedBox(height: 20),
-                            VedroStaggeredEntrance(
-                              index: 1,
-                              reduceMotion: widget.appState.prefs.reduceMotion,
-                              child: buildActionRow(),
-                            ),
-                            if (tagline != null || overviewText.isNotEmpty) ...[
-                              const SizedBox(height: 16),
-                              buildOverviewBlock(),
-                            ],
-                          ],
-                        ],
+                      // 2e. Chapters Strip
+                      if (_item.chapters.isNotEmpty && _item.isPlayable) ...[
+                        _ChaptersSection(
+                          chapters: _item.chapters,
+                          padX: padX,
+                          accent: accent,
+                          onSelectChapter: (ticks) => _play(
+                            _item,
+                            sourceId: _activeSource?.id,
+                            startPositionTicks: ticks,
+                          ),
+                        ),
+                        const SizedBox(height: 32),
+                      ],
+                    ],
+                  ),
+                ),
+
+                // 3. Related Recommendations Rail
+                if (_similar.isNotEmpty)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 32),
+                      child: HorizontalMediaRail(
+                        title: '相关推荐',
+                        items: _similar,
+                        appState: widget.appState,
+                        onItemTap: _openItemDetail,
                       ),
                     ),
-                  ],
-                ),
-              ),
+                  ),
 
-              // 2. Body Content on Deep Obsidian Canvas (zero heavy admin boxes or weird lines)
-              SliverToBoxAdapter(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // 2a. Compact Apple Version / Audio / Subtitle Selector (Movies & Episodes)
-                    if (_item.isPlayable && _item.mediaSources.isNotEmpty) ...[
-                      Padding(
-                        padding: EdgeInsets.symmetric(horizontal: padX),
-                        child: _TracksPanel(
-                          sources: _item.mediaSources,
-                          selectedId: _selectedSourceId,
-                          selectedAudioIndex: _selectedAudioIndex,
-                          selectedSubtitleIndex: _selectedSubtitleIndex,
-                          onSelectSource: (id) => setState(() {
-                            _selectedSourceId = id;
-                            _selectedAudioIndex = null;
-                            _selectedSubtitleIndex = null;
-                          }),
-                          onSelectAudio: (idx) => setState(() => _selectedAudioIndex = idx),
-                          onSelectSubtitle: (idx) => setState(() => _selectedSubtitleIndex = idx),
-                        ),
-                      ),
-                      const SizedBox(height: 32),
-                    ],
-
-                    // 2b. Compact Apple Series Version Cards (when episodes have multiple versions)
-                    if (_item.isSeries && seriesSources.length > 1) ...[
-                      Padding(
-                        padding: EdgeInsets.symmetric(horizontal: padX),
-                        child: Column(
-                          key: const ValueKey('detail-version-selector'),
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '选择剧集片源版本 (${seriesSources.length})',
-                              style: const TextStyle(
-                                color: VedroTheme.fg2,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: -0.1,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            LayoutBuilder(
-                              builder: (ctx, c) {
-                                final twoCol = c.maxWidth >= 680;
-                                final cardW = twoCol ? (c.maxWidth - 12) / 2 : c.maxWidth;
-                                return Wrap(
-                                  spacing: 12,
-                                  runSpacing: 10,
-                                  children: seriesSources.map((s) {
-                                    final vKey = _sourceVersionKey(s);
-                                    final on = vKey == _selectedSeriesVersionKey;
-                                    return SizedBox(
-                                      width: cardW,
-                                      child: _VersionOptionTile(
-                                        source: s,
-                                        selected: on,
-                                        accent: accent,
-                                        onTap: () => setState(() => _selectedSeriesVersionKey = vKey),
-                                      ),
-                                    );
-                                  }).toList(),
-                                );
-                              },
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 32),
-                    ],
-
-                    // 2c. TV Series Seasons & Scalable Episode Selector (full-bleed horizontal cards!)
-                    if (_seasons.isNotEmpty) ...[
-                      _buildEpisodeSection(
-                        wide: wide,
-                        padX: padX,
-                        accent: accent,
-                        nextEpToPlay: nextEpToPlay,
-                      ),
-                      const SizedBox(height: 34),
-                    ],
-
-                    // 2d. Apple TV+ Circular Cast & Crew Medallions
-                    if (_item.people.isNotEmpty) ...[
-                      Padding(
-                        padding: EdgeInsets.symmetric(horizontal: padX),
-                        child: Row(
-                          children: [
-                            const Text(
-                              '演职人员',
-                              style: TextStyle(
-                                color: VedroTheme.fg,
+                // 4. Editorial Information & Technical Specs Footer
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: padX),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (_item.type != 'Person') ...[
+                          _NfoMetadataSection(
+                            item: _item,
+                            seasonsCount: _seasons.isNotEmpty ? _seasons.length : _item.childCount,
+                            episodesCount: _item.recursiveItemCount ??
+                                (_episodes.isNotEmpty ? _episodes.length : null),
+                            statusLabel: statusLabel,
+                            appState: widget.appState,
+                            onGenreTap: widget.onGenreTap,
+                          ),
+                          const SizedBox(height: 20),
+                        ],
+                        if (src != null) ...[
+                          _MediaSpecsSection(source: src, itemPath: _item.path),
+                          const SizedBox(height: 20),
+                        ],
+                        if (_item.type == 'Person' && _personCredits.isNotEmpty) ...[
+                          Text(
+                            '参与作品 (${_personCredits.length})',
+                            style: skin.applyHeadlineMood(
+                              TextStyle(
+                                color: skin.fg,
                                 fontSize: 20,
                                 fontWeight: FontWeight.w700,
                                 letterSpacing: -0.4,
                               ),
                             ),
-                            if (directors.isNotEmpty && !ultraWide) ...[
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Text(
-                                  '导演：${directors.take(2).join(' · ')}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  textAlign: TextAlign.right,
-                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 13),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      SmoothHorizontalStrip(
-                        height: 152,
-                        padX: padX,
-                        paddleCenterY: 48,
-                        spacing: 18,
-                        itemCount: _item.people.take(36).length,
-                        itemBuilder: (_, idx) {
-                          final p = _item.people[idx];
-                          final avatarUrl = p.primaryImageTag != null
-                              ? widget.appState.buildImageUrl(
-                                  p.id,
-                                  type: 'Primary',
-                                  tag: p.primaryImageTag,
-                                  maxWidth: 240,
-                                )
-                              : '';
-                          final roleLabel = (p.role ?? '').trim().isNotEmpty
-                              ? p.role!.trim()
-                              : localizePersonRole(p.type);
-                          return SizedBox(
-                            width: 90,
-                            child: PressableScale(
-                              onTap: () => _openItemDetail(MediaItemModel(
-                                id: p.id,
-                                name: p.name,
-                                type: 'Person',
-                                primaryImageTag: p.primaryImageTag,
-                              )),
-                              hoverScale: 1.04,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  Container(
-                                    width: 86,
-                                    height: 86,
-                                    decoration: const BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: VedroTheme.surface2,
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Color(0x66000000),
-                                          blurRadius: 16,
-                                          offset: Offset(0, 6),
-                                        ),
-                                      ],
-                                    ),
-                                    clipBehavior: Clip.antiAlias,
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        GeneratedArt(seed: p.id, label: p.name),
-                                        if (avatarUrl.isNotEmpty)
-                                          FadeNetworkImage(
-                                            url: avatarUrl,
-                                            alignment: const Alignment(0, -0.35),
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    p.name,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(
-                                      color: VedroTheme.fg,
-                                      fontSize: 12.5,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 1),
-                                  Text(
-                                    roleLabel,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 28),
-                    ],
-
-                    // 2e. Borderless Chapters Strip
-                    if (_item.chapters.isNotEmpty && _item.isPlayable) ...[
-                      _ChaptersSection(
-                        chapters: _item.chapters,
-                        padX: padX,
-                        accent: accent,
-                        onSelectChapter: (ticks) => _play(
-                          _item,
-                          sourceId: _selectedSourceId,
-                          startPositionTicks: ticks,
-                        ),
-                      ),
-                      const SizedBox(height: 32),
-                    ],
-                  ],
-                ),
-              ),
-
-              // 3. Related Recommendations Rail (placed ABOVE the "关于" footer, exact Apple TV+ order!)
-              if (_similar.isNotEmpty)
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.only(bottom: 32),
-                    child: HorizontalMediaRail(
-                      title: '相关推荐',
-                      items: _similar,
-                      appState: widget.appState,
-                      onItemTap: _openItemDetail,
-                    ),
-                  ),
-                ),
-
-              // 4. Apple TV+ Editorial Information & Technical Specs Footer
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: padX),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (_item.type != 'Person') ...[
-                        _NfoMetadataSection(
-                          item: _item,
-                          seasonsCount: _seasons.isNotEmpty ? _seasons.length : _item.childCount,
-                          episodesCount: _item.recursiveItemCount ??
-                              (_episodes.isNotEmpty ? _episodes.length : null),
-                          statusLabel: statusLabel,
-                          appState: widget.appState,
-                          onGenreTap: widget.onGenreTap,
-                        ),
-                        const SizedBox(height: 20),
-                      ],
-                      if (src != null) ...[
-                        _MediaSpecsSection(source: src, itemPath: _item.path),
-                        const SizedBox(height: 20),
-                      ],
-                      if (_item.type == 'Person' && _personCredits.isNotEmpty) ...[
-                        Text(
-                          '参与作品 (${_personCredits.length})',
-                          style: const TextStyle(
-                            color: VedroTheme.fg,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: -0.4,
                           ),
-                        ),
-                        const SizedBox(height: 16),
-                        Wrap(
-                          spacing: 16,
-                          runSpacing: 20,
-                          children: _personCredits
-                              .map((c) => MediaCard(
-                                    item: c,
-                                    appState: widget.appState,
-                                    width: wide ? 152 : 110,
-                                    onTap: () => _openItemDetail(c),
-                                  ))
-                              .toList(),
-                        ),
-                        const SizedBox(height: 24),
+                          const SizedBox(height: 16),
+                          Wrap(
+                            spacing: 16,
+                            runSpacing: 20,
+                            children: _personCredits
+                                .map((c) => MediaCard(
+                                      item: c,
+                                      appState: widget.appState,
+                                      width: wide ? 152 : 110,
+                                      onTap: () => _openItemDetail(c),
+                                    ))
+                                .toList(),
+                          ),
+                          const SizedBox(height: 24),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
-              ),
 
-              if (_loading)
-                const SliverToBoxAdapter(
-                  child: Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Center(
-                      child: SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: VedroTheme.fg2),
+                if (_loading)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Center(
+                        child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: skin.fg2),
+                        ),
                       ),
                     ),
                   ),
-                ),
 
-              const SliverToBoxAdapter(child: SizedBox(height: 56)),
-            ],
-          ),
+                const SliverToBoxAdapter(child: SizedBox(height: 56)),
+              ],
+            ),
 
-          // Floating borderless frosted Back Pill aligned beside macOS traffic lights / iOS Dynamic Island
-          Positioned(
-            top: topSafe + 12,
-            left: isMac ? 82 : (padX - 4),
-            child: PressableScale(
-              onTap: () => Navigator.of(context).pop(),
-              hoverScale: 1.04,
-              pressScale: 0.92,
-              child: GlassSurface(
-                borderRadius: 20,
-                blur: 24,
-                color: const Color(0x66161619),
-                borderColor: const Color(0x18FFFFFF),
-                padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7.5),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.arrow_back_ios_new_rounded, size: 13.5, color: Colors.white),
-                    SizedBox(width: 4),
-                    Text(
-                      '返回',
-                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
-                    ),
-                  ],
+            // Floating frosted Back Pill
+            Positioned(
+              top: topSafe + 12,
+              left: isMac ? 82 : (padX - 4),
+              child: PressableScale(
+                onTap: () => Navigator.of(context).pop(),
+                hoverScale: 1.04,
+                pressScale: 0.92,
+                child: GlassSurface(
+                  borderRadius: skin.radiusForPill(36),
+                  blur: 24,
+                  color: skin.glass,
+                  borderColor: skin.borderStrong,
+                  padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7.5),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.arrow_back_ios_new_rounded, size: 13.5, color: skin.fg),
+                      const SizedBox(width: 4),
+                      Text(
+                        '返回',
+                        style: TextStyle(color: skin.fg, fontSize: 13, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1910,6 +1980,7 @@ class _DetailScreenState extends State<DetailScreen> {
     required Color accent,
     required MediaItemModel? nextEpToPlay,
   }) {
+    final skin = VedroSkin.of(context);
     final activeSeason = _activeSeason;
     final seasonOverview = activeSeason?.cleanOverview ?? '';
 
@@ -1951,193 +2022,207 @@ class _DetailScreenState extends State<DetailScreen> {
                   alignment: WrapAlignment.spaceBetween,
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                  if (_seasons.length > 1)
-                    SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Container(
-                        padding: const EdgeInsets.all(3),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF16161A),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: _seasons.map((s) {
-                            final active = s.id == (_selectedSeasonId ?? _seasons.first.id);
-                            return GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => _loadEpisodes(s.id),
-                              child: MouseRegion(
-                                cursor: SystemMouseCursors.click,
-                                child: AnimatedContainer(
-                                  duration: const Duration(milliseconds: 180),
-                                  curve: VedroTheme.easeOut,
-                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6.5),
-                                  decoration: BoxDecoration(
-                                    color: active ? Colors.white : Colors.transparent,
-                                    borderRadius: BorderRadius.circular(17),
-                                  ),
-                                  child: Text(
-                                    s.name,
-                                    style: TextStyle(
-                                      color: active ? VedroTheme.canvas : VedroTheme.fg2,
-                                      fontSize: 13.5,
-                                      fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                    if (_seasons.length > 1)
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Container(
+                          padding: const EdgeInsets.all(3),
+                          decoration: BoxDecoration(
+                            color: skin.surface2,
+                            borderRadius: BorderRadius.circular(skin.radiusForPill(38)),
+                            border: skin.frameStyle == 'borderless'
+                                ? null
+                                : Border.all(color: skin.border, width: 0.7),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: _seasons.map((s) {
+                              final active = s.id == (_selectedSeasonId ?? _seasons.first.id);
+                              return GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => _loadEpisodes(s.id),
+                                child: MouseRegion(
+                                  cursor: SystemMouseCursors.click,
+                                  child: AnimatedContainer(
+                                    duration: const Duration(milliseconds: 180),
+                                    curve: VedroTheme.easeOut,
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6.5),
+                                    decoration: BoxDecoration(
+                                      color: active ? skin.activePillBg : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
+                                    ),
+                                    child: Text(
+                                      s.name,
+                                      style: TextStyle(
+                                        color: active ? skin.activePillFg : skin.fg2,
+                                        fontSize: 13.5,
+                                        fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                                      ),
                                     ),
                                   ),
                                 ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      )
+                    else
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.baseline,
+                        textBaseline: TextBaseline.alphabetic,
+                        children: [
+                          Text(
+                            _seasons.first.name,
+                            style: skin.applyHeadlineMood(
+                              TextStyle(
+                                color: skin.fg,
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.4,
                               ),
-                            );
-                          }).toList(),
-                        ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            '共 ${_episodes.length} 集',
+                            style: TextStyle(
+                              color: skin.fg3,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                        ],
                       ),
-                    )
-                  else
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.baseline,
-                      textBaseline: TextBaseline.alphabetic,
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Text(
-                          _seasons.first.name,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: -0.4,
+                        if (_seasons.length > 1)
+                          Text(
+                            '共 ${_episodes.length} 集',
+                            style: TextStyle(
+                              color: skin.fg3,
+                              fontSize: 12.5,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        Text(
-                          '共 ${_episodes.length} 集',
-                          style: const TextStyle(
-                            color: VedroTheme.fg3,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
-                            fontFeatures: [FontFeature.tabularFigures()],
+                        if (widget.appState.canDownloadItem(_resolveDownloadTarget()))
+                          PressableScale(
+                            key: const ValueKey('detail-batch-download-btn'),
+                            onTap: _openBatchDownloadDialog,
+                            child: Container(
+                              height: 32,
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: skin.surface2,
+                                borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
+                                border: skin.frameStyle == 'borderless'
+                                    ? null
+                                    : Border.all(color: skin.border, width: 0.7),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.arrow_downward_rounded, size: 14, color: skin.fg),
+                                  const SizedBox(width: 5),
+                                  Text(
+                                    '批量下载',
+                                    style: TextStyle(
+                                      color: skin.fg,
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 6,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      if (_seasons.length > 1)
-                        Text(
-                          '共 ${_episodes.length} 集',
-                          style: const TextStyle(
-                            color: VedroTheme.fg3,
-                            fontSize: 12.5,
-                            fontFeatures: [FontFeature.tabularFigures()],
-                          ),
-                        ),
-                      if (widget.appState.canDownloadItem(_resolveDownloadTarget()))
                         PressableScale(
-                          key: const ValueKey('detail-batch-download-btn'),
-                          onTap: _openBatchDownloadDialog,
+                          onTap: () => setState(() {
+                            _episodeDescending = !_episodeDescending;
+                            _episodeRangeIndex = 0;
+                          }),
                           child: Container(
                             height: 32,
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            padding: const EdgeInsets.symmetric(horizontal: 11),
                             decoration: BoxDecoration(
-                              color: const Color(0xFF1A1A1F),
-                              borderRadius: BorderRadius.circular(16),
+                              color: skin.surface2,
+                              borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
+                              border: skin.frameStyle == 'borderless'
+                                  ? null
+                                  : Border.all(color: skin.border, width: 0.7),
                             ),
-                            child: const Row(
+                            child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.arrow_downward_rounded, size: 14, color: Colors.white),
-                                SizedBox(width: 5),
+                                Icon(
+                                  _episodeDescending
+                                      ? Icons.arrow_upward_rounded
+                                      : Icons.arrow_downward_rounded,
+                                  size: 13.5,
+                                  color: skin.fg2,
+                                ),
+                                const SizedBox(width: 4),
                                 Text(
-                                  '批量下载',
+                                  _episodeDescending ? '倒序' : '正序',
                                   style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.w600,
+                                    color: skin.fg2,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w500,
                                   ),
                                 ),
                               ],
                             ),
                           ),
                         ),
-                      PressableScale(
-                        onTap: () => setState(() {
-                          _episodeDescending = !_episodeDescending;
-                          _episodeRangeIndex = 0;
-                        }),
-                        child: Container(
-                          height: 32,
-                          padding: const EdgeInsets.symmetric(horizontal: 11),
+                        Container(
+                          padding: const EdgeInsets.all(3),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF16161A),
-                            borderRadius: BorderRadius.circular(16),
+                            color: skin.surface2,
+                            borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
+                            border: skin.frameStyle == 'borderless'
+                                ? null
+                                : Border.all(color: skin.border, width: 0.7),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(
-                                _episodeDescending
-                                    ? Icons.arrow_upward_rounded
-                                    : Icons.arrow_downward_rounded,
-                                size: 13.5,
-                                color: VedroTheme.fg2,
+                              _EpModeBtn(
+                                icon: Icons.grid_view_rounded,
+                                tooltip: '数字网格选集（适合多集/番剧）',
+                                active: _episodeViewMode == 'grid',
+                                onTap: () => setState(() {
+                                  _episodeViewMode = 'grid';
+                                  _episodeModeUserChosen = true;
+                                }),
                               ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _episodeDescending ? '倒序' : '正序',
-                                style: const TextStyle(
-                                  color: VedroTheme.fg2,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w500,
-                                ),
+                              _EpModeBtn(
+                                icon: Icons.view_carousel_outlined,
+                                tooltip: '横向剧照卡片',
+                                active: _episodeViewMode == 'cards',
+                                onTap: () => setState(() {
+                                  _episodeViewMode = 'cards';
+                                  _episodeModeUserChosen = true;
+                                }),
+                              ),
+                              _EpModeBtn(
+                                icon: Icons.view_agenda_outlined,
+                                tooltip: '纵向图文列表',
+                                active: _episodeViewMode == 'list',
+                                onTap: () => setState(() {
+                                  _episodeViewMode = 'list';
+                                  _episodeModeUserChosen = true;
+                                }),
                               ),
                             ],
                           ),
                         ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.all(3),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF16161A),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            _EpModeBtn(
-                              icon: Icons.grid_view_rounded,
-                              tooltip: '数字网格选集（适合多集/番剧）',
-                              active: _episodeViewMode == 'grid',
-                              onTap: () => setState(() {
-                                _episodeViewMode = 'grid';
-                                _episodeModeUserChosen = true;
-                              }),
-                            ),
-                            _EpModeBtn(
-                              icon: Icons.view_carousel_outlined,
-                              tooltip: '横向剧照卡片',
-                              active: _episodeViewMode == 'cards',
-                              onTap: () => setState(() {
-                                _episodeViewMode = 'cards';
-                                _episodeModeUserChosen = true;
-                              }),
-                            ),
-                            _EpModeBtn(
-                              icon: Icons.view_agenda_outlined,
-                              tooltip: '纵向图文列表',
-                              active: _episodeViewMode == 'list',
-                              onTap: () => setState(() {
-                                _episodeViewMode = 'list';
-                                _episodeModeUserChosen = true;
-                              }),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
+                      ],
+                    ),
+                  ],
                 ),
               ),
 
@@ -2149,8 +2234,8 @@ class _DetailScreenState extends State<DetailScreen> {
                     seasonOverview,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: VedroTheme.fg2,
+                    style: TextStyle(
+                      color: skin.fg2,
                       fontSize: 13,
                       height: 1.5,
                     ),
@@ -2158,7 +2243,6 @@ class _DetailScreenState extends State<DetailScreen> {
                 ),
               ],
 
-              // Range Chunk Capsules (1-50, 51-100...) + Quick Jump Search for long series
               if (_episodes.length > 24) ...[
                 const SizedBox(height: 12),
                 Row(
@@ -2184,17 +2268,19 @@ class _DetailScreenState extends State<DetailScreen> {
                                   child: MouseRegion(
                                     cursor: SystemMouseCursors.click,
                                     child: Container(
-                                      padding:
-                                          const EdgeInsets.symmetric(horizontal: 13, vertical: 5),
+                                      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 5),
                                       decoration: BoxDecoration(
-                                        color: active ? Colors.white : const Color(0xFF16161A),
-                                        borderRadius: BorderRadius.circular(16),
+                                        color: active ? skin.activePillBg : skin.surface2,
+                                        borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
+                                        border: (!active && skin.frameStyle != 'borderless')
+                                            ? Border.all(color: skin.border, width: 0.7)
+                                            : null,
                                       ),
                                       alignment: Alignment.center,
                                       child: Text(
                                         '$firstNum-$lastNum',
                                         style: TextStyle(
-                                          color: active ? VedroTheme.canvas : VedroTheme.fg2,
+                                          color: active ? skin.activePillFg : skin.fg2,
                                           fontSize: 12,
                                           fontWeight: FontWeight.w600,
                                           fontFeatures: const [FontFeature.tabularFigures()],
@@ -2220,18 +2306,16 @@ class _DetailScreenState extends State<DetailScreen> {
                           _episodeFilterQuery = v;
                           _episodeRangeIndex = 0;
                         }),
-                        style: const TextStyle(color: Colors.white, fontSize: 12.5),
+                        style: TextStyle(color: skin.fg, fontSize: 12.5),
                         decoration: InputDecoration(
                           hintText: '跳集 / 搜集名',
-                          hintStyle: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
-                          prefixIcon:
-                              const Icon(Icons.search_rounded, size: 15, color: VedroTheme.fg3),
+                          hintStyle: TextStyle(color: skin.fg3, fontSize: 12),
+                          prefixIcon: Icon(Icons.search_rounded, size: 15, color: skin.fg3),
                           prefixIconConstraints: const BoxConstraints(minWidth: 30),
                           suffixIcon: _episodeFilterQuery.isNotEmpty
                               ? IconButton(
                                   padding: EdgeInsets.zero,
-                                  icon: const Icon(Icons.cancel_rounded,
-                                      size: 14, color: VedroTheme.fg3),
+                                  icon: Icon(Icons.cancel_rounded, size: 14, color: skin.fg3),
                                   onPressed: () {
                                     _episodeJumpCtrl.clear();
                                     setState(() => _episodeFilterQuery = '');
@@ -2239,18 +2323,20 @@ class _DetailScreenState extends State<DetailScreen> {
                                 )
                               : null,
                           contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
-                          fillColor: const Color(0xFF16161A),
+                          fillColor: skin.surface2,
                           border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide.none,
+                            borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
+                            borderSide: BorderSide(color: skin.border, width: 0.7),
                           ),
                           enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide.none,
+                            borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
+                            borderSide: skin.frameStyle == 'borderless'
+                                ? BorderSide.none
+                                : BorderSide(color: skin.border, width: 0.7),
                           ),
                           focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: const BorderSide(color: Color(0x28FFFFFF), width: 1),
+                            borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
+                            borderSide: BorderSide(color: skin.accent, width: 1),
                           ),
                         ),
                       ),
@@ -2267,7 +2353,7 @@ class _DetailScreenState extends State<DetailScreen> {
         if (visibleEps.isEmpty)
           Padding(
             padding: EdgeInsets.symmetric(horizontal: padX, vertical: 20),
-            child: const Text('没有匹配的分集', style: TextStyle(color: VedroTheme.fg3, fontSize: 13)),
+            child: Text('没有匹配的分集', style: TextStyle(color: skin.fg3, fontSize: 13)),
           )
         else if (_episodeViewMode == 'grid')
           Padding(
@@ -2278,6 +2364,7 @@ class _DetailScreenState extends State<DetailScreen> {
                 final cols = (constraints.maxWidth / (tileW + 8)).floor().clamp(4, 14);
                 const gap = 8.0;
                 final actualW = (constraints.maxWidth - gap * (cols - 1)) / cols;
+                final tileR = skin.cardRadius.clamp(6.0, 12.0);
                 return Wrap(
                   spacing: gap,
                   runSpacing: gap,
@@ -2309,9 +2396,12 @@ class _DetailScreenState extends State<DetailScreen> {
                           height: wide ? 46 : 42,
                           decoration: BoxDecoration(
                             color: isNext
-                                ? Colors.white
-                                : (ep.played ? const Color(0xFF111114) : const Color(0xFF17171B)),
-                            borderRadius: BorderRadius.circular(11),
+                                ? skin.activePillBg
+                                : (ep.played
+                                    ? skin.surface.withValues(alpha: 0.65)
+                                    : skin.surface),
+                            borderRadius: BorderRadius.circular(tileR),
+                            border: isNext ? null : skin.cardBorder(),
                           ),
                           clipBehavior: Clip.antiAlias,
                           child: Stack(
@@ -2325,8 +2415,8 @@ class _DetailScreenState extends State<DetailScreen> {
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                       color: isNext
-                                          ? VedroTheme.canvas
-                                          : (ep.played ? const Color(0xFF63636B) : Colors.white),
+                                          ? skin.activePillFg
+                                          : (ep.played ? skin.fg3 : skin.fg),
                                       fontSize: wide ? 14 : 13,
                                       fontWeight: isNext ? FontWeight.w700 : FontWeight.w600,
                                       fontFeatures: const [FontFeature.tabularFigures()],
@@ -2335,11 +2425,10 @@ class _DetailScreenState extends State<DetailScreen> {
                                 ),
                               ),
                               if (ep.played && !isNext)
-                                const Positioned(
+                                Positioned(
                                   top: 4,
                                   right: 4,
-                                  child: Icon(Icons.check_rounded,
-                                      size: 11, color: Color(0xFF6E6E77)),
+                                  child: Icon(Icons.check_rounded, size: 11, color: skin.fg3),
                                 )
                               else if (ep.versionCount > 1)
                                 Positioned(
@@ -2348,7 +2437,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                   child: Text(
                                     '${ep.versionCount}×',
                                     style: TextStyle(
-                                      color: isNext ? VedroTheme.canvas : VedroTheme.fg3,
+                                      color: isNext ? skin.activePillFg : skin.fg3,
                                       fontSize: 9,
                                       fontWeight: FontWeight.w700,
                                     ),
@@ -2363,7 +2452,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                   child: LinearProgressIndicator(
                                     value: ep.resumeProgress,
                                     backgroundColor: Colors.transparent,
-                                    color: isNext ? VedroTheme.canvas : accent,
+                                    color: isNext ? skin.activePillFg : accent,
                                   ),
                                 ),
                             ],
@@ -2425,16 +2514,20 @@ class _AppleMicroBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6.5, vertical: 2.5),
       decoration: BoxDecoration(
-        color: const Color(0x18FFFFFF),
+        color: skin.subtleChipBg,
         borderRadius: BorderRadius.circular(4.5),
+        border: skin.frameStyle == 'neon'
+            ? Border.all(color: skin.accent.withValues(alpha: 0.35), width: 0.6)
+            : null,
       ),
       child: Text(
         text,
-        style: const TextStyle(
-          color: Color(0xFFE5E5EA),
+        style: TextStyle(
+          color: skin.fg,
           fontSize: 10.5,
           fontWeight: FontWeight.w600,
           letterSpacing: 0.2,
@@ -2466,6 +2559,8 @@ class _AppleCircleActionButtonState extends State<_AppleCircleActionButton> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final isSquareish = skin.pillRadius < 20;
     return PressableScale(
       onTap: widget.onTap,
       onHoverChanged: (v) => setState(() => _hovered = v),
@@ -2478,10 +2573,14 @@ class _AppleCircleActionButtonState extends State<_AppleCircleActionButton> {
         height: 46,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          shape: BoxShape.circle,
+          shape: isSquareish ? BoxShape.rectangle : BoxShape.circle,
+          borderRadius: isSquareish ? BorderRadius.circular(skin.pillRadius) : null,
           color: widget.active
-              ? widget.color.withValues(alpha: 0.22)
-              : (_hovered ? const Color(0x2BFFFFFF) : const Color(0x18FFFFFF)),
+              ? widget.color.withValues(alpha: 0.20)
+              : (_hovered ? skin.subtleChipHoverBg : skin.subtleChipBg),
+          border: skin.frameStyle == 'borderless'
+              ? null
+              : Border.all(color: _hovered ? skin.borderStrong : skin.border, width: 0.8),
         ),
         child: Icon(widget.icon, size: 20, color: widget.color),
       ),
@@ -2504,6 +2603,7 @@ class _EpModeBtn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Tooltip(
       message: tooltip,
       child: GestureDetector(
@@ -2514,13 +2614,13 @@ class _EpModeBtn extends StatelessWidget {
             width: 30,
             height: 26,
             decoration: BoxDecoration(
-              color: active ? Colors.white : Colors.transparent,
-              borderRadius: BorderRadius.circular(13),
+              color: active ? skin.activePillBg : Colors.transparent,
+              borderRadius: BorderRadius.circular(skin.radiusForPill(26)),
             ),
             child: Icon(
               icon,
               size: 14.5,
-              color: active ? VedroTheme.canvas : VedroTheme.fg3,
+              color: active ? skin.activePillFg : skin.fg3,
             ),
           ),
         ),
@@ -2529,7 +2629,6 @@ class _EpModeBtn extends StatelessWidget {
   }
 }
 
-/// Clean borderless Apple TV+ Chapters Strip.
 class _ChaptersSection extends StatelessWidget {
   const _ChaptersSection({
     required this.chapters,
@@ -2545,6 +2644,7 @@ class _ChaptersSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2552,11 +2652,13 @@ class _ChaptersSection extends StatelessWidget {
           padding: EdgeInsets.symmetric(horizontal: padX),
           child: Text(
             '章节导览 (${chapters.length})',
-            style: const TextStyle(
-              color: VedroTheme.fg,
-              fontSize: 20,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.4,
+            style: skin.applyHeadlineMood(
+              TextStyle(
+                color: skin.fg,
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.4,
+              ),
             ),
           ),
         ),
@@ -2581,8 +2683,9 @@ class _ChaptersSection extends StatelessWidget {
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF16161A),
-                      borderRadius: BorderRadius.circular(12),
+                      color: skin.surface,
+                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 14.0)),
+                      border: skin.cardBorder(),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2590,18 +2693,18 @@ class _ChaptersSection extends StatelessWidget {
                       children: [
                         Text(
                           ts,
-                          style: const TextStyle(
-                            color: VedroTheme.fg3,
+                          style: TextStyle(
+                            color: skin.fg3,
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
-                            fontFeatures: [FontFeature.tabularFigures()],
+                            fontFeatures: const [FontFeature.tabularFigures()],
                           ),
                         ),
                         const SizedBox(height: 2),
                         Text(
                           title,
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: skin.fg,
                             fontSize: 13,
                             fontWeight: FontWeight.w500,
                           ),
@@ -2619,7 +2722,6 @@ class _ChaptersSection extends StatelessWidget {
   }
 }
 
-/// Measures real rendered line overflow via TextPainter so "展开全部" NEVER appears on short text!
 class _ExpandableOverview extends StatefulWidget {
   const _ExpandableOverview({
     required this.text,
@@ -2648,8 +2750,9 @@ class _ExpandableOverviewState extends State<_ExpandableOverview> {
 
   @override
   Widget build(BuildContext context) {
-    const style = TextStyle(
-      color: Color(0xFFDADAE0),
+    final skin = VedroSkin.of(context);
+    final style = TextStyle(
+      color: skin.isLight ? skin.fg2 : skin.fg.withValues(alpha: 0.88),
       fontSize: 14.5,
       height: 1.62,
       letterSpacing: 0.05,
@@ -2690,8 +2793,8 @@ class _ExpandableOverviewState extends State<_ExpandableOverview> {
                         cursor: SystemMouseCursors.click,
                         child: Text(
                           _expanded ? '收起简介' : '展开全部',
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: skin.fg,
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                           ),
@@ -2897,22 +3000,26 @@ class _NfoMetadataSection extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
+    final skin = VedroSkin.of(context);
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: const Color(0xFF121215),
-        borderRadius: BorderRadius.circular(20),
+        color: skin.surface,
+        borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 22.0)),
+        border: skin.cardBorder(),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             '影片资料与 NFO 信息',
-            style: TextStyle(
-              color: VedroTheme.fg,
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.3,
+            style: skin.applyHeadlineMood(
+              TextStyle(
+                color: skin.fg,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.3,
+              ),
             ),
           ),
           if (facts.isNotEmpty) ...[
@@ -2934,8 +3041,8 @@ class _NfoMetadataSection extends StatelessWidget {
                         children: [
                           Text(
                             f.$1,
-                            style: const TextStyle(
-                              color: VedroTheme.fg3,
+                            style: TextStyle(
+                              color: skin.fg3,
                               fontSize: 12,
                               fontWeight: FontWeight.w500,
                             ),
@@ -2943,8 +3050,8 @@ class _NfoMetadataSection extends StatelessWidget {
                           const SizedBox(height: 3),
                           SelectableText(
                             f.$2,
-                            style: const TextStyle(
-                              color: VedroTheme.fg,
+                            style: TextStyle(
+                              color: skin.fg,
                               fontSize: 13.5,
                               fontWeight: FontWeight.w500,
                               height: 1.4,
@@ -2960,7 +3067,7 @@ class _NfoMetadataSection extends StatelessWidget {
           ],
           if (item.tags.isNotEmpty) ...[
             const SizedBox(height: 20),
-            const Text('标签', style: TextStyle(color: VedroTheme.fg3, fontSize: 12, fontWeight: FontWeight.w500)),
+            Text('标签', style: TextStyle(color: skin.fg3, fontSize: 12, fontWeight: FontWeight.w500)),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -2969,12 +3076,12 @@ class _NfoMetadataSection extends StatelessWidget {
                 return Container(
                   padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF1B1B20),
-                    borderRadius: BorderRadius.circular(14),
+                    color: skin.surface2,
+                    borderRadius: BorderRadius.circular(skin.radiusForPill(28)),
                   ),
                   child: Text(
                     '# $tag',
-                    style: const TextStyle(color: VedroTheme.fg2, fontSize: 12),
+                    style: TextStyle(color: skin.fg2, fontSize: 12),
                   ),
                 );
               }).toList(),
@@ -2982,7 +3089,7 @@ class _NfoMetadataSection extends StatelessWidget {
           ],
           if (item.remoteTrailers.isNotEmpty) ...[
             const SizedBox(height: 20),
-            const Text('官方预告片', style: TextStyle(color: VedroTheme.fg3, fontSize: 12, fontWeight: FontWeight.w500)),
+            Text('官方预告片', style: TextStyle(color: skin.fg3, fontSize: 12, fontWeight: FontWeight.w500)),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -2995,15 +3102,15 @@ class _NfoMetadataSection extends StatelessWidget {
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6.5),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF1B1B20),
-                      borderRadius: BorderRadius.circular(16),
+                      color: skin.surface2,
+                      borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.play_circle_outline_rounded, size: 15, color: Colors.white),
+                        Icon(Icons.play_circle_outline_rounded, size: 15, color: skin.fg),
                         const SizedBox(width: 5),
-                        Text(label, style: const TextStyle(color: Colors.white, fontSize: 12.5)),
+                        Text(label, style: TextStyle(color: skin.fg, fontSize: 12.5)),
                       ],
                     ),
                   ),
@@ -3013,7 +3120,7 @@ class _NfoMetadataSection extends StatelessWidget {
           ],
           if (links.isNotEmpty) ...[
             const SizedBox(height: 20),
-            const Text('资料索引', style: TextStyle(color: VedroTheme.fg3, fontSize: 12, fontWeight: FontWeight.w500)),
+            Text('资料索引', style: TextStyle(color: skin.fg3, fontSize: 12, fontWeight: FontWeight.w500)),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8,
@@ -3034,24 +3141,24 @@ class _NfoMetadataSection extends StatelessWidget {
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6.5),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF1B1B20),
-                      borderRadius: BorderRadius.circular(16),
+                      color: skin.surface2,
+                      borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
                           displayId,
-                          style: const TextStyle(
-                            color: VedroTheme.fg,
+                          style: TextStyle(
+                            color: skin.fg,
                             fontSize: 12,
                             fontWeight: FontWeight.w500,
-                            fontFeatures: [FontFeature.tabularFigures()],
+                            fontFeatures: const [FontFeature.tabularFigures()],
                           ),
                         ),
                         if (url != null) ...[
                           const SizedBox(width: 5),
-                          const Icon(Icons.arrow_outward_rounded, size: 12.5, color: VedroTheme.fg3),
+                          Icon(Icons.arrow_outward_rounded, size: 12.5, color: skin.fg3),
                         ],
                       ],
                     ),
@@ -3073,6 +3180,7 @@ class _MediaSpecsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final videos = source.videoStreams;
     final audios = source.audioStreams;
     final subs = source.subtitleStreams;
@@ -3088,8 +3196,9 @@ class _MediaSpecsSection extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: const Color(0xFF121215),
-        borderRadius: BorderRadius.circular(20),
+        color: skin.surface,
+        borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 22.0)),
+        border: skin.cardBorder(),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -3100,21 +3209,23 @@ class _MediaSpecsSection extends StatelessWidget {
             alignment: WrapAlignment.spaceBetween,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              const Text(
+              Text(
                 '技术规格',
-                style: TextStyle(
-                  color: VedroTheme.fg,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.3,
+                style: skin.applyHeadlineMood(
+                  TextStyle(
+                    color: skin.fg,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.3,
+                  ),
                 ),
               ),
               if (source.container != null && source.container!.isNotEmpty)
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF1B1B20),
-                    borderRadius: BorderRadius.circular(12),
+                    color: skin.surface2,
+                    borderRadius: BorderRadius.circular(skin.radiusForPill(24)),
                   ),
                   child: Text(
                     [
@@ -3123,11 +3234,11 @@ class _MediaSpecsSection extends StatelessWidget {
                       if ((source.bitrate ?? 0) > 0)
                         '${(source.bitrate! / 1000000).toStringAsFixed(1)} Mbps',
                     ].join(' · '),
-                    style: const TextStyle(
-                      color: VedroTheme.fg2,
+                    style: TextStyle(
+                      color: skin.fg2,
                       fontSize: 12,
                       fontWeight: FontWeight.w500,
-                      fontFeatures: [FontFeature.tabularFigures()],
+                      fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
                 ),
@@ -3142,12 +3253,12 @@ class _MediaSpecsSection extends StatelessWidget {
             _SpecGroup('字幕 (${subs.length})', subs.take(12).map((s) => s.detailedSpec).toList()),
           if (filePath != null && filePath.isNotEmpty) ...[
             const SizedBox(height: 8),
-            const Text('媒体路径', style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5)),
+            Text('媒体路径', style: TextStyle(color: skin.fg3, fontSize: 11.5)),
             const SizedBox(height: 3),
             SelectableText(
               filePath,
-              style: const TextStyle(
-                color: VedroTheme.fg2,
+              style: TextStyle(
+                color: skin.fg2,
                 fontSize: 12,
                 fontFamily: 'monospace',
               ),
@@ -3166,22 +3277,23 @@ class _SpecGroup extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(color: VedroTheme.fg3, fontSize: 12, fontWeight: FontWeight.w500)),
+          Text(label, style: TextStyle(color: skin.fg3, fontSize: 12, fontWeight: FontWeight.w500)),
           const SizedBox(height: 4),
           for (final line in lines)
             Padding(
               padding: const EdgeInsets.only(bottom: 3),
               child: Text(
                 line,
-                style: const TextStyle(
-                  color: VedroTheme.fg,
+                style: TextStyle(
+                  color: skin.fg,
                   fontSize: 13,
-                  fontFeatures: [FontFeature.tabularFigures()],
+                  fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
             ),
@@ -3198,22 +3310,25 @@ class _TitleHeadline extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Text(
       text,
       maxLines: 2,
       overflow: TextOverflow.ellipsis,
-      style: TextStyle(
-        color: Colors.white,
-        fontSize: wide ? 40 : 26,
-        fontWeight: FontWeight.w700,
-        letterSpacing: wide ? -0.9 : -0.6,
-        height: 1.1,
+      style: skin.applyHeadlineMood(
+        TextStyle(
+          color: skin.fg,
+          fontSize: wide ? 40 : 26,
+          fontWeight: FontWeight.w700,
+          letterSpacing: wide ? -0.9 : -0.6,
+          height: 1.1,
+        ),
       ),
     );
   }
 }
 
-/// Pure solid-white Apple TV+ Play Capsule (zero half-blue split lines!).
+/// Skin-adaptive Primary Play CTA button (supports contrast, accent, dual-tone gradient, and outline styles).
 class _ProgressPlayPill extends StatelessWidget {
   const _ProgressPlayPill({
     required this.label,
@@ -3231,37 +3346,40 @@ class _ProgressPlayPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final h = fullWidth ? 50.0 : 46.0;
+    final r = fullWidth ? skin.cardRadius.clamp(6.0, 16.0) : skin.radiusForPill(h);
     return PressableScale(
       onTap: onTap,
       hoverScale: fullWidth ? 1.015 : 1.03,
       pressScale: 0.96,
       child: Container(
-        height: fullWidth ? 50 : 46,
+        height: h,
         width: fullWidth ? double.infinity : null,
         constraints: fullWidth
             ? const BoxConstraints(minHeight: 50)
             : const BoxConstraints(minWidth: 152, maxWidth: 296),
         padding: const EdgeInsets.symmetric(horizontal: 24),
         decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(fullWidth ? 14 : 23),
-          boxShadow: const [
-            BoxShadow(color: Color(0x52000000), blurRadius: 22, offset: Offset(0, 8)),
-          ],
+          color: skin.primaryCtaBg,
+          gradient: skin.primaryCtaGradient,
+          borderRadius: BorderRadius.circular(r),
+          border: skin.primaryCtaBorder,
+          boxShadow: skin.primaryCtaShadow,
         ),
         child: Row(
           mainAxisSize: fullWidth ? MainAxisSize.max : MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.play_arrow_rounded, size: 23, color: VedroTheme.canvas),
+            Icon(Icons.play_arrow_rounded, size: 23, color: skin.primaryCtaFg),
             const SizedBox(width: 5),
             Flexible(
               child: Text(
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: VedroTheme.canvas,
+                style: TextStyle(
+                  color: skin.primaryCtaFg,
                   fontSize: 15,
                   fontWeight: FontWeight.w700,
                   letterSpacing: -0.2,
@@ -3305,11 +3423,13 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final ep = widget.episode;
     final hasProgress = ep.resumeProgress > 0.01;
     final airDate = fmtIsoDate(ep.premiereDate);
     final dur = fmtDurationTicks(ep.runTimeTicks);
     final epOverview = ep.cleanOverview;
+    final cardR = widget.appState.prefs.effectiveCardRadius(skin);
 
     return SizedBox(
       width: widget.width,
@@ -3327,15 +3447,13 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                 duration: const Duration(milliseconds: 200),
                 curve: VedroTheme.easeOut,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
-                  color: VedroTheme.surface2,
-                  boxShadow: [
-                    BoxShadow(
-                      color: _hovered ? const Color(0x88000000) : const Color(0x48000000),
-                      blurRadius: _hovered ? 24 : 14,
-                      offset: Offset(0, _hovered ? 10 : 6),
-                    ),
-                  ],
+                  borderRadius: BorderRadius.circular(cardR),
+                  color: skin.surface2,
+                  boxShadow: skin.posterShadow(hovered: _hovered),
+                ),
+                foregroundDecoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(cardR),
+                  border: skin.cardBorder(hovered: _hovered),
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Stack(
@@ -3358,7 +3476,6 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                         ),
                       ),
                     ),
-                    // Subtle hover play FAB in center
                     IgnorePointer(
                       ignoring: !_hovered,
                       child: AnimatedOpacity(
@@ -3368,20 +3485,20 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                           child: Container(
                             width: 42,
                             height: 42,
-                            decoration: const BoxDecoration(
-                              color: Color(0xEBFFFFFF),
+                            decoration: BoxDecoration(
+                              color: skin.primaryCtaBg,
+                              gradient: skin.primaryCtaGradient,
                               shape: BoxShape.circle,
                             ),
-                            child: const Icon(
+                            child: Icon(
                               Icons.play_arrow_rounded,
                               size: 24,
-                              color: VedroTheme.canvas,
+                              color: skin.primaryCtaFg,
                             ),
                           ),
                         ),
                       ),
                     ),
-                    // Clean top-right actions (no borders!)
                     Positioned(
                       top: 8,
                       right: 8,
@@ -3440,7 +3557,7 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                             value: ep.resumeProgress,
                             minHeight: 3,
                             backgroundColor: const Color(0x45FFFFFF),
-                            color: Colors.white,
+                            color: skin.ctaStyle == 'contrast' ? Colors.white : skin.accent,
                           ),
                         ),
                       ),
@@ -3454,16 +3571,16 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                 if (ep.indexNumber != null)
                   Text(
                     '第 ${ep.indexNumber} 集',
-                    style: const TextStyle(
-                      color: VedroTheme.fg3,
+                    style: TextStyle(
+                      color: skin.fg3,
                       fontSize: 11.5,
                       fontWeight: FontWeight.w600,
-                      fontFeatures: [FontFeature.tabularFigures()],
+                      fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
                 const Spacer(),
                 if (ep.played)
-                  const Icon(Icons.check_circle_rounded, size: 13.5, color: VedroTheme.fg3),
+                  Icon(Icons.check_circle_rounded, size: 13.5, color: skin.fg3),
               ],
             ),
             const SizedBox(height: 2),
@@ -3471,8 +3588,8 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
               ep.displayName,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
+              style: TextStyle(
+                color: skin.fg,
                 fontSize: 14.5,
                 fontWeight: FontWeight.w600,
                 letterSpacing: -0.2,
@@ -3484,7 +3601,7 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                 epOverview,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: VedroTheme.fg2, fontSize: 12, height: 1.42),
+                style: TextStyle(color: skin.fg2, fontSize: 12, height: 1.42),
               ),
             ],
             const SizedBox(height: 4),
@@ -3497,10 +3614,10 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
               ].join(' · '),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: VedroTheme.fg3,
+              style: TextStyle(
+                color: skin.fg3,
                 fontSize: 11.5,
-                fontFeatures: [FontFeature.tabularFigures()],
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
           ],
@@ -3510,27 +3627,30 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
   }
 }
 
-/// Clean Apple Soft Surface card for selecting a media version (zero radio buttons or neon boxes!).
+/// Strictly single-select Version Option Card with smart disambiguated title & compact index pill.
 class _VersionOptionTile extends StatelessWidget {
   const _VersionOptionTile({
-    required this.source,
+    super.key,
+    required this.version,
+    required this.totalCount,
     required this.selected,
     required this.accent,
     required this.onTap,
   });
 
-  final MediaSourceModel source;
+  final ResolvedMediaVersion version;
+  final int totalCount;
   final bool selected;
   final Color accent;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final title = source.name?.isNotEmpty == true
-        ? source.name!
-        : (source.container?.toUpperCase() ?? '原画');
+    final skin = VedroSkin.of(context);
+    final source = version.source;
     final video = source.videoStreams.isNotEmpty ? source.videoStreams.first : null;
     final tags = <String>[
+      if (version.folderBadge != null && version.folderBadge!.isNotEmpty) version.folderBadge!,
       if (video != null && video.height != null) '${video.height}p',
       if (video?.codec != null && video!.codec!.isNotEmpty) video.codec!.toUpperCase(),
       if (source.container != null && source.container!.isNotEmpty) source.container!.toUpperCase(),
@@ -3539,6 +3659,8 @@ class _VersionOptionTile extends StatelessWidget {
       if (source.audioStreams.isNotEmpty) '${source.audioStreams.length} 音轨',
       if (source.subtitleStreams.isNotEmpty) '${source.subtitleStreams.length} 字幕',
     ];
+    final compact = totalCount >= 4;
+    final r = skin.cardRadius.clamp(6.0, 16.0);
 
     return PressableScale(
       onTap: onTap,
@@ -3548,42 +3670,72 @@ class _VersionOptionTile extends StatelessWidget {
         duration: const Duration(milliseconds: 180),
         curve: VedroTheme.easeOut,
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 13 : 16,
+          vertical: compact ? 10.5 : 13,
+        ),
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFF222228) : const Color(0xFF151518),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: selected ? const Color(0x38FFFFFF) : Colors.transparent,
-            width: 0.9,
-          ),
+          color: selected ? skin.surface2 : skin.surface,
+          borderRadius: BorderRadius.circular(r),
+          border: skin.cardBorder(selected: selected),
+          boxShadow: selected && skin.isLight
+              ? [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.06),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ]
+              : null,
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
+            if (totalCount > 2) ...[
+              Container(
+                width: 24,
+                height: 24,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: selected ? skin.activePillBg : skin.subtleChipBg,
+                  borderRadius: BorderRadius.circular(skin.radiusForPill(24)),
+                ),
+                child: Text(
+                  '${version.index + 1}',
+                  style: TextStyle(
+                    color: selected ? skin.activePillFg : skin.fg3,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+            ],
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    title,
+                    version.displayTitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: selected ? Colors.white : const Color(0xFFD4D4DA),
-                      fontSize: 13.5,
+                      color: selected ? skin.fg : skin.fg2,
+                      fontSize: compact ? 13 : 13.5,
                       fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                     ),
                   ),
                   if (tags.isNotEmpty) ...[
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 3),
                     Text(
                       tags.join(' · '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: VedroTheme.fg3,
-                        fontSize: 12,
-                        fontFeatures: [FontFeature.tabularFigures()],
+                      style: TextStyle(
+                        color: skin.fg3,
+                        fontSize: 11.5,
+                        fontFeatures: const [FontFeature.tabularFigures()],
                       ),
                     ),
                   ],
@@ -3591,17 +3743,17 @@ class _VersionOptionTile extends StatelessWidget {
               ),
             ),
             if (selected) ...[
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(10),
+                  color: skin.activePillBg,
+                  borderRadius: BorderRadius.circular(skin.radiusForPill(20)),
                 ),
-                child: const Text(
+                child: Text(
                   '当前',
                   style: TextStyle(
-                    color: VedroTheme.canvas,
+                    color: skin.activePillFg,
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                   ),
@@ -3615,141 +3767,398 @@ class _VersionOptionTile extends StatelessWidget {
   }
 }
 
-/// Borderless Infuse 8 / Apple TV+ Version, Audio & Subtitle selector section.
+/// Unified, Always-Available Version + Audio + Subtitle Control Deck for Movies, Episodes, AND Series!
+/// - Strictly single-selects version by integer index (never highlights >1 version even when 4+ share Name/Id)
+/// - Always surfaces Audio & Subtitle selection (real probed tracks when available, or language priority + local .srt/.ass mount when unprobed on embygo!)
 class _TracksPanel extends StatelessWidget {
   const _TracksPanel({
-    required this.sources,
-    required this.selectedId,
+    required this.isSeries,
+    required this.versions,
+    required this.selectedVersionIndex,
+    required this.activeStreamSource,
     required this.selectedAudioIndex,
     required this.selectedSubtitleIndex,
-    required this.onSelectSource,
+    required this.localExternalSubPath,
+    required this.appState,
+    required this.onSelectVersionIndex,
     required this.onSelectAudio,
     required this.onSelectSubtitle,
+    required this.onPickExternalSubtitle,
+    required this.onClearExternalSubtitle,
   });
 
-  final List<MediaSourceModel> sources;
-  final String? selectedId;
+  final bool isSeries;
+  final List<ResolvedMediaVersion> versions;
+  final int selectedVersionIndex;
+  final MediaSourceModel? activeStreamSource;
   final int? selectedAudioIndex;
   final int? selectedSubtitleIndex;
-  final ValueChanged<String> onSelectSource;
+  final String? localExternalSubPath;
+  final VedroAppState appState;
+  final ValueChanged<int> onSelectVersionIndex;
   final ValueChanged<int?> onSelectAudio;
   final ValueChanged<int?> onSelectSubtitle;
+  final VoidCallback onPickExternalSubtitle;
+  final VoidCallback onClearExternalSubtitle;
+
+  void _openAllTracksSheet({
+    required BuildContext context,
+    required String title,
+    required List<MediaStreamModel> tracks,
+    required int? selectedIndex,
+    required ValueChanged<int?> onSelect,
+    bool allowOff = false,
+  }) {
+    final skin = VedroSkin.of(context);
+    showGlassSheet<void>(
+      context: context,
+      builder: (ctx) => ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Text(
+              '$title (${tracks.length})',
+              style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+          ),
+          ListTile(
+            dense: true,
+            title: Text('默认自动', style: TextStyle(color: skin.fg, fontSize: 13.5)),
+            trailing: selectedIndex == null ? Icon(Icons.check_rounded, size: 18, color: skin.accent) : null,
+            onTap: () {
+              Navigator.pop(ctx);
+              onSelect(null);
+            },
+          ),
+          if (allowOff)
+            ListTile(
+              dense: true,
+              title: Text('关闭字幕', style: TextStyle(color: skin.fg, fontSize: 13.5)),
+              trailing: selectedIndex == -1 ? Icon(Icons.check_rounded, size: 18, color: skin.accent) : null,
+              onTap: () {
+                Navigator.pop(ctx);
+                onSelect(-1);
+              },
+            ),
+          for (final t in tracks)
+            ListTile(
+              dense: true,
+              title: Text(t.label, style: TextStyle(color: skin.fg, fontSize: 13.5)),
+              subtitle: Text(t.detailedSpec, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
+              trailing: selectedIndex == t.index
+                  ? Icon(Icons.check_rounded, size: 18, color: skin.accent)
+                  : null,
+              onTap: () {
+                Navigator.pop(ctx);
+                onSelect(t.index);
+              },
+            ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final active = sources.firstWhere(
-      (s) => s.id == selectedId,
-      orElse: () => sources.first,
-    );
-    final audios = active.audioStreams;
-    final subs = active.subtitleStreams;
-    final accent = Theme.of(context).colorScheme.secondary;
+    final skin = VedroSkin.of(context);
+    final prefs = appState.prefs;
+    final safeVerIdx = versions.isEmpty
+        ? 0
+        : selectedVersionIndex.clamp(0, versions.length - 1);
+    final streamSrc = activeStreamSource ??
+        (versions.isNotEmpty ? versions[safeVerIdx].source : null);
+    final audios = streamSrc?.audioStreams ?? const <MediaStreamModel>[];
+    final subs = streamSrc?.subtitleStreams ?? const <MediaStreamModel>[];
+    final extFileName = localExternalSubPath?.trim().isNotEmpty == true
+        ? localExternalSubPath!.replaceAll('\\', '/').split('/').last
+        : null;
 
-    if (sources.length <= 1 && audios.isEmpty && subs.isEmpty) {
-      return const SizedBox.shrink(key: ValueKey('detail-version-selector'));
-    }
+    const audioLangOptions = <(String code, String label)>[
+      ('auto', '原声自动'),
+      ('zh', '中文 / 国语'),
+      ('ja', '日语'),
+      ('yue', '粤语'),
+      ('en', '英语'),
+    ];
+
+    const subLangOptions = <(String code, String label)>[
+      ('zh', '简体中文'),
+      ('zh-Hant', '繁体中文'),
+      ('en', '英语 / 双语'),
+      ('ja', '日语'),
+      ('off', '关闭字幕'),
+    ];
 
     return Column(
       key: const ValueKey('detail-version-selector'),
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (sources.length > 1) ...[
-          Text(
-            '选择片源版本 (${sources.length})',
-            style: const TextStyle(
-              color: VedroTheme.fg2,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              letterSpacing: -0.1,
-            ),
+        if (versions.length > 1) ...[
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                isSeries
+                    ? '选择剧集片源版本 (${versions.length})'
+                    : '选择片源版本 (${versions.length})',
+                style: TextStyle(
+                  color: skin.fg2,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -0.1,
+                ),
+              ),
+              if (versions.length > 3)
+                Text(
+                  '已智能识别目录与编码差异',
+                  style: TextStyle(color: skin.fg3, fontSize: 11.5),
+                ),
+            ],
           ),
           const SizedBox(height: 10),
           LayoutBuilder(
             builder: (ctx, c) {
-              final twoCol = c.maxWidth >= 680;
-              final cardW = twoCol ? (c.maxWidth - 12) / 2 : c.maxWidth;
+              final cols = (versions.length >= 4 && c.maxWidth >= 980)
+                  ? 3
+                  : (c.maxWidth >= 640 ? 2 : 1);
+              const gap = 10.0;
+              final cardW = (c.maxWidth - gap * (cols - 1)) / cols;
               return Wrap(
-                spacing: 12,
-                runSpacing: 10,
-                children: sources.map((s) {
-                  return SizedBox(
-                    width: cardW,
-                    child: _VersionOptionTile(
-                      source: s,
-                      selected: s.id == active.id,
-                      accent: accent,
-                      onTap: () => onSelectSource(s.id),
+                spacing: gap,
+                runSpacing: 9,
+                children: [
+                  for (var i = 0; i < versions.length; i++)
+                    SizedBox(
+                      width: cardW,
+                      child: _VersionOptionTile(
+                        key: ValueKey('${isSeries ? 'series' : 'movie'}-version-card-$i'),
+                        version: versions[i],
+                        totalCount: versions.length,
+                        selected: i == safeVerIdx,
+                        accent: skin.accent,
+                        onTap: () => onSelectVersionIndex(i),
+                      ),
                     ),
-                  );
-                }).toList(),
+                ],
               );
             },
           ),
+          const SizedBox(height: 20),
         ],
 
-        if (audios.isNotEmpty) ...[
-          if (sources.length > 1) const SizedBox(height: 18),
-          Text(
-            '音轨 (${audios.length})',
-            style: const TextStyle(
-              color: VedroTheme.fg3,
-              fontSize: 12.5,
-              fontWeight: FontWeight.w600,
-            ),
+        // Always-Visible Audio & Subtitle Selector Container
+        Container(
+          key: const ValueKey('detail-audio-subtitle-panel'),
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 15),
+          decoration: BoxDecoration(
+            color: skin.surface,
+            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 18.0)),
+            border: skin.cardBorder(),
           ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _TrackChoiceChip(
-                label: '默认',
-                selected: selectedAudioIndex == null,
-                onTap: () => onSelectAudio(null),
+              Wrap(
+                spacing: 10,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                alignment: WrapAlignment.spaceBetween,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.subtitles_outlined, size: 15.5, color: skin.accent),
+                      const SizedBox(width: 6),
+                      Text(
+                        '音轨与字幕',
+                        style: TextStyle(
+                          color: skin.fg,
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (audios.isEmpty && subs.isEmpty)
+                    Text(
+                      '开播自动按偏好匹配内封/外挂轨道 · 也可挂载本地字幕',
+                      style: TextStyle(color: skin.fg3, fontSize: 11.5),
+                    ),
+                ],
               ),
-              ...audios.map((a) {
-                final on = selectedAudioIndex == a.index;
-                return _TrackChoiceChip(
-                  label: a.label,
-                  selected: on,
-                  onTap: () => onSelectAudio(on ? null : a.index),
-                );
-              }),
-            ],
-          ),
-        ],
+              const SizedBox(height: 12),
 
-        if (subs.isNotEmpty) ...[
-          if (sources.length > 1 || audios.isNotEmpty) const SizedBox(height: 16),
-          Text(
-            '字幕 (${subs.length})',
-            style: const TextStyle(
-              color: VedroTheme.fg3,
-              fontSize: 12.5,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _TrackChoiceChip(
-                label: '默认',
-                selected: selectedSubtitleIndex == null,
-                onTap: () => onSelectSubtitle(null),
+              // 1. Audio Track / Preferred Audio Language Row
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6, right: 10),
+                    child: SizedBox(
+                      width: 42,
+                      child: Text(
+                        audios.isNotEmpty ? '音轨' : '配音',
+                        style: TextStyle(
+                          color: skin.fg3,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Wrap(
+                      spacing: 7,
+                      runSpacing: 7,
+                      children: audios.isNotEmpty
+                          ? [
+                              _TrackChoiceChip(
+                                label: '默认',
+                                selected: selectedAudioIndex == null,
+                                onTap: () => onSelectAudio(null),
+                              ),
+                              ...audios.take(6).map((a) {
+                                final on = selectedAudioIndex == a.index;
+                                return _TrackChoiceChip(
+                                  label: a.label,
+                                  selected: on,
+                                  onTap: () => onSelectAudio(on ? null : a.index),
+                                );
+                              }),
+                              if (audios.length > 6)
+                                _TrackChoiceChip(
+                                  label: '全部 ${audios.length} 条音轨 ▾',
+                                  selected: selectedAudioIndex != null &&
+                                      !audios.take(6).any((a) => a.index == selectedAudioIndex),
+                                  onTap: () => _openAllTracksSheet(
+                                    context: context,
+                                    title: '选择音轨',
+                                    tracks: audios,
+                                    selectedIndex: selectedAudioIndex,
+                                    onSelect: onSelectAudio,
+                                  ),
+                                ),
+                            ]
+                          : audioLangOptions.map((opt) {
+                              final on = prefs.preferredAudioLang == opt.$1;
+                              return _TrackChoiceChip(
+                                label: opt.$2,
+                                selected: on,
+                                onTap: () => appState.updatePrefs(
+                                  prefs.copyWith(preferredAudioLang: opt.$1),
+                                ),
+                              );
+                            }).toList(),
+                    ),
+                  ),
+                ],
               ),
-              ...subs.take(16).map((s) {
-                final on = selectedSubtitleIndex == s.index;
-                return _TrackChoiceChip(
-                  label: s.label,
-                  selected: on,
-                  onTap: () => onSelectSubtitle(on ? null : s.index),
-                );
-              }),
+
+              const SizedBox(height: 10),
+
+              // 2. Subtitle Stream / Preferred Subtitle Language + External Subtitle File Row
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6, right: 10),
+                    child: SizedBox(
+                      width: 42,
+                      child: Text(
+                        '字幕',
+                        style: TextStyle(
+                          color: skin.fg3,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Wrap(
+                      spacing: 7,
+                      runSpacing: 7,
+                      children: [
+                        if (subs.isNotEmpty) ...[
+                          _TrackChoiceChip(
+                            label: '默认',
+                            selected: selectedSubtitleIndex == null && extFileName == null,
+                            onTap: () => onSelectSubtitle(null),
+                          ),
+                          _TrackChoiceChip(
+                            label: '关闭字幕',
+                            selected: selectedSubtitleIndex == -1 && extFileName == null,
+                            onTap: () => onSelectSubtitle(-1),
+                          ),
+                          ...subs.take(8).map((s) {
+                            final on = selectedSubtitleIndex == s.index && extFileName == null;
+                            return _TrackChoiceChip(
+                              label: s.label,
+                              selected: on,
+                              onTap: () => onSelectSubtitle(on ? null : s.index),
+                            );
+                          }),
+                          if (subs.length > 8)
+                            _TrackChoiceChip(
+                              label: '全部 ${subs.length} 条字幕 ▾',
+                              selected: extFileName == null &&
+                                  selectedSubtitleIndex != null &&
+                                  selectedSubtitleIndex != -1 &&
+                                  !subs.take(8).any((s) => s.index == selectedSubtitleIndex),
+                              onTap: () => _openAllTracksSheet(
+                                context: context,
+                                title: '选择字幕轨道',
+                                tracks: subs,
+                                selectedIndex: selectedSubtitleIndex,
+                                onSelect: onSelectSubtitle,
+                                allowOff: true,
+                              ),
+                            ),
+                        ] else ...[
+                          for (final opt in subLangOptions)
+                            _TrackChoiceChip(
+                              label: opt.$2,
+                              selected: extFileName == null &&
+                                  ((opt.$1 == 'off' &&
+                                          (selectedSubtitleIndex == -1 ||
+                                              prefs.preferredSubLang == 'off')) ||
+                                      (opt.$1 != 'off' &&
+                                          selectedSubtitleIndex != -1 &&
+                                          prefs.preferredSubLang == opt.$1)),
+                              onTap: () {
+                                onSelectSubtitle(opt.$1 == 'off' ? -1 : null);
+                                appState.updatePrefs(prefs.copyWith(preferredSubLang: opt.$1));
+                              },
+                            ),
+                        ],
+
+                        if (extFileName != null)
+                          _TrackChoiceChip(
+                            label: '外挂: $extFileName ×',
+                            selected: true,
+                            onTap: onClearExternalSubtitle,
+                          ),
+
+                        _TrackChoiceChip(
+                          key: const ValueKey('detail-mount-local-sub-btn'),
+                          label: '+ 本地字幕',
+                          icon: Icons.upload_file_rounded,
+                          selected: false,
+                          onTap: onPickExternalSubtitle,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
-        ],
+        ),
       ],
     );
   }
@@ -3757,17 +4166,21 @@ class _TracksPanel extends StatelessWidget {
 
 class _TrackChoiceChip extends StatelessWidget {
   const _TrackChoiceChip({
+    super.key,
     required this.label,
     required this.selected,
     required this.onTap,
+    this.icon,
   });
 
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final IconData? icon;
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return PressableScale(
       onTap: onTap,
       hoverScale: 1.02,
@@ -3775,18 +4188,41 @@ class _TrackChoiceChip extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),
         curve: VedroTheme.easeOut,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        padding: const EdgeInsets.symmetric(horizontal: 12.5, vertical: 6),
         decoration: BoxDecoration(
-          color: selected ? Colors.white : const Color(0xFF16161A),
-          borderRadius: BorderRadius.circular(17),
+          color: selected ? skin.activePillBg : skin.surface2,
+          borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
+          border: (!selected && skin.frameStyle == 'neon')
+              ? Border.all(color: skin.border, width: 0.7)
+              : null,
         ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: selected ? VedroTheme.canvas : const Color(0xFFD4D4DA),
-            fontSize: 12.5,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-          ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[
+              Icon(
+                icon,
+                size: 13.5,
+                color: selected ? skin.activePillFg : skin.fg2,
+              ),
+              const SizedBox(width: 4),
+            ],
+            Flexible(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 220),
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: selected ? skin.activePillFg : skin.fg2,
+                    fontSize: 12,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -3819,6 +4255,7 @@ class _EpisodeRowState extends State<_EpisodeRow> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final ep = widget.episode;
     final dur = fmtDurationTicks(ep.runTimeTicks);
     final airDate = fmtIsoDate(ep.premiereDate);
@@ -3834,8 +4271,9 @@ class _EpisodeRowState extends State<_EpisodeRow> {
           duration: const Duration(milliseconds: 180),
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: _hovered ? const Color(0xFF1C1C21) : const Color(0xFF131316),
-            borderRadius: BorderRadius.circular(16),
+            color: _hovered ? skin.surface2 : skin.surface,
+            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 18.0)),
+            border: skin.cardBorder(hovered: _hovered),
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -3845,7 +4283,9 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                 child: AspectRatio(
                   aspectRatio: 16 / 9,
                   child: Container(
-                    decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 12.0)),
+                    ),
                     clipBehavior: Clip.antiAlias,
                     child: Stack(
                       fit: StackFit.expand,
@@ -3868,7 +4308,7 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                                 value: ep.resumeProgress,
                                 minHeight: 2.5,
                                 backgroundColor: const Color(0x45FFFFFF),
-                                color: Colors.white,
+                                color: skin.ctaStyle == 'contrast' ? Colors.white : skin.accent,
                               ),
                             ),
                           ),
@@ -3892,8 +4332,8 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                             ].join(' '),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: VedroTheme.fg,
+                            style: TextStyle(
+                              color: skin.fg,
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
                             ),
@@ -3907,13 +4347,13 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                               child: Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFF222228),
-                                  borderRadius: BorderRadius.circular(10),
+                                  color: skin.surface2,
+                                  borderRadius: BorderRadius.circular(skin.radiusForPill(20)),
                                 ),
                                 child: Text(
                                   '${ep.versionCount} 版本',
-                                  style: const TextStyle(
-                                    color: Colors.white,
+                                  style: TextStyle(
+                                    color: skin.fg,
                                     fontSize: 11.5,
                                     fontWeight: FontWeight.w600,
                                   ),
@@ -3922,17 +4362,15 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                             ),
                           ),
                         if (ep.played)
-                          const Padding(
-                            padding: EdgeInsets.only(right: 6),
-                            child: Icon(Icons.check_circle_rounded,
-                                size: 16, color: VedroTheme.fg3),
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: Icon(Icons.check_circle_rounded, size: 16, color: skin.fg3),
                           ),
                         Tooltip(
                           message: '查看本集详情与媒体规格',
                           child: IconButton(
                             visualDensity: VisualDensity.compact,
-                            icon: const Icon(Icons.more_horiz_rounded,
-                                size: 18, color: VedroTheme.fg3),
+                            icon: Icon(Icons.more_horiz_rounded, size: 18, color: skin.fg3),
                             onPressed: widget.onOpenDetail,
                           ),
                         ),
@@ -3946,10 +4384,10 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                         if (ep.communityRating != null && ep.communityRating! > 0)
                           '★ ${ep.communityRating!.toStringAsFixed(1)}',
                       ].join(' · '),
-                      style: const TextStyle(
-                        color: VedroTheme.fg3,
+                      style: TextStyle(
+                        color: skin.fg3,
                         fontSize: 12,
-                        fontFeatures: [FontFeature.tabularFigures()],
+                        fontFeatures: const [FontFeature.tabularFigures()],
                       ),
                     ),
                     if (epOverview.isNotEmpty) ...[
@@ -3958,8 +4396,8 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                         epOverview,
                         maxLines: 3,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: VedroTheme.fg2,
+                        style: TextStyle(
+                          color: skin.fg2,
                           fontSize: 13,
                           height: 1.5,
                         ),
@@ -3976,26 +4414,23 @@ class _EpisodeRowState extends State<_EpisodeRow> {
   }
 }
 
-/// Scalable Multi-Episode & Multi-Version Batch Download Picker (supports 1,000+ episodes,
-/// season switching, version selection, live EmbyGo download quota pre-check & Range queue).
+/// Scalable Multi-Episode & Multi-Version Batch Download Picker (strictly single-selects version by index!).
 class _BatchDownloadDialog extends StatefulWidget {
   const _BatchDownloadDialog({
     required this.series,
     required this.seasons,
     required this.initialSeasonId,
     required this.initialEpisodes,
-    required this.initialVersionKey,
+    required this.initialVersionIndex,
     required this.appState,
-    required this.sourceVersionKeyOf,
   });
 
   final MediaItemModel series;
   final List<MediaItemModel> seasons;
   final String? initialSeasonId;
   final List<MediaItemModel> initialEpisodes;
-  final String? initialVersionKey;
+  final int initialVersionIndex;
   final VedroAppState appState;
-  final String Function(MediaSourceModel) sourceVersionKeyOf;
 
   @override
   State<_BatchDownloadDialog> createState() => _BatchDownloadDialogState();
@@ -4006,7 +4441,7 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
   late List<MediaItemModel> _episodes;
   final Map<String, List<MediaItemModel>> _seasonCache = {};
   final Map<String, MediaItemModel> _selectedById = {};
-  String? _versionKey;
+  int _versionIndex = 0;
   int _rangeIdx = 0;
   bool _loadingSeason = false;
   bool _submitting = false;
@@ -4019,37 +4454,42 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
     if (_seasonId != null) {
       _seasonCache[_seasonId!] = _episodes;
     }
-    _versionKey = widget.initialVersionKey;
+    _versionIndex = widget.initialVersionIndex;
     _ensureDefaultVersion();
   }
 
-  List<MediaSourceModel> get _availableVersions {
-    final seen = <String, MediaSourceModel>{};
+  List<ResolvedMediaVersion> get _availableVersions {
+    List<MediaSourceModel> best = const [];
     for (final ep in _episodes) {
-      for (final s in ep.mediaSources) {
-        final k = widget.sourceVersionKeyOf(s);
-        seen.putIfAbsent(k, () => s);
+      if (ep.mediaSources.length > best.length) {
+        best = ep.mediaSources;
       }
     }
-    return seen.values.toList();
+    return MediaSourceModel.resolveVersions(best);
   }
 
   void _ensureDefaultVersion() {
     final vers = _availableVersions;
-    if (vers.isEmpty) return;
-    if (_versionKey == null || !vers.any((v) => widget.sourceVersionKeyOf(v) == _versionKey)) {
-      _versionKey = widget.sourceVersionKeyOf(vers.first);
+    if (vers.isEmpty) {
+      _versionIndex = 0;
+      return;
+    }
+    if (_versionIndex < 0 || _versionIndex >= vers.length) {
+      _versionIndex = 0;
     }
   }
 
   MediaSourceModel? _resolveSourceFor(MediaItemModel ep) {
     if (ep.mediaSources.isEmpty) return null;
-    if (_versionKey != null) {
-      for (final s in ep.mediaSources) {
-        if (widget.sourceVersionKeyOf(s) == _versionKey) return s;
-      }
+    if (ep.mediaSources.length == 1) return ep.mediaSources.first;
+    final vers = _availableVersions;
+    if (vers.isEmpty) return ep.mediaSources.first;
+    final chosen = vers[_versionIndex.clamp(0, vers.length - 1)];
+    final epVers = MediaSourceModel.resolveVersions(ep.mediaSources);
+    for (final ev in epVers) {
+      if (ev.seriesMatchSignature == chosen.seriesMatchSignature) return ev.source;
     }
-    return ep.mediaSources.first;
+    return ep.mediaSources[_versionIndex.clamp(0, ep.mediaSources.length - 1)];
   }
 
   Future<void> _selectSeason(String seasonId) async {
@@ -4113,12 +4553,16 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
           if (sa != sb) return sa.compareTo(sb);
           return (a.indexNumber ?? 0).compareTo(b.indexNumber ?? 0);
         });
+      final vers = _availableVersions;
+      final chosenLabel = vers.isNotEmpty
+          ? vers[_versionIndex.clamp(0, vers.length - 1)].displayTitle
+          : null;
       final batch = ordered.map((ep) {
         final src = _resolveSourceFor(ep);
         return (
           item: ep,
           mediaSourceId: src?.id,
-          versionLabel: src?.name ?? src?.container?.toUpperCase(),
+          versionLabel: chosenLabel ?? src?.name ?? src?.container?.toUpperCase(),
           expectedBytes: src?.size,
         );
       }).toList();
@@ -4155,7 +4599,9 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final versions = _availableVersions;
+    final safeVerIdx = versions.isEmpty ? 0 : _versionIndex.clamp(0, versions.length - 1);
     final totalBytes = _selectedTotalBytes;
 
     final chunkSize = _episodes.length >= 400 ? 100 : 50;
@@ -4167,10 +4613,10 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
 
     return Dialog(
       key: const ValueKey('detail-batch-download-dialog'),
-      backgroundColor: const Color(0xFF141417),
+      backgroundColor: skin.surface,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(22),
-        side: const BorderSide(color: Color(0x18FFFFFF), width: 0.8),
+        borderRadius: BorderRadius.circular(skin.cardRadius.clamp(12.0, 22.0)),
+        side: BorderSide(color: skin.borderStrong, width: 0.9),
       ),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 620, maxHeight: 720),
@@ -4178,34 +4624,32 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Header
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
               child: Row(
                 children: [
-                  const Icon(Icons.arrow_downward_rounded, size: 19, color: Colors.white),
+                  Icon(Icons.arrow_downward_rounded, size: 19, color: skin.fg),
                   const SizedBox(width: 9),
                   Expanded(
                     child: Text(
                       '选择下载剧集与版本 · ${widget.series.displayName}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: skin.fg,
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.close_rounded, color: VedroTheme.fg2),
+                    icon: Icon(Icons.close_rounded, color: skin.fg2),
                     onPressed: () => Navigator.pop(context),
                   ),
                 ],
               ),
             ),
 
-            // Season switcher (multi-season)
             if (widget.seasons.length > 1)
               SizedBox(
                 height: 36,
@@ -4223,13 +4667,13 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                         padding: const EdgeInsets.symmetric(horizontal: 14),
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
-                          color: active ? Colors.white : const Color(0xFF1E1E24),
-                          borderRadius: BorderRadius.circular(18),
+                          color: active ? skin.activePillBg : skin.surface2,
+                          borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
                         ),
                         child: Text(
                           s.name,
                           style: TextStyle(
-                            color: active ? VedroTheme.canvas : VedroTheme.fg2,
+                            color: active ? skin.activePillFg : skin.fg2,
                             fontSize: 12.5,
                             fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                           ),
@@ -4240,7 +4684,6 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                 ),
               ),
 
-            // Multi-version selector
             if (versions.length > 1) ...[
               const SizedBox(height: 10),
               Padding(
@@ -4250,44 +4693,39 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                   children: [
                     Text(
                       '下载版本 (${versions.length})',
-                      style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5, fontWeight: FontWeight.w500),
+                      style: TextStyle(color: skin.fg3, fontSize: 11.5, fontWeight: FontWeight.w500),
                     ),
                     const SizedBox(height: 6),
                     Wrap(
                       spacing: 8,
                       runSpacing: 6,
-                      children: versions.map((v) {
-                        final vKey = widget.sourceVersionKeyOf(v);
-                        final active = vKey == _versionKey;
-                        final label = (v.name?.trim().isNotEmpty == true)
-                            ? v.name!.trim()
-                            : (v.container?.toUpperCase() ?? '原画');
-                        return GestureDetector(
-                          onTap: () => setState(() => _versionKey = vKey),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6.5),
-                            decoration: BoxDecoration(
-                              color: active ? Colors.white : const Color(0xFF1E1E24),
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Text(
-                              label,
-                              style: TextStyle(
-                                color: active ? VedroTheme.canvas : VedroTheme.fg2,
-                                fontSize: 12,
-                                fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                      children: [
+                        for (var i = 0; i < versions.length; i++)
+                          GestureDetector(
+                            onTap: () => setState(() => _versionIndex = i),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6.5),
+                              decoration: BoxDecoration(
+                                color: i == safeVerIdx ? skin.activePillBg : skin.surface2,
+                                borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
+                              ),
+                              child: Text(
+                                versions[i].displayTitle,
+                                style: TextStyle(
+                                  color: i == safeVerIdx ? skin.activePillFg : skin.fg2,
+                                  fontSize: 12,
+                                  fontWeight: i == safeVerIdx ? FontWeight.w600 : FontWeight.w500,
+                                ),
                               ),
                             ),
                           ),
-                        );
-                      }).toList(),
+                      ],
                     ),
                   ],
                 ),
               ),
             ],
 
-            // Range pills + Quick Select actions
             const SizedBox(height: 10),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 18),
@@ -4313,13 +4751,13 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                                 padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
                                 alignment: Alignment.center,
                                 decoration: BoxDecoration(
-                                  color: active ? Colors.white : const Color(0xFF1E1E24),
-                                  borderRadius: BorderRadius.circular(14),
+                                  color: active ? skin.activePillBg : skin.surface2,
+                                  borderRadius: BorderRadius.circular(skin.radiusForPill(28)),
                                 ),
                                 child: Text(
                                   '$firstNum-$lastNum',
                                   style: TextStyle(
-                                    color: active ? VedroTheme.canvas : VedroTheme.fg2,
+                                    color: active ? skin.activePillFg : skin.fg2,
                                     fontSize: 11.5,
                                     fontWeight: FontWeight.w600,
                                     fontFeatures: const [FontFeature.tabularFigures()],
@@ -4337,7 +4775,7 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                   TextButton(
                     style: TextButton.styleFrom(
                       visualDensity: VisualDensity.compact,
-                      foregroundColor: Colors.white,
+                      foregroundColor: skin.fg,
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                     ),
                     onPressed: () {
@@ -4354,7 +4792,7 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                   TextButton(
                     style: TextButton.styleFrom(
                       visualDensity: VisualDensity.compact,
-                      foregroundColor: VedroTheme.fg2,
+                      foregroundColor: skin.fg2,
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                     ),
                     onPressed: () {
@@ -4372,7 +4810,7 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                     TextButton(
                       style: TextButton.styleFrom(
                         visualDensity: VisualDensity.compact,
-                        foregroundColor: VedroTheme.fg3,
+                        foregroundColor: skin.fg3,
                         padding: const EdgeInsets.symmetric(horizontal: 8),
                       ),
                       onPressed: () => setState(() => _selectedById.clear()),
@@ -4384,11 +4822,10 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
 
             const SizedBox(height: 8),
 
-            // Episode list
             Expanded(
               child: _loadingSeason
-                  ? const Center(
-                      child: CircularProgressIndicator(strokeWidth: 2, color: VedroTheme.fg2),
+                  ? Center(
+                      child: CircularProgressIndicator(strokeWidth: 2, color: skin.fg2),
                     )
                   : ListView.separated(
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
@@ -4421,10 +4858,8 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10.5),
                             decoration: BoxDecoration(
-                              color: checked
-                                  ? const Color(0xFF25252C)
-                                  : const Color(0xFF1A1A1E),
-                              borderRadius: BorderRadius.circular(12),
+                              color: checked ? skin.surface3 : skin.surface2,
+                              borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 12.0)),
                             ),
                             child: Row(
                               children: [
@@ -4436,8 +4871,8 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                                           : Icons.radio_button_unchecked_rounded),
                                   size: 19,
                                   color: done
-                                      ? const Color(0xFF34D399)
-                                      : (checked ? Colors.white : VedroTheme.fg3),
+                                      ? const Color(0xFF10B981)
+                                      : (checked ? skin.accent : skin.fg3),
                                 ),
                                 const SizedBox(width: 10),
                                 Expanded(
@@ -4449,7 +4884,7 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                         style: TextStyle(
-                                          color: disabled ? VedroTheme.fg3 : Colors.white,
+                                          color: disabled ? skin.fg3 : skin.fg,
                                           fontSize: 13.5,
                                           fontWeight: FontWeight.w500,
                                         ),
@@ -4459,7 +4894,7 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                                           src.name!,
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 11),
+                                          style: TextStyle(color: skin.fg3, fontSize: 11),
                                         ),
                                     ],
                                   ),
@@ -4469,16 +4904,16 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                                   const Text(
                                     '已下载',
                                     style: TextStyle(
-                                      color: Color(0xFF34D399),
+                                      color: Color(0xFF10B981),
                                       fontSize: 11.5,
                                       fontWeight: FontWeight.w600,
                                     ),
                                   )
                                 else if (active)
-                                  const Text(
+                                  Text(
                                     '队列中',
                                     style: TextStyle(
-                                      color: Color(0xFF60A5FA),
+                                      color: skin.accent,
                                       fontSize: 11.5,
                                       fontWeight: FontWeight.w600,
                                     ),
@@ -4486,10 +4921,10 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                                 else if (sizeText.isNotEmpty)
                                   Text(
                                     sizeText,
-                                    style: const TextStyle(
-                                      color: VedroTheme.fg2,
+                                    style: TextStyle(
+                                      color: skin.fg2,
                                       fontSize: 12,
-                                      fontFeatures: [FontFeature.tabularFigures()],
+                                      fontFeatures: const [FontFeature.tabularFigures()],
                                     ),
                                   ),
                               ],
@@ -4500,7 +4935,6 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                     ),
             ),
 
-            // Sticky Bottom Bar
             Padding(
               padding: const EdgeInsets.fromLTRB(18, 12, 18, 16),
               child: Row(
@@ -4510,23 +4944,25 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                       _selectedById.isEmpty
                           ? '请勾选需要下载的剧集'
                           : '已选 ${_selectedById.length} 集${totalBytes > 0 ? ' · 共 ${fmtQuotaBytes(totalBytes)}' : ''}',
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: skin.fg,
                         fontSize: 13.5,
                         fontWeight: FontWeight.w600,
-                        fontFeatures: [FontFeature.tabularFigures()],
+                        fontFeatures: const [FontFeature.tabularFigures()],
                       ),
                     ),
                   ),
                   const SizedBox(width: 10),
                   FilledButton(
                     style: FilledButton.styleFrom(
-                      backgroundColor: Colors.white,
-                      foregroundColor: VedroTheme.canvas,
-                      disabledBackgroundColor: const Color(0xFF28282E),
-                      disabledForegroundColor: VedroTheme.fg3,
+                      backgroundColor: skin.primaryCtaBg,
+                      foregroundColor: skin.primaryCtaFg,
+                      disabledBackgroundColor: skin.surface3,
+                      disabledForegroundColor: skin.fg3,
                       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(skin.radiusForPill(42)),
+                      ),
                     ),
                     onPressed: (_selectedById.isEmpty || _submitting)
                         ? null

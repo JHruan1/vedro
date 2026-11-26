@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/media_card.dart';
@@ -155,16 +156,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     if (!widget.appState.isSignedIn) {
       return Scaffold(
-        backgroundColor: VedroTheme.canvas,
+        backgroundColor: skin.canvas,
         body: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.grid_view_rounded, size: 36, color: VedroTheme.fg3),
+              Icon(Icons.grid_view_rounded, size: 36, color: skin.fg3),
               const SizedBox(height: 12),
-              const Text('连接媒体服务器后浏览媒体库', style: TextStyle(color: VedroTheme.fg2, fontSize: 14)),
+              Text('连接媒体服务器后浏览媒体库', style: TextStyle(color: skin.fg2, fontSize: 14)),
               if (widget.onOpenAddServer != null) ...[
                 const SizedBox(height: 16),
                 FilledButton(
@@ -192,78 +194,82 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 : (_selectedLibrary?.name ?? '全部媒体')));
 
     return Scaffold(
-      backgroundColor: VedroTheme.canvas,
-      body: Padding(
-        padding: EdgeInsets.only(
-          top: (!wide || widget.standalone) ? MediaQuery.paddingOf(context).top : widget.topInset,
-        ),
-        child: Column(
-          children: [
-            Padding(
-              padding: EdgeInsets.fromLTRB(
-                widget.standalone && isMac ? 82 : padX,
-                widget.standalone ? 12 : (wide ? 18 : 10),
-                padX - 6,
-                6,
-              ),
-              child: Row(
-                children: [
-                  if (widget.standalone) ...[
-                    PressableScale(
-                      onTap: () => Navigator.of(context).pop(),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
-                        decoration: BoxDecoration(
-                          color: const Color(0x16FFFFFF),
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.arrow_back_ios_new_rounded, size: 13.5, color: Colors.white),
-                            SizedBox(width: 4),
-                            Text('返回', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500)),
-                          ],
+      backgroundColor: skin.canvas,
+      body: VedroSkinCanvas(
+        child: Padding(
+          padding: EdgeInsets.only(
+            top: (!wide || widget.standalone) ? MediaQuery.paddingOf(context).top : widget.topInset,
+          ),
+          child: Column(
+            children: [
+              Padding(
+                padding: EdgeInsets.fromLTRB(
+                  widget.standalone && isMac ? 82 : padX,
+                  widget.standalone ? 12 : (wide ? 18 : 10),
+                  padX - 6,
+                  6,
+                ),
+                child: Row(
+                  children: [
+                    if (widget.standalone) ...[
+                      PressableScale(
+                        onTap: () => Navigator.of(context).pop(),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+                          decoration: BoxDecoration(
+                            color: skin.surface2,
+                            borderRadius: BorderRadius.circular(skin.radiusForPill(34)),
+                            border: Border.all(color: skin.border, width: 0.7),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.arrow_back_ios_new_rounded, size: 13.5, color: skin.fg),
+                              const SizedBox(width: 4),
+                              Text('返回', style: TextStyle(color: skin.fg, fontSize: 13, fontWeight: FontWeight.w500)),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 14),
-                  ],
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.baseline,
-                      textBaseline: TextBaseline.alphabetic,
-                      children: [
-                        Flexible(
-                          child: Text(
-                            pageTitle,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: VedroTheme.fg,
-                              fontSize: wide ? 26 : 24,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: -0.6,
+                      const SizedBox(width: 14),
+                    ],
+                    Expanded(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.baseline,
+                        textBaseline: TextBaseline.alphabetic,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              pageTitle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: skin.applyHeadlineMood(
+                                TextStyle(
+                                  color: skin.fg,
+                                  fontSize: wide ? 26 : 24,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: -0.6,
+                                ),
+                              ),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        Text(
-                          '$_total',
-                          style: const TextStyle(
-                            color: VedroTheme.fg3,
-                            fontSize: 13.5,
-                            fontWeight: FontWeight.w500,
-                            fontFeatures: [FontFeature.tabularFigures()],
+                          const SizedBox(width: 10),
+                          Text(
+                            '$_total',
+                            style: TextStyle(
+                              color: skin.fg3,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w500,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                  ..._sortActions(),
-                ],
+                    ..._sortActions(skin),
+                  ],
+                ),
               ),
-            ),
             // Filter strip: Libraries, Type, Unplayed, Favorite, Genre, Year
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -453,23 +459,24 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ],
         ),
       ),
+      ),
     );
   }
 
-  List<Widget> _sortActions() => [
+  List<Widget> _sortActions(VedroSkin skin) => [
         IconButton(
           tooltip: _listViewMode ? '切换海报墙视图' : '切换列表视图',
           icon: Icon(
             _listViewMode ? Icons.grid_view_rounded : Icons.view_list_rounded,
             size: 20,
-            color: VedroTheme.fg2,
+            color: skin.fg2,
           ),
           onPressed: () => setState(() => _listViewMode = !_listViewMode),
         ),
         PopupMenuButton<String>(
           tooltip: '排序',
-          color: VedroTheme.surface2,
-          icon: const Icon(Icons.sort_rounded, size: 20, color: VedroTheme.fg2),
+          color: skin.surface2,
+          icon: Icon(Icons.sort_rounded, size: 20, color: skin.fg2),
           onSelected: (v) {
             setState(() => _sortBy = v);
             _resetAndLoad();
@@ -489,7 +496,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 ? Icons.arrow_downward_rounded
                 : Icons.arrow_upward_rounded,
             size: 19,
-            color: VedroTheme.fg2,
+            color: skin.fg2,
           ),
           onPressed: () {
             setState(() => _sortOrder = _sortOrder == 'Descending' ? 'Ascending' : 'Descending');
@@ -512,6 +519,7 @@ class _LibraryListTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return PressableScale(
       onTap: onTap,
       hoverScale: 1.006,
@@ -519,9 +527,9 @@ class _LibraryListTile extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
-          color: VedroTheme.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: VedroTheme.line, width: 0.8),
+          color: skin.surface,
+          borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 14.0)),
+          border: skin.cardBorder(),
         ),
         child: Row(
           children: [
@@ -529,7 +537,7 @@ class _LibraryListTile extends StatelessWidget {
               width: 52,
               height: 76,
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(7),
+                borderRadius: BorderRadius.circular(skin.cardRadius.clamp(4.0, 9.0)),
                 child: VedroArtwork(item: item, appState: appState, width: 160),
               ),
             ),
@@ -542,8 +550,8 @@ class _LibraryListTile extends StatelessWidget {
                     item.cardTitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: VedroTheme.fg,
+                    style: TextStyle(
+                      color: skin.fg,
                       fontSize: 15,
                       fontWeight: FontWeight.w600,
                     ),
@@ -551,7 +559,7 @@ class _LibraryListTile extends StatelessWidget {
                   const SizedBox(height: 3),
                   Text(
                     item.cardSubtitle,
-                    style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
+                    style: TextStyle(color: skin.fg3, fontSize: 12.5),
                   ),
                   if (item.cleanOverview.isNotEmpty) ...[
                     const SizedBox(height: 4),
@@ -559,13 +567,13 @@ class _LibraryListTile extends StatelessWidget {
                       item.cleanOverview,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Color(0xFFB4B6C0), fontSize: 12.5, height: 1.4),
+                      style: TextStyle(color: skin.fg2, fontSize: 12.5, height: 1.4),
                     ),
                   ],
                 ],
               ),
             ),
-            const Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
+            Icon(Icons.chevron_right_rounded, size: 18, color: skin.fg3),
           ],
         ),
       ),
@@ -588,7 +596,7 @@ class _MiniDropdown<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final accent = Theme.of(context).colorScheme.secondary;
+    final skin = VedroSkin.of(context);
     String currentLabel = hint;
     for (final it in items) {
       if (it.value == value && it.child is Text) {
@@ -600,11 +608,11 @@ class _MiniDropdown<T> extends StatelessWidget {
     final active = value != null;
 
     return PopupMenuButton<int>(
-      color: const Color(0xFF1C1E27),
+      color: skin.surface2,
       elevation: 16,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: Color(0x28FFFFFF), width: 0.8),
+        side: BorderSide(color: skin.borderStrong, width: 0.8),
       ),
       onSelected: (idx) {
         if (idx >= 0 && idx < items.length) {
@@ -624,13 +632,13 @@ class _MiniDropdown<T> extends StatelessWidget {
                 child: Text(
                   text,
                   style: TextStyle(
-                    color: sel ? Colors.white : const Color(0xFFC8CCD6),
+                    color: sel ? skin.fg : skin.fg2,
                     fontSize: 13,
                     fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
                   ),
                 ),
               ),
-              if (sel) Icon(Icons.check_rounded, size: 15, color: accent),
+              if (sel) Icon(Icons.check_rounded, size: 15, color: skin.accent),
             ],
           ),
         );
@@ -639,8 +647,11 @@ class _MiniDropdown<T> extends StatelessWidget {
         height: 32,
         padding: const EdgeInsets.symmetric(horizontal: 13),
         decoration: BoxDecoration(
-          color: active ? Colors.white : const Color(0xFF18181C),
-          borderRadius: BorderRadius.circular(16),
+          color: active ? skin.activePillBg : skin.surface2,
+          borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
+          border: (!active && skin.frameStyle != 'borderless')
+              ? Border.all(color: skin.border, width: 0.7)
+              : null,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -648,7 +659,7 @@ class _MiniDropdown<T> extends StatelessWidget {
             Text(
               currentLabel,
               style: TextStyle(
-                color: active ? VedroTheme.canvas : VedroTheme.fg2,
+                color: active ? skin.activePillFg : skin.fg2,
                 fontSize: 12.5,
                 fontWeight: active ? FontWeight.w600 : FontWeight.w500,
               ),
@@ -657,7 +668,7 @@ class _MiniDropdown<T> extends StatelessWidget {
             Icon(
               Icons.keyboard_arrow_down_rounded,
               size: 15,
-              color: active ? VedroTheme.canvas : VedroTheme.fg3,
+              color: active ? skin.activePillFg : skin.fg3,
             ),
           ],
         ),
@@ -674,6 +685,7 @@ class _FilterPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return PressableScale(
       onTap: onTap,
       child: AnimatedContainer(
@@ -683,13 +695,16 @@ class _FilterPill extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 14),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: selected ? Colors.white : const Color(0xFF18181C),
-          borderRadius: BorderRadius.circular(16),
+          color: selected ? skin.activePillBg : skin.surface2,
+          borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
+          border: (!selected && skin.frameStyle != 'borderless')
+              ? Border.all(color: skin.border, width: 0.7)
+              : null,
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: selected ? VedroTheme.canvas : VedroTheme.fg2,
+            color: selected ? skin.activePillFg : skin.fg2,
             fontSize: 12.5,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
           ),

@@ -4,6 +4,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'core/ffi/vedro_bridge.dart';
+import 'core/theme/vedro_skin.dart';
 import 'core/theme/vedro_theme.dart';
 import 'screens/shell_screen.dart';
 import 'state/app_state.dart';
@@ -68,27 +69,40 @@ class _VedroAppState extends State<VedroApp> {
     return ListenableBuilder(
       listenable: _appState,
       builder: (context, _) {
-        final pal = _appState.prefs.accentPalette;
+        final skin = _appState.prefs.activeSkin;
+        final overlayStyle = SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: skin.isLight ? Brightness.dark : Brightness.light,
+          statusBarBrightness: skin.isLight ? Brightness.light : Brightness.dark,
+          systemNavigationBarColor: Colors.transparent,
+          systemNavigationBarDividerColor: Colors.transparent,
+          systemNavigationBarIconBrightness: skin.isLight ? Brightness.dark : Brightness.light,
+          systemStatusBarContrastEnforced: false,
+          systemNavigationBarContrastEnforced: false,
+        );
+
         final Widget child;
         if (!_appState.isInitialized || _appState.isAutoRestoring) {
           child = Scaffold(
             key: const ValueKey('splash'),
-            backgroundColor: VedroTheme.canvas,
-            body: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const BreathingBrandMark(size: 50),
-                  const SizedBox(height: 18),
-                  Text(
-                    _appState.isAutoRestoring ? '正在连接媒体服务器…' : 'Vedro',
-                    style: const TextStyle(
-                      color: VedroTheme.fg2,
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w500,
+            backgroundColor: skin.canvas,
+            body: VedroSkinCanvas(
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const BreathingBrandMark(size: 50),
+                    const SizedBox(height: 18),
+                    Text(
+                      _appState.isAutoRestoring ? '正在连接媒体服务器…' : 'Vedro',
+                      style: TextStyle(
+                        color: skin.fg2,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           );
@@ -102,18 +116,18 @@ class _VedroAppState extends State<VedroApp> {
         return MaterialApp(
           title: 'Vedro',
           debugShowCheckedModeBanner: false,
-          theme: VedroTheme.dark(
-            accentColor: pal.accent,
-            accentFillColor: pal.fill,
-          ),
+          theme: VedroTheme.fromSkin(skin),
           scrollBehavior: const VedroScrollBehavior(),
-          home: AppLockGate(
-            appState: _appState,
-            child: AnimatedSwitcher(
-              duration: Duration(milliseconds: _appState.prefs.reduceMotion ? 0 : 260),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
-              child: child,
+          home: AnnotatedRegion<SystemUiOverlayStyle>(
+            value: overlayStyle,
+            child: AppLockGate(
+              appState: _appState,
+              child: AnimatedSwitcher(
+                duration: Duration(milliseconds: _appState.prefs.reduceMotion ? 0 : 260),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                child: child,
+              ),
             ),
           ),
         );

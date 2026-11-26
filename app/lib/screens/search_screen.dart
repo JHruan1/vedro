@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
-import '../core/theme/vedro_theme.dart';
+import '../core/theme/vedro_skin.dart';
 import '../state/app_state.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
@@ -94,71 +94,77 @@ class _SearchScreenState extends State<SearchScreen> {
       grouped.putIfAbsent(key, () => (name: name, items: [])).items.add(h);
     }
 
+    final skin = VedroSkin.of(context);
     final history = widget.appState.prefs.searchHistory;
 
     return Scaffold(
-      backgroundColor: VedroTheme.canvas,
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: EdgeInsets.fromLTRB(padX, wide ? 72 : 10, padX, 10),
-              child: Text(
-                widget.appState.savedServers.length > 1 ? '聚合搜索' : '搜索',
-                style: TextStyle(
-                  color: VedroTheme.fg,
-                  fontSize: wide ? 28 : 26,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.7,
+      backgroundColor: skin.canvas,
+      body: VedroSkinCanvas(
+        child: SafeArea(
+          bottom: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: EdgeInsets.fromLTRB(padX, wide ? 72 : 10, padX, 10),
+                child: Text(
+                  widget.appState.savedServers.length > 1 ? '聚合搜索' : '搜索',
+                  style: skin.applyHeadlineMood(
+                    TextStyle(
+                      color: skin.fg,
+                      fontSize: wide ? 28 : 26,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.7,
+                    ),
+                  ),
                 ),
               ),
-            ),
-            Padding(
-              padding: EdgeInsets.fromLTRB(padX, 0, padX, 10),
-              child: TextField(
-                controller: _ctrl,
-                onChanged: _onChanged,
-                onSubmitted: (v) {
-                  if (v.trim().isNotEmpty) _runSearch(v.trim(), saveHistory: true);
-                },
-                style: const TextStyle(color: VedroTheme.fg, fontSize: 14.5),
-                decoration: InputDecoration(
-                  filled: true,
-                  fillColor: const Color(0xFF17171B),
-                  hintText: widget.appState.savedServers.length > 1
-                      ? '跨 ${widget.appState.savedServers.length} 个服务器搜索片名、演员…'
-                      : '片名、原名或演职员',
-                  prefixIcon: const Icon(Icons.search_rounded, size: 19, color: VedroTheme.fg3),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(13),
-                    borderSide: BorderSide.none,
+              Padding(
+                padding: EdgeInsets.fromLTRB(padX, 0, padX, 10),
+                child: TextField(
+                  controller: _ctrl,
+                  onChanged: _onChanged,
+                  onSubmitted: (v) {
+                    if (v.trim().isNotEmpty) _runSearch(v.trim(), saveHistory: true);
+                  },
+                  style: TextStyle(color: skin.fg, fontSize: 14.5),
+                  decoration: InputDecoration(
+                    filled: true,
+                    fillColor: skin.surface2,
+                    hintText: widget.appState.savedServers.length > 1
+                        ? '跨 ${widget.appState.savedServers.length} 个服务器搜索片名、演员…'
+                        : '片名、原名或演职员',
+                    prefixIcon: Icon(Icons.search_rounded, size: 19, color: skin.fg3),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
+                      borderSide: BorderSide(color: skin.border, width: 0.7),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
+                      borderSide: skin.frameStyle == 'borderless'
+                          ? BorderSide.none
+                          : BorderSide(color: skin.border, width: 0.7),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
+                      borderSide: BorderSide(color: skin.accent, width: 1.2),
+                    ),
+                    suffixIcon: _ctrl.text.isNotEmpty
+                        ? IconButton(
+                            icon: Icon(Icons.cancel_rounded, size: 17, color: skin.fg3),
+                            onPressed: () {
+                              _ctrl.clear();
+                              setState(() {
+                                _hits = [];
+                                _servers = [];
+                                _filterServerId = null;
+                              });
+                            },
+                          )
+                        : null,
                   ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(13),
-                    borderSide: BorderSide.none,
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(13),
-                    borderSide: const BorderSide(color: Color(0x28FFFFFF), width: 1),
-                  ),
-                  suffixIcon: _ctrl.text.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.cancel_rounded, size: 17, color: VedroTheme.fg3),
-                          onPressed: () {
-                            _ctrl.clear();
-                            setState(() {
-                              _hits = [];
-                              _servers = [];
-                              _filterServerId = null;
-                            });
-                          },
-                        )
-                      : null,
                 ),
               ),
-            ),
 
             // Server capsule tabs (Apple Music / TV+ borderless pills)
             if (_servers.length > 1)
@@ -224,18 +230,19 @@ class _SearchScreenState extends State<SearchScreen> {
 
           Expanded(
             child: _ctrl.text.trim().isEmpty
-                ? _buildIdleHistory(padX, history)
+                ? _buildIdleHistory(padX, history, skin)
                 : grouped.isEmpty
                     ? Center(
                         child: Text(
                           _searching ? '正在跨服务器检索…' : '没有找到匹配结果',
-                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 13.5),
+                          style: TextStyle(color: skin.fg3, fontSize: 13.5),
                         ),
                       )
                     : ListView(
                         padding: EdgeInsets.fromLTRB(0, 12, 0, wide ? 44 : 112),
                         children: grouped.values.map((group) {
                           final posterW = wide ? 148.0 : 114.0;
+                          final r = widget.appState.prefs.effectiveCardRadius(skin);
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 24),
                             child: Column(
@@ -247,8 +254,8 @@ class _SearchScreenState extends State<SearchScreen> {
                                     children: [
                                       Text(
                                         group.name,
-                                        style: const TextStyle(
-                                          color: VedroTheme.fg,
+                                        style: TextStyle(
+                                          color: skin.fg,
                                           fontSize: 16.5,
                                           fontWeight: FontWeight.w600,
                                         ),
@@ -256,7 +263,7 @@ class _SearchScreenState extends State<SearchScreen> {
                                       const SizedBox(width: 8),
                                       Text(
                                         '${group.items.length}',
-                                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
+                                        style: TextStyle(color: skin.fg3, fontSize: 12.5),
                                       ),
                                     ],
                                   ),
@@ -294,12 +301,13 @@ class _SearchScreenState extends State<SearchScreen> {
                                                 aspectRatio: 2 / 3,
                                                 child: Container(
                                                   foregroundDecoration: BoxDecoration(
-                                                    borderRadius: BorderRadius.circular(11),
-                                                    border: Border.all(color: VedroTheme.line, width: 0.8),
+                                                    borderRadius: BorderRadius.circular(r),
+                                                    border: skin.cardBorder(),
                                                   ),
                                                   decoration: BoxDecoration(
-                                                    borderRadius: BorderRadius.circular(11),
-                                                    color: VedroTheme.surface2,
+                                                    borderRadius: BorderRadius.circular(r),
+                                                    color: skin.surface2,
+                                                    boxShadow: skin.posterShadow(),
                                                   ),
                                                   clipBehavior: Clip.antiAlias,
                                                   child: Stack(
@@ -316,8 +324,8 @@ class _SearchScreenState extends State<SearchScreen> {
                                                 hit.name,
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  color: VedroTheme.fg,
+                                                style: TextStyle(
+                                                  color: skin.fg,
                                                   fontSize: 13,
                                                   fontWeight: FontWeight.w500,
                                                 ),
@@ -328,7 +336,7 @@ class _SearchScreenState extends State<SearchScreen> {
                                                     : (hit.series ?? hit.type),
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                                                style: TextStyle(color: skin.fg3, fontSize: 11.5),
                                               ),
                                             ],
                                           ),
@@ -346,17 +354,18 @@ class _SearchScreenState extends State<SearchScreen> {
         ],
       ),
       ),
+      ),
     );
   }
 
-  Widget _buildIdleHistory(double padX, List<String> history) {
+  Widget _buildIdleHistory(double padX, List<String> history, VedroSkin skin) {
     if (history.isEmpty) {
       return Center(
         child: Text(
           widget.appState.savedServers.isEmpty && !widget.appState.isSignedIn
               ? '请先在首页添加媒体服务器'
               : '支持跨多个已保存服务器并行聚合检索',
-          style: const TextStyle(color: VedroTheme.fg3, fontSize: 13.5),
+          style: TextStyle(color: skin.fg3, fontSize: 13.5),
         ),
       );
     }
@@ -365,14 +374,14 @@ class _SearchScreenState extends State<SearchScreen> {
       children: [
         Row(
           children: [
-            const Text(
+            Text(
               '最近搜索',
-              style: TextStyle(color: VedroTheme.fg2, fontSize: 13.5, fontWeight: FontWeight.w600),
+              style: TextStyle(color: skin.fg2, fontSize: 13.5, fontWeight: FontWeight.w600),
             ),
             const Spacer(),
             TextButton(
               onPressed: widget.appState.clearSearchHistory,
-              child: const Text('清空', style: TextStyle(color: VedroTheme.fg3, fontSize: 12)),
+              child: Text('清空', style: TextStyle(color: skin.fg3, fontSize: 12)),
             ),
           ],
         ),
@@ -389,15 +398,15 @@ class _SearchScreenState extends State<SearchScreen> {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF17171B),
-                  borderRadius: BorderRadius.circular(18),
+                  color: skin.surface2,
+                  borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.history_rounded, size: 14, color: VedroTheme.fg3),
+                    Icon(Icons.history_rounded, size: 14, color: skin.fg3),
                     const SizedBox(width: 6),
-                    Text(term, style: const TextStyle(color: VedroTheme.fg2, fontSize: 13)),
+                    Text(term, style: TextStyle(color: skin.fg2, fontSize: 13)),
                   ],
                 ),
               ),
@@ -424,6 +433,7 @@ class _ServerTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
@@ -432,13 +442,13 @@ class _ServerTab extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 13),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: selected ? Colors.white : const Color(0xFF17171B),
-          borderRadius: BorderRadius.circular(16),
+          color: selected ? skin.activePillBg : skin.surface2,
+          borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: selected ? VedroTheme.canvas : VedroTheme.fg2,
+            color: selected ? skin.activePillFg : skin.fg2,
             fontSize: 12.5,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
           ),
@@ -456,19 +466,20 @@ class _TypePill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: selected ? Colors.white : const Color(0xFF17171B),
-          borderRadius: BorderRadius.circular(16),
+          color: selected ? skin.activePillBg : skin.surface2,
+          borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: selected ? VedroTheme.canvas : VedroTheme.fg2,
+            color: selected ? skin.activePillFg : skin.fg2,
             fontSize: 12.5,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
           ),

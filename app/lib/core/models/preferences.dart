@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
+import '../theme/vedro_skin.dart';
+
 /// Deterministic lightweight hash for local app passcode verification (no plain PIN on disk).
 String hashPasscode(String pin) {
   final bytes = utf8.encode('vedro.lock.v1::$pin');
@@ -293,7 +295,10 @@ class DownloadTaskModel {
 
 class VedroPreferences {
   const VedroPreferences({
-    // 应用风格
+    // 应用风格 & 皮肤引擎
+    this.skinId = 'obsidian',
+    this.useSkinGeometry = true,
+    this.customSkins = const [],
     this.accentId = 'blue',
     this.cardRadius = 12.0,
     this.glassIntensity = 'standard',
@@ -382,6 +387,9 @@ class VedroPreferences {
     this.serverCardLayout = 'grid', // grid | list
   });
 
+  final String skinId;
+  final bool useSkinGeometry;
+  final List<CustomSkinSpec> customSkins;
   final String accentId;
   final double cardRadius;
   final String glassIntensity;
@@ -471,6 +479,21 @@ class VedroPreferences {
 
   AccentPalette get accentPalette => AccentPalette.byId(accentId);
 
+  VedroSkin get activeSkin {
+    var base = VedroSkin.byId(skinId, customSkins: customSkins);
+    if (skinId == 'obsidian' && accentId != 'blue') {
+      final pal = accentPalette;
+      base = base.copyWith(accent: pal.accent, accentSecondary: pal.fill);
+    }
+    if (!useSkinGeometry) {
+      base = base.copyWith(cardRadius: cardRadius);
+    }
+    return base;
+  }
+
+  double effectiveCardRadius(VedroSkin skin) =>
+      useSkinGeometry ? skin.cardRadius : cardRadius;
+
   bool get isAiReady =>
       aiEnabled && aiBaseUrl.trim().isNotEmpty && aiModel.trim().isNotEmpty;
 
@@ -486,6 +509,9 @@ class VedroPreferences {
   }
 
   VedroPreferences copyWith({
+    String? skinId,
+    bool? useSkinGeometry,
+    List<CustomSkinSpec>? customSkins,
     String? accentId,
     double? cardRadius,
     String? glassIntensity,
@@ -563,6 +589,9 @@ class VedroPreferences {
     String? serverCardLayout,
   }) =>
       VedroPreferences(
+        skinId: skinId ?? this.skinId,
+        useSkinGeometry: useSkinGeometry ?? this.useSkinGeometry,
+        customSkins: customSkins ?? this.customSkins,
         accentId: accentId ?? this.accentId,
         cardRadius: cardRadius ?? this.cardRadius,
         glassIntensity: glassIntensity ?? this.glassIntensity,
@@ -641,6 +670,9 @@ class VedroPreferences {
       );
 
   Map<String, dynamic> toJson() => {
+        'skin_id': skinId,
+        'use_skin_geometry': useSkinGeometry,
+        'custom_skins': customSkins.map((s) => s.toJson()).toList(),
         'accent_id': accentId,
         'card_radius': cardRadius,
         'glass_intensity': glassIntensity,
@@ -719,6 +751,14 @@ class VedroPreferences {
       };
 
   factory VedroPreferences.fromJson(Map<String, dynamic> j) => VedroPreferences(
+        skinId: (j['skin_id'] ?? 'obsidian').toString(),
+        useSkinGeometry: j['use_skin_geometry'] != false,
+        customSkins: ((j['custom_skins'] as List<dynamic>?) ?? const [])
+            .map((e) => e is Map<String, dynamic>
+                ? CustomSkinSpec.fromJson(e)
+                : (e is Map ? CustomSkinSpec.fromJson(Map<String, dynamic>.from(e)) : null))
+            .whereType<CustomSkinSpec>()
+            .toList(),
         accentId: (j['accent_id'] ?? 'blue').toString(),
         cardRadius: (j['card_radius'] as num?)?.toDouble() ?? 12.0,
         glassIntensity: (j['glass_intensity'] ?? 'standard').toString(),

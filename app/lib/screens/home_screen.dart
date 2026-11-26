@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/home_layout_sheet.dart';
@@ -318,9 +319,10 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
+    final skin = VedroSkin.of(context);
     return RefreshIndicator(
-      color: VedroTheme.fg,
-      backgroundColor: VedroTheme.surface2,
+      color: skin.fg,
+      backgroundColor: skin.surface2,
       onRefresh: app.refreshHome,
       child: CustomScrollView(
         controller: _scrollCtrl,
@@ -354,12 +356,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                   child: Row(
                     children: [
-                      const Icon(Icons.cast_connected_rounded, size: 16, color: VedroTheme.fg2),
+                      Icon(Icons.cast_connected_rounded, size: 16, color: skin.fg2),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
                           app.remoteBannerMessage!,
-                          style: const TextStyle(color: VedroTheme.fg, fontSize: 13),
+                          style: TextStyle(color: skin.fg, fontSize: 13),
                         ),
                       ),
                     ],
@@ -370,7 +372,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
           ...dynamicSectionSlivers,
 
-          // Subtle footer action to customize Home section order & visibility
           SliverToBoxAdapter(
             child: Padding(
               padding: EdgeInsets.fromLTRB(wide ? 32 : 20, 32, wide ? 32 : 20, wide ? 48 : 112),
@@ -382,19 +383,19 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
                     decoration: BoxDecoration(
-                      color: VedroTheme.surface,
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: VedroTheme.line, width: 0.8),
+                      color: skin.surface,
+                      borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
+                      border: Border.all(color: skin.border, width: 0.8),
                     ),
-                    child: const Row(
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.tune_rounded, size: 15, color: VedroTheme.fg2),
-                        SizedBox(width: 7),
+                        Icon(Icons.tune_rounded, size: 15, color: skin.fg2),
+                        const SizedBox(width: 7),
                         Text(
                           '自定义首页布局与顺序',
                           style: TextStyle(
-                            color: VedroTheme.fg2,
+                            color: skin.fg2,
                             fontSize: 12.5,
                             fontWeight: FontWeight.w500,
                           ),
@@ -477,8 +478,10 @@ class _ServerWelcomeHub extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final saved = appState.savedServers;
     final discovered = appState.discoveredServers;
+    final btnR = skin.pillRadius >= 100 ? 12.0 : skin.pillRadius.clamp(6.0, 16.0);
 
     return SafeArea(
       child: Center(
@@ -491,21 +494,23 @@ class _ServerWelcomeHub extends StatelessWidget {
               children: [
                 const Center(child: VedroBrandMark(size: 56)),
                 const SizedBox(height: 18),
-                const Text(
+                Text(
                   'Vedro',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: VedroTheme.fg,
-                    fontSize: 30,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.7,
+                  style: skin.applyHeadlineMood(
+                    TextStyle(
+                      color: skin.fg,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.7,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 6),
-                const Text(
+                Text(
                   '选择一个媒体服务器开始观影，支持多服务器聚合搜索、自定义卡片与多线路测速切换',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: VedroTheme.fg3, fontSize: 13.5),
+                  style: TextStyle(color: skin.fg3, fontSize: 13.5),
                 ),
                 const SizedBox(height: 28),
                 Wrap(
@@ -519,18 +524,21 @@ class _ServerWelcomeHub extends StatelessWidget {
                         height: 44,
                         padding: const EdgeInsets.symmetric(horizontal: 22),
                         decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
+                          color: skin.primaryCtaBg,
+                          gradient: skin.primaryCtaGradient,
+                          borderRadius: BorderRadius.circular(btnR),
+                          border: skin.primaryCtaBorder,
+                          boxShadow: skin.primaryCtaShadow,
                         ),
-                        child: const Row(
+                        child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.add_rounded, size: 19, color: VedroTheme.canvas),
-                            SizedBox(width: 6),
+                            Icon(Icons.add_rounded, size: 19, color: skin.primaryCtaFg),
+                            const SizedBox(width: 6),
                             Text(
                               '添加媒体服务器',
                               style: TextStyle(
-                                color: VedroTheme.canvas,
+                                color: skin.primaryCtaFg,
                                 fontSize: 14.5,
                                 fontWeight: FontWeight.w600,
                               ),
@@ -546,19 +554,19 @@ class _ServerWelcomeHub extends StatelessWidget {
                           height: 44,
                           padding: const EdgeInsets.symmetric(horizontal: 18),
                           decoration: BoxDecoration(
-                            color: VedroTheme.surface2,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: VedroTheme.line, width: 0.8),
+                            color: skin.surface2,
+                            borderRadius: BorderRadius.circular(btnR),
+                            border: Border.all(color: skin.border, width: 0.8),
                           ),
-                          child: const Row(
+                          child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.folder_open_rounded, size: 17, color: VedroTheme.fg2),
-                              SizedBox(width: 7),
+                              Icon(Icons.folder_open_rounded, size: 17, color: skin.fg2),
+                              const SizedBox(width: 7),
                               Text(
                                 '本地播放',
                                 style: TextStyle(
-                                  color: VedroTheme.fg,
+                                  color: skin.fg,
                                   fontSize: 14,
                                   fontWeight: FontWeight.w500,
                                 ),
@@ -573,19 +581,19 @@ class _ServerWelcomeHub extends StatelessWidget {
                         height: 44,
                         padding: const EdgeInsets.symmetric(horizontal: 18),
                         decoration: BoxDecoration(
-                          color: VedroTheme.surface2,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: VedroTheme.line, width: 0.8),
+                          color: skin.surface2,
+                          borderRadius: BorderRadius.circular(btnR),
+                          border: Border.all(color: skin.border, width: 0.8),
                         ),
-                        child: const Row(
+                        child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.tune_rounded, size: 17, color: VedroTheme.fg2),
-                            SizedBox(width: 7),
+                            Icon(Icons.tune_rounded, size: 17, color: skin.fg2),
+                            const SizedBox(width: 7),
                             Text(
                               '播放器设置',
                               style: TextStyle(
-                                color: VedroTheme.fg,
+                                color: skin.fg,
                                 fontSize: 14,
                                 fontWeight: FontWeight.w500,
                               ),
@@ -608,10 +616,10 @@ class _ServerWelcomeHub extends StatelessWidget {
 
                 if (discovered.isNotEmpty) ...[
                   const SizedBox(height: 24),
-                  const Text(
+                  Text(
                     '局域网发现',
                     style: TextStyle(
-                      color: VedroTheme.fg2,
+                      color: skin.fg2,
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                     ),
@@ -627,18 +635,18 @@ class _ServerWelcomeHub extends StatelessWidget {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
                           decoration: BoxDecoration(
-                            color: VedroTheme.surface,
+                            color: skin.surface,
                             borderRadius: BorderRadius.circular(11),
-                            border: Border.all(color: VedroTheme.line, width: 0.7),
+                            border: Border.all(color: skin.border, width: 0.7),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.wifi_tethering_rounded, size: 15, color: VedroTheme.fg2),
+                              Icon(Icons.wifi_tethering_rounded, size: 15, color: skin.fg2),
                               const SizedBox(width: 8),
                               Text(
                                 '${d['name'] ?? addr}',
-                                style: const TextStyle(color: VedroTheme.fg, fontSize: 13),
+                                style: TextStyle(color: skin.fg, fontSize: 13),
                               ),
                             ],
                           ),
@@ -786,34 +794,34 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
             ),
 
             if (wide)
-              const DecoratedBox(
+              DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.centerLeft,
                     end: Alignment.centerRight,
-                    stops: [0.0, 0.48, 0.82, 1.0],
+                    stops: const [0.0, 0.48, 0.82, 1.0],
                     colors: [
-                      Color(0xDC0B0B0D),
-                      Color(0x780B0B0D),
-                      Color(0x140B0B0D),
+                      const Color(0xDC0B0B0D),
+                      const Color(0x780B0B0D),
+                      const Color(0x140B0B0D),
                       Colors.transparent,
                     ],
                   ),
                 ),
               ),
 
-            const DecoratedBox(
+            DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  stops: [0.0, 0.24, 0.58, 0.86, 1.0],
+                  stops: const [0.0, 0.24, 0.58, 0.88, 1.0],
                   colors: [
-                    Color(0x720B0B0D),
+                    const Color(0x660B0B0D),
                     Colors.transparent,
-                    Color(0x660B0B0D),
-                    Color(0xE00B0B0D),
-                    VedroTheme.canvas,
+                    const Color(0x660B0B0D),
+                    const Color(0xD80B0B0D),
+                    VedroSkin.of(context).canvas,
                   ],
                 ),
               ),
@@ -1015,40 +1023,52 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                     const SizedBox(height: 22),
                     Row(
                       children: [
-                        PressableScale(
-                          onTap: () => widget.onPlay(item),
-                          hoverScale: 1.03,
-                          pressScale: 0.96,
-                          child: Container(
-                            height: 44,
-                            padding: const EdgeInsets.symmetric(horizontal: 26),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(22),
-                              boxShadow: const [
-                                BoxShadow(
-                                  color: Color(0x48000000),
-                                  blurRadius: 18,
-                                  offset: Offset(0, 6),
+                        Builder(
+                          builder: (ctx) {
+                            final skin = VedroSkin.of(ctx);
+                            final r = skin.radiusForPill(44);
+                            return PressableScale(
+                              onTap: () => widget.onPlay(item),
+                              hoverScale: 1.03,
+                              pressScale: 0.96,
+                              child: Container(
+                                height: 44,
+                                padding: const EdgeInsets.symmetric(horizontal: 26),
+                                decoration: BoxDecoration(
+                                  color: skin.isLight ? Colors.white : skin.primaryCtaBg,
+                                  gradient: skin.isLight ? null : skin.primaryCtaGradient,
+                                  borderRadius: BorderRadius.circular(r),
+                                  border: skin.isLight ? null : skin.primaryCtaBorder,
+                                  boxShadow: const [
+                                    BoxShadow(
+                                      color: Color(0x48000000),
+                                      blurRadius: 18,
+                                      offset: Offset(0, 6),
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
-                            child: const Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.play_arrow_rounded, size: 22, color: VedroTheme.canvas),
-                                SizedBox(width: 4),
-                                Text(
-                                  '播放',
-                                  style: TextStyle(
-                                    color: VedroTheme.canvas,
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w600,
-                                  ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.play_arrow_rounded,
+                                      size: 22,
+                                      color: skin.isLight ? const Color(0xFF09090B) : skin.primaryCtaFg,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      '播放',
+                                      style: TextStyle(
+                                        color: skin.isLight ? const Color(0xFF09090B) : skin.primaryCtaFg,
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
-                          ),
+                              ),
+                            );
+                          },
                         ),
                         const SizedBox(width: 12),
                         PressableScale(
@@ -1056,7 +1076,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                           hoverScale: 1.03,
                           pressScale: 0.96,
                           child: GlassSurface(
-                            borderRadius: 22,
+                            borderRadius: VedroSkin.of(context).radiusForPill(44),
                             blur: 24,
                             color: const Color(0x45FFFFFF),
                             borderColor: Colors.transparent,
@@ -1219,16 +1239,19 @@ class _HeroTitleText extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Text(
       text,
       maxLines: 2,
       overflow: TextOverflow.ellipsis,
-      style: TextStyle(
-        color: Colors.white,
-        fontSize: wide ? 42 : 28,
-        fontWeight: FontWeight.w700,
-        letterSpacing: -0.9,
-        height: 1.08,
+      style: skin.applyHeadlineMood(
+        TextStyle(
+          color: Colors.white,
+          fontSize: wide ? 42 : 28,
+          fontWeight: FontWeight.w700,
+          letterSpacing: -0.9,
+          height: 1.08,
+        ),
       ),
     );
   }

@@ -626,6 +626,24 @@ class MediaStreamModel {
       );
 }
 
+class ResolvedMediaVersion {
+  const ResolvedMediaVersion({
+    required this.index,
+    required this.source,
+    required this.selectionKey,
+    required this.seriesMatchSignature,
+    required this.displayTitle,
+    this.folderBadge,
+  });
+
+  final int index;
+  final MediaSourceModel source;
+  final String selectionKey;
+  final String seriesMatchSignature;
+  final String displayTitle;
+  final String? folderBadge;
+}
+
 class MediaSourceModel {
   MediaSourceModel({
     required this.id,
@@ -690,6 +708,217 @@ class MediaSourceModel {
       parts.add('${(bitrate! / 1000000).toStringAsFixed(1)} Mbps');
     }
     return parts.join(' · ');
+  }
+
+  /// Resolve a list of `MediaSourceModel`s into strictly unique, human-disambiguated version items.
+  /// Fixes duplicate/empty `Name` or `Id` collisions when 4+ versions exist across folders on Emby/embygo.
+  static List<ResolvedMediaVersion> resolveVersions(List<MediaSourceModel> sources) {
+    if (sources.isEmpty) return const [];
+
+    final rawInfos = List.generate(sources.length, (idx) {
+      final s = sources[idx];
+      final pathNorm = (s.path ?? '').replaceAll('\\', '/').trim();
+      final segments = pathNorm.split('/').where((seg) => seg.trim().isNotEmpty).toList();
+      final fileName = segments.isNotEmpty ? segments.last : '';
+      final dotIdx = fileName.lastIndexOf('.');
+      final fileStem = dotIdx > 0 ? fileName.substring(0, dotIdx) : fileName;
+
+      String meaningfulFolder = '';
+      String parentDirKey = '';
+      if (segments.length >= 2) {
+        final parent = segments[segments.length - 2];
+        parentDirKey = segments.sublist(0, segments.length - 1).join('/').toLowerCase();
+        final genericSeasonRe = RegExp(
+          r'^(season\s*\d+|s\d+|specials|sp|ova|bdmv|stream|video_ts|disc\s*\d+)$',
+          caseSensitive: false,
+        );
+        if (genericSeasonRe.hasMatch(parent.trim()) && segments.length >= 3) {
+          meaningfulFolder = segments[segments.length - 3].trim();
+        } else {
+          meaningfulFolder = parent.trim();
+        }
+      }
+
+      final rawName = (s.name ?? '').trim();
+      final bareEpRe = RegExp(r'^(s\d+e\d+|ep?\s*\d+|第\s*\d+\s*[集话])$', caseSensitive: false);
+      final nameIsGeneric = rawName.isEmpty || bareEpRe.hasMatch(rawName);
+
+      // Extract quality / release group tokens from path when `name` is missing or generic
+      final extractedTags = _extractReleaseSummary(
+        fileStem: fileStem,
+        folderName: meaningfulFolder,
+        source: s,
+      );
+
+      final primaryCandidate = !nameIsGeneric
+          ? rawName
+          : (extractedTags.isNotEmpty
+              ? extractedTags
+              : (fileStem.isNotEmpty
+                  ? fileStem
+                  : (s.container?.toUpperCase() ?? '版本 ${idx + 1}')));
+
+      // Episode-agnostic signature for matching the SAME version across all episodes of a Series
+      final strippedStem = fileStem
+          .toLowerCase()
+          .replaceAll(RegExp(r's\d{1,2}e\d{1,4}(-\d{1,4})?'), '')
+          .replaceAll(RegExp(r'\bep?\s*\d{1,4}\b'), '')
+          .replaceAll(RegExp(r'[\[\(]\d{1,4}[\]\)]'), '')
+          .replaceAll(RegExp(r'-\s*\d{1,4}\b'), '')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
+      final sigParts = <String>[
+        if (parentDirKey.isNotEmpty) 'dir:$parentDirKey',
+        if (!nameIsGeneric) 'name:${rawName.toLowerCase()}',
+        if (strippedStem.isNotEmpty && parentDirKey.isEmpty) 'stem:$strippedStem',
+        if (s.videoStreams.isNotEmpty && s.videoStreams.first.height != null)
+          'h:${s.videoStreams.first.height}',
+        if (s.container != null && s.container!.isNotEmpty)
+          'c:${s.container!.toLowerCase()}',
+      ];
+      final seriesSig = sigParts.isNotEmpty ? sigParts.join('|') : 'idx:$idx|id:${s.id}';
+
+      return (
+        idx: idx,
+        source: s,
+        primary: primaryCandidate,
+        folder: meaningfulFolder,
+        fileStem: fileStem,
+        extractedTags: extractedTags,
+        seriesSig: seriesSig,
+      );
+    });
+
+    // Count collisions on primary title so 4+ versions with identical short `Name`s get disambiguated!
+    final counts = <String, int>{};
+    for (final info in rawInfos) {
+      final k = info.primary.toLowerCase();
+      counts[k] = (counts[k] ?? 0) + 1;
+    }
+
+    final usedTitles = <String, int>{};
+    return rawInfos.map((info) {
+      var title = info.primary;
+      final isDuplicate = (counts[title.toLowerCase()] ?? 0) > 1;
+      String? folderBadge;
+
+      if (isDuplicate) {
+        if (info.extractedTags.isNotEmpty &&
+            info.extractedTags.toLowerCase() != title.toLowerCase()) {
+          title = '$title · ${info.extractedTags}';
+        } else if (info.folder.isNotEmpty &&
+            info.folder.toLowerCase() != title.toLowerCase()) {
+          title = '$title · ${info.folder}';
+        } else if (info.fileStem.isNotEmpty &&
+            info.fileStem.toLowerCase() != title.toLowerCase()) {
+          title = info.fileStem;
+        } else if (fmtFileSize(info.source.size).isNotEmpty) {
+          title = '$title (${fmtFileSize(info.source.size)})';
+        }
+      } else if (info.folder.isNotEmpty &&
+          !title.toLowerCase().contains(info.folder.toLowerCase()) &&
+          sources.length > 3) {
+        folderBadge = info.folder;
+      }
+
+      // Final guarantee: no two versions in the same selector can EVER display the exact same string!
+      final seenCount = (usedTitles[title.toLowerCase()] ?? 0) + 1;
+      usedTitles[title.toLowerCase()] = seenCount;
+      if (seenCount > 1) {
+        title = '$title · 版本 ${info.idx + 1}';
+      }
+
+      return ResolvedMediaVersion(
+        index: info.idx,
+        source: info.source,
+        selectionKey: 'v${info.idx}::${info.source.id}::${info.source.path ?? title}',
+        seriesMatchSignature: info.seriesSig,
+        displayTitle: title,
+        folderBadge: folderBadge,
+      );
+    }).toList();
+  }
+
+  static String _extractReleaseSummary({
+    required String fileStem,
+    required String folderName,
+    required MediaSourceModel source,
+  }) {
+    final hay = '$folderName $fileStem';
+    final lower = hay.toLowerCase();
+    final tags = <String>[];
+
+    // Release / subtitle group in leading `[Group]`
+    final bracketGroup = RegExp(r'\[([^\[\]]{2,20})\]').firstMatch(hay)?.group(1)?.trim();
+    if (bracketGroup != null &&
+        !RegExp(r'^(1080p|2160p|720p|4k|hevc|x265|x264|aac|flac|chs|cht|mp4|mkv)$',
+                caseSensitive: false)
+            .hasMatch(bracketGroup)) {
+      tags.add(bracketGroup);
+    }
+
+    final vHeight = source.videoStreams.isNotEmpty ? source.videoStreams.first.height : null;
+    if (lower.contains('2160p') || lower.contains('4k') || lower.contains('uhd') || (vHeight != null && vHeight >= 2000)) {
+      tags.add('4K');
+    } else if (lower.contains('1080p') || (vHeight != null && vHeight >= 1000)) {
+      tags.add('1080p');
+    } else if (lower.contains('720p') || (vHeight != null && vHeight >= 700)) {
+      tags.add('720p');
+    }
+
+    if (lower.contains('dovi') || lower.contains('.dv.') || lower.contains('dolby vision') || lower.contains('杜比')) {
+      tags.add('Dolby Vision');
+    } else if (lower.contains('hdr10+')) {
+      tags.add('HDR10+');
+    } else if (lower.contains('hdr')) {
+      tags.add('HDR');
+    }
+
+    if (lower.contains('remux')) {
+      tags.add('REMUX');
+    } else if (lower.contains('bluray') || lower.contains('blu-ray') || lower.contains('bdrip')) {
+      tags.add('BluRay');
+    } else if (lower.contains('web-dl') || lower.contains('webdl')) {
+      tags.add('WEB-DL');
+    }
+
+    if (lower.contains('atmos') || lower.contains('全景声')) {
+      tags.add('Atmos');
+    } else if (lower.contains('truehd')) {
+      tags.add('TrueHD');
+    } else if (lower.contains('dts')) {
+      tags.add('DTS');
+    }
+
+    if (lower.contains('hevc') || lower.contains('x265') || lower.contains('h265')) {
+      tags.add('HEVC');
+    } else if (lower.contains('av1')) {
+      tags.add('AV1');
+    } else if (lower.contains('x264') || lower.contains('h264')) {
+      tags.add('H.264');
+    }
+
+    if (lower.contains('国粤') || lower.contains('多音轨')) {
+      tags.add('多音轨');
+    } else if (lower.contains('国语') || lower.contains('mandarin')) {
+      tags.add('国语');
+    } else if (lower.contains('粤语') || lower.contains('cantonese')) {
+      tags.add('粤语');
+    }
+
+    if (lower.contains('双语') || lower.contains('chs&eng')) {
+      tags.add('中英双字');
+    } else if (lower.contains('简繁')) {
+      tags.add('简繁');
+    } else if (lower.contains('chs') || lower.contains('简日') || lower.contains('简体')) {
+      tags.add('简中');
+    } else if (lower.contains('cht') || lower.contains('繁日') || lower.contains('繁体')) {
+      tags.add('繁中');
+    }
+
+    if (tags.isNotEmpty) return tags.join(' · ');
+    if (folderName.isNotEmpty) return folderName;
+    return '';
   }
 
   factory MediaSourceModel.fromJson(Map<String, dynamic> j) => MediaSourceModel(

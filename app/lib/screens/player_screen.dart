@@ -35,6 +35,7 @@ class PlayerScreen extends StatefulWidget {
     this.segments,
     this.initialAudioStreamIndex,
     this.initialSubtitleStreamIndex,
+    this.initialExternalSubtitlePath,
     this.localFilePath,
     this.localPlaylistPaths,
   });
@@ -46,6 +47,7 @@ class PlayerScreen extends StatefulWidget {
   final List<MediaSegmentModel>? segments;
   final int? initialAudioStreamIndex;
   final int? initialSubtitleStreamIndex;
+  final String? initialExternalSubtitlePath;
   final String? localFilePath;
   final List<String>? localPlaylistPaths;
 
@@ -917,6 +919,34 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await _applyMpvProperty('tone-mapping', _toneMapping);
     await _applyMpvProperty('video-sync', p.videoSync);
     await _applyMpvProperty('demuxer-max-bytes', '${p.bufferSizeMb}MiB');
+
+    // Apply preferred audio & subtitle language priorities so unprobed embygo streams auto-match!
+    final alang = switch (p.preferredAudioLang) {
+      'zh' => 'cmn,zh,chi,zho,chs,cn,mandarin',
+      'yue' => 'yue,cantonese,zh-hk,zho,chi',
+      'ja' => 'ja,jpn,jp',
+      'en' => 'en,eng',
+      'ko' => 'ko,kor',
+      _ => '',
+    };
+    if (alang.isNotEmpty) {
+      await _applyMpvProperty('alang', alang);
+    }
+    if (widget.initialSubtitleStreamIndex == -1 || p.preferredSubLang == 'off') {
+      await _applyMpvProperty('sid', 'no');
+    } else {
+      final slang = switch (p.preferredSubLang) {
+        'zh' => 'chs,sc,zh-cn,zh-hans,zh,chi,zho,cn',
+        'zh-Hant' => 'cht,tc,zh-tw,zh-hk,zh-hant,zho,chi,zh',
+        'en' => 'en,eng',
+        'ja' => 'ja,jpn,jp',
+        _ => '',
+      };
+      if (slang.isNotEmpty) {
+        await _applyMpvProperty('slang', slang);
+      }
+    }
+
     if (p.audioDelayMs != 0) {
       await _applyMpvProperty('audio-delay', (p.audioDelayMs / 1000.0).toStringAsFixed(3));
     }
@@ -1119,7 +1149,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (_activeLocalPath != null && _activeLocalPath!.isNotEmpty) {
         await _applyInitialPreferencesToMpv();
         await _player.open(Media(_activeLocalPath!), play: true);
-        if (p.autoLoadExternalSubs) {
+        if (widget.initialExternalSubtitlePath != null &&
+            widget.initialExternalSubtitlePath!.trim().isNotEmpty) {
+          await _loadExternalSubtitleFile(widget.initialExternalSubtitlePath!);
+        } else if (p.autoLoadExternalSubs &&
+            widget.initialSubtitleStreamIndex != -1 &&
+            p.preferredSubLang != 'off') {
           final sidecars = NativePlaybackChannel.findSidecarSubtitles(_activeLocalPath!);
           if (sidecars.isNotEmpty) {
             final subPath = sidecars.first;
@@ -1168,18 +1203,63 @@ class _PlayerScreenState extends State<PlayerScreen> {
         play: true,
       );
 
-      if (p.autoLoadExternalSubs) {
+      if (widget.initialExternalSubtitlePath != null &&
+          widget.initialExternalSubtitlePath!.trim().isNotEmpty) {
+        await _loadExternalSubtitleFile(widget.initialExternalSubtitlePath!);
+      } else if (widget.initialSubtitleStreamIndex == -1 || p.preferredSubLang == 'off') {
+        await _player.setSubtitleTrack(SubtitleTrack.no());
+      } else if (widget.initialSubtitleStreamIndex != null) {
+        Map<String, dynamic>? chosenExt;
         for (final sub in prep.externalSubtitles) {
-          if (sub['is_default'] == true && sub['url'] != null) {
-            await _player.setSubtitleTrack(
-              SubtitleTrack.uri(
-                sub['url'].toString(),
-                title: sub['title']?.toString(),
-                language: sub['language']?.toString(),
-              ),
-            );
+          if ((sub['index'] as num?)?.toInt() == widget.initialSubtitleStreamIndex &&
+              sub['url'] != null) {
+            chosenExt = sub;
             break;
           }
+        }
+        if (chosenExt != null) {
+          await _player.setSubtitleTrack(
+            SubtitleTrack.uri(
+              chosenExt['url'].toString(),
+              title: chosenExt['title']?.toString(),
+              language: chosenExt['language']?.toString(),
+            ),
+          );
+        }
+      } else if (p.autoLoadExternalSubs && prep.externalSubtitles.isNotEmpty) {
+        Map<String, dynamic>? preferredExt;
+        final prefLang = p.preferredSubLang.toLowerCase();
+        for (final sub in prep.externalSubtitles) {
+          if (sub['url'] == null) continue;
+          final lang = (sub['language'] ?? '').toString().toLowerCase();
+          final title = (sub['title'] ?? '').toString().toLowerCase();
+          if (prefLang == 'zh' &&
+              (lang.contains('zh') || lang.contains('chi') || lang.contains('chs') || title.contains('简'))) {
+            preferredExt = sub;
+            break;
+          }
+          if (prefLang == 'zh-hant' &&
+              (lang.contains('cht') || lang.contains('tw') || lang.contains('hk') || title.contains('繁'))) {
+            preferredExt = sub;
+            break;
+          }
+          if (prefLang == 'en' && (lang.contains('en') || title.contains('eng'))) {
+            preferredExt = sub;
+            break;
+          }
+        }
+        preferredExt ??= prep.externalSubtitles.cast<Map<String, dynamic>?>().firstWhere(
+              (s) => s?['is_default'] == true && s?['url'] != null,
+              orElse: () => prep.externalSubtitles.first,
+            );
+        if (preferredExt != null && preferredExt['url'] != null) {
+          await _player.setSubtitleTrack(
+            SubtitleTrack.uri(
+              preferredExt['url'].toString(),
+              title: preferredExt['title']?.toString(),
+              language: preferredExt['language']?.toString(),
+            ),
+          );
         }
       }
 

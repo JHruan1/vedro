@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'server_card_grid.dart';
@@ -90,6 +91,7 @@ class _AddServerFormState extends State<_AddServerForm> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return ListenableBuilder(
       listenable: widget.appState,
       builder: (context, _) {
@@ -103,19 +105,19 @@ class _AddServerFormState extends State<_AddServerForm> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
+              Text(
                 '添加媒体服务器',
                 style: TextStyle(
-                  color: VedroTheme.fg,
+                  color: skin.fg,
                   fontSize: 18,
                   fontWeight: FontWeight.w600,
                   letterSpacing: -0.3,
                 ),
               ),
               const SizedBox(height: 4),
-              const Text(
+              Text(
                 '支持 embygo / Emby / Jellyfin，添加后可在服务器面板配置多条线路。',
-                style: TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
+                style: TextStyle(color: skin.fg3, fontSize: 12.5),
               ),
               if (widget.appState.discoveredServers.isNotEmpty) ...[
                 const SizedBox(height: 12),
@@ -129,18 +131,18 @@ class _AddServerFormState extends State<_AddServerForm> {
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                         decoration: BoxDecoration(
-                          color: VedroTheme.surface2,
+                          color: skin.surface2,
                           borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: VedroTheme.line, width: 0.7),
+                          border: Border.all(color: skin.border, width: 0.7),
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.wifi_tethering_rounded, size: 13, color: VedroTheme.fg2),
+                            Icon(Icons.wifi_tethering_rounded, size: 13, color: skin.fg2),
                             const SizedBox(width: 6),
                             Text(
                               '${d['name'] ?? addr}',
-                              style: const TextStyle(color: VedroTheme.fg2, fontSize: 12),
+                              style: TextStyle(color: skin.fg2, fontSize: 12),
                             ),
                           ],
                         ),
@@ -155,7 +157,7 @@ class _AddServerFormState extends State<_AddServerForm> {
                 enabled: !busy,
                 keyboardType: TextInputType.url,
                 textInputAction: TextInputAction.next,
-                style: const TextStyle(color: VedroTheme.fg, fontSize: 14),
+                style: TextStyle(color: skin.fg, fontSize: 14),
                 decoration: const InputDecoration(
                   labelText: '服务器地址',
                   hintText: 'https://example.com',
@@ -166,7 +168,7 @@ class _AddServerFormState extends State<_AddServerForm> {
                 controller: _userCtrl,
                 enabled: !busy,
                 textInputAction: TextInputAction.next,
-                style: const TextStyle(color: VedroTheme.fg, fontSize: 14),
+                style: TextStyle(color: skin.fg, fontSize: 14),
                 decoration: const InputDecoration(labelText: '用户名'),
               ),
               const SizedBox(height: 12),
@@ -175,14 +177,14 @@ class _AddServerFormState extends State<_AddServerForm> {
                 enabled: !busy,
                 obscureText: _obscure,
                 textInputAction: TextInputAction.done,
-                style: const TextStyle(color: VedroTheme.fg, fontSize: 14),
+                style: TextStyle(color: skin.fg, fontSize: 14),
                 decoration: InputDecoration(
                   labelText: '密码',
                   suffixIcon: IconButton(
                     icon: Icon(
                       _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
                       size: 18,
-                      color: VedroTheme.fg3,
+                      color: skin.fg3,
                     ),
                     onPressed: () => setState(() => _obscure = !_obscure),
                   ),
@@ -310,6 +312,7 @@ class _ServerHubSheetBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return ListenableBuilder(
       listenable: appState,
       builder: (context, _) {
@@ -321,10 +324,10 @@ class _ServerHubSheetBody extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  const Text(
+                  Text(
                     '媒体服务器与线路',
                     style: TextStyle(
-                      color: VedroTheme.fg,
+                      color: skin.fg,
                       fontSize: 17.5,
                       fontWeight: FontWeight.w600,
                       letterSpacing: -0.3,
@@ -339,18 +342,19 @@ class _ServerHubSheetBody extends StatelessWidget {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                       decoration: BoxDecoration(
-                        color: VedroTheme.fg,
-                        borderRadius: BorderRadius.circular(16),
+                        color: skin.primaryCtaBg,
+                        gradient: skin.primaryCtaGradient,
+                        borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
                       ),
-                      child: const Row(
+                      child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.add_rounded, size: 15, color: VedroTheme.canvas),
-                          SizedBox(width: 4),
+                          Icon(Icons.add_rounded, size: 15, color: skin.primaryCtaFg),
+                          const SizedBox(width: 4),
                           Text(
                             '添加服务器',
                             style: TextStyle(
-                              color: VedroTheme.canvas,
+                              color: skin.primaryCtaFg,
                               fontSize: 12.5,
                               fontWeight: FontWeight.w600,
                             ),

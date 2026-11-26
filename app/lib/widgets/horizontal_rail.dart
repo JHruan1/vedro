@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'media_card.dart';
 
-/// Apple TV+ / Infuse style horizontal scrolling rail:
+/// Skin-adaptive horizontal scrolling rail:
 /// - Zero ugly desktop scrollbars
-/// - Smooth soft edge fade-out masks whenever off-screen items exist (never harshly chopped)
 /// - Hover-revealed floating left/right edge navigation paddles on desktop
 /// - Calm, generous vertical clearance so hovered cards and shadows never clip
 class HorizontalMediaRail extends StatefulWidget {
@@ -52,6 +52,7 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
   @override
   Widget build(BuildContext context) {
     if (widget.items.isEmpty) return const SizedBox.shrink();
+    final skin = VedroSkin.of(context);
     final wide = MediaQuery.sizeOf(context).width >= 820;
     final padX = wide ? 32.0 : 20.0;
     final cardWidth = widget.isResume
@@ -63,6 +64,15 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
         ? (cardWidth / (16 / 9))
         : (cardWidth / (2 / 3));
     final railHeight = artHeight + 76;
+
+    final titleStyle = skin.applyHeadlineMood(
+      TextStyle(
+        color: skin.fg,
+        fontSize: wide ? 20 : 18,
+        fontWeight: FontWeight.w600,
+        letterSpacing: -0.3,
+      ),
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -83,16 +93,11 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
                             widget.title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: VedroTheme.fg,
-                              fontSize: wide ? 20 : 18,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: -0.3,
-                            ),
+                            style: titleStyle,
                           ),
                         ),
                         const SizedBox(width: 4),
-                        const Icon(Icons.chevron_right_rounded, size: 20, color: VedroTheme.fg3),
+                        Icon(Icons.chevron_right_rounded, size: 20, color: skin.fg3),
                       ],
                     ),
                   ),
@@ -101,12 +106,7 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
                   widget.title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: VedroTheme.fg,
-                    fontSize: wide ? 20 : 18,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: -0.3,
-                  ),
+                  style: titleStyle,
                 ),
         ),
         SmoothHorizontalStrip(
@@ -182,6 +182,7 @@ class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
   @override
   Widget build(BuildContext context) {
     if (widget.itemCount == 0) return const SizedBox.shrink();
+    final skin = VedroSkin.of(context);
     final wide = MediaQuery.sizeOf(context).width >= 820;
     final padX = wide ? 32.0 : 20.0;
 
@@ -192,11 +193,13 @@ class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
           padding: EdgeInsets.fromLTRB(padX, 28, padX, 10),
           child: Text(
             widget.title,
-            style: TextStyle(
-              color: VedroTheme.fg,
-              fontSize: wide ? 20 : 18,
-              fontWeight: FontWeight.w600,
-              letterSpacing: -0.3,
+            style: skin.applyHeadlineMood(
+              TextStyle(
+                color: skin.fg,
+                fontSize: wide ? 20 : 18,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -0.3,
+              ),
             ),
           ),
         ),
@@ -214,10 +217,7 @@ class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
   }
 }
 
-/// Reusable horizontal card strip with:
-/// - Hidden scrollbars on all platforms
-/// - Soft canvas-colored left/right edge fade masks when more items exist
-/// - Hover-revealed floating edge chevron buttons on wide/desktop viewports
+/// Reusable horizontal card strip with hidden scrollbars and hover-revealed edge paddles.
 class SmoothHorizontalStrip extends StatefulWidget {
   const SmoothHorizontalStrip({
     super.key,
@@ -331,8 +331,6 @@ class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
                   ),
                 ),
               ),
-
-              // Hover-revealed desktop edge paddles (Apple TV+ / Infuse style — zero black smudge walls!)
               if (wide && !_atStart)
                 Positioned(
                   left: 12,
@@ -374,6 +372,7 @@ class _EdgePaddleButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return IgnorePointer(
       ignoring: !visible,
       child: AnimatedOpacity(
@@ -381,17 +380,17 @@ class _EdgePaddleButton extends StatelessWidget {
         duration: const Duration(milliseconds: 180),
         curve: VedroTheme.easeOut,
         child: Material(
-          color: const Color(0xD91C1C20),
-          shape: const CircleBorder(),
+          color: skin.surface.withValues(alpha: 0.92),
+          shape: CircleBorder(side: BorderSide(color: skin.borderStrong, width: 0.8)),
           elevation: 8,
-          shadowColor: const Color(0x99000000),
+          shadowColor: Colors.black.withValues(alpha: skin.isLight ? 0.22 : 0.65),
           child: InkWell(
             customBorder: const CircleBorder(),
             onTap: onTap,
             child: SizedBox(
               width: 38,
               height: 38,
-              child: Icon(icon, size: 22, color: Colors.white),
+              child: Icon(icon, size: 22, color: skin.fg),
             ),
           ),
         ),

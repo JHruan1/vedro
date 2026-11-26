@@ -1,15 +1,16 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'vedro_artwork.dart';
 import 'vedro_ui.dart';
 
-/// SenPlayer / Forward / Apple TV+ style poster or widescreen media card.
-/// - Always backed by `GeneratedArt` beneath real artwork (zero ugly gray placeholders).
-/// - Quiet monochrome corner badges (watched / unplayed count / favorite / version count).
-/// - Desktop hover illuminates hairline ring, deepens shadow, and smoothly reveals Play FAB.
+/// Skin-adaptive poster or widescreen media card:
+/// - Always backed by `GeneratedArt` beneath real artwork.
+/// - Adapts corner geometry, border frame (`borderless` / `hairline` / `neon`),
+///   shadows, typography mood, and hover Play FAB to the active `VedroSkin`.
 class MediaCard extends StatefulWidget {
   const MediaCard({
     super.key,
@@ -41,9 +42,10 @@ class _MediaCardState extends State<MediaCard> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final item = widget.item;
     final prefs = widget.appState.prefs;
-    final radius = prefs.cardRadius;
+    final radius = prefs.effectiveCardRadius(skin);
     final aspect = widget.landscape ? 16 / 9 : 2 / 3;
     final showPlayFab = widget.onQuickPlay != null && !item.isFolderish && item.type != 'Person';
 
@@ -77,28 +79,18 @@ class _MediaCardState extends State<MediaCard> {
                 curve: VedroTheme.easeOut,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(radius),
-                  color: VedroTheme.surface2,
-                  boxShadow: [
-                    BoxShadow(
-                      color: _hovered ? const Color(0x90000000) : const Color(0x52000000),
-                      blurRadius: _hovered ? 24 : 12,
-                      offset: Offset(0, _hovered ? 10 : 5),
-                    ),
-                  ],
+                  color: skin.surface2,
+                  boxShadow: skin.posterShadow(hovered: _hovered),
                 ),
                 foregroundDecoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(radius),
-                  border: Border.all(
-                    color: _hovered ? const Color(0x99FFFFFF) : const Color(0x10FFFFFF),
-                    width: _hovered ? 1.4 : 0.5,
-                  ),
+                  border: skin.cardBorder(hovered: _hovered),
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
                     artBox,
-                    // Quiet top-right watched / unplayed count badge
                     if (prefs.showWatchedBadge && item.played)
                       const Positioned(
                         top: 7,
@@ -125,7 +117,6 @@ class _MediaCardState extends State<MediaCard> {
                           ),
                         ),
                       ),
-                    // Quiet top-left favorite / multi-version indicator
                     if (item.isFavorite || item.versionCount > 1)
                       Positioned(
                         top: 7,
@@ -153,7 +144,6 @@ class _MediaCardState extends State<MediaCard> {
                           ],
                         ),
                       ),
-                    // Progress bar for partially watched items
                     if (item.resumeProgress > 0.01) ...[
                       const Positioned(
                         left: 0,
@@ -180,12 +170,11 @@ class _MediaCardState extends State<MediaCard> {
                             value: item.resumeProgress,
                             minHeight: 3,
                             backgroundColor: const Color(0x45FFFFFF),
-                            color: Colors.white,
+                            color: skin.ctaStyle == 'contrast' ? Colors.white : skin.accent,
                           ),
                         ),
                       ),
                     ],
-                    // Hover-revealed quick-play circular white FAB (desktop magic!)
                     if (showPlayFab)
                       Positioned(
                         right: 10,
@@ -205,10 +194,11 @@ class _MediaCardState extends State<MediaCard> {
                                 child: Container(
                                   width: 38,
                                   height: 38,
-                                  decoration: const BoxDecoration(
-                                    color: Color(0xF2FFFFFF),
+                                  decoration: BoxDecoration(
+                                    color: skin.primaryCtaBg,
+                                    gradient: skin.primaryCtaGradient,
                                     shape: BoxShape.circle,
-                                    boxShadow: [
+                                    boxShadow: const [
                                       BoxShadow(
                                         color: Color(0x70000000),
                                         blurRadius: 14,
@@ -216,10 +206,10 @@ class _MediaCardState extends State<MediaCard> {
                                       ),
                                     ],
                                   ),
-                                  child: const Icon(
+                                  child: Icon(
                                     Icons.play_arrow_rounded,
                                     size: 21,
-                                    color: VedroTheme.canvas,
+                                    color: skin.primaryCtaFg,
                                   ),
                                 ),
                               ),
@@ -236,8 +226,8 @@ class _MediaCardState extends State<MediaCard> {
               item.cardTitle,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: VedroTheme.fg,
+              style: TextStyle(
+                color: skin.fg,
                 fontWeight: FontWeight.w500,
                 fontSize: 13.5,
                 letterSpacing: -0.1,
@@ -248,10 +238,10 @@ class _MediaCardState extends State<MediaCard> {
               item.cardSubtitle.isNotEmpty ? item.cardSubtitle : ' ',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: VedroTheme.fg3,
+              style: TextStyle(
+                color: skin.fg3,
                 fontSize: 12,
-                fontFeatures: [FontFeature.tabularFigures()],
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
           ],
@@ -261,8 +251,7 @@ class _MediaCardState extends State<MediaCard> {
   }
 }
 
-/// Dedicated 16:9 Continue Watching card with remaining time, progress strip,
-/// and tactile white "继续" pill button (works identically great on touch & desktop).
+/// Dedicated 16:9 Continue Watching card.
 class ResumeCard extends StatefulWidget {
   const ResumeCard({
     super.key,
@@ -290,6 +279,8 @@ class _ResumeCardState extends State<ResumeCard> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final radius = widget.appState.prefs.effectiveCardRadius(skin);
     final item = widget.item;
     final left = item.remainingText;
     final sub = item.type == 'Episode'
@@ -318,22 +309,13 @@ class _ResumeCardState extends State<ResumeCard> {
                 duration: const Duration(milliseconds: 200),
                 curve: VedroTheme.easeOut,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  color: VedroTheme.surface2,
-                  boxShadow: [
-                    BoxShadow(
-                      color: _hovered ? const Color(0x90000000) : const Color(0x52000000),
-                      blurRadius: _hovered ? 24 : 12,
-                      offset: Offset(0, _hovered ? 10 : 5),
-                    ),
-                  ],
+                  borderRadius: BorderRadius.circular(radius),
+                  color: skin.surface2,
+                  boxShadow: skin.posterShadow(hovered: _hovered),
                 ),
                 foregroundDecoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: _hovered ? const Color(0x99FFFFFF) : VedroTheme.line,
-                    width: _hovered ? 1.5 : 0.8,
-                  ),
+                  borderRadius: BorderRadius.circular(radius),
+                  border: skin.cardBorder(hovered: _hovered),
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Stack(
@@ -360,7 +342,6 @@ class _ResumeCardState extends State<ResumeCard> {
                         ),
                       ),
                     ),
-                    // AfuseKt / Apple TV+ centered translucent ring Play button
                     Center(
                       child: PressableScale(
                         onTap: widget.onResumePlay,
@@ -399,7 +380,7 @@ class _ResumeCardState extends State<ResumeCard> {
                           value: item.resumeProgress.clamp(0.02, 1.0),
                           minHeight: 3.5,
                           backgroundColor: const Color(0x45FFFFFF),
-                          color: Colors.white,
+                          color: skin.ctaStyle == 'contrast' ? Colors.white : skin.accent,
                         ),
                       ),
                     ),
@@ -412,8 +393,8 @@ class _ResumeCardState extends State<ResumeCard> {
               item.cardTitle,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: VedroTheme.fg,
+              style: TextStyle(
+                color: skin.fg,
                 fontWeight: FontWeight.w500,
                 fontSize: 13.5,
                 letterSpacing: -0.1,
@@ -428,10 +409,10 @@ class _ResumeCardState extends State<ResumeCard> {
                   : (sub.isNotEmpty ? sub : ' '),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: VedroTheme.fg3,
+              style: TextStyle(
+                color: skin.fg3,
                 fontSize: 12,
-                fontFeatures: [FontFeature.tabularFigures()],
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
           ],
@@ -441,8 +422,7 @@ class _ResumeCardState extends State<ResumeCard> {
   }
 }
 
-/// 16:9 Library tile prioritizing the server's own library cover (`Primary`/`Backdrop`/`Thumb`),
-/// gracefully falling back to a recent item's widescreen backdrop only when the library has none.
+/// 16:9 Library tile prioritizing the server's own library cover.
 class LibraryCard extends StatefulWidget {
   const LibraryCard({
     super.key,
@@ -468,6 +448,8 @@ class _LibraryCardState extends State<LibraryCard> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final radius = widget.appState.prefs.effectiveCardRadius(skin);
     final serverCover = widget.appState.libraryCoverUrl(widget.library, width: 720);
     final hasServerCover = serverCover != null && serverCover.isNotEmpty;
 
@@ -487,28 +469,18 @@ class _LibraryCardState extends State<LibraryCard> {
                 duration: const Duration(milliseconds: 200),
                 curve: VedroTheme.easeOut,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  color: VedroTheme.surface2,
-                  boxShadow: [
-                    BoxShadow(
-                      color: _hovered ? const Color(0x90000000) : const Color(0x52000000),
-                      blurRadius: _hovered ? 24 : 12,
-                      offset: Offset(0, _hovered ? 10 : 5),
-                    ),
-                  ],
+                  borderRadius: BorderRadius.circular(radius),
+                  color: skin.surface2,
+                  boxShadow: skin.posterShadow(hovered: _hovered),
                 ),
                 foregroundDecoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: _hovered ? const Color(0x99FFFFFF) : VedroTheme.line,
-                    width: _hovered ? 1.5 : 0.8,
-                  ),
+                  borderRadius: BorderRadius.circular(radius),
+                  border: skin.cardBorder(hovered: _hovered),
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    // Fallback layer beneath server cover (shows if server cover is absent or fails)
                     if (widget.coverItem != null)
                       VedroArtwork(
                         item: widget.coverItem!,
@@ -522,13 +494,11 @@ class _LibraryCardState extends State<LibraryCard> {
                         seed: widget.library.id,
                         label: hasServerCover ? null : widget.library.name,
                       ),
-                    // Authoritative server-generated / custom library cover on top!
                     if (hasServerCover)
                       FadeNetworkImage(
                         url: serverCover,
                         fit: BoxFit.cover,
                       ),
-                    // Subtle bottom-edge gradient only when no server cover (server covers often include titles/art)
                     if (!hasServerCover)
                       const DecoratedBox(
                         decoration: BoxDecoration(
@@ -552,11 +522,13 @@ class _LibraryCardState extends State<LibraryCard> {
                           widget.library.name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 17,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: -0.3,
+                          style: skin.applyHeadlineMood(
+                            const TextStyle(
+                              color: Colors.white,
+                              fontSize: 17,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: -0.3,
+                            ),
                           ),
                         ),
                       ),
@@ -572,8 +544,8 @@ class _LibraryCardState extends State<LibraryCard> {
                     widget.library.name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: VedroTheme.fg,
+                    style: TextStyle(
+                      color: skin.fg,
                       fontSize: 13.5,
                       fontWeight: FontWeight.w500,
                       letterSpacing: -0.1,
@@ -583,10 +555,10 @@ class _LibraryCardState extends State<LibraryCard> {
                 AnimatedOpacity(
                   opacity: _hovered ? 1.0 : 0.45,
                   duration: const Duration(milliseconds: 160),
-                  child: const Icon(
+                  child: Icon(
                     Icons.chevron_right_rounded,
                     size: 16,
-                    color: VedroTheme.fg2,
+                    color: skin.fg2,
                   ),
                 ),
               ],

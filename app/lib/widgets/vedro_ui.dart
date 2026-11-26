@@ -3,35 +3,54 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 
-/// Restrained monochrome geometric aperture mark for Vedro.
+/// Geometric aperture mark for Vedro that adapts its sheen & accent to the active skin.
 class VedroBrandMark extends StatelessWidget {
   const VedroBrandMark({super.key, this.size = 44});
   final double size;
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final useTinted = skin.ctaStyle != 'contrast';
     return Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
+        gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF23252C), Color(0xFF141519)],
+          colors: useTinted
+              ? [
+                  Color.lerp(skin.surface2, skin.accent, 0.38)!,
+                  Color.lerp(skin.surface, skin.accentSecondary, 0.22)!,
+                ]
+              : (skin.isLight
+                  ? [const Color(0xFF1E2028), const Color(0xFF101116)]
+                  : [const Color(0xFF23252C), const Color(0xFF141519)]),
         ),
-        borderRadius: BorderRadius.circular(size * 0.27),
-        border: Border.all(color: VedroTheme.lineStrong, width: 0.8),
-        boxShadow: const [
+        borderRadius: BorderRadius.circular(
+          skin.cardRadius <= 8 ? (size * 0.18) : (size * 0.27),
+        ),
+        border: Border.all(
+          color: useTinted ? skin.accent.withValues(alpha: 0.45) : skin.borderStrong,
+          width: 0.85,
+        ),
+        boxShadow: [
           BoxShadow(
-            color: Color(0x70000000),
-            blurRadius: 24,
-            offset: Offset(0, 10),
+            color: (useTinted ? skin.accent : Colors.black).withValues(alpha: skin.isLight ? 0.18 : 0.42),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
           ),
         ],
       ),
-      child: CustomPaint(painter: _VedroMarkPainter()),
+      child: CustomPaint(
+        painter: _VedroMarkPainter(
+          fgColor: useTinted ? skin.accent : Colors.white,
+        ),
+      ),
     );
   }
 }
@@ -81,6 +100,9 @@ class _BreathingBrandMarkState extends State<BreathingBrandMark>
 }
 
 class _VedroMarkPainter extends CustomPainter {
+  const _VedroMarkPainter({required this.fgColor});
+  final Color fgColor;
+
   @override
   void paint(Canvas canvas, Size size) {
     final cx = size.width * 0.52;
@@ -94,17 +116,18 @@ class _VedroMarkPainter extends CustomPainter {
       ..close();
 
     final paint = Paint()
-      ..color = VedroTheme.fg
+      ..color = fgColor
       ..style = PaintingStyle.fill
       ..isAntiAlias = true;
     canvas.drawPath(playPath, paint);
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _VedroMarkPainter oldDelegate) =>
+      oldDelegate.fgColor != fgColor;
 }
 
-/// Apple-style frosted glass surface reserved for floating chrome (nav bars, sheets, HUD).
+/// Frosted glass surface reserved for floating chrome (nav bars, sheets, HUD).
 class GlassSurface extends StatelessWidget {
   const GlassSurface({
     super.key,
@@ -112,24 +135,27 @@ class GlassSurface extends StatelessWidget {
     this.borderRadius = 14,
     this.padding,
     this.blur = 26,
-    this.color = VedroTheme.glass,
-    this.borderColor = VedroTheme.lineStrong,
+    this.color,
+    this.borderColor,
   });
 
   final Widget child;
   final double borderRadius;
   final EdgeInsetsGeometry? padding;
   final double blur;
-  final Color color;
-  final Color borderColor;
+  final Color? color;
+  final Color? borderColor;
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final effectiveColor = color ?? skin.glass;
+    final effectiveBorder = borderColor ?? skin.borderStrong;
     final radius = BorderRadius.circular(borderRadius);
     return Container(
       foregroundDecoration: BoxDecoration(
         borderRadius: radius,
-        border: Border.all(color: borderColor, width: 0.8),
+        border: Border.all(color: effectiveBorder, width: 0.8),
       ),
       child: ClipRRect(
         borderRadius: radius,
@@ -137,7 +163,7 @@ class GlassSurface extends StatelessWidget {
           filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
           child: Container(
             padding: padding,
-            color: color,
+            color: effectiveColor,
             child: child,
           ),
         ),
@@ -213,13 +239,15 @@ class _PressableScaleState extends State<PressableScale> {
   }
 }
 
-/// Apple TV+ style borderless monochrome technical spec micro-badges (`4K`, `杜比视界`, `杜比全景声`).
+/// Borderless technical spec micro-badges (`4K`, `杜比视界`, `杜比全景声`).
 class SpecGlyphRow extends StatelessWidget {
-  const SpecGlyphRow({super.key, required this.specs});
+  const SpecGlyphRow({super.key, required this.specs, this.forceDarkScrim = false});
   final List<String> specs;
+  final bool forceDarkScrim;
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final normalized = <String>[];
     final seen = <String>{};
     for (final raw in specs) {
@@ -232,6 +260,12 @@ class SpecGlyphRow extends StatelessWidget {
     }
     if (normalized.isEmpty) return const SizedBox.shrink();
 
+    final chipBg = forceDarkScrim ? const Color(0x22FFFFFF) : skin.subtleChipBg;
+    final chipFg = forceDarkScrim ? const Color(0xE8FFFFFF) : skin.fg.withValues(alpha: 0.88);
+    final chipBorder = (!forceDarkScrim && skin.frameStyle == 'neon')
+        ? Border.all(color: skin.accent.withValues(alpha: 0.35), width: 0.7)
+        : null;
+
     return Wrap(
       spacing: 6,
       runSpacing: 6,
@@ -240,17 +274,18 @@ class SpecGlyphRow extends StatelessWidget {
         return Container(
           padding: const EdgeInsets.symmetric(horizontal: 6.5, vertical: 2.5),
           decoration: BoxDecoration(
-            color: const Color(0x18FFFFFF),
+            color: chipBg,
             borderRadius: BorderRadius.circular(4.5),
+            border: chipBorder,
           ),
           child: Text(
             label,
-            style: const TextStyle(
-              color: Color(0xE0FFFFFF),
+            style: TextStyle(
+              color: chipFg,
               fontSize: 10.5,
               fontWeight: FontWeight.w600,
               letterSpacing: 0.25,
-              fontFeatures: [FontFeature.tabularFigures()],
+              fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
         );
@@ -280,7 +315,7 @@ class SpecGlyphRow extends StatelessWidget {
   }
 }
 
-/// Apple-style borderless horizontal segmented pill control (for Seasons / Filters).
+/// Skin-adaptive horizontal segmented pill control (for Seasons / Filters).
 class VedroSegmentedControl<T> extends StatelessWidget {
   const VedroSegmentedControl({
     super.key,
@@ -295,13 +330,17 @@ class VedroSegmentedControl<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final outerR = skin.radiusForPill(38);
+    final innerR = skin.radiusForPill(32);
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Container(
         padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
-          color: const Color(0x14FFFFFF),
-          borderRadius: BorderRadius.circular(20),
+          color: skin.surface2,
+          borderRadius: BorderRadius.circular(outerR),
+          border: skin.frameStyle == 'borderless' ? null : Border.all(color: skin.border, width: 0.7),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -316,13 +355,13 @@ class VedroSegmentedControl<T> extends StatelessWidget {
                 curve: VedroTheme.easeOut,
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6.5),
                 decoration: BoxDecoration(
-                  color: active ? Colors.white : Colors.transparent,
-                  borderRadius: BorderRadius.circular(17),
+                  color: active ? skin.activePillBg : Colors.transparent,
+                  borderRadius: BorderRadius.circular(innerR),
                 ),
                 child: Text(
                   label,
                   style: TextStyle(
-                    color: active ? VedroTheme.canvas : VedroTheme.fg2,
+                    color: active ? skin.activePillFg : skin.fg2,
                     fontSize: 13,
                     fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                   ),
@@ -336,8 +375,7 @@ class VedroSegmentedControl<T> extends StatelessWidget {
   }
 }
 
-/// Choreographed staggered fade + upward glide entrance (Apple TV+ / Linear style).
-/// Automatically skips delay/motion inside widget tests or when OS disableAnimations is active.
+/// Choreographed staggered fade + upward glide entrance.
 class VedroStaggeredEntrance extends StatefulWidget {
   const VedroStaggeredEntrance({
     super.key,
@@ -411,9 +449,7 @@ class _VedroStaggeredEntranceState extends State<VedroStaggeredEntrance>
   }
 }
 
-/// Tactile Apple TV+ / IINA precision slider bar with magnetic snap points,
-/// optional bi-directional center origin (`centeredOrigin = true`), live tabular readout,
-/// clickable tick marks, and one-tap reset.
+/// Tactile precision slider bar with magnetic snap points, live tabular readout, and one-tap reset.
 class VedroPrecisionSlider extends StatefulWidget {
   const VedroPrecisionSlider({
     super.key,
@@ -485,7 +521,8 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
 
   @override
   Widget build(BuildContext context) {
-    final accent = Theme.of(context).colorScheme.secondary;
+    final skin = VedroSkin.of(context);
+    final accent = skin.accent;
     final span = (widget.max - widget.min) <= 0 ? 1.0 : (widget.max - widget.min);
     final ratio = ((widget.value - widget.min) / span).clamp(0.0, 1.0);
     final active = _hovering || _dragging;
@@ -503,8 +540,8 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
               Expanded(
                 child: Text(
                   widget.label,
-                  style: const TextStyle(
-                    color: VedroTheme.fg2,
+                  style: TextStyle(
+                    color: skin.fg2,
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
                   ),
@@ -523,12 +560,12 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                         decoration: BoxDecoration(
-                          color: const Color(0x18FFFFFF),
+                          color: skin.subtleChipBg,
                           borderRadius: BorderRadius.circular(5),
                         ),
-                        child: const Text(
+                        child: Text(
                           '复位',
-                          style: TextStyle(color: VedroTheme.fg3, fontSize: 11),
+                          style: TextStyle(color: skin.fg3, fontSize: 11),
                         ),
                       ),
                     ),
@@ -537,17 +574,17 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1F2230),
+                  color: skin.surface2,
                   borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: const Color(0x22FFFFFF), width: 0.7),
+                  border: Border.all(color: skin.border, width: 0.7),
                 ),
                 child: Text(
                   widget.valueText,
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: skin.fg,
                     fontSize: 12.5,
                     fontWeight: FontWeight.w600,
-                    fontFeatures: [FontFeature.tabularFigures()],
+                    fontFeatures: const [FontFeature.tabularFigures()],
                   ),
                 ),
               ),
@@ -557,8 +594,7 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
           LayoutBuilder(
             builder: (context, constraints) {
               final w = constraints.maxWidth;
-              final centerRatio =
-                  ((0.0 - widget.min) / span).clamp(0.0, 1.0);
+              final centerRatio = ((0.0 - widget.min) / span).clamp(0.0, 1.0);
               final fillStart = widget.centeredOrigin
                   ? ((ratio < centerRatio ? ratio : centerRatio) * w)
                   : 0.0;
@@ -586,16 +622,14 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
                       clipBehavior: Clip.none,
                       alignment: Alignment.centerLeft,
                       children: [
-                        // Base track
                         AnimatedContainer(
                           duration: const Duration(milliseconds: 140),
                           height: trackH,
                           decoration: BoxDecoration(
-                            color: const Color(0x28FFFFFF),
+                            color: skin.fg.withValues(alpha: skin.isLight ? 0.14 : 0.20),
                             borderRadius: BorderRadius.circular(trackH / 2),
                           ),
                         ),
-                        // Snap detent ticks on track
                         for (final s in widget.snapValues)
                           Positioned(
                             left: (((s - widget.min) / span).clamp(0.0, 1.0) * w - 1)
@@ -604,12 +638,11 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
                               width: 2,
                               height: trackH + 3,
                               decoration: BoxDecoration(
-                                color: const Color(0x55FFFFFF),
+                                color: skin.fg.withValues(alpha: 0.35),
                                 borderRadius: BorderRadius.circular(1),
                               ),
                             ),
                           ),
-                        // Active fill
                         Positioned(
                           left: fillStart,
                           width: fillWidth.clamp(0.0, w),
@@ -618,13 +651,12 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
                             height: trackH,
                             decoration: BoxDecoration(
                               gradient: LinearGradient(
-                                colors: [accent, Colors.white.withValues(alpha: 0.95)],
+                                colors: [accent, skin.accentSecondary],
                               ),
                               borderRadius: BorderRadius.circular(trackH / 2),
                             ),
                           ),
                         ),
-                        // Tactile thumb
                         Positioned(
                           left: (w * ratio - 8).clamp(0.0, (w - 16).clamp(0.0, w)),
                           child: AnimatedScale(
@@ -638,12 +670,12 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
                                 color: Colors.white,
                                 shape: BoxShape.circle,
                                 border: Border.all(
-                                  color: accent.withValues(alpha: 0.55),
-                                  width: 1.5,
+                                  color: accent.withValues(alpha: 0.72),
+                                  width: 1.8,
                                 ),
                                 boxShadow: const [
                                   BoxShadow(
-                                    color: Color(0x88000000),
+                                    color: Color(0x55000000),
                                     blurRadius: 8,
                                     offset: Offset(0, 2),
                                   ),
@@ -677,7 +709,7 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
                       child: Text(
                         t.$2,
                         style: TextStyle(
-                          color: on ? Colors.white : VedroTheme.fg3,
+                          color: on ? skin.fg : skin.fg3,
                           fontSize: 11,
                           fontWeight: on ? FontWeight.w600 : FontWeight.w400,
                           fontFeatures: const [FontFeature.tabularFigures()],
@@ -695,23 +727,22 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
   }
 }
 
-/// Present a crisp, high-contrast solid elevated modal sheet:
-/// - On desktop/wide screens: uses `showGeneralDialog(barrierDismissible: true)` with smooth
-///   scale + fade animation so clicking ANYWHERE outside (or pressing Esc) dismisses cleanly.
-/// - On mobile: uses `showModalBottomSheet(isDismissible: true, enableDrag: true)`.
+/// Present a crisp, skin-adaptive modal sheet.
 Future<T?> showGlassSheet<T>({
   required BuildContext context,
   required WidgetBuilder builder,
+  double maxWidth = 480,
 }) {
   final size = MediaQuery.sizeOf(context);
   final wide = size.width >= 720;
+  final parentSkin = VedroSkin.of(context);
 
   if (wide) {
     return showGeneralDialog<T>(
       context: context,
       barrierDismissible: true,
       barrierLabel: 'Dismiss',
-      barrierColor: const Color(0x9E000000),
+      barrierColor: Colors.black.withValues(alpha: parentSkin.isLight ? 0.36 : 0.62),
       transitionDuration: const Duration(milliseconds: 230),
       transitionBuilder: (ctx, anim, _, child) {
         final curved = CurvedAnimation(
@@ -729,25 +760,27 @@ Future<T?> showGlassSheet<T>({
       },
       pageBuilder: (ctx, _, __) {
         final s = MediaQuery.sizeOf(ctx);
+        final skin = VedroSkin.of(ctx);
+        final r = skin.cardRadius.clamp(10.0, 22.0);
         return Dialog(
           backgroundColor: Colors.transparent,
           elevation: 0,
           insetPadding: const EdgeInsets.all(24),
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              maxWidth: 480,
-              maxHeight: s.height * 0.84,
+              maxWidth: maxWidth,
+              maxHeight: s.height * 0.86,
             ),
             child: Container(
               decoration: BoxDecoration(
-                color: const Color(0xFF161821),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: const Color(0xFF2F3346), width: 1.0),
-                boxShadow: const [
+                color: skin.surface,
+                borderRadius: BorderRadius.circular(r),
+                border: Border.all(color: skin.borderStrong, width: 1.0),
+                boxShadow: [
                   BoxShadow(
-                    color: Color(0xC8000000),
+                    color: Colors.black.withValues(alpha: skin.isLight ? 0.22 : 0.78),
                     blurRadius: 36,
-                    offset: Offset(0, 16),
+                    offset: const Offset(0, 16),
                   ),
                 ],
               ),
@@ -771,12 +804,14 @@ Future<T?> showGlassSheet<T>({
   return showModalBottomSheet<T>(
     context: context,
     backgroundColor: Colors.transparent,
-    barrierColor: const Color(0xA6000000),
+    barrierColor: Colors.black.withValues(alpha: parentSkin.isLight ? 0.36 : 0.65),
     isScrollControlled: true,
     isDismissible: true,
     enableDrag: true,
     builder: (ctx) {
       final s = MediaQuery.sizeOf(ctx);
+      final skin = VedroSkin.of(ctx);
+      final r = skin.cardRadius.clamp(12.0, 22.0);
       return SafeArea(
         top: false,
         child: Padding(
@@ -784,18 +819,18 @@ Future<T?> showGlassSheet<T>({
           child: ConstrainedBox(
             constraints: BoxConstraints(
               maxWidth: 540,
-              maxHeight: s.height * 0.82,
+              maxHeight: s.height * 0.84,
             ),
             child: Container(
               decoration: BoxDecoration(
-                color: const Color(0xFF161821),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: const Color(0xFF2D3142), width: 1.0),
-                boxShadow: const [
+                color: skin.surface,
+                borderRadius: BorderRadius.circular(r),
+                border: Border.all(color: skin.borderStrong, width: 1.0),
+                boxShadow: [
                   BoxShadow(
-                    color: Color(0xB8000000),
+                    color: Colors.black.withValues(alpha: skin.isLight ? 0.20 : 0.72),
                     blurRadius: 32,
-                    offset: Offset(0, 12),
+                    offset: const Offset(0, 12),
                   ),
                 ],
               ),
@@ -810,7 +845,7 @@ Future<T?> showGlassSheet<T>({
                       width: 36,
                       height: 4,
                       decoration: BoxDecoration(
-                        color: const Color(0xFF3E4357),
+                        color: skin.fg3.withValues(alpha: 0.45),
                         borderRadius: BorderRadius.circular(2),
                       ),
                     ),

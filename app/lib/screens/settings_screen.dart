@@ -4,10 +4,12 @@ import 'package:flutter/material.dart';
 import '../core/models/models.dart';
 import '../core/models/preferences.dart';
 import '../core/platform/native_playback_channel.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/admin_console_pane.dart';
 import '../widgets/server_card_grid.dart';
+import '../widgets/skin_studio_pane.dart';
 import '../widgets/vedro_ui.dart';
 import 'player_screen.dart';
 
@@ -252,7 +254,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case _SettingsSection.fonts:
         return p.subtitleFontFamily.isEmpty ? '系统默认' : p.subtitleFontFamily;
       case _SettingsSection.style:
-        return p.accentPalette.label;
+        return p.activeSkin.name;
       case _SettingsSection.modules:
         return '${app.homeSections.where((s) => s.visible).length} 个板块';
       case _SettingsSection.lists:
@@ -284,6 +286,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final wide = MediaQuery.sizeOf(context).width >= 820;
     final items = _visibleNavItems;
     if (!_canShowAdmin && _active == _SettingsSection.admin) {
@@ -292,180 +295,183 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (wide) {
       return Scaffold(
-        backgroundColor: VedroTheme.canvas,
-        body: Padding(
-          padding: EdgeInsets.only(top: widget.topInset),
-          child: Row(
-            children: [
-              // macOS Sequoia translucent-feel Sidebar
-              Container(
-                width: 268,
-                decoration: const BoxDecoration(
-                  color: Color(0xFF0E0F14),
-                  border: Border(right: BorderSide(color: Color(0x18FFFFFF), width: 0.8)),
-                ),
-                child: Column(
-                  children: [
-                    // Sidebar Header: Search box + Active Server Identity Pill
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
-                      child: Column(
-                        children: [
-                          Container(
-                            height: 34,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF171820),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: const Color(0x18FFFFFF), width: 0.7),
-                            ),
-                            child: TextField(
-                              controller: _filterCtrl,
-                              onChanged: (v) => setState(() => _filter = v),
-                              style: const TextStyle(color: VedroTheme.fg, fontSize: 13),
-                              decoration: InputDecoration(
-                                hintText: '筛选设置…',
-                                hintStyle: const TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
-                                prefixIcon: const Icon(Icons.search_rounded, size: 16, color: VedroTheme.fg3),
-                                prefixIconConstraints: const BoxConstraints(minWidth: 34),
-                                suffixIcon: _filter.isNotEmpty
-                                    ? GestureDetector(
-                                        onTap: () {
-                                          _filterCtrl.clear();
-                                          setState(() => _filter = '');
-                                        },
-                                        child: const Icon(Icons.close_rounded, size: 15, color: VedroTheme.fg3),
-                                      )
-                                    : null,
-                                border: InputBorder.none,
-                                enabledBorder: InputBorder.none,
-                                focusedBorder: InputBorder.none,
-                                filled: false,
-                                contentPadding: const EdgeInsets.symmetric(vertical: 8),
+        backgroundColor: skin.canvas,
+        body: VedroSkinCanvas(
+          child: Padding(
+            padding: EdgeInsets.only(top: widget.topInset),
+            child: Row(
+              children: [
+                // Skin-adaptive Sidebar
+                Container(
+                  width: 268,
+                  decoration: BoxDecoration(
+                    color: skin.surface.withValues(alpha: skin.isLight ? 0.78 : 0.85),
+                    border: Border(right: BorderSide(color: skin.border, width: 0.8)),
+                  ),
+                  child: Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
+                        child: Column(
+                          children: [
+                            Container(
+                              height: 34,
+                              decoration: BoxDecoration(
+                                color: skin.surface2,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: skin.border, width: 0.7),
+                              ),
+                              child: TextField(
+                                controller: _filterCtrl,
+                                onChanged: (v) => setState(() => _filter = v),
+                                style: TextStyle(color: skin.fg, fontSize: 13),
+                                decoration: InputDecoration(
+                                  hintText: '筛选设置…',
+                                  hintStyle: TextStyle(color: skin.fg3, fontSize: 12.5),
+                                  prefixIcon: Icon(Icons.search_rounded, size: 16, color: skin.fg3),
+                                  prefixIconConstraints: const BoxConstraints(minWidth: 34),
+                                  suffixIcon: _filter.isNotEmpty
+                                      ? GestureDetector(
+                                          onTap: () {
+                                            _filterCtrl.clear();
+                                            setState(() => _filter = '');
+                                          },
+                                          child: Icon(Icons.close_rounded, size: 15, color: skin.fg3),
+                                        )
+                                      : null,
+                                  border: InputBorder.none,
+                                  enabledBorder: InputBorder.none,
+                                  focusedBorder: InputBorder.none,
+                                  filled: false,
+                                  contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(height: 10),
-                          _SidebarServerMiniCard(
-                            appState: widget.appState,
-                            selected: _active == _SettingsSection.servers,
-                            onTap: () => setState(() => _active = _SettingsSection.servers),
-                          ),
-                        ],
+                            const SizedBox(height: 10),
+                            _SidebarServerMiniCard(
+                              appState: widget.appState,
+                              selected: _active == _SettingsSection.servers,
+                              onTap: () => setState(() => _active = _SettingsSection.servers),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    const Divider(height: 1),
-                    Expanded(
-                      child: ListView(
-                        padding: const EdgeInsets.fromLTRB(12, 6, 12, 28),
-                        children: _buildGroupedSidebar(items),
+                      Divider(height: 1, color: skin.border),
+                      Expanded(
+                        child: ListView(
+                          padding: const EdgeInsets.fromLTRB(12, 6, 12, 28),
+                          children: _buildGroupedSidebar(items, skin),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
 
-              // Right Detail Pane
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(40, 28, 40, 64),
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 780),
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 160),
-                        child: KeyedSubtree(
-                          key: ValueKey(_active),
-                          child: _SettingsDetailPane(
-                            section: _active,
-                            appState: widget.appState,
-                            onOpenServerHub: widget.onOpenServerHub,
-                            onOpenAddServer: widget.onOpenAddServer,
+                // Right Detail Pane
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(40, 28, 40, 64),
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 820),
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 160),
+                          child: KeyedSubtree(
+                            key: ValueKey(_active),
+                            child: _SettingsDetailPane(
+                              section: _active,
+                              appState: widget.appState,
+                              onOpenServerHub: widget.onOpenServerHub,
+                              onOpenAddServer: widget.onOpenAddServer,
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       );
     }
 
-    // Mobile: iOS 18 Grouped Inset Settings List
+    // Mobile: Grouped Inset Settings List
     final grouped = <String, List<_NavItemMeta>>{};
     for (final item in items) {
       grouped.putIfAbsent(item.group, () => []).add(item);
     }
 
     return Scaffold(
-      backgroundColor: VedroTheme.canvas,
+      backgroundColor: skin.canvas,
       appBar: AppBar(title: const Text('设置')),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 112),
-        children: [
-          for (final entry in grouped.entries) ...[
-            _GroupHeader(entry.key),
-            _GroupedCard(
-              children: entry.value.map((meta) {
-                return InkWell(
-                  onTap: () => Navigator.of(context).push(
-                    vedroRoute(_MobileSettingsSubPage(
-                      title: meta.title,
-                      section: meta.section,
-                      appState: widget.appState,
-                      onOpenServerHub: widget.onOpenServerHub,
-                      onOpenAddServer: widget.onOpenAddServer,
-                    )),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-                    child: Row(
-                      children: [
-                        _AppleSquircleIcon(
-                          icon: meta.icon,
-                          top: meta.tintTop,
-                          bottom: meta.tintBottom,
-                          size: 28,
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            meta.title,
-                            style: const TextStyle(
-                              color: VedroTheme.fg,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w500,
+      body: VedroSkinCanvas(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 112),
+          children: [
+            for (final entry in grouped.entries) ...[
+              _GroupHeader(entry.key),
+              _GroupedCard(
+                children: entry.value.map((meta) {
+                  return InkWell(
+                    onTap: () => Navigator.of(context).push(
+                      vedroRoute(_MobileSettingsSubPage(
+                        title: meta.title,
+                        section: meta.section,
+                        appState: widget.appState,
+                        onOpenServerHub: widget.onOpenServerHub,
+                        onOpenAddServer: widget.onOpenAddServer,
+                      )),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                      child: Row(
+                        children: [
+                          _AppleSquircleIcon(
+                            icon: meta.icon,
+                            top: meta.tintTop,
+                            bottom: meta.tintBottom,
+                            size: 28,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              meta.title,
+                              style: TextStyle(
+                                color: skin.fg,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w500,
+                              ),
                             ),
                           ),
-                        ),
-                        Text(
-                          _summaryFor(meta.section),
-                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 13),
-                        ),
-                        const SizedBox(width: 4),
-                        const Icon(Icons.chevron_right_rounded, size: 18, color: VedroTheme.fg3),
-                      ],
+                          Text(
+                            _summaryFor(meta.section),
+                            style: TextStyle(color: skin.fg3, fontSize: 13),
+                          ),
+                          const SizedBox(width: 4),
+                          Icon(Icons.chevron_right_rounded, size: 18, color: skin.fg3),
+                        ],
+                      ),
                     ),
-                  ),
-                );
-              }).toList(),
+                  );
+                }).toList(),
+              ),
+            ],
+            const SizedBox(height: 22),
+            Center(
+              child: Text(
+                'Vedro v${widget.appState.core.coreVersion}',
+                style: TextStyle(color: skin.fg3, fontSize: 12),
+              ),
             ),
           ],
-          const SizedBox(height: 22),
-          Center(
-            child: Text(
-              'Vedro v${widget.appState.core.coreVersion}',
-              style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  List<Widget> _buildGroupedSidebar(List<_NavItemMeta> items) {
+  List<Widget> _buildGroupedSidebar(List<_NavItemMeta> items, VedroSkin skin) {
     final grouped = <String, List<_NavItemMeta>>{};
     for (final item in items) {
       grouped.putIfAbsent(item.group, () => []).add(item);
@@ -476,8 +482,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.fromLTRB(10, 14, 10, 6),
         child: Text(
           entry.key,
-          style: const TextStyle(
-            color: VedroTheme.fg3,
+          style: TextStyle(
+            color: skin.fg3,
             fontSize: 11,
             fontWeight: FontWeight.w600,
             letterSpacing: 0.4,
@@ -496,10 +502,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 duration: const Duration(milliseconds: 140),
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7.5),
                 decoration: BoxDecoration(
-                  color: selected ? const Color(0xFF21232D) : Colors.transparent,
-                  borderRadius: BorderRadius.circular(10),
+                  color: selected ? skin.surface2 : Colors.transparent,
+                  borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 11.0)),
                   border: selected
-                      ? Border.all(color: const Color(0x1EFFFFFF), width: 0.7)
+                      ? Border.all(color: skin.borderStrong, width: 0.8)
                       : null,
                 ),
                 child: Row(
@@ -517,7 +523,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          color: selected ? Colors.white : const Color(0xFFC4C7D0),
+                          color: selected ? skin.fg : skin.fg2,
                           fontSize: 13.5,
                           fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                         ),
@@ -535,7 +541,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       padding: const EdgeInsets.fromLTRB(12, 20, 12, 0),
       child: Text(
         'Vedro Core v${widget.appState.core.coreVersion}',
-        style: const TextStyle(color: VedroTheme.fg3, fontSize: 11),
+        style: TextStyle(color: skin.fg3, fontSize: 11),
       ),
     ));
     return out;
@@ -658,19 +664,22 @@ class _MobileSettingsSubPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Scaffold(
-      backgroundColor: VedroTheme.canvas,
+      backgroundColor: skin.canvas,
       appBar: AppBar(title: Text(title)),
-      body: ListenableBuilder(
-        listenable: appState,
-        builder: (context, _) => SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 48),
-          child: _SettingsDetailPane(
-            section: section,
-            appState: appState,
-            onOpenServerHub: onOpenServerHub,
-            onOpenAddServer: onOpenAddServer,
-            hideHeading: true,
+      body: VedroSkinCanvas(
+        child: ListenableBuilder(
+          listenable: appState,
+          builder: (context, _) => SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 48),
+            child: _SettingsDetailPane(
+              section: section,
+              appState: appState,
+              onOpenServerHub: onOpenServerHub,
+              onOpenAddServer: onOpenAddServer,
+              hideHeading: true,
+            ),
           ),
         ),
       ),
@@ -777,6 +786,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
 
   Widget _heading(String title, String subtitle, {Widget? trailing}) {
     if (widget.hideHeading) return const SizedBox.shrink();
+    final skin = VedroSkin.of(context);
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
       child: Row(
@@ -788,15 +798,17 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.5,
+                  style: skin.applyHeadlineMood(
+                    TextStyle(
+                      color: skin.fg,
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(subtitle, style: const TextStyle(color: VedroTheme.fg3, fontSize: 13)),
+                Text(subtitle, style: TextStyle(color: skin.fg3, fontSize: 13)),
               ],
             ),
           ),
@@ -1494,85 +1506,11 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     );
   }
 
-  // 4. 应用风格
+  // 4. 应用风格 & 皮肤工坊
   Widget _buildStyle(VedroPreferences p) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _heading('应用风格', '定制全局强调色、海报圆角、毛玻璃强度与动效'),
-        _GroupedCard(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('全局强调色', style: TextStyle(color: VedroTheme.fg, fontSize: 14, fontWeight: FontWeight.w500)),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    children: AccentPalette.all.map((pal) {
-                      final active = p.accentId == pal.id;
-                      return PressableScale(
-                        onTap: () => _updatePrefs(p.copyWith(accentId: pal.id)),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: active ? pal.accent.withValues(alpha: 0.18) : const Color(0xFF1C1E26),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: active ? pal.accent : const Color(0x1CFFFFFF),
-                              width: active ? 1.3 : 0.7,
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Container(
-                                width: 13,
-                                height: 13,
-                                decoration: BoxDecoration(color: pal.accent, shape: BoxShape.circle),
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                pal.label,
-                                style: TextStyle(
-                                  color: active ? Colors.white : VedroTheme.fg2,
-                                  fontSize: 13,
-                                  fontWeight: active ? FontWeight.w600 : FontWeight.w400,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ],
-              ),
-            ),
-            _InlineSegmentedRow<double>(
-              title: '海报卡片圆角',
-              value: p.cardRadius,
-              items: const [(8.0, '干练 8px'), (12.0, '标准 12px'), (16.0, '柔和 16px')],
-              onChanged: (v) => _updatePrefs(p.copyWith(cardRadius: v)),
-            ),
-            _InlineSegmentedRow<String>(
-              title: '毛玻璃通透度',
-              value: p.glassIntensity,
-              items: const [('subtle', '微雾'), ('standard', '标准'), ('rich', '浓郁')],
-              onChanged: (v) => _updatePrefs(p.copyWith(glassIntensity: v)),
-            ),
-            _SwitchRow(
-              title: '减弱动态效果',
-              subtitle: '降低页面切换动效幅度以获得更干脆的响应',
-              value: p.reduceMotion,
-              onChanged: (v) => _updatePrefs(p.copyWith(reduceMotion: v)),
-            ),
-          ],
-        ),
-      ],
+    return SkinStudioPane(
+      appState: widget.appState,
+      hideHeading: widget.hideHeading,
     );
   }
 
@@ -1615,6 +1553,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
             app.saveHomeLayout(sections);
           },
           itemBuilder: (context, idx) {
+            final skin = VedroSkin.of(context);
             final sec = sections[idx];
             return Padding(
               key: ValueKey('mod_${sec.id}'),
@@ -1622,9 +1561,9 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               child: Container(
                 padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF13141A),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: const Color(0x1DFFFFFF), width: 0.85),
+                  color: skin.surface,
+                  borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 16.0)),
+                  border: skin.cardBorder(),
                 ),
                 child: Row(
                   children: [
@@ -1632,10 +1571,10 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                       width: 22,
                       child: Text(
                         '${idx + 1}',
-                        style: const TextStyle(
-                          color: VedroTheme.fg3,
+                        style: TextStyle(
+                          color: skin.fg3,
                           fontSize: 12.5,
-                          fontFeatures: [FontFeature.tabularFigures()],
+                          fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                       ),
                     ),
@@ -1647,12 +1586,12 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                           Text(
                             sec.title,
                             style: TextStyle(
-                              color: sec.visible ? VedroTheme.fg : VedroTheme.fg3,
+                              color: sec.visible ? skin.fg : skin.fg3,
                               fontSize: 14,
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-                          Text(sec.subtitle, style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5)),
+                          Text(sec.subtitle, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
                         ],
                       ),
                     ),
@@ -1660,7 +1599,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                       scale: 0.78,
                       child: CupertinoSwitch(
                         value: sec.visible,
-                        activeTrackColor: Theme.of(context).colorScheme.primary,
+                        activeTrackColor: skin.accent,
                         onChanged: (v) {
                           sections[idx] = sec.copyWith(visible: v);
                           app.saveHomeLayout(sections);
@@ -1670,11 +1609,11 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                     const SizedBox(width: 4),
                     ReorderableDragStartListener(
                       index: idx,
-                      child: const MouseRegion(
+                      child: MouseRegion(
                         cursor: SystemMouseCursors.grab,
                         child: Padding(
-                          padding: EdgeInsets.all(6),
-                          child: Icon(Icons.drag_handle_rounded, size: 19, color: VedroTheme.fg3),
+                          padding: const EdgeInsets.all(6),
+                          child: Icon(Icons.drag_handle_rounded, size: 19, color: skin.fg3),
                         ),
                       ),
                     ),
@@ -2597,12 +2536,13 @@ class _GroupHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(4, 14, 4, 8),
       child: Text(
         text,
-        style: const TextStyle(
-          color: VedroTheme.fg3,
+        style: TextStyle(
+          color: skin.fg3,
           fontSize: 12,
           fontWeight: FontWeight.w600,
           letterSpacing: 0.3,
@@ -2618,17 +2558,18 @@ class _GroupedCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF13141A),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x1DFFFFFF), width: 0.85),
+        color: skin.surface,
+        borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 18.0)),
+        border: skin.cardBorder(),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
           for (var i = 0; i < children.length; i++) ...[
-            if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16, color: Color(0x14FFFFFF)),
+            if (i > 0) Divider(height: 1, indent: 16, endIndent: 16, color: skin.border),
             children[i],
           ],
         ],
@@ -2650,13 +2591,14 @@ class _ActionRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return InkWell(
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
         child: Row(
           children: [
-            Expanded(child: Text(title, style: const TextStyle(color: VedroTheme.fg, fontSize: 14))),
+            Expanded(child: Text(title, style: TextStyle(color: skin.fg, fontSize: 14))),
             if (trailing != null) trailing!,
           ],
         ),
@@ -2682,7 +2624,7 @@ class _CheckRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final accent = Theme.of(context).colorScheme.secondary;
+    final skin = VedroSkin.of(context);
     return InkWell(
       onTap: onTap,
       child: Padding(
@@ -2696,7 +2638,7 @@ class _CheckRow extends StatelessWidget {
                   Text(
                     title,
                     style: TextStyle(
-                      color: selected ? Colors.white : VedroTheme.fg,
+                      color: selected ? skin.fg : skin.fg2,
                       fontSize: 14,
                       fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
                     ),
@@ -2706,12 +2648,12 @@ class _CheckRow extends StatelessWidget {
                       subtitle!,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                      style: TextStyle(color: skin.fg3, fontSize: 11.5),
                     ),
                 ],
               ),
             ),
-            if (selected) Icon(Icons.check_rounded, size: 18, color: accent),
+            if (selected) Icon(Icons.check_rounded, size: 18, color: skin.accent),
             if (trailing != null) trailing!,
           ],
         ),
@@ -2720,7 +2662,6 @@ class _CheckRow extends StatelessWidget {
   }
 }
 
-/// Sleek Apple pop-up menu picker pill (replaces raw Material DropdownButton).
 class _AppleMenuPickerRow<T> extends StatelessWidget {
   const _AppleMenuPickerRow({
     required this.title,
@@ -2736,24 +2677,24 @@ class _AppleMenuPickerRow<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final safeValue = items.containsKey(value) ? value : items.keys.first;
     final label = items[safeValue] ?? '';
-    final accent = Theme.of(context).colorScheme.secondary;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       child: Row(
         children: [
-          Expanded(child: Text(title, style: const TextStyle(color: VedroTheme.fg, fontSize: 14))),
+          Expanded(child: Text(title, style: TextStyle(color: skin.fg, fontSize: 14))),
           const SizedBox(width: 12),
           PopupMenuButton<T>(
             initialValue: safeValue,
             onSelected: onChanged,
-            color: const Color(0xFF1C1E27),
+            color: skin.surface2,
             elevation: 16,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
-              side: const BorderSide(color: Color(0x28FFFFFF), width: 0.8),
+              side: BorderSide(color: skin.borderStrong, width: 0.8),
             ),
             itemBuilder: (_) => items.entries.map((e) {
               final selected = e.key == safeValue;
@@ -2766,13 +2707,13 @@ class _AppleMenuPickerRow<T> extends StatelessWidget {
                       child: Text(
                         e.value,
                         style: TextStyle(
-                          color: selected ? Colors.white : const Color(0xFFC8CCD6),
+                          color: selected ? skin.fg : skin.fg2,
                           fontSize: 13,
                           fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
                         ),
                       ),
                     ),
-                    if (selected) Icon(Icons.check_rounded, size: 16, color: accent),
+                    if (selected) Icon(Icons.check_rounded, size: 16, color: skin.accent),
                   ],
                 ),
               );
@@ -2780,9 +2721,9 @@ class _AppleMenuPickerRow<T> extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6.5),
               decoration: BoxDecoration(
-                color: const Color(0xFF1D1F28),
+                color: skin.surface2,
                 borderRadius: BorderRadius.circular(9),
-                border: Border.all(color: const Color(0x24FFFFFF), width: 0.8),
+                border: Border.all(color: skin.border, width: 0.8),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -2793,15 +2734,15 @@ class _AppleMenuPickerRow<T> extends StatelessWidget {
                       label,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
+                      style: TextStyle(
+                        color: skin.fg,
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
                   ),
                   const SizedBox(width: 5),
-                  const Icon(Icons.unfold_more_rounded, size: 15, color: VedroTheme.fg3),
+                  Icon(Icons.unfold_more_rounded, size: 15, color: skin.fg3),
                 ],
               ),
             ),
@@ -2812,7 +2753,6 @@ class _AppleMenuPickerRow<T> extends StatelessWidget {
   }
 }
 
-/// Clean macOS inline segmented control row for compact 2–4 option settings.
 class _InlineSegmentedRow<T> extends StatelessWidget {
   const _InlineSegmentedRow({
     required this.title,
@@ -2828,12 +2768,13 @@ class _InlineSegmentedRow<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final seg = Container(
       padding: const EdgeInsets.all(2.5),
       decoration: BoxDecoration(
-        color: const Color(0xFF1A1C24),
+        color: skin.surface2,
         borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: const Color(0x1DFFFFFF), width: 0.7),
+        border: Border.all(color: skin.border, width: 0.7),
       ),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
@@ -2849,13 +2790,13 @@ class _InlineSegmentedRow<T> extends StatelessWidget {
                   duration: const Duration(milliseconds: 140),
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                   decoration: BoxDecoration(
-                    color: active ? const Color(0xFF2D303E) : Colors.transparent,
+                    color: active ? skin.activePillBg : Colors.transparent,
                     borderRadius: BorderRadius.circular(7),
                   ),
                   child: Text(
                     entry.$2,
                     style: TextStyle(
-                      color: active ? Colors.white : VedroTheme.fg3,
+                      color: active ? skin.activePillFg : skin.fg3,
                       fontSize: 12,
                       fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                     ),
@@ -2876,7 +2817,7 @@ class _InlineSegmentedRow<T> extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(color: VedroTheme.fg, fontSize: 14)),
+                Text(title, style: TextStyle(color: skin.fg, fontSize: 14)),
                 const SizedBox(height: 8),
                 seg,
               ],
@@ -2887,7 +2828,7 @@ class _InlineSegmentedRow<T> extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           child: Row(
             children: [
-              Expanded(child: Text(title, style: const TextStyle(color: VedroTheme.fg, fontSize: 14))),
+              Expanded(child: Text(title, style: TextStyle(color: skin.fg, fontSize: 14))),
               const SizedBox(width: 10),
               seg,
             ],
@@ -2913,6 +2854,7 @@ class _SwitchRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
       child: Row(
@@ -2921,10 +2863,10 @@ class _SwitchRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(color: VedroTheme.fg, fontSize: 14)),
+                Text(title, style: TextStyle(color: skin.fg, fontSize: 14)),
                 if (subtitle != null) ...[
                   const SizedBox(height: 2),
-                  Text(subtitle!, style: const TextStyle(color: VedroTheme.fg3, fontSize: 12)),
+                  Text(subtitle!, style: TextStyle(color: skin.fg3, fontSize: 12)),
                 ],
               ],
             ),
@@ -2934,7 +2876,7 @@ class _SwitchRow extends StatelessWidget {
             scale: 0.78,
             child: CupertinoSwitch(
               value: value,
-              activeTrackColor: Theme.of(context).colorScheme.primary,
+              activeTrackColor: skin.accent,
               onChanged: onChanged,
             ),
           ),

@@ -93,6 +93,10 @@ impl Default for ServerCapabilities {
 }
 
 impl ServerCapabilities {
+    pub fn is_embygo(&self) -> bool {
+        self.dialect == ServerDialect::EmbyGo
+    }
+
     /// Build capability profile from `System/Info/Public`, response headers,
     /// and optional embygo signature hints.
     pub fn detect(

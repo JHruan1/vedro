@@ -12,7 +12,7 @@ use crate::dialect::{ServerCapabilities, ServerDialect};
 use crate::error::{ProtocolError, Result};
 use crate::models::*;
 
-const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,Overview,Taglines,ChildCount,RecursiveItemCount,People,Genres,Tags,Studios,ProviderIds,ExternalUrls,OriginalTitle,SortName,DateCreated,ProductionLocations,PremiereDate,EndDate,Status,OfficialRating,CustomRating,CriticRating,Path,AirDays,AirTime,RemoteTrailers,Chapters,AspectRatio,Budget,Revenue,AwardSummary";
+const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,CanDownload,Overview,Taglines,ChildCount,RecursiveItemCount,People,Genres,Tags,Studios,ProviderIds,ExternalUrls,OriginalTitle,SortName,DateCreated,ProductionLocations,PremiereDate,EndDate,Status,OfficialRating,CustomRating,CriticRating,Path,AirDays,AirTime,RemoteTrailers,Chapters,AspectRatio,Budget,Revenue,AwardSummary";
 
 /// High-performance async REST client supporting `embygo`, `Emby`, and `Jellyfin`.
 ///
@@ -27,6 +27,7 @@ pub struct EmbyClient {
     http: Client,
     base_url: Url,
     identity: ClientIdentity,
+    transport_options: ClientTransportOptions,
     state: Arc<RwLock<ClientState>>,
 }
 
@@ -82,6 +83,7 @@ impl EmbyClient {
             http,
             base_url: normalized,
             identity,
+            transport_options: options,
             state: Arc::new(RwLock::new(ClientState::default())),
         })
     }
@@ -92,6 +94,10 @@ impl EmbyClient {
 
     pub fn identity(&self) -> &ClientIdentity {
         &self.identity
+    }
+
+    pub fn transport_options(&self) -> &ClientTransportOptions {
+        &self.transport_options
     }
 
     pub fn capabilities(&self) -> ServerCapabilities {
@@ -993,6 +999,105 @@ impl EmbyClient {
                     .await
             }
         }
+    }
+
+    /// Build the official Emby / Jellyfin / embygo file download URL:
+    /// `GET /Items/{item_id}/Download?MediaSourceId=...[&StreamTicket=...]`
+    pub fn build_download_url(
+        &self,
+        item_id: &str,
+        media_source_id: Option<&str>,
+        stream_ticket: Option<&str>,
+    ) -> Result<Url> {
+        let mut url = self.endpoint_url(&format!("Items/{item_id}/Download"))?;
+        {
+            let mut q = url.query_pairs_mut();
+            if let Some(msid) = media_source_id.filter(|s| !s.is_empty()) {
+                q.append_pair("MediaSourceId", msid);
+            }
+            if let Some(ticket) = stream_ticket.filter(|s| !s.is_empty()) {
+                q.append_pair("StreamTicket", ticket);
+            }
+        }
+        Ok(url)
+    }
+
+    /// Fetch authenticated user's EmbyGo quota, traffic & download-quota status (`GET /emby-compat/me/quota`).
+    /// Returns `Ok(None)` cleanly on standard Emby / Jellyfin servers (404 / 405 / 501).
+    pub async fn me_quota(&self) -> Result<Option<serde_json::Value>> {
+        match self
+            .request_json::<serde_json::Value>(Method::GET, "emby-compat/me/quota", &[], None)
+            .await
+        {
+            Ok(v) => Ok(Some(v)),
+            Err(ProtocolError::NotFound(_)) => Ok(None),
+            Err(ProtocolError::Api {
+                status: 405 | 501, ..
+            }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn admin_user_detail(&self, user_id: &str) -> Result<serde_json::Value> {
+        self.request_json(
+            Method::GET,
+            &format!("emby-compat/users/{user_id}"),
+            &[],
+            None,
+        )
+        .await
+    }
+
+    pub async fn admin_adjust_download_pack(
+        &self,
+        user_id: &str,
+        bytes: i64,
+        note: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let mut body = serde_json::json!({ "bytes": bytes });
+        if let Some(n) = note.map(str::trim).filter(|s| !s.is_empty()) {
+            body["note"] = serde_json::Value::String(n.to_string());
+        }
+        self.request_json(
+            Method::POST,
+            &format!("emby-compat/users/{user_id}/download-quota/pack"),
+            &[],
+            Some(body),
+        )
+        .await
+    }
+
+    pub async fn admin_set_monthly_download_quota(
+        &self,
+        user_id: &str,
+        monthly_bytes: Option<i64>,
+    ) -> Result<serde_json::Value> {
+        let body = match monthly_bytes {
+            Some(b) => serde_json::json!({ "monthly_bytes": b }),
+            None => serde_json::json!({ "monthly_bytes": null }),
+        };
+        self.request_json(
+            Method::POST,
+            &format!("emby-compat/users/{user_id}/download-quota/monthly"),
+            &[],
+            Some(body),
+        )
+        .await
+    }
+
+    pub async fn admin_download_quota_events(
+        &self,
+        user_id: &str,
+        limit: u32,
+    ) -> Result<serde_json::Value> {
+        let clamped = limit.clamp(1, 100);
+        self.request_json(
+            Method::GET,
+            &format!("emby-compat/users/{user_id}/download-quota/events"),
+            &[("limit", clamped.to_string())],
+            None,
+        )
+        .await
     }
 
     // -------------------------------------------------------------------------

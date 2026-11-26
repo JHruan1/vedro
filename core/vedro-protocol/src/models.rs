@@ -649,6 +649,8 @@ pub struct BaseItemDto {
     pub user_data: Option<UserItemDataDto>,
     #[serde(default)]
     pub media_sources: Vec<MediaSourceInfo>,
+    #[serde(default)]
+    pub can_download: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_opt_string_or_int")]
     pub playlist_item_id: Option<String>,
 }

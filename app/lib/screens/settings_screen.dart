@@ -248,7 +248,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case _SettingsSection.servers:
         return app.isSignedIn ? app.activeServerDisplayName : '${app.savedServers.length} 个';
       case _SettingsSection.downloads:
-        return app.downloads.isEmpty ? '无任务' : '${app.downloads.length} 项';
+        if (app.downloads.isNotEmpty) return '${app.downloads.length} 项';
+        final dq = app.meQuota?.downloadQuota;
+        if (dq != null && dq.enabled) {
+          return dq.adminExempt ? '不限额度' : '剩 ${fmtQuotaBytes(dq.totalRemainingBytes)}';
+        }
+        return '无任务';
       case _SettingsSection.fonts:
         return p.subtitleFontFamily.isEmpty ? '系统默认' : p.subtitleFontFamily;
       case _SettingsSection.style:
@@ -833,10 +838,38 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
   // 2. 下载管理
   Widget _buildDownloads(VedroAppState app, VedroPreferences p) {
     final totalBytes = app.downloads.fold<int>(0, (sum, d) => sum + d.downloadedBytes);
+    final dq = app.meQuota?.downloadQuota;
+    final traffic = app.meQuota?.traffic;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('下载管理', '离线缓存影片与本地文件管理（详情页点击下载图标即可加入队列）'),
+        _heading('下载管理', '离线缓存影片与本地文件管理'),
+        if (dq != null && dq.enabled) ...[
+          _buildDownloadQuotaCard(app, dq, traffic),
+          const SizedBox(height: 18),
+        ] else if (app.isSignedIn && !app.canDownloadAccount) ...[
+          Container(
+            margin: const EdgeInsets.only(bottom: 18),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF151720),
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(color: const Color(0x22FFFFFF), width: 0.8),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.info_outline_rounded, size: 17, color: VedroTheme.fg3),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '当前服务器账号未开放下载权限，详情页已隐藏下载按钮（仅支持管理本地已有离线缓存）。',
+                    style: TextStyle(color: VedroTheme.fg2, fontSize: 12.5, height: 1.45),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
         _GroupedCard(
           children: [
             _SwitchRow(
@@ -968,6 +1001,268 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               );
             }).toList(),
           ),
+      ],
+    );
+  }
+
+  Widget _buildDownloadQuotaCard(
+    VedroAppState app,
+    DownloadQuotaStatusModel dq,
+    UserTrafficModel? traffic,
+  ) {
+    final accent = Theme.of(context).colorScheme.secondary;
+    final usedRatio = dq.monthlyUsedRatio;
+    return Container(
+      key: const ValueKey('settings-download-quota-card'),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF161B28), Color(0xFF12141C)],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0x28FFFFFF), width: 0.9),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: const Color(0x2234D399),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.cloud_download_outlined, size: 18, color: Color(0xFF34D399)),
+              ),
+              const SizedBox(width: 11),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '下载流量包',
+                      style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      '仅限原文件下载，在线播放不限流量',
+                      style: TextStyle(color: VedroTheme.fg3, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: '刷新额度',
+                visualDensity: VisualDensity.compact,
+                icon: app.isLoadingQuota
+                    ? const SizedBox(
+                        width: 15,
+                        height: 15,
+                        child: CircularProgressIndicator(strokeWidth: 1.8, color: VedroTheme.fg2),
+                      )
+                    : const Icon(Icons.refresh_rounded, size: 18, color: VedroTheme.fg2),
+                onPressed: app.isLoadingQuota ? null : () => app.refreshMeQuota(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (dq.adminExempt)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: const Color(0x1E34D399),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0x4534D399), width: 0.8),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.verified_user_outlined, size: 16, color: Color(0xFF34D399)),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '管理员不限下载流量与并发数 · 在线播放不限流量',
+                      style: TextStyle(color: Color(0xFF34D399), fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(
+                  fmtQuotaBytes(dq.totalRemainingBytes),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 26,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.5,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Text('当前总可用下载额度', style: TextStyle(color: VedroTheme.fg3, fontSize: 12.5)),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '30 天周期免费额度${dq.monthlyOverride ? '（自定义）' : ''}',
+                    style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
+                  ),
+                ),
+                Text(
+                  '剩 ${fmtQuotaBytes(dq.monthlyRemainingBytes)} / ${fmtQuotaBytes(dq.monthlyQuotaBytes)}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w500,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: 1.0 - usedRatio,
+                minHeight: 5,
+                backgroundColor: const Color(0x20FFFFFF),
+                color: dq.monthlyRemainingBytes > 0 ? accent : VedroTheme.fg3,
+              ),
+            ),
+            if ((dq.cycleEnd ?? '').isNotEmpty) ...[
+              const SizedBox(height: 5),
+              Text(
+                '当前周期：${dq.cycleStart ?? '-'} 至 ${dq.cycleEnd}（到期自动重置）',
+                style: const TextStyle(
+                  color: VedroTheme.fg3,
+                  fontSize: 11.5,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1E2B),
+                borderRadius: BorderRadius.circular(11),
+                border: Border.all(color: const Color(0x1EFFFFFF), width: 0.7),
+              ),
+              child: Column(
+                children: [
+                  _quotaKvRow(
+                    '一次性永久下载流量包',
+                    fmtQuotaBytes(dq.packBytes),
+                    subtitle: '一次性 · 永不过期 · 用完即止（优先消耗周期免费额度）',
+                    valueColor: dq.packBytes > 0 ? const Color(0xFF60A5FA) : VedroTheme.fg2,
+                  ),
+                  const Divider(height: 16),
+                  _quotaKvRow(
+                    '同时下载限制',
+                    dq.maxConcurrentDownloads > 0
+                        ? '进行中 ${dq.activeDownloads} / 最多 ${dq.maxConcurrentDownloads} 个文件'
+                        : '不限制',
+                    valueColor: dq.isConcurrencyFull ? const Color(0xFFFBBF24) : VedroTheme.fg,
+                  ),
+                  if (dq.inFlightBytes > 0) ...[
+                    const Divider(height: 16),
+                    _quotaKvRow(
+                      '当前在途预占',
+                      fmtQuotaBytes(dq.inFlightBytes),
+                      subtitle: '下载结束后按实际传输字节结算并释放多余预占',
+                      valueColor: const Color(0xFFFBBF24),
+                    ),
+                  ],
+                  const Divider(height: 16),
+                  _quotaKvRow(
+                    '在线播放流量限制',
+                    '不限制',
+                    valueColor: const Color(0xFF34D399),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (traffic != null) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 14,
+              runSpacing: 6,
+              children: [
+                Text(
+                  '本周期已下载 ${fmtQuotaBytes(dq.cycleDownloadBytes)}',
+                  style: const TextStyle(
+                    color: VedroTheme.fg3,
+                    fontSize: 11.5,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+                Text(
+                  '累计已下载 ${fmtQuotaBytes(traffic.downloadBytes)}',
+                  style: const TextStyle(
+                    color: VedroTheme.fg3,
+                    fontSize: 11.5,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+                Text(
+                  '累计在线播放 ${fmtQuotaBytes(traffic.streamBytes)}（不计费）',
+                  style: const TextStyle(
+                    color: VedroTheme.fg3,
+                    fontSize: 11.5,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _quotaKvRow(
+    String label,
+    String value, {
+    String? subtitle,
+    Color valueColor = VedroTheme.fg,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5)),
+              if (subtitle != null && subtitle.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(subtitle, style: const TextStyle(color: VedroTheme.fg3, fontSize: 11)),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          value,
+          style: TextStyle(
+            color: valueColor,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
       ],
     );
   }

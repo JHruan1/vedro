@@ -1648,6 +1648,132 @@ impl VedroRuntime {
                 Ok(json!({"started": key}))
             }
 
+            "get_me_quota" => {
+                let client = self.require_client()?;
+                let quota = client.me_quota().await.map_err(|e| e.to_string())?;
+                Ok(quota.unwrap_or(Value::Null))
+            }
+
+            "prepare_download" => {
+                let client = self.require_client()?;
+                let item_id = str_param(&params, "item_id")?;
+                let media_source_id = params.get("media_source_id").and_then(Value::as_str);
+                let caps = client.capabilities();
+
+                // On embygo, mint a long-lived StreamTicket via `external_play_info` (just like embygo Web)
+                // so large downloads never expire mid-transfer and cross-origin 302 redirects never need tokens.
+                let pb = if caps.is_embygo() {
+                    client
+                        .external_play_info(&item_id, media_source_id, Some("vedro-download"))
+                        .await
+                        .map_err(|e| e.to_string())?
+                } else {
+                    client
+                        .playback_info(&item_id, media_source_id, None, None)
+                        .await
+                        .map_err(|e| e.to_string())?
+                };
+
+                let chosen = media_source_id
+                    .and_then(|sid| pb.media_sources.iter().find(|s| s.id == sid))
+                    .or_else(|| pb.media_sources.first())
+                    .cloned()
+                    .ok_or_else(|| "未找到可下载的媒体源".to_string())?;
+
+                // Extract StreamTicket from DirectStreamUrl if issued by embygo
+                let stream_ticket = chosen.direct_stream_url.as_deref().and_then(|dsu| {
+                    client.resolve_media_url(dsu).ok().and_then(|u| {
+                        u.query_pairs()
+                            .find(|(k, _)| k == "StreamTicket")
+                            .map(|(_, v)| v.into_owned())
+                            .filter(|v| !v.is_empty())
+                    })
+                });
+
+                let download_url = client
+                    .build_download_url(&item_id, Some(&chosen.id), stream_ticket.as_deref())
+                    .map_err(|e| e.to_string())?;
+
+                let uses_ticket = stream_ticket.is_some();
+                let mut header_map = serde_json::Map::new();
+                header_map.insert(
+                    "User-Agent".to_string(),
+                    Value::String(client.identity().user_agent()),
+                );
+                if !uses_ticket {
+                    for (k, v) in client.auth_headers().iter() {
+                        if let Ok(val) = v.to_str() {
+                            header_map
+                                .insert(k.as_str().to_string(), Value::String(val.to_string()));
+                        }
+                    }
+                }
+
+                let basename = chosen
+                    .path
+                    .as_deref()
+                    .and_then(|p| p.rsplit(['/', '\\']).next())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string);
+
+                let transport = client.transport_options();
+                Ok(json!({
+                    "url": download_url.to_string(),
+                    "headers": header_map,
+                    "uses_stream_ticket": uses_ticket,
+                    "media_source_id": chosen.id,
+                    "container": chosen.container,
+                    "size": chosen.size,
+                    "filename": basename,
+                    "proxy_url": transport.proxy_url,
+                    "accept_invalid_certs": transport.accept_invalid_certs,
+                }))
+            }
+
+            "admin_user_detail" => {
+                let client = self.require_client()?;
+                let user_id = str_param(&params, "user_id")?;
+                client
+                    .admin_user_detail(&user_id)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+
+            "admin_adjust_download_pack" => {
+                let client = self.require_client()?;
+                let user_id = str_param(&params, "user_id")?;
+                let bytes = params
+                    .get("bytes")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| "missing required integer parameter `bytes`".to_string())?;
+                let note = params.get("note").and_then(Value::as_str);
+                client
+                    .admin_adjust_download_pack(&user_id, bytes, note)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+
+            "admin_set_monthly_download_quota" => {
+                let client = self.require_client()?;
+                let user_id = str_param(&params, "user_id")?;
+                let monthly_bytes = params.get("monthly_bytes").and_then(Value::as_i64);
+                client
+                    .admin_set_monthly_download_quota(&user_id, monthly_bytes)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+
+            "admin_download_quota_events" => {
+                let client = self.require_client()?;
+                let user_id = str_param(&params, "user_id")?;
+                let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(20) as u32;
+                client
+                    .admin_download_quota_events(&user_id, limit)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+
             "admin_set_library_covers" => {
                 let client = self.require_client()?;
                 let id = str_param(&params, "id")?;
@@ -1779,7 +1905,7 @@ impl VedroRuntime {
                 let episode = params.get("episode").and_then(Value::as_u64);
                 let http = reqwest::Client::builder()
                     .timeout(Duration::from_secs(12))
-                    .user_agent("Vedro/0.2.0")
+                    .user_agent(concat!("Vedro/", env!("CARGO_PKG_VERSION")))
                     .build()
                     .map_err(|e| e.to_string())?;
 

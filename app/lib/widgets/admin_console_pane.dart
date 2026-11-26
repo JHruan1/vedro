@@ -621,7 +621,9 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final policy = Map<String, dynamic>.from((u['Policy'] as Map?) ?? const {});
     final isAdm = policy['IsAdministrator'] == true;
     final isDisabled = policy['IsDisabled'] == true;
+    final canDl = policy['EnableContentDownloading'] == true;
     final isSelf = uid == widget.appState.userId;
+    final isEmbyGo = widget.appState.capabilities?.isEmbyGo == true;
 
     return Row(
       children: [
@@ -647,7 +649,10 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
+              Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Text(
                     name,
@@ -657,23 +662,24 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  if (isSelf) ...[
-                    const SizedBox(width: 6),
-                    const _MetaBadge('当前账号'),
-                  ],
-                  if (isAdm) ...[
-                    const SizedBox(width: 6),
-                    const _StatusDotBadge(label: '管理员', color: Color(0xFF5B9BFF)),
-                  ],
-                  if (isDisabled) ...[
-                    const SizedBox(width: 6),
-                    const _StatusDotBadge(label: '已禁用', color: VedroTheme.danger),
-                  ],
+                  if (isSelf) const _MetaBadge('当前账号'),
+                  if (isAdm) const _StatusDotBadge(label: '管理员', color: Color(0xFF5B9BFF)),
+                  if (!isAdm && canDl)
+                    const _StatusDotBadge(label: '可下载', color: Color(0xFF34D399)),
+                  if (isDisabled) const _StatusDotBadge(label: '已禁用', color: VedroTheme.danger),
                 ],
               ),
             ],
           ),
         ),
+        if (isEmbyGo && uid.isNotEmpty) ...[
+          _CompactActionBtn(
+            icon: Icons.data_usage_rounded,
+            label: '下载额度',
+            onTap: () => _openUserQuotaDialog(uid, name, policy),
+          ),
+          const SizedBox(width: 6),
+        ],
         if (!isSelf && uid.isNotEmpty) ...[
           _CompactActionBtn(
             icon: isDisabled ? Icons.check_circle_outline_rounded : Icons.block_rounded,
@@ -711,6 +717,23 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
           ),
         ],
       ],
+    );
+  }
+
+  Future<void> _openUserQuotaDialog(
+    String uid,
+    String name,
+    Map<String, dynamic> initialPolicy,
+  ) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => _UserDownloadQuotaDialog(
+        appState: widget.appState,
+        userId: uid,
+        userName: name,
+        initialPolicy: initialPolicy,
+        onPolicyUpdated: _reload,
+      ),
     );
   }
 
@@ -1079,6 +1102,384 @@ class _CompactActionBtn extends StatelessWidget {
                 fontSize: 12.5,
                 fontWeight: FontWeight.w500,
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _UserDownloadQuotaDialog extends StatefulWidget {
+  const _UserDownloadQuotaDialog({
+    required this.appState,
+    required this.userId,
+    required this.userName,
+    required this.initialPolicy,
+    required this.onPolicyUpdated,
+  });
+
+  final VedroAppState appState;
+  final String userId;
+  final String userName;
+  final Map<String, dynamic> initialPolicy;
+  final VoidCallback onPolicyUpdated;
+
+  @override
+  State<_UserDownloadQuotaDialog> createState() => _UserDownloadQuotaDialogState();
+}
+
+class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
+  static const int _bytesPerGiB = 1024 * 1024 * 1024;
+
+  bool _loading = true;
+  bool _saving = false;
+  String? _error;
+  bool _enableDownload = false;
+  DownloadQuotaStatusModel? _quota;
+  UserTrafficModel? _traffic;
+  List<DownloadQuotaEventModel> _events = const [];
+
+  final TextEditingController _packGiBCtrl = TextEditingController(text: '500');
+  final TextEditingController _packNoteCtrl = TextEditingController();
+  final TextEditingController _monthlyGiBCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _enableDownload = widget.initialPolicy['EnableContentDownloading'] == true;
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _packGiBCtrl.dispose();
+    _packNoteCtrl.dispose();
+    _monthlyGiBCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final detail = await widget.appState.adminGetUserDetail(widget.userId);
+      final events = await widget.appState.adminGetDownloadQuotaEvents(widget.userId, limit: 15);
+      if (!mounted) return;
+      final p = detail['Policy'] as Map<String, dynamic>?;
+      if (p != null && p.containsKey('EnableContentDownloading')) {
+        _enableDownload = p['EnableContentDownloading'] == true;
+      }
+      _quota = detail['DownloadQuota'] is Map<String, dynamic>
+          ? DownloadQuotaStatusModel.fromJson(detail['DownloadQuota'] as Map<String, dynamic>)
+          : null;
+      _traffic = detail['Traffic'] is Map<String, dynamic>
+          ? UserTrafficModel.fromJson(detail['Traffic'] as Map<String, dynamic>)
+          : null;
+      _events = events;
+      if (_quota != null && _quota!.monthlyQuotaBytes > 0) {
+        final gib = _quota!.monthlyQuotaBytes / _bytesPerGiB;
+        _monthlyGiBCtrl.text = gib == gib.roundToDouble() ? '${gib.round()}' : gib.toStringAsFixed(1);
+      }
+    } catch (e) {
+      if (mounted) _error = e.toString().replaceFirst('VedroCoreException: ', '');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _toggleDownloadPermission(bool value) async {
+    setState(() => _saving = true);
+    try {
+      await widget.appState.adminSetUserPolicy(
+        widget.userId,
+        {'EnableContentDownloading': value},
+      );
+      if (mounted) {
+        setState(() => _enableDownload = value);
+        widget.onPolicyUpdated();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = '更新下载权限失败：$e');
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _adjustPackGiB(double gib) async {
+    final bytes = (gib * _bytesPerGiB).round();
+    if (bytes == 0) return;
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      await widget.appState.adminAdjustDownloadPack(
+        widget.userId,
+        bytes,
+        note: _packNoteCtrl.text.trim(),
+      );
+      _packNoteCtrl.clear();
+      await _load();
+    } catch (e) {
+      if (mounted) setState(() => _error = '调整流量包失败：$e');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _saveMonthlyOverride(int? bytes) async {
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      await widget.appState.adminSetMonthlyDownloadQuota(widget.userId, bytes);
+      await _load();
+    } catch (e) {
+      if (mounted) setState(() => _error = '更新周期额度失败：$e');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dq = _quota;
+    return Dialog(
+      backgroundColor: const Color(0xFF151720),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: const BorderSide(color: Color(0x28FFFFFF), width: 0.9),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520, maxHeight: 680),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 12, 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.data_usage_rounded, size: 19, color: Color(0xFF34D399)),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Text(
+                      '下载权限与流量包 · ${widget.userName}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white, fontSize: 15.5, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: VedroTheme.fg2),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Flexible(
+              child: _loading
+                  ? const Padding(
+                      padding: EdgeInsets.all(42),
+                      child: CircularProgressIndicator(strokeWidth: 2, color: VedroTheme.fg2),
+                    )
+                  : SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (_error != null) ...[
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              margin: const EdgeInsets.only(bottom: 12),
+                              decoration: BoxDecoration(
+                                color: const Color(0x28EF4444),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(_error!, style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 12.5)),
+                            ),
+                          ],
+                          Row(
+                            children: [
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('允许原文件下载', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500)),
+                                    SizedBox(height: 2),
+                                    Text('User.Policy.EnableContentDownloading', style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5)),
+                                  ],
+                                ),
+                              ),
+                              Transform.scale(
+                                scale: 0.82,
+                                child: CupertinoSwitch(
+                                  value: _enableDownload,
+                                  onChanged: _saving ? null : _toggleDownloadPermission,
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (dq != null) ...[
+                            const Divider(height: 24),
+                            Wrap(
+                              spacing: 12,
+                              runSpacing: 10,
+                              children: [
+                                _MetaBadge('总可用：${dq.adminExempt ? '管理员不限' : fmtQuotaBytes(dq.totalRemainingBytes)}'),
+                                _MetaBadge('30天免费剩：${fmtQuotaBytes(dq.monthlyRemainingBytes)} / ${fmtQuotaBytes(dq.monthlyQuotaBytes)}'),
+                                _MetaBadge('永久流量包：${fmtQuotaBytes(dq.packBytes)}'),
+                                _MetaBadge('并发：${dq.activeDownloads}/${dq.maxConcurrentDownloads > 0 ? dq.maxConcurrentDownloads : '∞'}'),
+                                if (dq.inFlightBytes > 0) _MetaBadge('在途预占：${fmtQuotaBytes(dq.inFlightBytes)}'),
+                                if (_traffic != null) _MetaBadge('累计下载：${fmtQuotaBytes(_traffic!.downloadBytes)}'),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            const Text(
+                              '一次性永久下载流量包（永不过期 · 用完即止）',
+                              style: TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                _CompactActionBtn(
+                                  icon: Icons.add_rounded,
+                                  label: '+500 GiB',
+                                  primary: true,
+                                  loading: _saving,
+                                  onTap: () => _adjustPackGiB(500),
+                                ),
+                                _CompactActionBtn(
+                                  icon: Icons.add_rounded,
+                                  label: '+100 GiB',
+                                  loading: _saving,
+                                  onTap: () => _adjustPackGiB(100),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                SizedBox(
+                                  width: 110,
+                                  child: TextField(
+                                    controller: _packGiBCtrl,
+                                    keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
+                                    decoration: const InputDecoration(labelText: 'GiB (±)', isDense: true),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TextField(
+                                    controller: _packNoteCtrl,
+                                    decoration: const InputDecoration(labelText: '备注（可选）', isDense: true),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                FilledButton(
+                                  onPressed: _saving
+                                      ? null
+                                      : () {
+                                          final v = double.tryParse(_packGiBCtrl.text.trim());
+                                          if (v != null && v != 0) _adjustPackGiB(v);
+                                        },
+                                  child: const Text('调整'),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            const Text(
+                              '30 天周期免费下载额度覆写',
+                              style: TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: _monthlyGiBCtrl,
+                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                    decoration: const InputDecoration(labelText: '每 30 天免费 GiB', isDense: true),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                FilledButton(
+                                  onPressed: _saving
+                                      ? null
+                                      : () {
+                                          final v = double.tryParse(_monthlyGiBCtrl.text.trim());
+                                          if (v != null && v >= 0) {
+                                            _saveMonthlyOverride((v * _bytesPerGiB).round());
+                                          }
+                                        },
+                                  child: const Text('保存'),
+                                ),
+                                const SizedBox(width: 6),
+                                TextButton(
+                                  onPressed: _saving ? null : () => _saveMonthlyOverride(null),
+                                  child: const Text('恢复默认'),
+                                ),
+                              ],
+                            ),
+                          ],
+                          if (_events.isNotEmpty) ...[
+                            const Divider(height: 24),
+                            const Text(
+                              '最近下载额度流水',
+                              style: TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(height: 8),
+                            ..._events.map((ev) {
+                              final positive = ev.bytesDelta >= 0;
+                              final sign = positive ? '+' : '-';
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            '${ev.kindLabel}${ev.note.isNotEmpty ? ' · ${ev.note}' : ''}',
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(color: VedroTheme.fg, fontSize: 12.5),
+                                          ),
+                                          if (ev.createdAt.isNotEmpty)
+                                            Text(
+                                              ev.createdAt.replaceFirst('T', ' ').split('.').first,
+                                              style: const TextStyle(color: VedroTheme.fg3, fontSize: 11),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      '$sign${fmtQuotaBytes(ev.bytesDelta.abs())}',
+                                      style: TextStyle(
+                                        color: positive ? const Color(0xFF34D399) : const Color(0xFFFCA5A5),
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w600,
+                                        fontFeatures: const [FontFeature.tabularFigures()],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }),
+                          ],
+                        ],
+                      ),
+                    ),
             ),
           ],
         ),

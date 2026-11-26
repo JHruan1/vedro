@@ -13,17 +13,29 @@ import 'package:vedro/widgets/danmaku_engine.dart';
 import 'package:vedro/widgets/server_card_grid.dart';
 
 class _MockVedroCore implements VedroCoreClient {
-  _MockVedroCore({this.isAdmin = false});
+  _MockVedroCore({
+    this.isAdmin = false,
+    this.dialect = 'embygo',
+    this.canDownload = true,
+    this.enableContentDownloading = false,
+    this.meQuotaJson,
+  });
   final bool isAdmin;
+  final String dialect;
+  final bool canDownload;
+  final bool enableContentDownloading;
+  final Map<String, dynamic>? meQuotaJson;
 
   @override
-  String get coreVersion => '0.2.1-test';
+  String get coreVersion => '0.2.2-test';
 
   @override
   Future<dynamic> invoke(String method, [Map<String, dynamic> params = const {}]) async {
     switch (method) {
       case 'version':
-        return <String, dynamic>{'version': '0.2.1-test'};
+        return <String, dynamic>{'version': '0.2.2-test'};
+      case 'get_me_quota':
+        return meQuotaJson;
       case 'list_servers':
         return <dynamic>[];
       case 'get_settings':
@@ -43,15 +55,15 @@ class _MockVedroCore implements VedroCoreClient {
       case 'connect_server':
         return <String, dynamic>{
           'capabilities': <String, dynamic>{
-            'dialect': 'embygo',
+            'dialect': dialect,
             'server_id': 'embygo-1',
-            'server_name': 'My EmbyGo',
+            'server_name': dialect == 'embygo' ? 'My EmbyGo' : 'Standard Emby',
             'advertised_version': '4.8.11.0',
-            'supports_transcoding': false,
-            'supports_popular': true,
+            'supports_transcoding': dialect != 'embygo',
+            'supports_popular': dialect == 'embygo',
             'supports_suggestions': true,
             'supports_hide_from_resume': true,
-            'uses_stream_tickets': true,
+            'uses_stream_tickets': dialect == 'embygo',
           },
         };
       case 'login':
@@ -61,19 +73,22 @@ class _MockVedroCore implements VedroCoreClient {
             'User': <String, dynamic>{
               'Id': 'u1',
               'Name': isAdmin ? 'admin' : 'viewer',
-              'Policy': <String, dynamic>{'IsAdministrator': isAdmin},
+              'Policy': <String, dynamic>{
+                'IsAdministrator': isAdmin,
+                'EnableContentDownloading': enableContentDownloading,
+              },
             },
           },
           'capabilities': <String, dynamic>{
-            'dialect': 'embygo',
+            'dialect': dialect,
             'server_id': 'embygo-1',
-            'server_name': 'My EmbyGo',
+            'server_name': dialect == 'embygo' ? 'My EmbyGo' : 'Standard Emby',
             'advertised_version': '4.8.11.0',
-            'supports_transcoding': false,
-            'supports_popular': true,
+            'supports_transcoding': dialect != 'embygo',
+            'supports_popular': dialect == 'embygo',
             'supports_suggestions': true,
             'supports_hide_from_resume': true,
-            'uses_stream_tickets': true,
+            'uses_stream_tickets': dialect == 'embygo',
           },
         };
       case 'get_home':
@@ -119,6 +134,7 @@ class _MockVedroCore implements VedroCoreClient {
               'Name': '沙丘2',
               'OriginalTitle': 'Dune: Part Two',
               'Type': 'Movie',
+              'CanDownload': canDownload,
               'Overview': '保罗·厄崔迪与弗雷曼人联手展开复仇。',
               'ProductionYear': 2024,
               'CommunityRating': 8.6,
@@ -562,6 +578,136 @@ void main() {
     await tester.tap(find.text('1080p · BluRay · x264'));
     await tester.pumpAndSettle();
     expect(find.text('当前'), findsOneWidget);
+  });
+
+  testWidgets('Download permission strictly hides download button on normal Emby and shows EmbyGo quota pill when permitted',
+      (tester) async {
+    tester.view.physicalSize = const Size(1100, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    // 1. Standard Emby user WITHOUT download permission (CanDownload: false, me/quota: null)
+    final embyMock = _MockVedroCore(
+      isAdmin: false,
+      dialect: 'emby',
+      canDownload: false,
+      enableContentDownloading: false,
+      meQuotaJson: null,
+    );
+    final embyApp = VedroAppState(embyMock)
+      ..userId = 'u1'
+      ..connectedUrl = 'https://emby.example.com'
+      ..enableContentDownloading = false
+      ..capabilities = ServerCapabilitiesModel(
+        dialect: 'emby',
+        serverId: 'emby-1',
+        serverName: 'Standard Emby',
+        advertisedVersion: '4.8.11.0',
+        supportsTranscoding: true,
+        supportsPopular: false,
+        supportsSuggestions: true,
+        supportsHideFromResume: true,
+        usesStreamTickets: false,
+      );
+
+    await tester.pumpWidget(MaterialApp(
+      home: DetailScreen(
+        key: const ValueKey('emby-detail'),
+        item: MediaItemModel(id: 'm1', name: '沙丘2', type: 'Movie', canDownload: false),
+        appState: embyApp,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('detail-download-button')), findsNothing);
+    expect(find.byKey(const ValueKey('detail-download-quota-pill')), findsNothing);
+    await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+    await tester.pumpAndSettle();
+    expect(find.text('离线下载到本地'), findsNothing);
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+
+    // 2. EmbyGo user WITH download permission & metered quota (30 GiB monthly + 500 GiB pack)
+    const gib = 1024 * 1024 * 1024;
+    final embygoMock = _MockVedroCore(
+      isAdmin: false,
+      dialect: 'embygo',
+      canDownload: true,
+      enableContentDownloading: false,
+      meQuotaJson: <String, dynamic>{
+        'limits': <String, dynamic>{
+          'is_admin': false,
+          'allow_downloads': true,
+        },
+        'download_quota': <String, dynamic>{
+          'Enabled': true,
+          'AdminExempt': false,
+          'MonthlyQuotaBytes': 30 * gib,
+          'MonthlyUsedBytes': 0,
+          'MonthlyRemainingBytes': 30 * gib,
+          'PackBytes': 500 * gib,
+          'InFlightBytes': 0,
+          'ActiveDownloads': 0,
+          'MaxConcurrentDownloads': 2,
+          'TotalRemainingBytes': 530 * gib,
+          'CycleDownloadBytes': 0,
+          'CycleStart': '2026-11-01',
+          'CycleEnd': '2026-12-01',
+        },
+      },
+    );
+    final embygoApp = VedroAppState(embygoMock)
+      ..userId = 'u1'
+      ..connectedUrl = 'https://embygo.example.com'
+      ..capabilities = ServerCapabilitiesModel(
+        dialect: 'embygo',
+        serverId: 'embygo-1',
+        serverName: 'My EmbyGo',
+        advertisedVersion: '4.8.11.0',
+        supportsTranscoding: false,
+        supportsPopular: true,
+        supportsSuggestions: true,
+        supportsHideFromResume: true,
+        usesStreamTickets: true,
+      );
+    await embygoApp.refreshMeQuota();
+    expect(embygoApp.meQuota?.downloadQuota?.totalRemainingBytes, equals(530 * gib));
+    expect(fmtQuotaBytes(500 * gib), equals('500.00 GB'));
+
+    await tester.pumpWidget(MaterialApp(
+      home: DetailScreen(
+        key: const ValueKey('embygo-detail'),
+        item: MediaItemModel(id: 'm1', name: '沙丘2', type: 'Movie', canDownload: true),
+        appState: embygoApp,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('detail-download-button')), findsOneWidget);
+    expect(find.byKey(const ValueKey('detail-download-quota-pill')), findsOneWidget);
+    expect(find.textContaining('530.00 GB'), findsOneWidget);
+    expect(find.textContaining('一次性永久包 500.00 GB'), findsOneWidget);
+
+    // 3. When remaining quota (10 GiB) is smaller than active 4K Remux (73.4 GB), warn clearly
+    embygoApp.meQuota = MeQuotaModel.fromJson(<String, dynamic>{
+      'limits': <String, dynamic>{'is_admin': false, 'allow_downloads': true},
+      'download_quota': <String, dynamic>{
+        'Enabled': true,
+        'AdminExempt': false,
+        'MonthlyQuotaBytes': 30 * gib,
+        'MonthlyUsedBytes': 20 * gib,
+        'MonthlyRemainingBytes': 10 * gib,
+        'PackBytes': 0,
+        'InFlightBytes': 0,
+        'ActiveDownloads': 0,
+        'MaxConcurrentDownloads': 2,
+        'TotalRemainingBytes': 10 * gib,
+        'CycleDownloadBytes': 20 * gib,
+      },
+    });
+    embygoApp.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(find.textContaining('下载流量包余额不足'), findsOneWidget);
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {

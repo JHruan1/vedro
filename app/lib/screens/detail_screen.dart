@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -59,16 +60,35 @@ class _DetailScreenState extends State<DetailScreen> {
   String _episodeFilterQuery = '';
   String? _translatedOverview;
   bool _translating = false;
+  DateTime? _lastDownloadTapAt;
 
   @override
   void initState() {
     super.initState();
     _item = widget.item;
+    widget.appState.addListener(_onAppStateChanged);
     _loadDetails();
+    if (widget.appState.capabilities?.isEmbyGo == true) {
+      unawaited(widget.appState.refreshMeQuota());
+    }
+  }
+
+  void _onAppStateChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void didUpdateWidget(covariant DetailScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.appState != widget.appState) {
+      oldWidget.appState.removeListener(_onAppStateChanged);
+      widget.appState.addListener(_onAppStateChanged);
+    }
   }
 
   @override
   void dispose() {
+    widget.appState.removeListener(_onAppStateChanged);
     _episodeJumpCtrl.dispose();
     super.dispose();
   }
@@ -405,23 +425,74 @@ class _DetailScreenState extends State<DetailScreen> {
     }
   }
 
-  Future<void> _startDownload() async {
-    final target = _item.isPlayable
-        ? _item
-        : (_episodes.isNotEmpty ? _episodes.first : null);
-    if (target == null) return;
-    await widget.appState.enqueueDownload(target, mediaSourceId: _selectedSourceId);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('已加入下载队列：${target.cardTitle}（设置 → 下载管理）'),
-        duration: const Duration(seconds: 3),
+  MediaItemModel? _resolveDownloadTarget() {
+    if (_item.isPlayable) return _item;
+    if (_episodes.isEmpty) return null;
+    return _episodes.firstWhere(
+      (e) => e.resumeProgress > 0.01,
+      orElse: () => _episodes.firstWhere(
+        (e) => !e.played,
+        orElse: () => _episodes.first,
       ),
     );
   }
 
+  MediaSourceModel? _resolveDownloadSource(MediaItemModel? target) {
+    if (target == null) return null;
+    if (target.id == _item.id) return _activeSource;
+    if (target.mediaSources.isEmpty) return null;
+    final matchedId = _matchingSourceIdForEpisode(target);
+    if (matchedId != null) {
+      for (final s in target.mediaSources) {
+        if (s.id == matchedId) return s;
+      }
+    }
+    return target.mediaSources.first;
+  }
+
+  Future<void> _startDownload() async {
+    final target = _resolveDownloadTarget();
+    if (target == null || !widget.appState.canDownloadItem(target)) return;
+
+    final now = DateTime.now();
+    if (_lastDownloadTapAt != null &&
+        now.difference(_lastDownloadTapAt!) < const Duration(milliseconds: 2500)) {
+      return;
+    }
+    _lastDownloadTapAt = now;
+
+    final dlSource = _resolveDownloadSource(target);
+    try {
+      await widget.appState.enqueueDownload(
+        target,
+        mediaSourceId: dlSource?.id ?? (target.id == _item.id ? _selectedSourceId : null),
+        expectedBytes: dlSource?.size,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已加入下载队列：${target.cardTitle}（设置 → 下载管理）'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFF991B1B),
+          content: Text(
+            e.toString().replaceFirst('Exception: ', ''),
+            style: const TextStyle(color: Colors.white),
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
   void _openMoreSheet() {
-    final playable = _item.isPlayable ? _item : (_episodes.isNotEmpty ? _episodes.first : null);
+    final playable = _resolveDownloadTarget();
+    final canDownload = widget.appState.canDownloadItem(playable);
     showGlassSheet<void>(
       context: context,
       builder: (ctx) => ListView(
@@ -439,17 +510,26 @@ class _DetailScreenState extends State<DetailScreen> {
               subtitle: const Text('IINA / Infuse / MPV / VLC', style: TextStyle(color: VedroTheme.fg3, fontSize: 12)),
               onTap: () {
                 Navigator.pop(ctx);
-                _launchExternal(playable, sourceId: _selectedSourceId);
+                _launchExternal(playable, sourceId: _resolveDownloadSource(playable)?.id ?? _selectedSourceId);
               },
             ),
-            ListTile(
-              leading: const Icon(Icons.download_rounded, color: VedroTheme.fg2),
-              title: const Text('离线下载到本地', style: TextStyle(color: VedroTheme.fg, fontSize: 14)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _startDownload();
-              },
-            ),
+            if (canDownload)
+              ListTile(
+                leading: const Icon(Icons.download_rounded, color: VedroTheme.fg2),
+                title: const Text('离线下载到本地', style: TextStyle(color: VedroTheme.fg, fontSize: 14)),
+                subtitle: widget.appState.meQuota?.downloadQuota?.enabled == true
+                    ? Text(
+                        widget.appState.meQuota!.downloadQuota!.adminExempt
+                            ? '下载流量包：管理员不限'
+                            : '剩余下载流量包 ${fmtQuotaBytes(widget.appState.meQuota!.downloadQuota!.totalRemainingBytes)}',
+                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
+                      )
+                    : null,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _startDownload();
+                },
+              ),
           ],
           if (_item.type != 'Person')
             ListTile(
@@ -550,7 +630,19 @@ class _DetailScreenState extends State<DetailScreen> {
         ? _translatedOverview!
         : _item.cleanOverview;
     final tagline = _item.taglines.isNotEmpty ? _item.taglines.first : null;
-    final dlTask = widget.appState.findDownloadForItem(_item.id);
+    final downloadTarget = _resolveDownloadTarget();
+    final downloadSource = _resolveDownloadSource(downloadTarget);
+    final canDownload = widget.appState.canDownloadItem(downloadTarget);
+    final downloadQuota = widget.appState.meQuota?.downloadQuota;
+    final activeBytes = downloadSource?.size;
+    final quotaInsufficient = downloadQuota != null &&
+        downloadQuota.enabled &&
+        !downloadQuota.adminExempt &&
+        activeBytes != null &&
+        activeBytes > 0 &&
+        !downloadQuota.canFitBytes(activeBytes);
+    final quotaConcurrencyFull = downloadQuota != null && downloadQuota.isConcurrencyFull;
+    final dlTask = widget.appState.findDownloadForItem(downloadTarget?.id ?? _item.id);
     final localReady = dlTask != null && dlTask.status == 'completed' && dlTask.filePath.isNotEmpty;
 
     final directors = _item.people
@@ -668,16 +760,29 @@ class _DetailScreenState extends State<DetailScreen> {
               await _loadDetails();
             },
           ),
-          if (_item.isPlayable || _episodes.isNotEmpty)
-            _CircleActionButton(
-              icon: localReady
-                  ? Icons.download_done_rounded
-                  : Icons.download_rounded,
-              iconColor: localReady ? const Color(0xFF34D399) : Colors.white,
-              tooltip: localReady ? '已离线下载' : '离线下载',
-              onTap: localReady
-                  ? () => _play(_item, localPath: dlTask.filePath)
-                  : _startDownload,
+          if (localReady || canDownload)
+            KeyedSubtree(
+              key: const ValueKey('detail-download-button'),
+              child: _CircleActionButton(
+                icon: localReady
+                    ? Icons.download_done_rounded
+                    : Icons.download_rounded,
+                iconColor: localReady
+                    ? const Color(0xFF34D399)
+                    : (quotaInsufficient
+                        ? VedroTheme.danger
+                        : (quotaConcurrencyFull ? const Color(0xFFFBBF24) : Colors.white)),
+                tooltip: localReady
+                    ? '已离线下载'
+                    : (quotaInsufficient
+                        ? '下载流量包余额不足'
+                        : (quotaConcurrencyFull
+                            ? '同时下载任务已满（${downloadQuota.activeDownloads}/${downloadQuota.maxConcurrentDownloads}）'
+                            : '离线下载')),
+                onTap: localReady
+                    ? () => _play(downloadTarget ?? _item, localPath: dlTask.filePath)
+                    : _startDownload,
+              ),
             ),
           _CircleActionButton(
             icon: Icons.more_horiz_rounded,
@@ -685,6 +790,72 @@ class _DetailScreenState extends State<DetailScreen> {
             onTap: _openMoreSheet,
           ),
         ],
+      );
+    }
+
+    Widget buildDownloadQuotaPill() {
+      if (!canDownload || downloadQuota == null || !downloadQuota.enabled) {
+        return const SizedBox.shrink();
+      }
+      final Color tint;
+      final Color bg;
+      final IconData icon;
+      final String text;
+      if (downloadQuota.adminExempt) {
+        tint = const Color(0xFF34D399);
+        bg = const Color(0x1E34D399);
+        icon = Icons.verified_user_outlined;
+        text = '下载流量包：管理员不限 · 在线播放不限流量';
+      } else if (quotaInsufficient) {
+        tint = const Color(0xFFFCA5A5);
+        bg = const Color(0x2AEF4444);
+        icon = Icons.warning_amber_rounded;
+        text =
+            '下载流量包余额不足（剩 ${fmtQuotaBytes(downloadQuota.totalRemainingBytes)}，该文件需 ${fmtQuotaBytes(activeBytes)}）· 在线播放不限流量';
+      } else if (quotaConcurrencyFull) {
+        tint = const Color(0xFFFCD34D);
+        bg = const Color(0x28F59E0B);
+        icon = Icons.downloading_rounded;
+        text =
+            '同时下载已达上限（${downloadQuota.activeDownloads}/${downloadQuota.maxConcurrentDownloads}）· 流量包剩 ${fmtQuotaBytes(downloadQuota.totalRemainingBytes)}';
+      } else {
+        tint = const Color(0xFFCBD5E1);
+        bg = const Color(0xFF171A24);
+        icon = Icons.cloud_download_outlined;
+        final packHint = downloadQuota.packBytes > 0
+            ? '（含一次性永久包 ${fmtQuotaBytes(downloadQuota.packBytes)}）'
+            : '';
+        text = '下载流量包剩 ${fmtQuotaBytes(downloadQuota.totalRemainingBytes)}$packHint · 仅限原文件下载，播放不限';
+      }
+      return Padding(
+        padding: const EdgeInsets.only(top: 10),
+        child: Container(
+          key: const ValueKey('detail-download-quota-pill'),
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: tint.withValues(alpha: 0.30), width: 0.8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 14.5, color: tint),
+              const SizedBox(width: 7),
+              Flexible(
+                child: Text(
+                  text,
+                  style: TextStyle(
+                    color: tint,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       );
     }
 
@@ -1045,6 +1216,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                         ],
                                         const SizedBox(height: 18),
                                         buildActionRow(),
+                                        buildDownloadQuotaPill(),
                                       ],
                                     ],
                                   ),
@@ -1055,6 +1227,7 @@ class _DetailScreenState extends State<DetailScreen> {
                           if (!wide) ...[
                             const SizedBox(height: 18),
                             buildActionRow(),
+                            buildDownloadQuotaPill(),
                             if (tagline != null || overviewText.isNotEmpty) ...[
                               const SizedBox(height: 16),
                               buildOverviewBlock(),

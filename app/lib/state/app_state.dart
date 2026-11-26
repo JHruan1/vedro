@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -43,6 +44,9 @@ class VedroAppState extends ChangeNotifier {
   String? username;
   String? userId;
   bool isAdmin = false;
+  bool enableContentDownloading = false;
+  MeQuotaModel? meQuota;
+  bool isLoadingQuota = false;
 
   // Home collections
   List<MediaItemModel> views = [];
@@ -287,9 +291,12 @@ class VedroAppState extends ChangeNotifier {
       }) as Map<String, dynamic>;
       final auth = res['auth'] as Map<String, dynamic>;
       final userObj = auth['User'] as Map<String, dynamic>;
+      final policyObj = userObj['Policy'] as Map<String, dynamic>?;
       username = userObj['Name']?.toString();
       userId = userObj['Id']?.toString();
-      isAdmin = (userObj['Policy'] as Map<String, dynamic>?)?['IsAdministrator'] == true;
+      isAdmin = policyObj?['IsAdministrator'] == true;
+      enableContentDownloading = policyObj?['EnableContentDownloading'] == true;
+      meQuota = null;
       if (res['capabilities'] is Map<String, dynamic>) {
         capabilities = ServerCapabilitiesModel.fromJson(
           res['capabilities'] as Map<String, dynamic>,
@@ -309,6 +316,7 @@ class VedroAppState extends ChangeNotifier {
       _startEventPolling();
       await _reloadSavedServers();
       unawaited(refreshHome());
+      unawaited(refreshMeQuota());
     } catch (e) {
       errorMessage = _humanizeError(e.toString());
       isBusy = false;
@@ -354,9 +362,12 @@ class VedroAppState extends ChangeNotifier {
         res['capabilities'] as Map<String, dynamic>,
       );
       final u = res['user'] as Map<String, dynamic>;
+      final uPolicy = u['Policy'] as Map<String, dynamic>?;
       username = u['Name']?.toString();
       userId = u['Id']?.toString();
-      isAdmin = (u['Policy'] as Map<String, dynamic>?)?['IsAdministrator'] == true;
+      isAdmin = uPolicy?['IsAdministrator'] == true;
+      enableContentDownloading = uPolicy?['EnableContentDownloading'] == true;
+      meQuota = null;
 
       _clearHomeCollections();
       isBusy = false;
@@ -366,6 +377,7 @@ class VedroAppState extends ChangeNotifier {
 
       _startEventPolling();
       unawaited(refreshHome());
+      unawaited(refreshMeQuota());
     } catch (e) {
       if (!silentError) {
         errorMessage = _humanizeError(e.toString());
@@ -470,10 +482,13 @@ class VedroAppState extends ChangeNotifier {
       }
       if (res['user'] is Map<String, dynamic>) {
         final u = res['user'] as Map<String, dynamic>;
+        final uPolicy = u['Policy'] as Map<String, dynamic>?;
         username = u['Name']?.toString();
         userId = u['Id']?.toString();
-        isAdmin = (u['Policy'] as Map<String, dynamic>?)?['IsAdministrator'] == true;
+        isAdmin = uPolicy?['IsAdministrator'] == true;
+        enableContentDownloading = uPolicy?['EnableContentDownloading'] == true;
       }
+      meQuota = null;
       await _reloadSavedServers();
       isBusy = false;
       loginStage = null;
@@ -481,6 +496,7 @@ class VedroAppState extends ChangeNotifier {
       notifyListeners();
       _startEventPolling();
       unawaited(refreshHome());
+      unawaited(refreshMeQuota());
     } catch (e) {
       errorMessage = _humanizeError(e.toString());
       isBusy = false;
@@ -528,6 +544,9 @@ class VedroAppState extends ChangeNotifier {
     userId = null;
     username = null;
     isAdmin = false;
+    enableContentDownloading = false;
+    meQuota = null;
+    isLoadingQuota = false;
     isLoadingHome = false;
     homeError = null;
     _clearHomeCollections();
@@ -675,13 +694,77 @@ class VedroAppState extends ChangeNotifier {
   String get fontsDirectoryPath =>
       '${_supportDirPath ?? Directory.systemTemp.path}/vedro_fonts';
 
-  Future<void> enqueueDownload(MediaItemModel item, {String? mediaSourceId}) async {
+  /// Account-level download eligibility.
+  /// On EmbyGo, honors `meQuota.limits.allowDownloads` (which accounts for admin, server download-quota,
+  /// and `EnableContentDownloading`). On standard Emby/Jellyfin, honors `User.Policy.EnableContentDownloading`.
+  bool get canDownloadAccount {
+    if (!isSignedIn) return false;
+    if (meQuota != null) return meQuota!.limits.allowDownloads;
+    return enableContentDownloading || (capabilities?.isEmbyGo == true && isAdmin);
+  }
+
+  /// Strict item-level download permission check.
+  /// Always hides download controls when the user lacks permission on Emby, Jellyfin, or EmbyGo.
+  bool canDownloadItem(MediaItemModel? item) {
+    if (!isSignedIn || item == null) return false;
+    if (item.canDownload != null) return item.canDownload!;
+    if (!item.isPlayable) return false;
+    return canDownloadAccount;
+  }
+
+  Future<void> refreshMeQuota() async {
+    if (!isSignedIn) {
+      meQuota = null;
+      isLoadingQuota = false;
+      notifyListeners();
+      return;
+    }
+    isLoadingQuota = true;
+    notifyListeners();
+    try {
+      final res = await core.invoke('get_me_quota');
+      if (res is Map<String, dynamic> && res.containsKey('limits')) {
+        meQuota = MeQuotaModel.fromJson(res);
+      } else {
+        meQuota = null;
+      }
+    } catch (_) {
+      // Standard Emby / Jellyfin servers do not expose `/emby-compat/me/quota`.
+    } finally {
+      isLoadingQuota = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> enqueueDownload(
+    MediaItemModel item, {
+    String? mediaSourceId,
+    int? expectedBytes,
+  }) async {
+    if (!canDownloadItem(item)) {
+      throw Exception('当前账号未开放下载权限，请联系管理员');
+    }
+    final dq = meQuota?.downloadQuota;
+    if (dq != null && dq.enabled && !dq.adminExempt) {
+      if (dq.isConcurrencyFull) {
+        throw Exception(
+          '同时下载任务数已达上限（进行中 ${dq.activeDownloads} / 最多 ${dq.maxConcurrentDownloads} 个文件），请等待完成后再试',
+        );
+      }
+      if (expectedBytes != null && expectedBytes > 0 && !dq.canFitBytes(expectedBytes)) {
+        throw Exception(
+          '下载流量包余额不足：当前剩余 ${fmtQuotaBytes(dq.totalRemainingBytes)}，该文件需 ${fmtQuotaBytes(expectedBytes)}（仅限原文件下载，在线播放不限流量）',
+        );
+      }
+    }
+
     final taskId = '${item.id}_${DateTime.now().millisecondsSinceEpoch}';
     final initial = DownloadTaskModel(
       id: taskId,
       itemId: item.id,
       title: item.cardTitle,
       subtitle: item.cardSubtitle,
+      totalBytes: expectedBytes ?? 0,
       status: 'downloading',
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
@@ -690,50 +773,150 @@ class VedroAppState extends ChangeNotifier {
     await _persistDownloads();
 
     unawaited(() async {
+      Timer? inFlightRefreshTimer;
       try {
-        final prepRaw = await core.invoke('prepare_playback', {
+        final prep = await core.invoke('prepare_download', {
           'item_id': item.id,
           if (mediaSourceId != null) 'media_source_id': mediaSourceId,
-          'inspect_header': false,
         }) as Map<String, dynamic>;
-        final prep = PreparedPlaybackModel.fromJson(prepRaw);
-        final ext = (prep.allSources.isNotEmpty ? prep.allSources.first.container : null) ?? 'mkv';
-        final safeName = item.cardTitle
-            .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ]+'), '_')
-            .trim();
-        final dir = Directory(downloadsDirectoryPath);
-        if (!dir.existsSync()) dir.createSync(recursive: true);
-        final outPath = '${dir.path}/${safeName.isEmpty ? item.id : safeName}.$ext';
+
+        final initialUrlStr = (prep['url'] ?? '').toString();
+        if (initialUrlStr.isEmpty) {
+          throw Exception('无法获取原文件下载地址');
+        }
+        final rawHeaders = (prep['headers'] as Map?)?.map(
+              (k, v) => MapEntry(k.toString(), v.toString()),
+            ) ??
+            const <String, String>{};
+        final ext = (prep['container']?.toString().trim().isNotEmpty == true)
+            ? prep['container'].toString().trim().replaceFirst(RegExp(r'^\.'), '')
+            : 'mkv';
+        final rawFilename = prep['filename']?.toString().trim() ?? '';
+        final fallbackSize = (prep['size'] as num?)?.toInt() ?? expectedBytes ?? 0;
+        final proxyUrl = prep['proxy_url']?.toString().trim() ?? '';
+        final acceptInvalid = prep['accept_invalid_certs'] == true;
 
         final client = HttpClient();
+        if (acceptInvalid) {
+          client.badCertificateCallback = (_, __, ___) => true;
+        }
+        if (proxyUrl.isNotEmpty) {
+          final parsedProxy = Uri.tryParse(proxyUrl);
+          if (parsedProxy != null && parsedProxy.host.isNotEmpty && parsedProxy.port > 0) {
+            final proxySpec = 'PROXY ${parsedProxy.host}:${parsedProxy.port}';
+            client.findProxy = (_) => proxySpec;
+          }
+        }
+
         try {
-          final req = await client.getUrl(Uri.parse(prep.proxyUrl));
-          final resp = await req.close();
-          final total = resp.contentLength > 0 ? resp.contentLength : 0;
+          var currentUri = Uri.parse(initialUrlStr);
+          final initialOrigin = '${currentUri.scheme}://${currentUri.authority}';
+          HttpClientResponse? resp;
+
+          for (var hop = 0; hop < 6; hop++) {
+            final req = await client.getUrl(currentUri);
+            req.followRedirects = false;
+            final sameOrigin = '${currentUri.scheme}://${currentUri.authority}' == initialOrigin;
+            rawHeaders.forEach((k, v) {
+              final lower = k.toLowerCase();
+              final isAuthHeader = lower == 'authorization' ||
+                  lower == 'x-emby-authorization' ||
+                  lower == 'x-emby-token' ||
+                  lower == 'x-mediabrowser-token';
+              if (sameOrigin || !isAuthHeader) {
+                req.headers.set(k, v);
+              }
+            });
+            final r = await req.close();
+            if (r.statusCode == 301 ||
+                r.statusCode == 302 ||
+                r.statusCode == 303 ||
+                r.statusCode == 307 ||
+                r.statusCode == 308) {
+              final loc = r.headers.value(HttpHeaders.locationHeader);
+              await r.drain<void>();
+              if (loc == null || loc.isEmpty) {
+                throw Exception('下载重定向地址无效');
+              }
+              currentUri = currentUri.resolve(loc);
+              continue;
+            }
+            resp = r;
+            break;
+          }
+
+          if (resp == null) {
+            throw Exception('下载重定向次数过多');
+          }
+
+          if (resp.statusCode < 200 || resp.statusCode >= 300) {
+            final quotaErr = resp.headers.value('x-embygo-quota-error')?.trim() ?? '';
+            final bodyBytes = await resp.fold<List<int>>(<int>[], (acc, b) => acc..addAll(b));
+            final bodyStr = utf8.decode(bodyBytes, allowMalformed: true).trim();
+            String serverMsg = '';
+            if (bodyStr.startsWith('{')) {
+              try {
+                final parsed = jsonDecode(bodyStr);
+                if (parsed is Map && parsed['Message'] != null) {
+                  serverMsg = parsed['Message'].toString().trim();
+                }
+              } catch (_) {}
+            }
+            throw Exception(_formatDownloadHttpError(resp.statusCode, quotaErr, serverMsg));
+          }
+
+          // Server accepted the download & reserved quota — refresh quota shortly to show live InFlight/Active.
+          inFlightRefreshTimer = Timer(const Duration(milliseconds: 650), () {
+            unawaited(refreshMeQuota());
+          });
+
+          final cdFilename = _parseContentDispositionFilename(
+            resp.headers.value('content-disposition'),
+          );
+          final chosenName = cdFilename.isNotEmpty
+              ? cdFilename
+              : (rawFilename.isNotEmpty ? rawFilename : '${item.cardTitle}.$ext');
+          final safeName = chosenName
+              .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ()\[\]]+'), '_')
+              .trim();
+          final dir = Directory(downloadsDirectoryPath);
+          if (!dir.existsSync()) dir.createSync(recursive: true);
+          final outPath = '${dir.path}/${safeName.isEmpty ? '${item.id}.$ext' : safeName}';
+
+          final total = resp.contentLength > 0 ? resp.contentLength : fallbackSize;
           final file = File(outPath);
           final sink = file.openWrite();
           var received = 0;
           var lastEmit = DateTime.now();
 
-          await for (final chunk in resp) {
-            sink.add(chunk);
-            received += chunk.length;
-            final now = DateTime.now();
-            if (now.difference(lastEmit).inMilliseconds > 350) {
-              lastEmit = now;
-              _replaceDownload(
-                taskId,
-                (d) => d.copyWith(
-                  filePath: outPath,
-                  totalBytes: total,
-                  downloadedBytes: received,
-                  status: 'downloading',
-                ),
-              );
+          try {
+            await for (final chunk in resp) {
+              sink.add(chunk);
+              received += chunk.length;
+              final now = DateTime.now();
+              if (now.difference(lastEmit).inMilliseconds > 350) {
+                lastEmit = now;
+                _replaceDownload(
+                  taskId,
+                  (d) => d.copyWith(
+                    filePath: outPath,
+                    totalBytes: total,
+                    downloadedBytes: received,
+                    status: 'downloading',
+                  ),
+                );
+              }
             }
+            await sink.flush();
+            await sink.close();
+          } catch (streamErr) {
+            await sink.close();
+            try {
+              if (file.existsSync() && received == 0) file.deleteSync();
+            } catch (_) {}
+            rethrow;
           }
-          await sink.flush();
-          await sink.close();
+
           _replaceDownload(
             taskId,
             (d) => d.copyWith(
@@ -745,16 +928,62 @@ class VedroAppState extends ChangeNotifier {
           );
           await _persistDownloads();
         } finally {
+          inFlightRefreshTimer?.cancel();
           client.close();
+          unawaited(refreshMeQuota());
+          // EmbyGo Nginx billing callback settles shortly after transfer ends.
+          Timer(const Duration(seconds: 2), () => unawaited(refreshMeQuota()));
         }
       } catch (e) {
+        inFlightRefreshTimer?.cancel();
         _replaceDownload(
           taskId,
-          (d) => d.copyWith(status: 'failed', error: e.toString()),
+          (d) => d.copyWith(
+            status: 'failed',
+            error: e.toString().replaceFirst('Exception: ', ''),
+          ),
         );
         await _persistDownloads();
+        unawaited(refreshMeQuota());
       }
     }());
+  }
+
+  static String _formatDownloadHttpError(int status, String quotaErr, String serverMsg) {
+    switch (quotaErr) {
+      case 'insufficient_download_quota':
+        return serverMsg.isNotEmpty
+            ? serverMsg
+            : '下载流量包余额不足（仅限原文件下载，在线播放不限流量）';
+      case 'too_many_concurrent_downloads':
+        return serverMsg.isNotEmpty
+            ? serverMsg
+            : '同时下载任务数已达上限，请等待当前下载完成后再试';
+      case 'telegram_binding_required':
+        return serverMsg.isNotEmpty
+            ? serverMsg
+            : '请先绑定 Telegram 账号后再使用共享下载流量包';
+    }
+    if (serverMsg.isNotEmpty) return serverMsg;
+    if (status == 403) return '当前账号无下载权限，请联系管理员';
+    if (status == 429) return '下载并发数已达上限，请稍后再试';
+    if (status == 503) return '无法核验下载流量额度，请稍后重试';
+    return '下载失败 (HTTP $status)';
+  }
+
+  static String _parseContentDispositionFilename(String? header) {
+    if (header == null || header.isEmpty) return '';
+    final star = RegExp(r"filename\*=UTF-8''([^;\r\n]+)", caseSensitive: false).firstMatch(header);
+    if (star != null) {
+      try {
+        return Uri.decodeComponent(star.group(1)!.trim());
+      } catch (_) {}
+    }
+    final quoted = RegExp(r'filename="([^"]+)"', caseSensitive: false).firstMatch(header);
+    if (quoted != null) return quoted.group(1)!.trim();
+    final plain = RegExp(r'filename=([^;\r\n]+)', caseSensitive: false).firstMatch(header);
+    if (plain != null) return plain.group(1)!.trim();
+    return '';
   }
 
   void _replaceDownload(
@@ -859,6 +1088,54 @@ class VedroAppState extends ChangeNotifier {
     if (!isAdmin) return;
     await core.invoke('admin_set_library_covers', {'id': id, 'enabled': enabled});
     await loadEmbyGoAdminDashboard();
+  }
+
+  Future<Map<String, dynamic>> adminGetUserDetail(String uid) async {
+    final res = await core.invoke('admin_user_detail', {'user_id': uid});
+    return res is Map<String, dynamic> ? res : const <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> adminAdjustDownloadPack(
+    String uid,
+    int bytes, {
+    String? note,
+  }) async {
+    final res = await core.invoke('admin_adjust_download_pack', {
+      'user_id': uid,
+      'bytes': bytes,
+      if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+    });
+    if (uid == userId) unawaited(refreshMeQuota());
+    return res is Map<String, dynamic> ? res : const <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> adminSetMonthlyDownloadQuota(
+    String uid,
+    int? monthlyBytes,
+  ) async {
+    final res = await core.invoke('admin_set_monthly_download_quota', {
+      'user_id': uid,
+      'monthly_bytes': monthlyBytes,
+    });
+    if (uid == userId) unawaited(refreshMeQuota());
+    return res is Map<String, dynamic> ? res : const <String, dynamic>{};
+  }
+
+  Future<List<DownloadQuotaEventModel>> adminGetDownloadQuotaEvents(
+    String uid, {
+    int limit = 20,
+  }) async {
+    final res = await core.invoke('admin_download_quota_events', {
+      'user_id': uid,
+      'limit': limit,
+    });
+    if (res is Map<String, dynamic> && res['Events'] is List) {
+      return (res['Events'] as List)
+          .whereType<Map<String, dynamic>>()
+          .map(DownloadQuotaEventModel.fromJson)
+          .toList();
+    }
+    return const [];
   }
 
   Future<void> addSearchHistory(String term) async {

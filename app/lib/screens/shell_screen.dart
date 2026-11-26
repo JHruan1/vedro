@@ -22,9 +22,10 @@ import 'playlists_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 
-/// Skin-adaptive full-bleed cinema shell:
-/// - Desktop: Floating translucent top bar adapting to active `VedroSkin` (light, dark, neon, film).
-/// - Mobile: Floating frosted-glass bottom dock adapting geometry & colors to `VedroSkin`.
+/// Multi-architecture cinema shell adapting structurally to `VedroSkin.navLayout`:
+/// - `'top_floating'`: Apple TV+ / ElegantFin full-width floating header
+/// - `'left_rail'`: Scyfin / Plex / Infuse vertical left sidebar rail
+/// - `'centered_capsule'`: Ultrachromic / visionOS floating centered glass capsule island
 class ShellScreen extends StatefulWidget {
   const ShellScreen({super.key, required this.appState});
   final VedroAppState appState;
@@ -103,10 +104,10 @@ class _ShellScreenState extends State<ShellScreen> {
   }
 
   static const _desktopNav = [
-    (0, '首页'),
-    (1, '媒体库'),
-    (3, '片单'),
-    (4, '设置'),
+    (0, '首页', Icons.home_rounded),
+    (1, '媒体库', Icons.grid_view_rounded),
+    (3, '片单', Icons.bookmark_rounded),
+    (4, '设置', Icons.tune_rounded),
   ];
 
   static const _mobileTabs = [
@@ -220,17 +221,40 @@ class _ShellScreenState extends State<ShellScreen> {
     );
   }
 
+  String? _resolveHomeFanartUrl() {
+    final app = widget.appState;
+    if (!app.isSignedIn) return null;
+    for (final list in [app.popular, app.resume, app.nextUp, app.favorites]) {
+      for (final item in list) {
+        final art = app.backdropArt(item);
+        if (art != null && !art.isPoster && art.url.isNotEmpty) {
+          return art.url;
+        }
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    final wide = MediaQuery.sizeOf(context).width >= 820;
+    final size = MediaQuery.sizeOf(context);
+    final wide = size.width >= 820;
     final signedIn = widget.appState.isSignedIn;
-    final topBarClear = _index == 0 && signedIn && !_homeScrolled && !skin.isLight;
+    final isLeftRail = wide && skin.navLayout == 'left_rail';
+    final isCenteredCapsule = wide && skin.navLayout == 'centered_capsule';
+    final topBarClear = _index == 0 &&
+        signedIn &&
+        !_homeScrolled &&
+        !skin.isLight &&
+        skin.heroStyle == 'full_bleed';
+    final childTopInset = wide ? (isLeftRail ? 16.0 : 68.0) : 0.0;
 
     final pages = [
       HomeScreen(
         key: const ValueKey('tab-home'),
         appState: widget.appState,
+        topNavClearance: wide ? (isLeftRail ? 24.0 : 72.0) : 0.0,
         onItemTap: (item, {String? heroPrefix}) =>
             _openItem(item, heroPrefix: heroPrefix),
         onQuickPlay: _quickPlay,
@@ -253,7 +277,7 @@ class _ShellScreenState extends State<ShellScreen> {
         onItemTap: _openItem,
         onQuickPlay: _quickPlay,
         onOpenAddServer: _openAddServer,
-        topInset: wide ? 64 : 0,
+        topInset: childTopInset,
       ),
       SearchScreen(
         key: const ValueKey('tab-search'),
@@ -265,35 +289,35 @@ class _ShellScreenState extends State<ShellScreen> {
         appState: widget.appState,
         onItemTap: _openItem,
         onQuickPlay: _quickPlay,
-        topInset: wide ? 64 : 0,
+        topInset: childTopInset,
       ),
       SettingsScreen(
         key: const ValueKey('tab-settings'),
         appState: widget.appState,
         onOpenServerHub: _openServerHub,
         onOpenAddServer: _openAddServer,
-        topInset: wide ? 64 : 0,
+        topInset: childTopInset,
       ),
     ];
 
-    final body = VedroSkinCanvas(
-      child: AnimatedSwitcher(
-        duration: Duration(milliseconds: widget.appState.prefs.reduceMotion ? 0 : 260),
-        switchInCurve: VedroTheme.easeOut,
-        switchOutCurve: Curves.easeInCubic,
-        transitionBuilder: (child, anim) => FadeTransition(
-          opacity: anim,
-          child: SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(0, 0.014),
-              end: Offset.zero,
-            ).animate(anim),
-            child: child,
-          ),
+    final pageSwitcher = AnimatedSwitcher(
+      duration: Duration(milliseconds: widget.appState.prefs.reduceMotion ? 0 : 260),
+      switchInCurve: VedroTheme.easeOut,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, anim) => FadeTransition(
+        opacity: anim,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.014),
+            end: Offset.zero,
+          ).animate(anim),
+          child: child,
         ),
-        child: pages[_index],
       ),
+      child: pages[_index],
     );
+
+    final fanartUrl = skin.usesBlurredFanart ? _resolveHomeFanartUrl() : null;
 
     if (wide) {
       return CallbackShortcuts(
@@ -305,31 +329,76 @@ class _ShellScreenState extends State<ShellScreen> {
           autofocus: true,
           child: Scaffold(
             backgroundColor: skin.canvas,
-            body: Stack(
-              children: [
-                Positioned.fill(child: body),
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: _FloatingDesktopHeader(
-                    appState: widget.appState,
-                    clear: topBarClear,
-                    activeIndex: _index,
-                    navItems: _desktopNav,
-                    onSelectIndex: (i) => setState(() => _index = i),
-                    onOpenServerHub: _openServerHub,
-                    onOpenSearch: _openSpotlight,
-                    onOpenLocalMedia: _openLocalMediaPicker,
-                    onOpenFavorites: _openFavorites,
-                    onOpenLayout: () => showHomeLayoutSheet(
-                      context: context,
-                      appState: widget.appState,
+            body: VedroSkinCanvas(
+              backdropImageUrl: fanartUrl,
+              child: isLeftRail
+                  ? Row(
+                      key: const ValueKey('shell-left-rail-layout'),
+                      children: [
+                        _VerticalSidebarRail(
+                          appState: widget.appState,
+                          compact: size.width < 1120,
+                          activeIndex: _index,
+                          navItems: _desktopNav,
+                          onSelectIndex: (i) => setState(() => _index = i),
+                          onOpenServerHub: _openServerHub,
+                          onOpenSearch: _openSpotlight,
+                          onOpenLocalMedia: _openLocalMediaPicker,
+                          onOpenFavorites: _openFavorites,
+                          onOpenLayout: () => showHomeLayoutSheet(
+                            context: context,
+                            appState: widget.appState,
+                          ),
+                          onRefresh: widget.appState.refreshHome,
+                        ),
+                        Expanded(child: pageSwitcher),
+                      ],
+                    )
+                  : Stack(
+                      children: [
+                        Positioned.fill(child: pageSwitcher),
+                        if (isCenteredCapsule)
+                          Positioned(
+                            top: 12,
+                            left: 20,
+                            right: 20,
+                            child: _CenteredCapsuleNavIsland(
+                              key: const ValueKey('shell-centered-capsule-nav'),
+                              appState: widget.appState,
+                              activeIndex: _index,
+                              navItems: _desktopNav,
+                              onSelectIndex: (i) => setState(() => _index = i),
+                              onOpenServerHub: _openServerHub,
+                              onOpenSearch: _openSpotlight,
+                              onOpenLocalMedia: _openLocalMediaPicker,
+                              onOpenFavorites: _openFavorites,
+                              onRefresh: widget.appState.refreshHome,
+                            ),
+                          )
+                        else
+                          Positioned(
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            child: _FloatingDesktopHeader(
+                              appState: widget.appState,
+                              clear: topBarClear,
+                              activeIndex: _index,
+                              navItems: _desktopNav,
+                              onSelectIndex: (i) => setState(() => _index = i),
+                              onOpenServerHub: _openServerHub,
+                              onOpenSearch: _openSpotlight,
+                              onOpenLocalMedia: _openLocalMediaPicker,
+                              onOpenFavorites: _openFavorites,
+                              onOpenLayout: () => showHomeLayoutSheet(
+                                context: context,
+                                appState: widget.appState,
+                              ),
+                              onRefresh: widget.appState.refreshHome,
+                            ),
+                          ),
+                      ],
                     ),
-                    onRefresh: widget.appState.refreshHome,
-                  ),
-                ),
-              ],
             ),
           ),
         ),
@@ -340,11 +409,19 @@ class _ShellScreenState extends State<ShellScreen> {
     return Scaffold(
       backgroundColor: skin.canvas,
       extendBody: true,
-      body: body,
+      body: VedroSkinCanvas(
+        backdropImageUrl: fanartUrl,
+        child: pageSwitcher,
+      ),
       bottomNavigationBar: SafeArea(
         top: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+          padding: EdgeInsets.fromLTRB(
+            skin.navLayout == 'centered_capsule' ? 34 : 20,
+            0,
+            skin.navLayout == 'centered_capsule' ? 34 : 20,
+            10,
+          ),
           child: GlassSurface(
             borderRadius: dockR,
             blur: 36,
@@ -372,6 +449,382 @@ class _ShellScreenState extends State<ShellScreen> {
   }
 }
 
+/// Scyfin / Plex / Infuse Pro Left Vertical Navigation Rail (`navLayout == 'left_rail'`).
+class _VerticalSidebarRail extends StatelessWidget {
+  const _VerticalSidebarRail({
+    required this.appState,
+    required this.compact,
+    required this.activeIndex,
+    required this.navItems,
+    required this.onSelectIndex,
+    required this.onOpenServerHub,
+    required this.onOpenSearch,
+    required this.onOpenLocalMedia,
+    required this.onOpenFavorites,
+    required this.onOpenLayout,
+    required this.onRefresh,
+  });
+
+  final VedroAppState appState;
+  final bool compact;
+  final int activeIndex;
+  final List<(int, String, IconData)> navItems;
+  final ValueChanged<int> onSelectIndex;
+  final VoidCallback onOpenServerHub;
+  final VoidCallback onOpenSearch;
+  final VoidCallback onOpenLocalMedia;
+  final VoidCallback onOpenFavorites;
+  final VoidCallback onOpenLayout;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    return ValueListenableBuilder<bool>(
+      valueListenable: NativePlaybackChannel.fullscreenNotifier,
+      builder: (context, isFullscreen, _) {
+        final topPad = (!kIsWeb && Platform.isMacOS && !isFullscreen) ? 44.0 : 18.0;
+        final w = compact ? 76.0 : 216.0;
+        final serverLabel = appState.isSignedIn ? appState.activeServerDisplayName : '选择服务器';
+        final routeName = appState.activeRouteDisplayName;
+        final itemR = skin.cardRadius.clamp(6.0, 14.0);
+
+        Widget railEntry({
+          required IconData icon,
+          required String label,
+          required bool selected,
+          required VoidCallback onTap,
+          String? trailingHint,
+        }) {
+          final activeFg = skin.ctaStyle == 'contrast' ? skin.fg : skin.accent;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: PressableScale(
+              onTap: onTap,
+              hoverScale: 1.015,
+              pressScale: 0.97,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                curve: VedroTheme.easeOut,
+                height: 40,
+                padding: EdgeInsets.symmetric(horizontal: compact ? 0 : 12),
+                decoration: BoxDecoration(
+                  color: selected
+                      ? (skin.ctaStyle == 'contrast'
+                          ? skin.subtleChipHoverBg
+                          : skin.accent.withValues(alpha: skin.isLight ? 0.14 : 0.20))
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(itemR),
+                  border: selected && skin.frameStyle != 'borderless'
+                      ? Border.all(color: skin.accent.withValues(alpha: 0.45), width: 0.8)
+                      : null,
+                ),
+                child: compact
+                    ? Tooltip(
+                        message: label,
+                        child: Center(
+                          child: Icon(
+                            icon,
+                            size: 20,
+                            color: selected ? activeFg : skin.fg2,
+                          ),
+                        ),
+                      )
+                    : Row(
+                        children: [
+                          Icon(icon, size: 18, color: selected ? activeFg : skin.fg2),
+                          const SizedBox(width: 11),
+                          Expanded(
+                            child: Text(
+                              label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: selected ? activeFg : skin.fg2,
+                                fontSize: 13.5,
+                                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                          if (trailingHint != null)
+                            Text(
+                              trailingHint,
+                              style: TextStyle(color: skin.fg3, fontSize: 10.5),
+                            ),
+                        ],
+                      ),
+              ),
+            ),
+          );
+        }
+
+        return Container(
+          width: w,
+          decoration: BoxDecoration(
+            color: skin.panelSurface,
+            border: Border(right: BorderSide(color: skin.border, width: 0.8)),
+          ),
+          padding: EdgeInsets.fromLTRB(12, topPad, 12, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              PressableScale(
+                onTap: onOpenServerHub,
+                child: Container(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: compact ? 6 : 10,
+                    vertical: 9,
+                  ),
+                  decoration: BoxDecoration(
+                    color: skin.surface2,
+                    borderRadius: BorderRadius.circular(itemR),
+                    border: Border.all(color: skin.border, width: 0.8),
+                  ),
+                  child: compact
+                      ? const Center(child: VedroBrandMark(size: 26))
+                      : Row(
+                          children: [
+                            const VedroBrandMark(size: 26),
+                            const SizedBox(width: 9),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    serverLabel,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: skin.fg,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  if (routeName != null && routeName.isNotEmpty)
+                                    Text(
+                                      routeName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(color: skin.fg3, fontSize: 11),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            Icon(Icons.unfold_more_rounded, size: 15, color: skin.fg3),
+                          ],
+                        ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              railEntry(
+                icon: Icons.search_rounded,
+                label: appState.savedServers.length > 1 ? '聚合搜索' : '搜索',
+                selected: activeIndex == 2,
+                trailingHint: '⌘K',
+                onTap: onOpenSearch,
+              ),
+              const SizedBox(height: 6),
+              for (final (idx, label, icon) in navItems)
+                railEntry(
+                  icon: icon,
+                  label: label,
+                  selected: activeIndex == idx,
+                  onTap: () => onSelectIndex(idx),
+                ),
+              const Spacer(),
+              railEntry(
+                icon: Icons.folder_open_rounded,
+                label: '本地播放',
+                selected: false,
+                onTap: onOpenLocalMedia,
+              ),
+              if (appState.isSignedIn) ...[
+                railEntry(
+                  icon: Icons.favorite_border_rounded,
+                  label: '我的收藏',
+                  selected: false,
+                  onTap: onOpenFavorites,
+                ),
+                railEntry(
+                  icon: Icons.dashboard_customize_outlined,
+                  label: '首页布局',
+                  selected: false,
+                  onTap: onOpenLayout,
+                ),
+                railEntry(
+                  icon: Icons.refresh_rounded,
+                  label: '刷新数据',
+                  selected: false,
+                  onTap: onRefresh,
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Ultrachromic / visionOS Floating Centered Capsule Navigation Island (`navLayout == 'centered_capsule'`).
+class _CenteredCapsuleNavIsland extends StatelessWidget {
+  const _CenteredCapsuleNavIsland({
+    super.key,
+    required this.appState,
+    required this.activeIndex,
+    required this.navItems,
+    required this.onSelectIndex,
+    required this.onOpenServerHub,
+    required this.onOpenSearch,
+    required this.onOpenLocalMedia,
+    required this.onOpenFavorites,
+    required this.onRefresh,
+  });
+
+  final VedroAppState appState;
+  final int activeIndex;
+  final List<(int, String, IconData)> navItems;
+  final ValueChanged<int> onSelectIndex;
+  final VoidCallback onOpenServerHub;
+  final VoidCallback onOpenSearch;
+  final VoidCallback onOpenLocalMedia;
+  final VoidCallback onOpenFavorites;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final islandR = skin.radiusForPill(48);
+    final btnR = skin.radiusForPill(34);
+    final serverLabel = appState.isSignedIn ? appState.activeServerDisplayName : '服务器';
+
+    return SafeArea(
+      bottom: false,
+      child: Center(
+        child: GlassSurface(
+          borderRadius: islandR,
+          blur: 32,
+          color: skin.glassStrong,
+          borderColor: skin.borderStrong,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              PressableScale(
+                onTap: onOpenServerHub,
+                child: Container(
+                  height: 34,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: skin.subtleChipBg,
+                    borderRadius: BorderRadius.circular(btnR),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const VedroBrandMark(size: 20),
+                      const SizedBox(width: 7),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 120),
+                        child: Text(
+                          serverLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: skin.fg,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 3),
+                      Icon(Icons.keyboard_arrow_down_rounded, size: 15, color: skin.fg3),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              for (final (idx, label, icon) in navItems)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 2),
+                  child: PressableScale(
+                    onTap: () => onSelectIndex(idx),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      curve: VedroTheme.easeOut,
+                      height: 34,
+                      padding: const EdgeInsets.symmetric(horizontal: 13),
+                      decoration: BoxDecoration(
+                        color: activeIndex == idx ? skin.activePillBg : Colors.transparent,
+                        borderRadius: BorderRadius.circular(btnR),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            icon,
+                            size: 15,
+                            color: activeIndex == idx ? skin.activePillFg : skin.fg2,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            label,
+                            style: TextStyle(
+                              color: activeIndex == idx ? skin.activePillFg : skin.fg2,
+                              fontSize: 13,
+                              fontWeight: activeIndex == idx ? FontWeight.w600 : FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              const SizedBox(width: 8),
+              _IslandIconBtn(icon: Icons.search_rounded, tooltip: '搜索 (⌘K)', onTap: onOpenSearch),
+              _IslandIconBtn(icon: Icons.folder_open_rounded, tooltip: '本地视频', onTap: onOpenLocalMedia),
+              if (appState.isSignedIn) ...[
+                _IslandIconBtn(icon: Icons.favorite_border_rounded, tooltip: '我的收藏', onTap: onOpenFavorites),
+                _IslandIconBtn(icon: Icons.refresh_rounded, tooltip: '刷新', onTap: onRefresh),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _IslandIconBtn extends StatelessWidget {
+  const _IslandIconBtn({required this.icon, required this.tooltip, required this.onTap});
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(left: 4),
+      child: Tooltip(
+        message: tooltip,
+        child: PressableScale(
+          onTap: onTap,
+          child: Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: skin.subtleChipBg,
+              borderRadius: BorderRadius.circular(skin.radiusForPill(34)),
+            ),
+            child: Icon(icon, size: 15.5, color: skin.fg2),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _FloatingDesktopHeader extends StatelessWidget {
   const _FloatingDesktopHeader({
     required this.appState,
@@ -390,7 +843,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
   final VedroAppState appState;
   final bool clear;
   final int activeIndex;
-  final List<(int, String)> navItems;
+  final List<(int, String, IconData)> navItems;
   final ValueChanged<int> onSelectIndex;
   final VoidCallback onOpenServerHub;
   final VoidCallback onOpenSearch;
@@ -529,7 +982,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 18),
-                for (final (idx, label) in navItems)
+                for (final (idx, label, _) in navItems)
                   Padding(
                     padding: const EdgeInsets.only(right: 4),
                     child: PressableScale(
@@ -673,13 +1126,16 @@ class _FloatingDesktopHeader extends StatelessWidget {
           );
         }
 
+        // Feather-seamless frosted header when scrolled — NO harsh 1px line!
         return ClipRect(
           child: BackdropFilter(
             filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
             child: DecoratedBox(
               decoration: BoxDecoration(
                 color: skin.glass,
-                border: Border(bottom: BorderSide(color: skin.border, width: 0.8)),
+                border: skin.frameStyle == 'neon'
+                    ? Border(bottom: BorderSide(color: skin.border, width: 0.7))
+                    : null,
               ),
               child: content,
             ),

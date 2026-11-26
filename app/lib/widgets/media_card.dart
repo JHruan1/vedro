@@ -59,6 +59,18 @@ class _MediaCardState extends State<MediaCard> {
     if (widget.heroPrefix != null) {
       artBox = Hero(tag: '${widget.heroPrefix}-${item.id}', child: artBox);
     }
+    if (skin.cardHoverEffect == 'zoom_art') {
+      artBox = AnimatedScale(
+        scale: _hovered ? 1.065 : 1.0,
+        duration: const Duration(milliseconds: 240),
+        curve: VedroTheme.easeOut,
+        child: artBox,
+      );
+    }
+
+    final isOverlayCard = skin.cardStyle == 'overlay_poster';
+    final isHoverReveal = skin.cardStyle == 'hover_reveal';
+    final showBelowCaption = !isOverlayCard && !isHoverReveal;
 
     return SizedBox(
       width: widget.width,
@@ -67,7 +79,7 @@ class _MediaCardState extends State<MediaCard> {
         onLongPress: widget.onLongPress,
         onSecondaryTap: widget.onLongPress,
         onHoverChanged: (v) => setState(() => _hovered = v),
-        hoverScale: 1.015,
+        hoverScale: skin.cardHoverEffect == 'zoom_art' ? 1.0 : 1.02,
         pressScale: 0.975,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -91,6 +103,69 @@ class _MediaCardState extends State<MediaCard> {
                   fit: StackFit.expand,
                   children: [
                     artBox,
+                    if (isOverlayCard || isHoverReveal)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: IgnorePointer(
+                          child: AnimatedOpacity(
+                            opacity: isOverlayCard ? 1.0 : (_hovered ? 1.0 : 0.0),
+                            duration: const Duration(milliseconds: 190),
+                            curve: Curves.easeOut,
+                            child: Container(
+                              padding: EdgeInsets.fromLTRB(
+                                10,
+                                28,
+                                showPlayFab && _hovered ? 48 : 10,
+                                item.resumeProgress > 0.01 ? 14 : 9,
+                              ),
+                              decoration: const BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  stops: [0.0, 0.45, 1.0],
+                                  colors: [
+                                    Colors.transparent,
+                                    Color(0x9005060A),
+                                    Color(0xEB05060A),
+                                  ],
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    item.cardTitle,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      letterSpacing: -0.1,
+                                    ),
+                                  ),
+                                  if (item.cardSubtitle.isNotEmpty) ...[
+                                    const SizedBox(height: 1.5),
+                                    Text(
+                                      item.cardSubtitle,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Color(0xBDFFFFFF),
+                                        fontSize: 11,
+                                        fontFeatures: [FontFeature.tabularFigures()],
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     if (prefs.showWatchedBadge && item.played)
                       const Positioned(
                         top: 7,
@@ -221,29 +296,31 @@ class _MediaCardState extends State<MediaCard> {
                 ),
               ),
             ),
-            const SizedBox(height: 9),
-            Text(
-              item.cardTitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: skin.fg,
-                fontWeight: FontWeight.w500,
-                fontSize: 13.5,
-                letterSpacing: -0.1,
+            if (showBelowCaption) ...[
+              const SizedBox(height: 9),
+              Text(
+                item.cardTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: skin.fg,
+                  fontWeight: FontWeight.w500,
+                  fontSize: 13.5,
+                  letterSpacing: -0.1,
+                ),
               ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              item.cardSubtitle.isNotEmpty ? item.cardSubtitle : ' ',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: skin.fg3,
-                fontSize: 12,
-                fontFeatures: const [FontFeature.tabularFigures()],
+              const SizedBox(height: 2),
+              Text(
+                item.cardSubtitle.isNotEmpty ? item.cardSubtitle : ' ',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: skin.fg3,
+                  fontSize: 12,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
               ),
-            ),
+            ],
           ],
         ),
       ),

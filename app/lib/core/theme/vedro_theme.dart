@@ -38,6 +38,9 @@ class VedroTheme {
   static const Curve easeOut = Cubic(0.16, 1.0, 0.3, 1.0);
   static const Curve springCurve = Cubic(0.16, 1.0, 0.3, 1.0);
 
+  static Color highContrastOn(Color bg) =>
+      bg.computeLuminance() > 0.52 ? const Color(0xFF09090B) : Colors.white;
+
   static ThemeData dark({
     Color accentColor = accent,
     Color accentFillColor = accentFill,

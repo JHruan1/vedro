@@ -299,6 +299,7 @@ class VedroPreferences {
     this.skinId = 'obsidian',
     this.useSkinGeometry = true,
     this.customSkins = const [],
+    this.skinOverrides = const {},
     this.accentId = 'blue',
     this.cardRadius = 12.0,
     this.glassIntensity = 'standard',
@@ -390,6 +391,7 @@ class VedroPreferences {
   final String skinId;
   final bool useSkinGeometry;
   final List<CustomSkinSpec> customSkins;
+  final Map<String, dynamic> skinOverrides;
   final String accentId;
   final double cardRadius;
   final String glassIntensity;
@@ -485,6 +487,9 @@ class VedroPreferences {
       final pal = accentPalette;
       base = base.copyWith(accent: pal.accent, accentSecondary: pal.fill);
     }
+    if (skinOverrides.isNotEmpty) {
+      base = base.applyOverrides(skinOverrides);
+    }
     if (!useSkinGeometry) {
       base = base.copyWith(cardRadius: cardRadius);
     }
@@ -512,6 +517,7 @@ class VedroPreferences {
     String? skinId,
     bool? useSkinGeometry,
     List<CustomSkinSpec>? customSkins,
+    Map<String, dynamic>? skinOverrides,
     String? accentId,
     double? cardRadius,
     String? glassIntensity,
@@ -592,6 +598,7 @@ class VedroPreferences {
         skinId: skinId ?? this.skinId,
         useSkinGeometry: useSkinGeometry ?? this.useSkinGeometry,
         customSkins: customSkins ?? this.customSkins,
+        skinOverrides: skinOverrides ?? this.skinOverrides,
         accentId: accentId ?? this.accentId,
         cardRadius: cardRadius ?? this.cardRadius,
         glassIntensity: glassIntensity ?? this.glassIntensity,
@@ -673,6 +680,7 @@ class VedroPreferences {
         'skin_id': skinId,
         'use_skin_geometry': useSkinGeometry,
         'custom_skins': customSkins.map((s) => s.toJson()).toList(),
+        'skin_overrides': skinOverrides,
         'accent_id': accentId,
         'card_radius': cardRadius,
         'glass_intensity': glassIntensity,
@@ -759,6 +767,9 @@ class VedroPreferences {
                 : (e is Map ? CustomSkinSpec.fromJson(Map<String, dynamic>.from(e)) : null))
             .whereType<CustomSkinSpec>()
             .toList(),
+        skinOverrides: j['skin_overrides'] is Map
+            ? Map<String, dynamic>.from(j['skin_overrides'] as Map)
+            : const {},
         accentId: (j['accent_id'] ?? 'blue').toString(),
         cardRadius: (j['card_radius'] as num?)?.toDouble() ?? 12.0,
         glassIntensity: (j['glass_intensity'] ?? 'standard').toString(),

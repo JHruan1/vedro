@@ -131,6 +131,44 @@ class _MockVedroCore implements VedroCoreClient {
           'latest_by_library': <dynamic>[],
         };
       case 'get_item':
+        if (params['item_id'] == 'm-probe-ver') {
+          return <String, dynamic>{
+            'item': <String, dynamic>{
+              'Id': 'm-probe-ver',
+              'Name': '星际穿越',
+              'Type': 'Movie',
+              'CanDownload': true,
+              'Overview': '切换不同版本时，音轨与字幕随片源实时联动。',
+              'ProductionYear': 2014,
+              'CommunityRating': 9.4,
+              'MediaSources': <dynamic>[
+                <String, dynamic>{
+                  'Id': 'ver-uhd',
+                  'Name': '4K UHD REMUX',
+                  'Container': 'mkv',
+                  'Size': 68000000000,
+                  'MediaStreams': <dynamic>[],
+                },
+                <String, dynamic>{
+                  'Id': 'ver-dub',
+                  'Name': '1080p 国粤双语版',
+                  'Container': 'mkv',
+                  'Size': 16000000000,
+                  'MediaStreams': <dynamic>[],
+                },
+                <String, dynamic>{
+                  'Id': 'ver-raw',
+                  'Name': '1080p 生肉无字版',
+                  'Container': 'mp4',
+                  'Size': 6000000000,
+                  'MediaStreams': <dynamic>[],
+                },
+              ],
+            },
+            'similar': <dynamic>[],
+            'segments': <dynamic>[],
+          };
+        }
         if (params['item_id'] == 'm-5ver') {
           return <String, dynamic>{
             'item': <String, dynamic>{
@@ -428,6 +466,51 @@ class _MockVedroCore implements VedroCoreClient {
           'episode_title': '哔哩哔哩 · 三体 第1话',
           'raw': '<i><d p="1.5,1,25,16777215,1700000000,0,abc,1">B站弹幕加载成功</d></i>',
         };
+      case 'probe_media_source':
+        final itemId = params['item_id']?.toString() ?? '';
+        final msId = params['media_source_id']?.toString() ?? '';
+        if (itemId == 'm-probe-ver') {
+          if (msId == 'ver-uhd') {
+            return <String, dynamic>{
+              'probed': true,
+              'media_source': <String, dynamic>{
+                'Id': 'ver-uhd',
+                'MediaStreams': <dynamic>[
+                  <String, dynamic>{'Index': 0, 'Type': 'Video', 'Codec': 'hevc', 'Height': 2160},
+                  <String, dynamic>{'Index': 1, 'Type': 'Audio', 'Language': 'eng', 'Codec': 'truehd', 'DisplayTitle': 'English TrueHD Atmos 7.1'},
+                  <String, dynamic>{'Index': 2, 'Type': 'Subtitle', 'Language': 'chi', 'Codec': 'ass', 'DisplayTitle': '简英双语特效 ASS'},
+                ],
+              },
+            };
+          }
+          if (msId == 'ver-dub') {
+            return <String, dynamic>{
+              'probed': true,
+              'media_source': <String, dynamic>{
+                'Id': 'ver-dub',
+                'MediaStreams': <dynamic>[
+                  <String, dynamic>{'Index': 0, 'Type': 'Video', 'Codec': 'hevc', 'Height': 1080},
+                  <String, dynamic>{'Index': 1, 'Type': 'Audio', 'Language': 'chi', 'Codec': 'eac3', 'DisplayTitle': '国语配音 EAC3 5.1'},
+                  <String, dynamic>{'Index': 2, 'Type': 'Audio', 'Language': 'yue', 'Codec': 'flac', 'DisplayTitle': '粤语原声 FLAC 2.0'},
+                  <String, dynamic>{'Index': 3, 'Type': 'Subtitle', 'Language': 'cht', 'Codec': 'srt', 'DisplayTitle': '繁体中文 SRT'},
+                ],
+              },
+            };
+          }
+          if (msId == 'ver-raw') {
+            return <String, dynamic>{
+              'probed': true,
+              'media_source': <String, dynamic>{
+                'Id': 'ver-raw',
+                'MediaStreams': <dynamic>[
+                  <String, dynamic>{'Index': 0, 'Type': 'Video', 'Codec': 'h264', 'Height': 1080},
+                  <String, dynamic>{'Index': 1, 'Type': 'Audio', 'Language': 'jpn', 'Codec': 'aac', 'DisplayTitle': '日语原声 AAC 2.0'},
+                ],
+              },
+            };
+          }
+        }
+        return <String, dynamic>{};
       default:
         return <String, dynamic>{};
     }
@@ -1219,6 +1302,57 @@ void main() {
     await tester.pumpAndSettle();
     expect(app.prefs.customSkins.length, equals(1));
     expect(app.prefs.skinId, equals(app.prefs.customSkins.first.id));
+
+    // Live modular layout customizer (Jellyfin Skin Manager style overrides)
+    await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-left_rail')));
+    await tester.tap(find.byKey(const ValueKey('skin-mod-left_rail')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.activeSkin.navLayout, equals('left_rail'));
+
+    await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-overlay_poster')));
+    await tester.tap(find.byKey(const ValueKey('skin-mod-overlay_poster')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.activeSkin.cardStyle, equals('overlay_poster'));
+  });
+
+  testWidgets('Audio & Subtitle tracks dynamically follow selected video version via probe_media_source',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final app = VedroAppState(_MockVedroCore());
+    await tester.pumpWidget(MaterialApp(
+      theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+      home: DetailScreen(
+        key: const ValueKey('detail-probe-ver'),
+        item: MediaItemModel(id: 'm-probe-ver', name: '星际穿越', type: 'Movie'),
+        appState: app,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // Version 0 (4K UHD REMUX) probed automatically -> shows its exact Audio & Subtitle streams!
+    expect(find.text('English TrueHD Atmos 7.1'), findsOneWidget);
+    expect(find.text('简英双语特效 ASS'), findsOneWidget);
+    expect(find.textContaining('跟随版本 1'), findsOneWidget);
+
+    // Switch to Version 1 (1080p 国粤双语版) -> Audio & Subtitle chips immediately follow Version 1!
+    await tester.tap(find.byKey(const ValueKey('movie-version-card-1')));
+    await tester.pumpAndSettle();
+    expect(find.text('English TrueHD Atmos 7.1'), findsNothing);
+    expect(find.text('国语配音 EAC3 5.1'), findsOneWidget);
+    expect(find.text('粤语原声 FLAC 2.0'), findsOneWidget);
+    expect(find.text('繁体中文 SRT'), findsOneWidget);
+    expect(find.textContaining('跟随版本 2'), findsOneWidget);
+
+    // Switch to Version 2 (1080p 生肉无字版) -> Shows Japanese AAC audio + explicit "该版本无内封或服务端外挂字幕"
+    await tester.tap(find.byKey(const ValueKey('movie-version-card-2')));
+    await tester.pumpAndSettle();
+    expect(find.text('国语配音 EAC3 5.1'), findsNothing);
+    expect(find.text('日语原声 AAC 2.0'), findsOneWidget);
+    expect(find.text('该版本无内封或服务端外挂字幕'), findsOneWidget);
+    expect(find.textContaining('跟随版本 3'), findsOneWidget);
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {

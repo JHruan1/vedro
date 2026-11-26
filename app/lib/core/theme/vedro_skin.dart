@@ -1,9 +1,23 @@
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
-/// User-authored DIY skin specification persisted in `VedroPreferences` and shareable via skin code.
+/// Choose high-contrast ink (near-black or pure white) against any background color.
+Color highContrastOn(Color bg) =>
+    bg.computeLuminance() > 0.52 ? const Color(0xFF09090B) : Colors.white;
+
+/// User-authored or modularly customized skin specification (Jellyfin Skin Manager / Ultrachromic / ElegantFin caliber).
+/// Controls NOT ONLY palette & light/dark polarity, but also 8 structural & layout dimensions:
+/// - `navLayout`: `'top_floating'` | `'left_rail'` | `'centered_capsule'`
+/// - `heroStyle`: `'full_bleed'` | `'framed_stage'` | `'split_showcase'` | `'compact_minimal'`
+/// - `detailLayout`: `'apple_immersive'` | `'jellyfin_glass'` | `'centered_editorial'`
+/// - `backdropMode`: `'solid_clean'` | `'ambient_orb'` | `'blurred_fanart'`
+/// - `cardStyle`: `'classic_below'` | `'overlay_poster'` | `'hover_reveal'`
+/// - `cardHoverEffect`: `'lift'` | `'glow_ring'` | `'zoom_art'`
+/// - `castStyle`: `'circle_medallion'` | `'portrait_card'` | `'compact_pill'`
+/// - `backdropBlur`, `surfaceOpacity`, `preferClearLogo`, `editorialSerif`, `ctaStyle`, `frameStyle`, `cardRadius`, `pillRadius`
 class CustomSkinSpec {
   const CustomSkinSpec({
     required this.id,
@@ -19,13 +33,22 @@ class CustomSkinSpec {
     this.pillRadius = 999.0,
     this.ambientGlow = true,
     this.editorialSerif = false,
+    this.navLayout = 'top_floating', // top_floating | left_rail | centered_capsule
+    this.heroStyle = 'full_bleed', // full_bleed | framed_stage | split_showcase | compact_minimal
+    this.detailLayout = 'apple_immersive', // apple_immersive | jellyfin_glass | centered_editorial
+    this.backdropMode = 'ambient_orb', // solid_clean | ambient_orb | blurred_fanart
+    this.backdropBlur = 38.0,
+    this.surfaceOpacity = 0.86,
+    this.cardStyle = 'classic_below', // classic_below | overlay_poster | hover_reveal
+    this.cardHoverEffect = 'lift', // lift | glow_ring | zoom_art
+    this.castStyle = 'circle_medallion', // circle_medallion | portrait_card | compact_pill
+    this.preferClearLogo = true,
   });
 
   final String id;
   final String name;
   final bool isLight;
   final String canvasHex;
-  /// Optional explicit surface hex; when empty, auto-derived harmoniously from `canvasHex`.
   final String surfaceHex;
   final String accentHex;
   final String accentSecondaryHex;
@@ -35,6 +58,16 @@ class CustomSkinSpec {
   final double pillRadius;
   final bool ambientGlow;
   final bool editorialSerif;
+  final String navLayout;
+  final String heroStyle;
+  final String detailLayout;
+  final String backdropMode;
+  final double backdropBlur;
+  final double surfaceOpacity;
+  final String cardStyle;
+  final String cardHoverEffect;
+  final String castStyle;
+  final bool preferClearLogo;
 
   CustomSkinSpec copyWith({
     String? id,
@@ -50,6 +83,16 @@ class CustomSkinSpec {
     double? pillRadius,
     bool? ambientGlow,
     bool? editorialSerif,
+    String? navLayout,
+    String? heroStyle,
+    String? detailLayout,
+    String? backdropMode,
+    double? backdropBlur,
+    double? surfaceOpacity,
+    String? cardStyle,
+    String? cardHoverEffect,
+    String? castStyle,
+    bool? preferClearLogo,
   }) =>
       CustomSkinSpec(
         id: id ?? this.id,
@@ -65,6 +108,16 @@ class CustomSkinSpec {
         pillRadius: pillRadius ?? this.pillRadius,
         ambientGlow: ambientGlow ?? this.ambientGlow,
         editorialSerif: editorialSerif ?? this.editorialSerif,
+        navLayout: navLayout ?? this.navLayout,
+        heroStyle: heroStyle ?? this.heroStyle,
+        detailLayout: detailLayout ?? this.detailLayout,
+        backdropMode: backdropMode ?? this.backdropMode,
+        backdropBlur: backdropBlur ?? this.backdropBlur,
+        surfaceOpacity: surfaceOpacity ?? this.surfaceOpacity,
+        cardStyle: cardStyle ?? this.cardStyle,
+        cardHoverEffect: cardHoverEffect ?? this.cardHoverEffect,
+        castStyle: castStyle ?? this.castStyle,
+        preferClearLogo: preferClearLogo ?? this.preferClearLogo,
       );
 
   Map<String, dynamic> toJson() => {
@@ -81,81 +134,80 @@ class CustomSkinSpec {
         'pill_radius': pillRadius,
         'ambient_glow': ambientGlow,
         'editorial_serif': editorialSerif,
+        'nav_layout': navLayout,
+        'hero_style': heroStyle,
+        'detail_layout': detailLayout,
+        'backdrop_mode': backdropMode,
+        'backdrop_blur': backdropBlur,
+        'surface_opacity': surfaceOpacity,
+        'card_style': cardStyle,
+        'card_hover_effect': cardHoverEffect,
+        'cast_style': castStyle,
+        'prefer_clear_logo': preferClearLogo,
       };
 
-  factory CustomSkinSpec.fromJson(Map<String, dynamic> j) => CustomSkinSpec(
-        id: (j['id'] ?? 'custom_${DateTime.now().millisecondsSinceEpoch}').toString(),
-        name: (j['name'] ?? '自定义皮肤').toString(),
-        isLight: j['is_light'] == true,
-        canvasHex: (j['canvas_hex'] ?? '#0B1020').toString(),
-        surfaceHex: (j['surface_hex'] ?? '').toString(),
-        accentHex: (j['accent_hex'] ?? '#38BDF8').toString(),
-        accentSecondaryHex: (j['accent_secondary_hex'] ?? '#818CF8').toString(),
-        ctaStyle: (j['cta_style'] ?? 'accent').toString(),
-        frameStyle: (j['frame_style'] ?? 'hairline').toString(),
-        cardRadius: ((j['card_radius'] as num?)?.toDouble() ?? 14.0).clamp(2.0, 28.0),
-        pillRadius: ((j['pill_radius'] as num?)?.toDouble() ?? 999.0).clamp(4.0, 999.0),
-        ambientGlow: j['ambient_glow'] != false,
-        editorialSerif: j['editorial_serif'] == true,
-      );
+  factory CustomSkinSpec.fromJson(Map<String, dynamic> j) {
+    final glow = j['ambient_glow'] != false;
+    return CustomSkinSpec(
+      id: (j['id'] ?? 'custom_${DateTime.now().millisecondsSinceEpoch}').toString(),
+      name: (j['name'] ?? '我的专属皮肤').toString(),
+      isLight: j['is_light'] == true,
+      canvasHex: (j['canvas_hex'] ?? '#0B1020').toString(),
+      surfaceHex: (j['surface_hex'] ?? '').toString(),
+      accentHex: (j['accent_hex'] ?? '#38BDF8').toString(),
+      accentSecondaryHex: (j['accent_secondary_hex'] ?? '#818CF8').toString(),
+      ctaStyle: (j['cta_style'] ?? 'accent').toString(),
+      frameStyle: (j['frame_style'] ?? 'hairline').toString(),
+      cardRadius: ((j['card_radius'] as num?)?.toDouble() ?? 14.0).clamp(0.0, 28.0),
+      pillRadius: ((j['pill_radius'] as num?)?.toDouble() ?? 999.0).clamp(4.0, 999.0),
+      ambientGlow: glow,
+      editorialSerif: j['editorial_serif'] == true,
+      navLayout: (j['nav_layout'] ?? 'top_floating').toString(),
+      heroStyle: (j['hero_style'] ?? 'full_bleed').toString(),
+      detailLayout: (j['detail_layout'] ?? 'apple_immersive').toString(),
+      backdropMode: (j['backdrop_mode'] ?? (glow ? 'ambient_orb' : 'solid_clean')).toString(),
+      backdropBlur: ((j['backdrop_blur'] as num?)?.toDouble() ?? 38.0).clamp(10.0, 64.0),
+      surfaceOpacity: ((j['surface_opacity'] as num?)?.toDouble() ?? 0.86).clamp(0.45, 1.0),
+      cardStyle: (j['card_style'] ?? 'classic_below').toString(),
+      cardHoverEffect: (j['card_hover_effect'] ?? 'lift').toString(),
+      castStyle: (j['cast_style'] ?? 'circle_medallion').toString(),
+      preferClearLogo: j['prefer_clear_logo'] != false,
+    );
+  }
 
+  /// Portable share code (`VEDRO-SKIN:...`) so users can copy/paste custom skins across devices.
   String encodeShareCode() {
-    final jsonStr = jsonEncode(toJson());
-    final b64 = base64Url.encode(utf8.encode(jsonStr));
-    return 'VEDRO-SKIN:$b64';
+    final payload = jsonEncode(toJson()..remove('id'));
+    return 'VEDRO-SKIN:${base64Url.encode(utf8.encode(payload))}';
   }
 
   static CustomSkinSpec? tryDecodeShareCode(String raw) {
-    final trimmed = raw.trim();
-    if (trimmed.isEmpty) return null;
+    var clean = raw.trim();
+    if (clean.isEmpty) return null;
+    if (clean.startsWith('VEDRO-SKIN:')) {
+      clean = clean.substring('VEDRO-SKIN:'.length).trim();
+    }
     try {
-      String payload = trimmed;
-      if (payload.startsWith('VEDRO-SKIN:')) {
-        payload = payload.substring('VEDRO-SKIN:'.length).trim();
-        final normalized = base64Url.normalize(payload);
-        final decoded = utf8.decode(base64Url.decode(normalized));
-        final map = jsonDecode(decoded);
-        if (map is Map) {
-          return CustomSkinSpec.fromJson(Map<String, dynamic>.from(map));
-        }
-      } else if (payload.startsWith('{')) {
-        final map = jsonDecode(payload);
-        if (map is Map) {
-          return CustomSkinSpec.fromJson(Map<String, dynamic>.from(map));
-        }
+      String jsonText;
+      if (clean.startsWith('{')) {
+        jsonText = clean;
+      } else {
+        final pad = (4 - clean.length % 4) % 4;
+        jsonText = utf8.decode(base64Url.decode(clean + ('=' * pad)));
       }
-    } catch (_) {}
-    return null;
+      final map = jsonDecode(jsonText);
+      if (map is! Map) return null;
+      return CustomSkinSpec.fromJson({
+        ...Map<String, dynamic>.from(map),
+        'id': 'custom_${DateTime.now().millisecondsSinceEpoch}',
+      });
+    } catch (_) {
+      return null;
+    }
   }
 }
 
-Color parseHexColor(String hex, Color fallback) {
-  final clean = hex.trim().replaceFirst('#', '');
-  if (clean.length == 6) {
-    final val = int.tryParse('FF$clean', radix: 16);
-    if (val != null) return Color(val);
-  } else if (clean.length == 8) {
-    final val = int.tryParse(clean, radix: 16);
-    if (val != null) return Color(val);
-  }
-  return fallback;
-}
-
-String colorToHex6(Color c) {
-  final r = (c.r * 255.0).round().clamp(0, 255).toRadixString(16).padLeft(2, '0');
-  final g = (c.g * 255.0).round().clamp(0, 255).toRadixString(16).padLeft(2, '0');
-  final b = (c.b * 255.0).round().clamp(0, 255).toRadixString(16).padLeft(2, '0');
-  return '#${r.toUpperCase()}${g.toUpperCase()}${b.toUpperCase()}';
-}
-
-Color highContrastOn(Color bg) {
-  return bg.computeLuminance() > 0.44 ? const Color(0xFF0F1117) : Colors.white;
-}
-
-/// Complete multi-personality skin token system for Vedro.
-/// Switching skins transforms canvas atmosphere, light/dark polarity, card geometry,
-/// frame borders, CTA personality, pill shapes, glass tint, and editorial typography.
-@immutable
+/// Multi-personality structural + visual skin engine (`ThemeExtension<VedroSkin>`).
 class VedroSkin extends ThemeExtension<VedroSkin> {
   const VedroSkin({
     required this.id,
@@ -178,12 +230,22 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     required this.fg3,
     required this.accent,
     required this.accentSecondary,
-    this.ctaStyle = 'contrast', // contrast | accent | gradient | outline
-    this.frameStyle = 'borderless', // borderless | hairline | neon
-    this.cardRadius = 13.0,
-    this.pillRadius = 999.0,
-    this.ambientGlow = false,
-    this.editorialSerif = false,
+    required this.ctaStyle, // contrast | accent | gradient | outline
+    required this.frameStyle, // borderless | hairline | neon
+    required this.cardRadius,
+    required this.pillRadius,
+    required this.ambientGlow,
+    required this.editorialSerif,
+    this.navLayout = 'top_floating', // top_floating | left_rail | centered_capsule
+    this.heroStyle = 'full_bleed', // full_bleed | framed_stage | split_showcase | compact_minimal
+    this.detailLayout = 'apple_immersive', // apple_immersive | jellyfin_glass | centered_editorial
+    this.backdropMode = 'ambient_orb', // solid_clean | ambient_orb | blurred_fanart
+    this.backdropBlur = 38.0,
+    this.surfaceOpacity = 0.88,
+    this.cardStyle = 'classic_below', // classic_below | overlay_poster | hover_reveal
+    this.cardHoverEffect = 'lift', // lift | glow_ring | zoom_art
+    this.castStyle = 'circle_medallion', // circle_medallion | portrait_card | compact_pill
+    this.preferClearLogo = true,
     this.isCustom = false,
   });
 
@@ -203,46 +265,98 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
   final Color glassStrong;
   final Color border;
   final Color borderStrong;
-
   final Color fg;
   final Color fg2;
   final Color fg3;
-
   final Color accent;
   final Color accentSecondary;
 
+  /// `'contrast'` | `'accent'` | `'gradient'` | `'outline'`
   final String ctaStyle;
+
+  /// `'borderless'` | `'hairline'` | `'neon'`
   final String frameStyle;
+
   final double cardRadius;
   final double pillRadius;
   final bool ambientGlow;
   final bool editorialSerif;
-  final bool isCustom;
 
-  static const List<String> serifFontFallback = <String>[
-    'Georgia',
-    'New York',
-    'Songti SC',
-    'Source Han Serif SC',
-    'Noto Serif CJK SC',
-    'STSong',
-    'Times New Roman',
-    'serif',
-  ];
+  /// `'top_floating'` | `'left_rail'` | `'centered_capsule'`
+  final String navLayout;
+
+  /// `'full_bleed'` | `'framed_stage'` | `'split_showcase'` | `'compact_minimal'`
+  final String heroStyle;
+
+  /// `'apple_immersive'` | `'jellyfin_glass'` | `'centered_editorial'`
+  final String detailLayout;
+
+  /// `'solid_clean'` | `'ambient_orb'` | `'blurred_fanart'`
+  final String backdropMode;
+
+  final double backdropBlur;
+  final double surfaceOpacity;
+
+  /// `'classic_below'` | `'overlay_poster'` | `'hover_reveal'`
+  final String cardStyle;
+
+  /// `'lift'` | `'glow_ring'` | `'zoom_art'`
+  final String cardHoverEffect;
+
+  /// `'circle_medallion'` | `'portrait_card'` | `'compact_pill'`
+  final String castStyle;
+
+  final bool preferClearLogo;
+  final bool isCustom;
 
   Brightness get brightness => isLight ? Brightness.light : Brightness.dark;
 
+  bool get usesBlurredFanart => backdropMode == 'blurred_fanart';
+  bool get usesGlassPanels => detailLayout == 'jellyfin_glass' || backdropMode == 'blurred_fanart';
+
+  /// Effective panel surface color accounting for frosted-glass skins (`jellyfin_glass` / `blurred_fanart`).
+  Color get panelSurface => usesGlassPanels
+      ? surface.withValues(alpha: surfaceOpacity.clamp(0.48, 0.96))
+      : surface;
+
+  Color get panelSurface2 => usesGlassPanels
+      ? surface2.withValues(alpha: (surfaceOpacity + 0.05).clamp(0.55, 0.98))
+      : surface2;
+
+  /// Resolve active skin from BuildContext (falls back to `obsidian` safely in isolated tests).
+  static VedroSkin of(BuildContext context) =>
+      Theme.of(context).extension<VedroSkin>() ?? obsidian;
+
+  /// Effective radius for capsules/buttons given a widget height.
+  double radiusForPill(double height) => math.min(pillRadius, height / 2);
+
+  /// Primary Play / Main CTA background color (when not using gradient).
   Color get primaryCtaBg {
     switch (ctaStyle) {
-      case 'accent':
-        return accent;
-      case 'gradient':
-        return accent;
-      case 'outline':
-        return accent.withValues(alpha: isLight ? 0.14 : 0.20);
       case 'contrast':
-      default:
         return isLight ? const Color(0xFF111318) : Colors.white;
+      case 'outline':
+        return accent.withValues(alpha: isLight ? 0.12 : 0.16);
+      case 'accent':
+      case 'gradient':
+      default:
+        return accent;
+    }
+  }
+
+  /// Primary Play / Main CTA foreground icon & label color.
+  Color get primaryCtaFg {
+    switch (ctaStyle) {
+      case 'contrast':
+        return isLight ? Colors.white : const Color(0xFF09090B);
+      case 'outline':
+        return isLight ? accent : Colors.white;
+      case 'gradient':
+        final mid = Color.lerp(accent, accentSecondary, 0.5)!;
+        return mid.computeLuminance() > 0.52 ? const Color(0xFF09090B) : Colors.white;
+      case 'accent':
+      default:
+        return accent.computeLuminance() > 0.52 ? const Color(0xFF09090B) : Colors.white;
     }
   }
 
@@ -255,154 +369,221 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     );
   }
 
-  Color get primaryCtaFg {
-    switch (ctaStyle) {
-      case 'accent':
-        return highContrastOn(accent);
-      case 'gradient':
-        final avgLum = (accent.computeLuminance() + accentSecondary.computeLuminance()) / 2.0;
-        return avgLum > 0.48 ? const Color(0xFF0F1117) : Colors.white;
-      case 'outline':
-        return isLight ? accent : Colors.white;
-      case 'contrast':
-      default:
-        return isLight ? Colors.white : const Color(0xFF09090B);
-    }
-  }
-
   Border? get primaryCtaBorder {
     if (ctaStyle == 'outline') {
-      return Border.all(color: accent.withValues(alpha: 0.72), width: 1.2);
+      return Border.all(color: accent, width: 1.4);
     }
-    if (frameStyle == 'neon' && ctaStyle != 'contrast') {
-      return Border.all(color: Colors.white.withValues(alpha: 0.28), width: 0.8);
+    if (frameStyle == 'neon') {
+      return Border.all(color: Colors.white.withValues(alpha: 0.28), width: 0.9);
     }
     return null;
   }
 
   List<BoxShadow> get primaryCtaShadow {
-    if (ctaStyle == 'gradient' || frameStyle == 'neon' || ctaStyle == 'accent') {
+    if (ctaStyle == 'outline') return const [];
+    if (ctaStyle == 'gradient' || frameStyle == 'neon') {
       return [
         BoxShadow(
-          color: accent.withValues(alpha: isLight ? 0.28 : 0.36),
-          blurRadius: 22,
-          offset: const Offset(0, 7),
+          color: accent.withValues(alpha: isLight ? 0.28 : 0.38),
+          blurRadius: 20,
+          offset: const Offset(0, 6),
         ),
       ];
     }
     return [
       BoxShadow(
-        color: Colors.black.withValues(alpha: isLight ? 0.14 : 0.36),
-        blurRadius: 20,
-        offset: const Offset(0, 7),
+        color: Colors.black.withValues(alpha: isLight ? 0.16 : 0.34),
+        blurRadius: 18,
+        offset: const Offset(0, 6),
       ),
     ];
   }
 
-  /// Active segmented / filter / track pill fill & foreground matching the skin's personality.
-  Color get activePillBg =>
-      (ctaStyle == 'contrast') ? (isLight ? const Color(0xFF111318) : Colors.white) : accent;
+  /// Selected filter/version/track pill background.
+  Color get activePillBg => ctaStyle == 'contrast'
+      ? (isLight ? const Color(0xFF111318) : Colors.white)
+      : accent;
 
-  Color get activePillFg => highContrastOn(activePillBg);
+  Color get activePillFg => ctaStyle == 'contrast'
+      ? (isLight ? Colors.white : const Color(0xFF09090B))
+      : (accent.computeLuminance() > 0.52 ? const Color(0xFF09090B) : Colors.white);
 
-  Color get subtleChipBg =>
-      isLight ? fg.withValues(alpha: 0.065) : Colors.white.withValues(alpha: 0.09);
+  /// Subtle translucent chip/action surface.
+  Color get subtleChipBg => isLight
+      ? Colors.black.withValues(alpha: 0.055)
+      : Colors.white.withValues(alpha: 0.09);
 
-  Color get subtleChipHoverBg =>
-      isLight ? fg.withValues(alpha: 0.12) : Colors.white.withValues(alpha: 0.16);
+  Color get subtleChipHoverBg => isLight
+      ? Colors.black.withValues(alpha: 0.095)
+      : Colors.white.withValues(alpha: 0.16);
 
-  double radiusForPill(double height) =>
-      math.min(pillRadius, height / 2.0);
-
-  Border? cardBorder({bool hovered = false, bool selected = false}) {
+  /// Card border decoration respecting `frameStyle` & `cardHoverEffect`.
+  BoxBorder? cardBorder({bool hovered = false, bool selected = false}) {
     if (selected) {
-      final selColor = frameStyle == 'neon' || ctaStyle != 'contrast'
-          ? accent.withValues(alpha: 0.82)
-          : borderStrong;
-      return Border.all(color: selColor, width: 1.25);
+      return Border.all(
+        color: ctaStyle == 'contrast' ? fg : accent,
+        width: frameStyle == 'neon' ? 1.6 : 1.35,
+      );
+    }
+    if (hovered && cardHoverEffect == 'glow_ring') {
+      return Border.all(color: accent, width: 2.0);
     }
     switch (frameStyle) {
       case 'neon':
         return Border.all(
-          color: hovered ? accent.withValues(alpha: 0.88) : accent.withValues(alpha: isLight ? 0.28 : 0.32),
-          width: hovered ? 1.4 : 1.0,
+          color: hovered ? accent : borderStrong,
+          width: hovered ? 1.3 : 0.95,
         );
       case 'hairline':
         return Border.all(
           color: hovered ? borderStrong : border,
-          width: hovered ? 1.2 : 0.85,
+          width: 0.85,
         );
       case 'borderless':
       default:
         if (hovered) {
-          return Border.all(color: borderStrong, width: 1.15);
+          return Border.all(color: borderStrong, width: 0.85);
         }
-        return isLight
-            ? Border.all(color: Colors.black.withValues(alpha: 0.05), width: 0.6)
-            : Border.all(color: Colors.white.withValues(alpha: 0.06), width: 0.5);
+        return isLight ? Border.all(color: border, width: 0.65) : null;
     }
   }
 
+  /// Card drop shadow respecting light vs dark vs glow_ring/neon mood.
   List<BoxShadow> posterShadow({bool hovered = false}) {
-    if (frameStyle == 'neon') {
+    if (hovered && cardHoverEffect == 'glow_ring') {
       return [
         BoxShadow(
-          color: hovered
-              ? accent.withValues(alpha: 0.32)
-              : Colors.black.withValues(alpha: isLight ? 0.14 : 0.48),
-          blurRadius: hovered ? 26 : 14,
-          offset: Offset(0, hovered ? 10 : 6),
+          color: accent.withValues(alpha: isLight ? 0.32 : 0.48),
+          blurRadius: 24,
+          spreadRadius: 1,
+          offset: const Offset(0, 6),
+        ),
+        BoxShadow(
+          color: Colors.black.withValues(alpha: isLight ? 0.14 : 0.56),
+          blurRadius: 22,
+          offset: const Offset(0, 10),
+        ),
+      ];
+    }
+    if (frameStyle == 'neon' && hovered) {
+      return [
+        BoxShadow(
+          color: accent.withValues(alpha: 0.34),
+          blurRadius: 24,
+          offset: const Offset(0, 8),
+        ),
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.55),
+          blurRadius: 20,
+          offset: const Offset(0, 10),
         ),
       ];
     }
     if (isLight) {
       return [
         BoxShadow(
-          color: Colors.black.withValues(alpha: hovered ? 0.16 : 0.085),
+          color: Colors.black.withValues(alpha: hovered ? 0.14 : 0.075),
           blurRadius: hovered ? 26 : 16,
-          offset: Offset(0, hovered ? 10 : 6),
+          offset: Offset(0, hovered ? 12 : 6),
         ),
       ];
     }
     return [
       BoxShadow(
-        color: Colors.black.withValues(alpha: hovered ? 0.58 : 0.34),
-        blurRadius: hovered ? 24 : 13,
-        offset: Offset(0, hovered ? 10 : 5),
+        color: Colors.black.withValues(alpha: hovered ? 0.58 : 0.38),
+        blurRadius: hovered ? 28 : 18,
+        offset: Offset(0, hovered ? 12 : 8),
       ),
     ];
   }
 
+  /// Apply editorial serif font fallback to major headings when skin specifies `editorialSerif`.
   TextStyle applyHeadlineMood(TextStyle base) {
     if (!editorialSerif) return base;
     return base.copyWith(
-      fontFamily: 'Georgia',
-      fontFamilyFallback: serifFontFallback,
-      letterSpacing: (base.letterSpacing ?? 0) + 0.25,
+      fontFamilyFallback: const [
+        'New York',
+        'Georgia',
+        'Songti SC',
+        'STSong',
+        'Noto Serif CJK SC',
+        'Times New Roman',
+        'serif',
+      ],
+      letterSpacing: (base.letterSpacing ?? -0.5) + 0.35,
     );
   }
 
+  /// Apply interactive modular overrides (Jellyfin Skin Manager style live layout toggles).
+  VedroSkin applyOverrides(Map<String, dynamic> o) {
+    if (o.isEmpty) return this;
+    return copyWith(
+      navLayout: o['nav_layout']?.toString(),
+      heroStyle: o['hero_style']?.toString(),
+      detailLayout: o['detail_layout']?.toString(),
+      backdropMode: o['backdrop_mode']?.toString(),
+      backdropBlur: (o['backdrop_blur'] as num?)?.toDouble(),
+      surfaceOpacity: (o['surface_opacity'] as num?)?.toDouble(),
+      cardStyle: o['card_style']?.toString(),
+      cardHoverEffect: o['card_hover_effect']?.toString(),
+      castStyle: o['cast_style']?.toString(),
+      preferClearLogo: o['prefer_clear_logo'] is bool ? o['prefer_clear_logo'] as bool : null,
+      editorialSerif: o['editorial_serif'] is bool ? o['editorial_serif'] as bool : null,
+      ctaStyle: o['cta_style']?.toString(),
+      frameStyle: o['frame_style']?.toString(),
+      cardRadius: (o['card_radius'] as num?)?.toDouble(),
+      pillRadius: (o['pill_radius'] as num?)?.toDouble(),
+    );
+  }
+
+  /// Convert any built-in or custom `VedroSkin` into an editable `CustomSkinSpec` template.
+  CustomSkinSpec toCustomSpec({String? newId, String? newName}) => CustomSkinSpec(
+        id: newId ?? (isCustom ? id : 'custom_${DateTime.now().millisecondsSinceEpoch}'),
+        name: newName ?? (isCustom ? name : '$name · 定制'),
+        isLight: isLight,
+        canvasHex: colorToHex(canvas),
+        surfaceHex: colorToHex(surface),
+        accentHex: colorToHex(accent),
+        accentSecondaryHex: colorToHex(accentSecondary),
+        ctaStyle: ctaStyle,
+        frameStyle: frameStyle,
+        cardRadius: cardRadius,
+        pillRadius: pillRadius,
+        ambientGlow: ambientGlow,
+        editorialSerif: editorialSerif,
+        navLayout: navLayout,
+        heroStyle: heroStyle,
+        detailLayout: detailLayout,
+        backdropMode: backdropMode,
+        backdropBlur: backdropBlur,
+        surfaceOpacity: surfaceOpacity,
+        cardStyle: cardStyle,
+        cardHoverEffect: cardHoverEffect,
+        castStyle: castStyle,
+        preferClearLogo: preferClearLogo,
+      );
+
   // ===========================================================================
-  // 9 Bold Flagship Built-in Skins ("进了不同 App 一样的感觉")
+  // 9 Bold Flagship Built-in Skins — Each with Distinct Layout, Nav, Hero, Cards & Mood!
   // ===========================================================================
 
-  /// 1. Apple TV+ Obsidian — Pure #09090B cinema room, monochrome white capsules, borderless soft cards.
-  static const VedroSkin obsidian = VedroSkin(
+  /// 1. 曜石影院 — Apple TV+ Dark Cinema (Top Floating Nav · Full-Bleed Hero · Immersive Detail)
+  static const obsidian = VedroSkin(
     id: 'obsidian',
     name: '曜石影院',
-    subtitle: 'Apple TV+ 极简暗房 · 纯白胶囊无框质感',
-    badge: 'TV+ · DARK',
+    subtitle: 'Apple TV+ 悬浮顶栏 · 全屏巨幕 · 纯白无框质感',
+    badge: 'TV+ · IMMERSIVE',
     isLight: false,
     canvas: Color(0xFF09090B),
     canvasGlow: Color(0xFF18181F),
     surface: Color(0xFF141417),
-    surface2: Color(0xFF1C1C21),
-    surface3: Color(0xFF282830),
-    field: Color(0xFF131317),
-    glass: Color(0xC2151519),
-    glassStrong: Color(0xEE18181D),
-    border: Color(0x12FFFFFF),
-    borderStrong: Color(0x2EFFFFFF),
+    surface2: Color(0xFF1D1D21),
+    surface3: Color(0xFF29292F),
+    field: Color(0xFF121215),
+    glass: Color(0xCC151518),
+    glassStrong: Color(0xF019191D),
+    border: Color(0x14FFFFFF),
+    borderStrong: Color(0x28FFFFFF),
     fg: Color(0xFFF5F5F7),
     fg2: Color(0xFFA1A1AA),
     fg3: Color(0xFF71717A),
@@ -410,152 +591,189 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     accentSecondary: Color(0xFF0A84FF),
     ctaStyle: 'contrast',
     frameStyle: 'borderless',
-    cardRadius: 13.0,
+    cardRadius: 12.0,
     pillRadius: 999.0,
     ambientGlow: false,
     editorialSerif: false,
+    navLayout: 'top_floating',
+    heroStyle: 'full_bleed',
+    detailLayout: 'apple_immersive',
+    backdropMode: 'solid_clean',
+    cardStyle: 'classic_below',
+    cardHoverEffect: 'lift',
+    castStyle: 'circle_medallion',
   );
 
-  /// 2. Daylight Porcelain — Crisp Apple Music / App Store sunlit white mode, floating white cards & jet ink.
-  static const VedroSkin daylight = VedroSkin(
+  /// 2. 纯净昼白 — Apple Music / tvOS Daylight Studio (Light Mode · Framed Sunlit Hero · White Shadow Cards)
+  static const daylight = VedroSkin(
     id: 'daylight',
     name: '纯净昼白',
-    subtitle: 'Apple Music 漫射日光浅色 · 悬浮纯白卡片与浓墨排版',
-    badge: 'LIGHT · STUDIO',
+    subtitle: 'Apple Music 漫射浅色 · 悬浮圆角画框轮播 · 纯白卡片',
+    badge: 'LIGHT · FRAMED',
     isLight: true,
     canvas: Color(0xFFF2F4F8),
     canvasGlow: Color(0xFFDCE7FF),
     surface: Color(0xFFFFFFFF),
-    surface2: Color(0xFFE7EAF0),
-    surface3: Color(0xFFDADFE8),
-    field: Color(0xFFEAECEF),
-    glass: Color(0xCCF7F8FB),
-    glassStrong: Color(0xF2FFFFFF),
+    surface2: Color(0xFFE7ECF3),
+    surface3: Color(0xFFD9E1EC),
+    field: Color(0xFFEAEFF6),
+    glass: Color(0xD9FFFFFF),
+    glassStrong: Color(0xF5FFFFFF),
     border: Color(0x140F172A),
-    borderStrong: Color(0x2E0F172A),
+    borderStrong: Color(0x260F172A),
     fg: Color(0xFF111318),
     fg2: Color(0xFF4B5565),
-    fg3: Color(0xFF7B8494),
+    fg3: Color(0xFF7C8698),
     accent: Color(0xFF0066FF),
-    accentSecondary: Color(0xFF38BDF8),
+    accentSecondary: Color(0xFF3B82F6),
     ctaStyle: 'contrast',
     frameStyle: 'borderless',
-    cardRadius: 16.0,
+    cardRadius: 15.0,
     pillRadius: 999.0,
     ambientGlow: true,
     editorialSerif: false,
+    navLayout: 'top_floating',
+    heroStyle: 'framed_stage',
+    detailLayout: 'apple_immersive',
+    backdropMode: 'ambient_orb',
+    cardStyle: 'classic_below',
+    cardHoverEffect: 'lift',
+    castStyle: 'circle_medallion',
   );
 
-  /// 3. Kinfolk Editorial Paper — Warm ivory magazine light skin with book-plate borders & serif headlines.
-  static const VedroSkin editorialPaper = VedroSkin(
+  /// 3. 画报暖纸 — Kinfolk / Letterboxd Editorial Paper (Light Warm Paper · Split Showcase · Centered Detail · Serif)
+  static const editorialPaper = VedroSkin(
     id: 'editorial_paper',
     name: '画报暖纸',
-    subtitle: 'Kinfolk 艺术画报浅色 · 暖米羊皮纸与经典衬线字',
-    badge: 'LIGHT · SERIF',
+    subtitle: 'Kinfolk 双栏画报橱窗 · 居中对称详情页 · 电影衬线字',
+    badge: 'SERIF · EDITORIAL',
     isLight: true,
     canvas: Color(0xFFF7F2E7),
-    canvasGlow: Color(0xFFF0DEC2),
+    canvasGlow: Color(0xFFEFDFC6),
     surface: Color(0xFFFFFCF5),
     surface2: Color(0xFFEDE5D5),
-    surface3: Color(0xFFE2D7C3),
-    field: Color(0xFFEFE8D8),
-    glass: Color(0xD4FAF5EB),
-    glassStrong: Color(0xF5FFFDF8),
-    border: Color(0x223E2E1E),
-    borderStrong: Color(0x453E2E1E),
+    surface3: Color(0xFFE0D5C0),
+    field: Color(0xFFEFE8D9),
+    glass: Color(0xDEFFFCF5),
+    glassStrong: Color(0xF7FFFCF5),
+    border: Color(0x1C3E2C1C),
+    borderStrong: Color(0x363E2C1C),
     fg: Color(0xFF211A13),
-    fg2: Color(0xFF5C5043),
-    fg3: Color(0xFF8A7B6A),
+    fg2: Color(0xFF5D5042),
+    fg3: Color(0xFF8C7D6B),
     accent: Color(0xFFC25E28),
-    accentSecondary: Color(0xFFD97706),
+    accentSecondary: Color(0xFFD97736),
     ctaStyle: 'accent',
     frameStyle: 'hairline',
     cardRadius: 7.0,
     pillRadius: 8.0,
     ambientGlow: true,
     editorialSerif: true,
+    navLayout: 'top_floating',
+    heroStyle: 'split_showcase',
+    detailLayout: 'centered_editorial',
+    backdropMode: 'ambient_orb',
+    cardStyle: 'classic_below',
+    cardHoverEffect: 'zoom_art',
+    castStyle: 'compact_pill',
   );
 
-  /// 4. Infuse Deep Ocean — Arctic midnight sapphire canvas with frosted oceanic glass & luminous ice-blue pills.
-  static const VedroSkin oceanGlass = VedroSkin(
+  /// 4. 深海流光 — Ultrachromic Blurred Fanart Glass (Centered Capsule Island · Full-Page Fanart Blur · 2:3 Cast)
+  static const oceanGlass = VedroSkin(
     id: 'ocean_glass',
-    name: '深海蓝调',
-    subtitle: 'Infuse 北极深海 · 冰川蓝琉璃漫反射与大圆角',
-    badge: 'OCEAN · GLASS',
+    name: '流光琉璃',
+    subtitle: '致敬 Ultrachromic · 居中灵动胶囊岛 · 全页毛玻璃剧照沉浸',
+    badge: 'ULTRACHROMIC · BLUR',
     isLight: false,
     canvas: Color(0xFF06101E),
-    canvasGlow: Color(0xFF0EA5E9),
-    surface: Color(0xFF0D1D33),
-    surface2: Color(0xFF132845),
-    surface3: Color(0xFF1B365C),
-    field: Color(0xFF0B192C),
-    glass: Color(0xC40B1B30),
-    glassStrong: Color(0xEE0E213B),
-    border: Color(0x2256B8FF),
-    borderStrong: Color(0x5238BDF8),
+    canvasGlow: Color(0xFF0E3358),
+    surface: Color(0xFF0D1B2E),
+    surface2: Color(0xFF132640),
+    surface3: Color(0xFF1C3557),
+    field: Color(0xFF0A1626),
+    glass: Color(0xBD0B1829),
+    glassStrong: Color(0xEE0E1E33),
+    border: Color(0x227DD3FC),
+    borderStrong: Color(0x457DD3FC),
     fg: Color(0xFFF0F7FF),
-    fg2: Color(0xFF9CC2E6),
-    fg3: Color(0xFF648BB2),
+    fg2: Color(0xFF9BB4D0),
+    fg3: Color(0xFF6480A0),
     accent: Color(0xFF38BDF8),
-    accentSecondary: Color(0xFF3B82F6),
+    accentSecondary: Color(0xFF2563EB),
     ctaStyle: 'accent',
     frameStyle: 'hairline',
     cardRadius: 18.0,
     pillRadius: 999.0,
     ambientGlow: true,
     editorialSerif: false,
+    navLayout: 'centered_capsule',
+    heroStyle: 'full_bleed',
+    detailLayout: 'jellyfin_glass',
+    backdropMode: 'blurred_fanart',
+    backdropBlur: 42.0,
+    surfaceOpacity: 0.72,
+    cardStyle: 'classic_below',
+    cardHoverEffect: 'glow_ring',
+    castStyle: 'portrait_card',
   );
 
-  /// 5. Criterion 35mm Film — Warm walnut screening room, Kodak 35mm amber gold accents & sharp gallery frames.
-  static const VedroSkin criterionFilm = VedroSkin(
+  /// 5. 胶片暗房 — Criterion 35mm Archive (Left Sidebar · Symmetrical Detail · Pure Hover-Reveal Poster Wall)
+  static const criterionFilm = VedroSkin(
     id: 'criterion_film',
     name: '胶片暗房',
-    subtitle: 'Criterion 35mm 放映室 · 暖棕胡桃木与柯达琥珀金',
-    badge: 'FILM · 35MM',
+    subtitle: '左侧放映室边栏 · 居中对称详情页 · 纯海报悬停显字墙',
+    badge: '35MM · ARCHIVE',
     isLight: false,
     canvas: Color(0xFF120E0B),
-    canvasGlow: Color(0xFFD97706),
-    surface: Color(0xFF1B1510),
-    surface2: Color(0xFF261E17),
-    surface3: Color(0xFF34291F),
-    field: Color(0xFF18120E),
-    glass: Color(0xC81B1510),
-    glassStrong: Color(0xF0211913),
-    border: Color(0x26E5A93C),
-    borderStrong: Color(0x66E5A93C),
-    fg: Color(0xFFF7EFE2),
-    fg2: Color(0xFFC4B5A2),
-    fg3: Color(0xFF8C7D6B),
+    canvasGlow: Color(0xFF382413),
+    surface: Color(0xFF1C1612),
+    surface2: Color(0xFF271F19),
+    surface3: Color(0xFF362B22),
+    field: Color(0xFF17120E),
+    glass: Color(0xCC1B1511),
+    glassStrong: Color(0xF2201914),
+    border: Color(0x24F3D5A5),
+    borderStrong: Color(0x42F3D5A5),
+    fg: Color(0xFFF7EFE4),
+    fg2: Color(0xFFBBA992),
+    fg3: Color(0xFF84735E),
     accent: Color(0xFFE5A93C),
-    accentSecondary: Color(0xFFF59E0B),
+    accentSecondary: Color(0xFFC87D28),
     ctaStyle: 'accent',
     frameStyle: 'hairline',
     cardRadius: 5.0,
-    pillRadius: 7.0,
+    pillRadius: 6.0,
     ambientGlow: true,
     editorialSerif: true,
+    navLayout: 'left_rail',
+    heroStyle: 'split_showcase',
+    detailLayout: 'centered_editorial',
+    backdropMode: 'ambient_orb',
+    cardStyle: 'hover_reveal',
+    cardHoverEffect: 'zoom_art',
+    castStyle: 'portrait_card',
   );
 
-  /// 6. Cyber Neon — Deep ultraviolet abyss, angular tech geometry, dual-tone magenta/cyan glow & neon frames.
-  static const VedroSkin cyberNeon = VedroSkin(
+  /// 6. 霓虹赛博 — Night City HUD (Centered Capsule HUD · Framed Neon Stage · Overlay Posters · Glow Ring)
+  static const cyberNeon = VedroSkin(
     id: 'cyber_neon',
     name: '霓虹赛博',
-    subtitle: 'Night City 机能风 · 紫外深空、锐利切角与双色霓虹光晕',
-    badge: 'CYBER · NEON',
+    subtitle: '居中机能胶囊岛 · 霓虹切角画框 · 海报内嵌字与电光环',
+    badge: 'CYBER · HUD',
     isLight: false,
     canvas: Color(0xFF080514),
-    canvasGlow: Color(0xFFD946EF),
-    surface: Color(0xFF120B26),
-    surface2: Color(0xFF1B1138),
-    surface3: Color(0xFF27184F),
-    field: Color(0xFF0F0920),
-    glass: Color(0xC8120B28),
-    glassStrong: Color(0xF0170E33),
+    canvasGlow: Color(0xFF2B0F4C),
+    surface: Color(0xFF110B24),
+    surface2: Color(0xFF1A1136),
+    surface3: Color(0xFF26194D),
+    field: Color(0xFF0D081D),
+    glass: Color(0xC8110B26),
+    glassStrong: Color(0xF0150E2E),
     border: Color(0x3822D3EE),
-    borderStrong: Color(0x99F43F5E),
-    fg: Color(0xFFF8FAFC),
-    fg2: Color(0xFFC4B5FD),
-    fg3: Color(0xFF7E74A8),
+    borderStrong: Color(0x78F43F5E),
+    fg: Color(0xFFF8F7FF),
+    fg2: Color(0xFFB8AED8),
+    fg3: Color(0xFF7B6FA3),
     accent: Color(0xFFF43F5E),
     accentSecondary: Color(0xFF06B6D4),
     ctaStyle: 'gradient',
@@ -564,150 +782,185 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     pillRadius: 6.0,
     ambientGlow: true,
     editorialSerif: false,
+    navLayout: 'centered_capsule',
+    heroStyle: 'framed_stage',
+    detailLayout: 'jellyfin_glass',
+    backdropMode: 'blurred_fanart',
+    backdropBlur: 34.0,
+    surfaceOpacity: 0.76,
+    cardStyle: 'overlay_poster',
+    cardHoverEffect: 'glow_ring',
+    castStyle: 'compact_pill',
   );
 
-  /// 7. Nordic Aurora — Calm deep pine-emerald sanctuary with mint-jade aurora gradient highlights.
-  static const VedroSkin nordicAurora = VedroSkin(
+  /// 7. 极光侧栏 — Scyfin / Plex Pro Sidebar (Left Vertical Sidebar · Split Showcase · 2:3 Portrait Cast)
+  static const nordicAurora = VedroSkin(
     id: 'nordic_aurora',
-    name: '极光森境',
-    subtitle: 'Nordic 北境松林 · 墨绿雾面玻璃与翡翠极光渐变',
-    badge: 'AURORA · MIST',
+    name: '极光侧栏',
+    subtitle: '致敬 Scyfin / Plex · 左侧垂直导航栏 · 双栏橱窗与竖版影人卡',
+    badge: 'SCYFIN · SIDEBAR',
     isLight: false,
     canvas: Color(0xFF06130F),
-    canvasGlow: Color(0xFF10B981),
-    surface: Color(0xFF0E211B),
-    surface2: Color(0xFF153027),
-    surface3: Color(0xFF1E4236),
-    field: Color(0xFF0B1B16),
-    glass: Color(0xC60C1E18),
-    glassStrong: Color(0xEE10261F),
-    border: Color(0x2434D399),
-    borderStrong: Color(0x5E34D399),
+    canvasGlow: Color(0xFF0D3B2E),
+    surface: Color(0xFF0D1F19),
+    surface2: Color(0xFF142D25),
+    surface3: Color(0xFF1E4035),
+    field: Color(0xFF0A1914),
+    glass: Color(0xC40C1D18),
+    glassStrong: Color(0xEE10241E),
+    border: Color(0x226EE7B7),
+    borderStrong: Color(0x456EE7B7),
     fg: Color(0xFFECFDF5),
-    fg2: Color(0xFF99C7B5),
-    fg3: Color(0xFF5F8D7B),
+    fg2: Color(0xFF99C2B3),
+    fg3: Color(0xFF618B7C),
     accent: Color(0xFF34D399),
     accentSecondary: Color(0xFF14B8A6),
     ctaStyle: 'gradient',
     frameStyle: 'hairline',
-    cardRadius: 16.0,
+    cardRadius: 14.0,
     pillRadius: 999.0,
     ambientGlow: true,
     editorialSerif: false,
+    navLayout: 'left_rail',
+    heroStyle: 'split_showcase',
+    detailLayout: 'apple_immersive',
+    backdropMode: 'ambient_orb',
+    cardStyle: 'classic_below',
+    cardHoverEffect: 'glow_ring',
+    castStyle: 'portrait_card',
   );
 
-  /// 8. Grand Velvet — Royal burgundy opera house with champagne-rose serif typography & plush curves.
-  static const VedroSkin grandVelvet = VedroSkin(
+  /// 8. 星幕画框 — ElegantFin / Jellyseerr Stage (Framed Panoramic Hero · Overlay Gradient Posters · Fanart Glass)
+  static const grandVelvet = VedroSkin(
     id: 'grand_velvet',
-    name: '丝绒歌剧',
-    subtitle: 'Grand Opera 皇家剧院 · 勃艮第红丝绒与香槟金衬线',
-    badge: 'VELVET · LUXE',
+    name: '丝绒画框',
+    subtitle: '致敬 ElegantFin · 悬浮圆角画框轮播 · 海报内嵌渐变标题',
+    badge: 'ELEGANTFIN · STAGE',
     isLight: false,
-    canvas: Color(0xFF14060A),
-    canvasGlow: Color(0xFFE11D48),
-    surface: Color(0xFF210B12),
-    surface2: Color(0xFF2E101A),
-    surface3: Color(0xFF3F1724),
-    field: Color(0xFF1B090F),
-    glass: Color(0xC8210B12),
-    glassStrong: Color(0xF0280D16),
-    border: Color(0x28FB7185),
-    borderStrong: Color(0x66FB7185),
-    fg: Color(0xFFFDF2F5),
-    fg2: Color(0xFFD8AEB8),
-    fg3: Color(0xFF966B76),
+    canvas: Color(0xFF13070D),
+    canvasGlow: Color(0xFF4A1026),
+    surface: Color(0xFF200D17),
+    surface2: Color(0xFF2E1422),
+    surface3: Color(0xFF401D2F),
+    field: Color(0xFF1A0A12),
+    glass: Color(0xC41E0C15),
+    glassStrong: Color(0xEE26101B),
+    border: Color(0x24FDA4AF),
+    borderStrong: Color(0x48FDA4AF),
+    fg: Color(0xFFFFF1F2),
+    fg2: Color(0xFFD4A5B0),
+    fg3: Color(0xFF946672),
     accent: Color(0xFFFB7185),
     accentSecondary: Color(0xFFE11D48),
-    ctaStyle: 'accent',
-    frameStyle: 'hairline',
+    ctaStyle: 'gradient',
+    frameStyle: 'borderless',
     cardRadius: 20.0,
     pillRadius: 999.0,
     ambientGlow: true,
     editorialSerif: true,
+    navLayout: 'top_floating',
+    heroStyle: 'framed_stage',
+    detailLayout: 'jellyfin_glass',
+    backdropMode: 'blurred_fanart',
+    backdropBlur: 44.0,
+    surfaceOpacity: 0.74,
+    cardStyle: 'overlay_poster',
+    cardHoverEffect: 'lift',
+    castStyle: 'circle_medallion',
   );
 
-  /// 9. Pure OLED Zero — Absolute #000000 zero-nit AMOLED black with Linear-grade 1px precision borders.
-  static const VedroSkin pureOled = VedroSkin(
+  /// 9. 极夜海报墙 — True OLED `#000000` Poster-Wall Mode (Left Rail · No Hero Clutter · Instant Dense Rails)
+  static const pureOled = VedroSkin(
     id: 'pure_oled',
     name: '极夜纯黑',
-    subtitle: 'True OLED 零辉度纯黑 · Linear 级 1px 极客几何细线',
-    badge: 'OLED · #000',
+    subtitle: '零辉度 #000 纯黑 · 极简无轮播直达海报墙 · 1px 极客线框',
+    badge: 'OLED · POSTER WALL',
     isLight: false,
     canvas: Color(0xFF000000),
-    canvasGlow: Color(0xFF27272A),
-    surface: Color(0xFF0A0A0D),
-    surface2: Color(0xFF141418),
-    surface3: Color(0xFF1F1F26),
-    field: Color(0xFF09090C),
-    glass: Color(0xCC09090C),
-    glassStrong: Color(0xF20D0D11),
-    border: Color(0x24FFFFFF),
-    borderStrong: Color(0x48FFFFFF),
-    fg: Color(0xFFFAFAFA),
+    canvasGlow: Color(0xFF000000),
+    surface: Color(0xFF0A0A0C),
+    surface2: Color(0xFF121216),
+    surface3: Color(0xFF1C1C22),
+    field: Color(0xFF08080A),
+    glass: Color(0xD808080A),
+    glassStrong: Color(0xF50B0B0E),
+    border: Color(0x22FFFFFF),
+    borderStrong: Color(0x40FFFFFF),
+    fg: Color(0xFFFFFFFF),
     fg2: Color(0xFFA1A1AA),
     fg3: Color(0xFF63636B),
-    accent: Color(0xFFA78BFA),
+    accent: Color(0xFF818CF8),
     accentSecondary: Color(0xFF6366F1),
     ctaStyle: 'contrast',
     frameStyle: 'hairline',
     cardRadius: 8.0,
-    pillRadius: 10.0,
+    pillRadius: 8.0,
     ambientGlow: false,
     editorialSerif: false,
+    navLayout: 'left_rail',
+    heroStyle: 'compact_minimal',
+    detailLayout: 'apple_immersive',
+    backdropMode: 'solid_clean',
+    cardStyle: 'classic_below',
+    cardHoverEffect: 'lift',
+    castStyle: 'compact_pill',
   );
 
-  static const List<VedroSkin> presets = <VedroSkin>[
+  static const List<VedroSkin> presets = [
     obsidian,
+    oceanGlass,
+    grandVelvet,
+    nordicAurora,
     daylight,
     editorialPaper,
-    oceanGlass,
     criterionFilm,
     cyberNeon,
-    nordicAurora,
-    grandVelvet,
     pureOled,
   ];
 
-  static VedroSkin byId(
-    String id, {
-    List<CustomSkinSpec> customSkins = const [],
-  }) {
-    for (final c in customSkins) {
-      if (c.id == id) return VedroSkin.fromCustom(c);
+  static Color parseHex(String hex, Color fallback) {
+    final clean = hex.trim().replaceAll('#', '');
+    if (clean.length == 6) {
+      final v = int.tryParse('FF$clean', radix: 16);
+      if (v != null) return Color(v);
+    } else if (clean.length == 8) {
+      final v = int.tryParse(clean, radix: 16);
+      if (v != null) return Color(v);
     }
-    for (final p in presets) {
-      if (p.id == id) return p;
-    }
-    return obsidian;
+    return fallback;
   }
 
-  /// Synthesizes a complete, contrast-balanced `VedroSkin` from a user-created `CustomSkinSpec`.
+  static String colorToHex(Color c) {
+    final r = (c.r * 255).round().clamp(0, 255).toRadixString(16).padLeft(2, '0');
+    final g = (c.g * 255).round().clamp(0, 255).toRadixString(16).padLeft(2, '0');
+    final b = (c.b * 255).round().clamp(0, 255).toRadixString(16).padLeft(2, '0');
+    return '#${r.toUpperCase()}${g.toUpperCase()}${b.toUpperCase()}';
+  }
+
+  /// Synthesize a complete, harmonious `VedroSkin` from a user-authored `CustomSkinSpec`.
   factory VedroSkin.fromCustom(CustomSkinSpec spec) {
     final light = spec.isLight;
-    final canvas = parseHexColor(
-      spec.canvasHex,
-      light ? const Color(0xFFF3F4F8) : const Color(0xFF0B1020),
-    );
-    final accent = parseHexColor(spec.accentHex, const Color(0xFF38BDF8));
-    final accent2 = parseHexColor(spec.accentSecondaryHex, accent);
+    final canvas = parseHex(spec.canvasHex, light ? const Color(0xFFF3F5F9) : const Color(0xFF0B1020));
+    final accent = parseHex(spec.accentHex, const Color(0xFF38BDF8));
+    final accent2 = parseHex(spec.accentSecondaryHex, accent);
 
     final hslCanvas = HSLColor.fromColor(canvas);
-    final Color autoSurface = light
+    final autoSurface = light
         ? HSLColor.fromAHSL(
             1.0,
             hslCanvas.hue,
-            (hslCanvas.saturation * 0.5).clamp(0.0, 1.0),
-            (hslCanvas.lightness + 0.055).clamp(0.0, 1.0),
+            (hslCanvas.saturation * 0.45).clamp(0.0, 1.0),
+            (hslCanvas.lightness + 0.065).clamp(0.0, 1.0),
           ).toColor()
         : HSLColor.fromAHSL(
             1.0,
             hslCanvas.hue,
             (hslCanvas.saturation * 0.88).clamp(0.0, 1.0),
-            (hslCanvas.lightness + 0.048).clamp(0.0, 0.35),
+            (hslCanvas.lightness + 0.055).clamp(0.0, 0.35),
           ).toColor();
 
     final surface = spec.surfaceHex.trim().isNotEmpty
-        ? parseHexColor(spec.surfaceHex, autoSurface)
+        ? parseHex(spec.surfaceHex, autoSurface)
         : autoSurface;
     final hslSurf = HSLColor.fromColor(surface);
     final surface2 = light
@@ -720,8 +973,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
         : HSLColor.fromAHSL(
             1.0,
             hslSurf.hue,
-            (hslSurf.saturation * 0.9).clamp(0.0, 1.0),
-            (hslSurf.lightness + 0.045).clamp(0.0, 0.45),
+            (hslSurf.saturation * 0.92).clamp(0.0, 1.0),
+            (hslSurf.lightness + 0.048).clamp(0.0, 0.45),
           ).toColor();
     final surface3 = light
         ? HSLColor.fromAHSL(
@@ -752,10 +1005,19 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
         ? accent2.withValues(alpha: 0.85)
         : (light ? Colors.black.withValues(alpha: 0.22) : Colors.white.withValues(alpha: 0.28));
 
+    final navDesc = spec.navLayout == 'left_rail'
+        ? '左侧栏'
+        : (spec.navLayout == 'centered_capsule' ? '胶囊岛' : '悬浮顶栏');
+    final heroDesc = spec.heroStyle == 'framed_stage'
+        ? '画框轮播'
+        : (spec.heroStyle == 'split_showcase'
+            ? '双栏橱窗'
+            : (spec.heroStyle == 'compact_minimal' ? '纯海报墙' : '全屏巨幕'));
+
     return VedroSkin(
       id: spec.id,
       name: spec.name.trim().isEmpty ? '我的皮肤' : spec.name.trim(),
-      subtitle: '${light ? '浅色基底' : '深色基底'} · 自定义专属风格',
+      subtitle: '${light ? '浅色' : '深色'} · $navDesc · $heroDesc',
       badge: 'DIY · CUSTOM',
       isLight: light,
       canvas: canvas,
@@ -779,29 +1041,32 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       pillRadius: spec.pillRadius,
       ambientGlow: spec.ambientGlow,
       editorialSerif: spec.editorialSerif,
+      navLayout: spec.navLayout,
+      heroStyle: spec.heroStyle,
+      detailLayout: spec.detailLayout,
+      backdropMode: spec.backdropMode,
+      backdropBlur: spec.backdropBlur,
+      surfaceOpacity: spec.surfaceOpacity,
+      cardStyle: spec.cardStyle,
+      cardHoverEffect: spec.cardHoverEffect,
+      castStyle: spec.castStyle,
+      preferClearLogo: spec.preferClearLogo,
       isCustom: true,
     );
   }
 
-  /// Export any built-in or custom skin into an editable `CustomSkinSpec` template!
-  CustomSkinSpec toCustomTemplate({String? newId, String? newName}) => CustomSkinSpec(
-        id: newId ?? 'custom_${DateTime.now().millisecondsSinceEpoch}',
-        name: newName ?? '$name · 定制',
-        isLight: isLight,
-        canvasHex: colorToHex6(canvas),
-        surfaceHex: colorToHex6(surface),
-        accentHex: colorToHex6(accent),
-        accentSecondaryHex: colorToHex6(accentSecondary),
-        ctaStyle: ctaStyle,
-        frameStyle: frameStyle,
-        cardRadius: cardRadius,
-        pillRadius: pillRadius,
-        ambientGlow: ambientGlow,
-        editorialSerif: editorialSerif,
-      );
-
-  static VedroSkin of(BuildContext context) =>
-      Theme.of(context).extension<VedroSkin>() ?? obsidian;
+  static VedroSkin byId(
+    String id, {
+    List<CustomSkinSpec> customSkins = const [],
+  }) {
+    for (final p in presets) {
+      if (p.id == id) return p;
+    }
+    for (final c in customSkins) {
+      if (c.id == id) return VedroSkin.fromCustom(c);
+    }
+    return obsidian;
+  }
 
   @override
   VedroSkin copyWith({
@@ -831,6 +1096,16 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     double? pillRadius,
     bool? ambientGlow,
     bool? editorialSerif,
+    String? navLayout,
+    String? heroStyle,
+    String? detailLayout,
+    String? backdropMode,
+    double? backdropBlur,
+    double? surfaceOpacity,
+    String? cardStyle,
+    String? cardHoverEffect,
+    String? castStyle,
+    bool? preferClearLogo,
     bool? isCustom,
   }) =>
       VedroSkin(
@@ -860,6 +1135,16 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
         pillRadius: pillRadius ?? this.pillRadius,
         ambientGlow: ambientGlow ?? this.ambientGlow,
         editorialSerif: editorialSerif ?? this.editorialSerif,
+        navLayout: navLayout ?? this.navLayout,
+        heroStyle: heroStyle ?? this.heroStyle,
+        detailLayout: detailLayout ?? this.detailLayout,
+        backdropMode: backdropMode ?? this.backdropMode,
+        backdropBlur: backdropBlur ?? this.backdropBlur,
+        surfaceOpacity: surfaceOpacity ?? this.surfaceOpacity,
+        cardStyle: cardStyle ?? this.cardStyle,
+        cardHoverEffect: cardHoverEffect ?? this.cardHoverEffect,
+        castStyle: castStyle ?? this.castStyle,
+        preferClearLogo: preferClearLogo ?? this.preferClearLogo,
         isCustom: isCustom ?? this.isCustom,
       );
 
@@ -889,41 +1174,118 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       accentSecondary: Color.lerp(accentSecondary, other.accentSecondary, t)!,
       ctaStyle: t < 0.5 ? ctaStyle : other.ctaStyle,
       frameStyle: t < 0.5 ? frameStyle : other.frameStyle,
-      cardRadius: cardRadius + (other.cardRadius - cardRadius) * t,
-      pillRadius: pillRadius + (other.pillRadius - pillRadius) * t,
+      cardRadius: lerpDoubleD(cardRadius, other.cardRadius, t),
+      pillRadius: lerpDoubleD(pillRadius, other.pillRadius, t),
       ambientGlow: t < 0.5 ? ambientGlow : other.ambientGlow,
       editorialSerif: t < 0.5 ? editorialSerif : other.editorialSerif,
+      navLayout: t < 0.5 ? navLayout : other.navLayout,
+      heroStyle: t < 0.5 ? heroStyle : other.heroStyle,
+      detailLayout: t < 0.5 ? detailLayout : other.detailLayout,
+      backdropMode: t < 0.5 ? backdropMode : other.backdropMode,
+      backdropBlur: lerpDoubleD(backdropBlur, other.backdropBlur, t),
+      surfaceOpacity: lerpDoubleD(surfaceOpacity, other.surfaceOpacity, t),
+      cardStyle: t < 0.5 ? cardStyle : other.cardStyle,
+      cardHoverEffect: t < 0.5 ? cardHoverEffect : other.cardHoverEffect,
+      castStyle: t < 0.5 ? castStyle : other.castStyle,
+      preferClearLogo: t < 0.5 ? preferClearLogo : other.preferClearLogo,
       isCustom: t < 0.5 ? isCustom : other.isCustom,
     );
   }
+
+  static double lerpDoubleD(double a, double b, double t) => a + (b - a) * t;
 }
 
-/// Optional ambient atmospheric canvas wrapper that renders subtle aurora / darkroom glow
-/// behind page content when `skin.ambientGlow` is active.
+/// Global atmospheric backdrop canvas:
+/// - `'solid_clean'`: pure solid `skin.canvas`
+/// - `'ambient_orb'`: dual-tone atmospheric radial color wash
+/// - `'blurred_fanart'`: Ultrachromic / Jellyfin full-page blurred fanart backdrop (`backdropImageUrl`)!
 class VedroSkinCanvas extends StatelessWidget {
-  const VedroSkinCanvas({super.key, required this.child});
+  const VedroSkinCanvas({
+    super.key,
+    required this.child,
+    this.backdropImageUrl,
+  });
+
   final Widget child;
+  final String? backdropImageUrl;
 
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    if (!skin.ambientGlow) {
+    final showFanart = skin.usesBlurredFanart &&
+        backdropImageUrl != null &&
+        backdropImageUrl!.trim().isNotEmpty;
+    final showOrb = skin.backdropMode == 'ambient_orb' ||
+        (skin.ambientGlow && skin.backdropMode != 'solid_clean');
+
+    if (!showFanart && !showOrb) {
       return ColoredBox(color: skin.canvas, child: child);
     }
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: skin.canvas,
-        gradient: RadialGradient(
-          center: const Alignment(-0.55, -0.88),
-          radius: 1.35,
-          colors: [
-            Color.lerp(skin.canvas, skin.canvasGlow, skin.isLight ? 0.34 : 0.16)!,
-            skin.canvas,
+
+    return ColoredBox(
+      color: skin.canvas,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (showFanart)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: ClipRect(
+                  child: ImageFiltered(
+                    imageFilter: ImageFilter.blur(
+                      sigmaX: skin.backdropBlur,
+                      sigmaY: skin.backdropBlur,
+                      tileMode: TileMode.clamp,
+                    ),
+                    child: Opacity(
+                      opacity: skin.isLight ? 0.24 : 0.34,
+                      child: Image.network(
+                        backdropImageUrl!,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          if (showOrb) ...[
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: RadialGradient(
+                      center: const Alignment(-0.72, -0.82),
+                      radius: 1.25,
+                      colors: [
+                        skin.canvasGlow.withValues(alpha: skin.isLight ? 0.36 : 0.28),
+                        skin.canvas.withValues(alpha: 0.0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: RadialGradient(
+                      center: const Alignment(0.85, 0.78),
+                      radius: 1.15,
+                      colors: [
+                        skin.accentSecondary.withValues(alpha: skin.isLight ? 0.09 : 0.12),
+                        skin.canvas.withValues(alpha: 0.0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
           ],
-          stops: const [0.0, 0.85],
-        ),
+          child,
+        ],
       ),
-      child: child,
     );
   }
 }

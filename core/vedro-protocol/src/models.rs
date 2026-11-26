@@ -731,6 +731,8 @@ pub struct PlaybackInfoRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_transcoding: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_media_probe: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub device_profile: Option<DeviceProfile>,
 }
 

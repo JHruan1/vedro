@@ -1,4 +1,3 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -7,7 +6,10 @@ import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'vedro_ui.dart';
 
-/// Bold Multi-Personality Skin Gallery + Full DIY Custom Skin Studio (`设置 → 应用风格`).
+/// Jellyfin Skin Manager (`Ultrachromic` / `ElegantFin` / `Scyfin`) caliber Skin Store & Modular Layout Studio.
+/// Lets users switch between 9 structurally distinct skins, tweak live structural addons (navigation layout,
+/// hero stage, detail page composition, full-page fanart blur, poster card anatomy, hover effects, cast style),
+/// author full custom skins from scratch or templates, and share `VEDRO-SKIN:...` codes.
 class SkinStudioPane extends StatelessWidget {
   const SkinStudioPane({
     super.key,
@@ -18,103 +20,117 @@ class SkinStudioPane extends StatelessWidget {
   final VedroAppState appState;
   final bool hideHeading;
 
-  Future<void> _selectSkin(String skinId) async {
-    HapticFeedback.selectionClick();
-    await appState.updatePrefs(appState.prefs.copyWith(skinId: skinId));
-  }
-
   Future<void> _openEditor(
     BuildContext context, {
     CustomSkinSpec? existing,
-    VedroSkin? templateSkin,
+    VedroSkin? forkFrom,
   }) async {
-    final spec = existing ??
-        (templateSkin != null
-            ? templateSkin.toCustomTemplate()
-            : CustomSkinSpec(
-                id: 'custom_${DateTime.now().millisecondsSinceEpoch}',
-                name: '我的专属皮肤 ${appState.prefs.customSkins.length + 1}',
-              ));
+    final seed = existing ??
+        forkFrom?.toCustomSpec(
+          newId: 'custom_${DateTime.now().millisecondsSinceEpoch}',
+          newName: '${forkFrom.name} · 定制',
+        ) ??
+        const CustomSkinSpec(
+          id: '',
+          name: '我的专属皮肤',
+          isLight: false,
+          canvasHex: '#0B1020',
+          accentHex: '#38BDF8',
+          accentSecondaryHex: '#818CF8',
+          ctaStyle: 'gradient',
+          frameStyle: 'hairline',
+          cardRadius: 16,
+          pillRadius: 999,
+          ambientGlow: true,
+          editorialSerif: false,
+          navLayout: 'centered_capsule',
+          heroStyle: 'framed_stage',
+          detailLayout: 'jellyfin_glass',
+          backdropMode: 'blurred_fanart',
+          cardStyle: 'overlay_poster',
+          cardHoverEffect: 'glow_ring',
+          castStyle: 'portrait_card',
+        ).copyWith(id: 'custom_${DateTime.now().millisecondsSinceEpoch}');
 
-    final result = await showDialog<CustomSkinSpec>(
+    final saved = await showDialog<CustomSkinSpec>(
       context: context,
       barrierDismissible: true,
-      builder: (ctx) => _CustomSkinEditorDialog(initial: spec),
+      builder: (ctx) => _CustomSkinEditorDialog(initial: seed),
     );
-    if (result == null) return;
+    if (saved == null) return;
 
     final p = appState.prefs;
-    final list = List<CustomSkinSpec>.from(p.customSkins);
-    final idx = list.indexWhere((s) => s.id == result.id);
+    final list = [...p.customSkins];
+    final idx = list.indexWhere((c) => c.id == saved.id);
     if (idx >= 0) {
-      list[idx] = result;
+      list[idx] = saved;
     } else {
-      list.add(result);
+      list.add(saved);
     }
     await appState.updatePrefs(
       p.copyWith(
         customSkins: list,
-        skinId: result.id,
+        skinId: saved.id,
+        skinOverrides: const {},
         useSkinGeometry: true,
       ),
     );
   }
 
-  Future<void> _deleteCustomSkin(BuildContext context, CustomSkinSpec target) async {
-    final p = appState.prefs;
-    final nextList = p.customSkins.where((s) => s.id != target.id).toList();
-    final nextId = p.skinId == target.id ? 'obsidian' : p.skinId;
-    await appState.updatePrefs(
-      p.copyWith(customSkins: nextList, skinId: nextId),
-    );
-  }
-
-  Future<void> _importSkinDialog(BuildContext context) async {
+  Future<void> _openImportDialog(BuildContext context) async {
     final skin = VedroSkin.of(context);
     final ctrl = TextEditingController();
-    String? err;
+    String? errText;
     final imported = await showDialog<CustomSkinSpec>(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModal) => AlertDialog(
-          title: const Text('导入皮肤分享码'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                '粘贴 VEDRO-SKIN:... 皮肤口令或 JSON 配置，即可一键复刻他人定制的整套界面风格。',
-                style: TextStyle(color: skin.fg3, fontSize: 12.5),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: ctrl,
-                autofocus: true,
-                maxLines: 3,
-                style: TextStyle(color: skin.fg, fontSize: 12.5, fontFamily: 'monospace'),
-                decoration: const InputDecoration(
-                  hintText: 'VEDRO-SKIN:eyJpZCI6...',
+        builder: (ctx, setSt) => AlertDialog(
+          backgroundColor: skin.surface2,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: BorderSide(color: skin.borderStrong),
+          ),
+          title: Text(
+            '导入皮肤口令',
+            style: TextStyle(color: skin.fg, fontSize: 17, fontWeight: FontWeight.w700),
+          ),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '粘贴好友分享或跨设备导出的 VEDRO-SKIN:... 皮肤码（包含完整导航布局、轮播样式、卡片结构与配色）：',
+                  style: TextStyle(color: skin.fg2, fontSize: 13),
                 ),
-              ),
-              if (err != null) ...[
-                const SizedBox(height: 8),
-                Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12)),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: ctrl,
+                  maxLines: 3,
+                  autofocus: true,
+                  style: TextStyle(color: skin.fg, fontSize: 12.5, fontFamily: 'monospace'),
+                  decoration: InputDecoration(
+                    hintText: 'VEDRO-SKIN:eyJuYW1lIjoi...',
+                    errorText: errText,
+                  ),
+                ),
               ],
-            ],
+            ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('取消'),
+            ),
             FilledButton(
               onPressed: () {
                 final parsed = CustomSkinSpec.tryDecodeShareCode(ctrl.text);
                 if (parsed == null) {
-                  setModal(() => err = '无法解析该皮肤码，请检查是否复制完整');
+                  setSt(() => errText = '皮肤口令格式无效，请检查后重试');
                   return;
                 }
-                final fresh = parsed.copyWith(
-                  id: 'custom_${DateTime.now().millisecondsSinceEpoch}',
-                );
-                Navigator.pop(ctx, fresh);
+                Navigator.pop(ctx, parsed);
               },
               child: const Text('导入并启用'),
             ),
@@ -129,6 +145,7 @@ class SkinStudioPane extends StatelessWidget {
       p.copyWith(
         customSkins: [...p.customSkins, imported],
         skinId: imported.id,
+        skinOverrides: const {},
         useSkinGeometry: true,
       ),
     );
@@ -139,11 +156,19 @@ class SkinStudioPane extends StatelessWidget {
     }
   }
 
+  void _setOverride(String key, dynamic value) {
+    final p = appState.prefs;
+    final next = Map<String, dynamic>.from(p.skinOverrides);
+    next[key] = value;
+    appState.updatePrefs(p.copyWith(skinOverrides: next));
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = appState.prefs;
     final activeSkin = p.activeSkin;
     final skin = VedroSkin.of(context);
+    final hasOverrides = p.skinOverrides.isNotEmpty;
 
     return Column(
       key: const ValueKey('skin-studio-pane'),
@@ -152,59 +177,45 @@ class SkinStudioPane extends StatelessWidget {
         if (!hideHeading)
           Padding(
             padding: const EdgeInsets.only(bottom: 18),
-            child: Row(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '应用风格与皮肤工坊',
-                        style: skin.applyHeadlineMood(
-                          TextStyle(
-                            color: skin.fg,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: -0.5,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '9 套截然不同的旗舰级视觉人格（涵盖昼白杂志、深海琉璃、35mm 胶片、赛博霓虹与纯黑 OLED），并支持从零自由定制专属皮肤',
-                        style: TextStyle(color: skin.fg3, fontSize: 13, height: 1.45),
-                      ),
-                    ],
+                Text(
+                  '皮肤管理与模块化布局工坊',
+                  style: skin.applyHeadlineMood(
+                    TextStyle(
+                      color: skin.fg,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5,
+                    ),
                   ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '参考 Jellyfin Skin Manager / Ultrachromic / ElegantFin / Scyfin：不仅切换色彩，更可自由组合导航栏位置、首页轮播形态、详情页毛玻璃构图、海报卡片结构与演员卡样式',
+                  style: TextStyle(color: skin.fg3, fontSize: 13, height: 1.45),
                 ),
               ],
             ),
           ),
 
-        // Top DIY Banner CTA: Create or Import Custom Skin
+        // 1. Top DIY Banner CTA: Create or Import Custom Skin
         Container(
           padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color.lerp(skin.surface, skin.accent, skin.isLight ? 0.10 : 0.16)!,
-                skin.surface,
-              ],
-            ),
+            color: skin.panelSurface,
             borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 20.0)),
-            border: skin.cardBorder(selected: activeSkin.isCustom),
+            border: Border.all(color: skin.borderStrong, width: 0.9),
           ),
           child: Wrap(
-            spacing: 12,
+            spacing: 16,
             runSpacing: 12,
             alignment: WrapAlignment.spaceBetween,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 420),
+                constraints: const BoxConstraints(maxWidth: 470),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -217,7 +228,7 @@ class SkinStudioPane extends StatelessWidget {
                           '自定义皮肤工坊',
                           style: TextStyle(
                             color: skin.fg,
-                            fontSize: 15.5,
+                            fontSize: 15,
                             fontWeight: FontWeight.w700,
                           ),
                         ),
@@ -229,7 +240,7 @@ class SkinStudioPane extends StatelessWidget {
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
-                            'DIY',
+                            'SKIN MANAGER',
                             style: TextStyle(
                               color: skin.accent,
                               fontSize: 10.5,
@@ -239,22 +250,23 @@ class SkinStudioPane extends StatelessWidget {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 5),
                     Text(
-                      '自由调配深浅基底、画布色、卡片色、双色渐变按钮、锐利切角或超椭圆圆角、霓虹边框与衬线电影标题，还可分享皮肤口令。',
+                      '支持自由拼装「左侧栏 / 灵动胶囊岛 / 悬浮顶栏」「悬浮画框 / 双栏橱窗 / 全屏巨幕」「全页剧照毛玻璃」「海报内嵌渐变字 / 纯图悬停显字」及完整配色口令分享。',
                       style: TextStyle(color: skin.fg2, fontSize: 12.5, height: 1.45),
                     ),
                   ],
                 ),
               ),
               Wrap(
-                spacing: 8,
+                spacing: 10,
                 runSpacing: 8,
                 children: [
                   OutlinedButton.icon(
-                    onPressed: () => _importSkinDialog(context),
-                    icon: const Icon(Icons.download_done_rounded, size: 16),
-                    label: const Text('导入皮肤码', style: TextStyle(fontSize: 13)),
+                    key: const ValueKey('import-skin-code-btn'),
+                    onPressed: () => _openImportDialog(context),
+                    icon: const Icon(Icons.download_rounded, size: 16),
+                    label: const Text('导入皮肤码'),
                   ),
                   FilledButton.icon(
                     key: const ValueKey('open-diy-skin-editor-btn'),
@@ -262,9 +274,9 @@ class SkinStudioPane extends StatelessWidget {
                       backgroundColor: skin.primaryCtaBg,
                       foregroundColor: skin.primaryCtaFg,
                     ),
-                    onPressed: () => _openEditor(context, templateSkin: activeSkin),
+                    onPressed: () => _openEditor(context, forkFrom: activeSkin),
                     icon: const Icon(Icons.add_rounded, size: 18),
-                    label: const Text('自己设置新皮肤', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                    label: const Text('新建自定义皮肤'),
                   ),
                 ],
               ),
@@ -272,95 +284,95 @@ class SkinStudioPane extends StatelessWidget {
           ),
         ),
 
-        // User's Saved Custom Skins (if any)
+        const SizedBox(height: 22),
+
+        // 2. Custom Skins Section (when user has created or imported any)
         if (p.customSkins.isNotEmpty) ...[
-          const SizedBox(height: 22),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 2),
-            child: Text(
-              '我的自制皮肤 (${p.customSkins.length})',
-              style: TextStyle(
-                color: skin.fg2,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+          Text(
+            '我的专属皮肤 (${p.customSkins.length})',
+            style: TextStyle(color: skin.fg2, fontSize: 13, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 10),
           LayoutBuilder(
             builder: (ctx, c) {
-              final cols = c.maxWidth >= 680 ? 3 : (c.maxWidth >= 420 ? 2 : 1);
+              final cols = c.maxWidth >= 760 ? 3 : (c.maxWidth >= 480 ? 2 : 1);
               const gap = 12.0;
               final cardW = (c.maxWidth - gap * (cols - 1)) / cols;
               return Wrap(
                 spacing: gap,
-                runSpacing: gap,
+                runSpacing: 12,
                 children: p.customSkins.map((spec) {
-                  final built = VedroSkin.fromCustom(spec);
+                  final customSkin = VedroSkin.fromCustom(spec);
                   final selected = p.skinId == spec.id;
                   return SizedBox(
                     width: cardW,
                     child: _SkinPreviewCard(
-                      previewSkin: built,
+                      key: ValueKey('skin-custom-${spec.id}'),
+                      skinPreview: customSkin,
                       selected: selected,
-                      onTap: () => _selectSkin(spec.id),
+                      onSelect: () => appState.updatePrefs(
+                        p.copyWith(skinId: spec.id, skinOverrides: const {}, useSkinGeometry: true),
+                      ),
                       onEdit: () => _openEditor(context, existing: spec),
                       onShare: () {
                         Clipboard.setData(ClipboardData(text: spec.encodeShareCode()));
                         ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('已复制「${spec.name}」的皮肤分享码')),
+                          SnackBar(content: Text('已复制「${spec.name}」皮肤分享口令到剪贴板')),
                         );
                       },
-                      onDelete: () => _deleteCustomSkin(context, spec),
+                      onDelete: () {
+                        final remaining = p.customSkins.where((x) => x.id != spec.id).toList();
+                        appState.updatePrefs(
+                          p.copyWith(
+                            customSkins: remaining,
+                            skinId: p.skinId == spec.id ? 'obsidian' : p.skinId,
+                          ),
+                        );
+                      },
                     ),
                   );
                 }).toList(),
               );
             },
           ),
+          const SizedBox(height: 24),
         ],
 
-        // 9 Built-in Flagship Skins Gallery
-        const SizedBox(height: 24),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 2),
-          child: Row(
-            children: [
-              Text(
-                '官方大胆风格预设 (${VedroSkin.presets.length})',
-                style: TextStyle(
-                  color: skin.fg2,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                '当前：${activeSkin.name}',
-                style: TextStyle(color: skin.accent, fontSize: 12.5, fontWeight: FontWeight.w600),
-              ),
-            ],
-          ),
+        // 3. 9 Built-in Structural + Aesthetic Presets
+        Row(
+          children: [
+            Text(
+              '官方多架构皮肤库 (${VedroSkin.presets.length})',
+              style: TextStyle(color: skin.fg2, fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+            const Spacer(),
+            Text(
+              '当前：${activeSkin.name}${hasOverrides ? "（已微调模块）" : ""}',
+              style: TextStyle(color: skin.accent, fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+          ],
         ),
         const SizedBox(height: 10),
         LayoutBuilder(
           builder: (ctx, c) {
-            final cols = c.maxWidth >= 680 ? 3 : (c.maxWidth >= 420 ? 2 : 1);
+            final cols = c.maxWidth >= 760 ? 3 : (c.maxWidth >= 480 ? 2 : 1);
             const gap = 12.0;
             final cardW = (c.maxWidth - gap * (cols - 1)) / cols;
             return Wrap(
               spacing: gap,
-              runSpacing: gap,
+              runSpacing: 12,
               children: VedroSkin.presets.map((preset) {
                 final selected = p.skinId == preset.id;
                 return SizedBox(
                   width: cardW,
                   child: _SkinPreviewCard(
                     key: ValueKey('skin-preset-${preset.id}'),
-                    previewSkin: preset,
+                    skinPreview: preset,
                     selected: selected,
-                    onTap: () => _selectSkin(preset.id),
-                    onFork: () => _openEditor(context, templateSkin: preset),
+                    onSelect: () => appState.updatePrefs(
+                      p.copyWith(skinId: preset.id, skinOverrides: const {}, useSkinGeometry: true),
+                    ),
+                    onFork: () => _openEditor(context, forkFrom: preset),
                   ),
                 );
               }).toList(),
@@ -368,113 +380,299 @@ class SkinStudioPane extends StatelessWidget {
           },
         ),
 
-        const SizedBox(height: 24),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 2),
-          child: Text(
-            '细节微调与动效',
-            style: TextStyle(
-              color: skin.fg2,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 28),
+
+        // 4. Jellyfin Skin Manager Style Live Modular Customizer!
         Container(
+          key: const ValueKey('skin-modular-addons-panel'),
+          padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: skin.surface,
-            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 18.0)),
+            color: skin.panelSurface,
+            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 20.0)),
             border: skin.cardBorder(),
           ),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-                child: Row(
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.widgets_outlined, size: 17, color: skin.accent),
+                          const SizedBox(width: 7),
+                          Text(
+                            '模块化布局与组件自定义（实时生效）',
+                            style: TextStyle(
+                              color: skin.fg,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        '在当前皮肤之上单独混搭导航栏位置、轮播构图、详情页毛玻璃、海报卡片解剖与演员卡样式',
+                        style: TextStyle(color: skin.fg3, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (hasOverrides)
+                        TextButton.icon(
+                          onPressed: () =>
+                              appState.updatePrefs(p.copyWith(skinOverrides: const {})),
+                          icon: const Icon(Icons.restart_alt_rounded, size: 15),
+                          label: const Text('恢复该皮肤默认'),
+                        ),
+                      OutlinedButton.icon(
+                        onPressed: () => _openEditor(context, forkFrom: activeSkin),
+                        icon: const Icon(Icons.save_outlined, size: 15),
+                        label: const Text('另存为新皮肤'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+
+              _ModuleOptionRow(
+                title: '导航栏架构',
+                subtitle: '切换全站顶栏、左侧垂直边栏（Scyfin/Plex）或居中灵动胶囊岛',
+                value: activeSkin.navLayout,
+                options: const [
+                  ('top_floating', '顶部悬浮栏', Icons.web_asset_rounded),
+                  ('left_rail', '左侧垂直边栏', Icons.view_sidebar_rounded),
+                  ('centered_capsule', '居中灵动胶囊岛', Icons.smart_button_rounded),
+                ],
+                onChanged: (v) => _setOverride('nav_layout', v),
+              ),
+              const Divider(height: 22),
+
+              _ModuleOptionRow(
+                title: '首页轮播舞台形态',
+                subtitle: '全屏巨幕、ElegantFin 圆角画框、双栏杂志橱窗或无轮播直达海报墙',
+                value: activeSkin.heroStyle,
+                options: const [
+                  ('full_bleed', '全屏沉浸巨幕', Icons.panorama_wide_angle_select_rounded),
+                  ('framed_stage', '圆角悬浮画框', Icons.crop_16_9_rounded),
+                  ('split_showcase', '双栏画报橱窗', Icons.vertical_split_rounded),
+                  ('compact_minimal', '极简纯海报墙', Icons.apps_rounded),
+                ],
+                onChanged: (v) => _setOverride('hero_style', v),
+              ),
+              const Divider(height: 22),
+
+              _ModuleOptionRow(
+                title: '详情页构图模式',
+                subtitle: 'Apple TV+ 沉浸式、Ultrachromic 毛玻璃悬浮卡片或居中对称画报式',
+                value: activeSkin.detailLayout,
+                options: const [
+                  ('apple_immersive', '影院沉浸式', Icons.movie_creation_outlined),
+                  ('jellyfin_glass', '毛玻璃悬浮卡片', Icons.blur_on_rounded),
+                  ('centered_editorial', '居中对称画报', Icons.format_align_center_rounded),
+                ],
+                onChanged: (v) => _setOverride('detail_layout', v),
+              ),
+              const Divider(height: 22),
+
+              _ModuleOptionRow(
+                title: '全局背景氛围引擎',
+                subtitle: '开启「全页剧照毛玻璃」后，首页与详情页滚动全程呈现高斯模糊电影背景',
+                value: activeSkin.backdropMode,
+                options: const [
+                  ('solid_clean', '纯净实色画布', Icons.crop_square_rounded),
+                  ('ambient_orb', '双色流光漫反射', Icons.gradient_rounded),
+                  ('blurred_fanart', '全页剧照毛玻璃', Icons.deblur_rounded),
+                ],
+                onChanged: (v) => _setOverride('backdrop_mode', v),
+              ),
+
+              if (activeSkin.usesBlurredFanart || activeSkin.detailLayout == 'jellyfin_glass') ...[
+                const SizedBox(height: 12),
+                Row(
                   children: [
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            '跟随所选皮肤的专属圆角与几何造型',
-                            style: TextStyle(color: skin.fg, fontSize: 14),
+                            '背景模糊半径：${activeSkin.backdropBlur.round()} px',
+                            style: TextStyle(color: skin.fg2, fontSize: 12),
                           ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '开启时胶片风呈硬朗画框、赛博风呈锐利机能角、深海风呈大圆角；关闭可统一手动指定海报圆角',
-                            style: TextStyle(color: skin.fg3, fontSize: 12),
+                          Slider(
+                            value: activeSkin.backdropBlur.clamp(12.0, 60.0),
+                            min: 12,
+                            max: 60,
+                            onChanged: (v) => _setOverride('backdrop_blur', v),
                           ),
                         ],
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Transform.scale(
-                      scale: 0.78,
-                      child: CupertinoSwitch(
-                        value: p.useSkinGeometry,
-                        activeTrackColor: skin.accent,
-                        onChanged: (v) => appState.updatePrefs(p.copyWith(useSkinGeometry: v)),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '毛玻璃卡片不透明度：${(activeSkin.surfaceOpacity * 100).round()}%',
+                            style: TextStyle(color: skin.fg2, fontSize: 12),
+                          ),
+                          Slider(
+                            value: activeSkin.surfaceOpacity.clamp(0.50, 0.98),
+                            min: 0.50,
+                            max: 0.98,
+                            onChanged: (v) => _setOverride('surface_opacity', v),
+                          ),
+                        ],
                       ),
                     ),
                   ],
+                ),
+              ],
+              const Divider(height: 22),
+
+              _ModuleOptionRow(
+                title: '海报卡片文字结构',
+                subtitle: '经典图下标题、ElegantFin 海报内嵌渐变标题或纯海报悬停浮现',
+                value: activeSkin.cardStyle,
+                options: const [
+                  ('classic_below', '经典图下文字', Icons.subtitles_outlined),
+                  ('overlay_poster', '海报内嵌渐变字', Icons.branding_watermark_outlined),
+                  ('hover_reveal', '纯海报悬停显字', Icons.visibility_outlined),
+                ],
+                onChanged: (v) => _setOverride('card_style', v),
+              ),
+              const Divider(height: 22),
+
+              _ModuleOptionRow(
+                title: '海报悬停动效',
+                subtitle: '控制鼠标悬停或聚焦卡片时的交互反馈',
+                value: activeSkin.cardHoverEffect,
+                options: const [
+                  ('lift', '轻盈悬浮抬升', Icons.open_in_new_rounded),
+                  ('glow_ring', '主题色电光环', Icons.flare_rounded),
+                  ('zoom_art', '内景微距缩放', Icons.zoom_in_rounded),
+                ],
+                onChanged: (v) => _setOverride('card_hover_effect', v),
+              ),
+              const Divider(height: 22),
+
+              _ModuleOptionRow(
+                title: '演职人员展示形态',
+                subtitle: '切换圆形肖像勋章、Jellyfin 2:3 竖版写真卡或紧凑胶囊名牌',
+                value: activeSkin.castStyle,
+                options: const [
+                  ('circle_medallion', '圆形头像勋章', Icons.account_circle_outlined),
+                  ('portrait_card', '2:3 竖版写真卡', Icons.portrait_rounded),
+                  ('compact_pill', '紧凑胶囊名牌', Icons.badge_outlined),
+                ],
+                onChanged: (v) => _setOverride('cast_style', v),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 18),
+
+        // 5. Typography, Geometry & Motion Switches
+        Container(
+          decoration: BoxDecoration(
+            color: skin.panelSurface,
+            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 18.0)),
+            border: skin.cardBorder(),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Material(
+            color: Colors.transparent,
+            child: Column(
+              children: [
+              SwitchListTile.adaptive(
+                value: activeSkin.preferClearLogo,
+                onChanged: (v) => _setOverride('prefer_clear_logo', v),
+                title: Text(
+                  '优先展示电影/剧集透明艺术 Logo (ClearLogo)',
+                  style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
+                ),
+                subtitle: Text(
+                  '关闭后统一使用当前皮肤字体排印大标题',
+                  style: TextStyle(color: skin.fg3, fontSize: 12),
+                ),
+              ),
+              Divider(height: 1, color: skin.border),
+              SwitchListTile.adaptive(
+                value: activeSkin.editorialSerif,
+                onChanged: (v) => _setOverride('editorial_serif', v),
+                title: Text(
+                  '使用电影画报衬线标题字体 (Editorial Serif)',
+                  style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
+                ),
+                subtitle: Text(
+                  '为片名与栏目标题启用经典杂志衬线字重',
+                  style: TextStyle(color: skin.fg3, fontSize: 12),
+                ),
+              ),
+              Divider(height: 1, color: skin.border),
+              SwitchListTile.adaptive(
+                value: p.useSkinGeometry,
+                onChanged: (v) => appState.updatePrefs(p.copyWith(useSkinGeometry: v)),
+                title: Text(
+                  '跟随所选皮肤的专属圆角与几何造型',
+                  style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
+                ),
+                subtitle: Text(
+                  '开启时胶片风呈 5px 画框、赛博风呈 6px 切角、丝绒风呈 20px 圆弧；关闭则统一手动指定圆角',
+                  style: TextStyle(color: skin.fg3, fontSize: 12),
                 ),
               ),
               if (!p.useSkinGeometry) ...[
-                Divider(height: 1, indent: 16, endIndent: 16, color: skin.border),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-                  child: VedroPrecisionSlider(
-                    label: '手动覆盖海报圆角',
-                    valueText: '${p.cardRadius.round()} px',
-                    value: p.cardRadius.clamp(4.0, 24.0),
-                    min: 4.0,
-                    max: 24.0,
-                    step: 2.0,
-                    defaultValue: 12.0,
-                    ticks: const [
-                      (4.0, '4px'),
-                      (8.0, '8px'),
-                      (12.0, '12px'),
-                      (18.0, '18px'),
-                      (24.0, '24px'),
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                  child: Row(
+                    children: [
+                      Text('全局统一圆角', style: TextStyle(color: skin.fg2, fontSize: 12.5)),
+                      Expanded(
+                        child: Slider(
+                          value: p.cardRadius.clamp(0.0, 26.0),
+                          min: 0,
+                          max: 26,
+                          divisions: 26,
+                          onChanged: (v) => appState.updatePrefs(p.copyWith(cardRadius: v)),
+                        ),
+                      ),
+                      Text(
+                        '${p.cardRadius.round()} px',
+                        style: TextStyle(color: skin.fg, fontSize: 12.5, fontWeight: FontWeight.w600),
+                      ),
                     ],
-                    onChanged: (v) => appState.updatePrefs(p.copyWith(cardRadius: v)),
                   ),
                 ),
               ],
-              Divider(height: 1, indent: 16, endIndent: 16, color: skin.border),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('减弱动态效果', style: TextStyle(color: skin.fg, fontSize: 14)),
-                          const SizedBox(height: 2),
-                          Text(
-                            '降低页面切换动效幅度以获得更干脆的响应',
-                            style: TextStyle(color: skin.fg3, fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Transform.scale(
-                      scale: 0.78,
-                      child: CupertinoSwitch(
-                        value: p.reduceMotion,
-                        activeTrackColor: skin.accent,
-                        onChanged: (v) => appState.updatePrefs(p.copyWith(reduceMotion: v)),
-                      ),
-                    ),
-                  ],
+              Divider(height: 1, color: skin.border),
+              SwitchListTile.adaptive(
+                value: p.reduceMotion,
+                onChanged: (v) => appState.updatePrefs(p.copyWith(reduceMotion: v)),
+                title: Text(
+                  '减弱动态效果',
+                  style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
                 ),
-              ),
-            ],
+                  subtitle: Text(
+                    '降低页面切换动效幅度以获得更干脆的响应',
+                    style: TextStyle(color: skin.fg3, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ],
@@ -482,23 +680,100 @@ class SkinStudioPane extends StatelessWidget {
   }
 }
 
-/// Rich Miniature App Mockup Card previewing a `VedroSkin`'s actual canvas, glow,
-/// serif/sans typography, card frame, poster geometry, and primary Play button!
+class _ModuleOptionRow extends StatelessWidget {
+  const _ModuleOptionRow({
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.options,
+    required this.onChanged,
+  });
+
+  final String title;
+  final String subtitle;
+  final String value;
+  final List<(String id, String label, IconData icon)> options;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 2),
+        Text(subtitle, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
+        const SizedBox(height: 9),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: options.map((opt) {
+            final selected = value == opt.$1;
+            return PressableScale(
+              key: ValueKey('skin-mod-${opt.$1}'),
+              onTap: () => onChanged(opt.$1),
+              hoverScale: 1.02,
+              pressScale: 0.97,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 160),
+                curve: VedroTheme.easeOut,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7.5),
+                decoration: BoxDecoration(
+                  color: selected ? skin.activePillBg : skin.surface2,
+                  borderRadius: BorderRadius.circular(skin.radiusForPill(34)),
+                  border: (!selected && skin.frameStyle != 'borderless')
+                      ? Border.all(color: skin.border, width: 0.75)
+                      : null,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      opt.$3,
+                      size: 14.5,
+                      color: selected ? skin.activePillFg : skin.fg2,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      opt.$2,
+                      style: TextStyle(
+                        color: selected ? skin.activePillFg : skin.fg2,
+                        fontSize: 12,
+                        fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+}
+
+/// Miniature live-rendered preview card depicting each skin's ACTUAL structural silhouette
+/// (`left_rail` sidebar vs `centered_capsule` island vs `framed_stage` vs `split_showcase` + palette!).
 class _SkinPreviewCard extends StatefulWidget {
   const _SkinPreviewCard({
     super.key,
-    required this.previewSkin,
+    required this.skinPreview,
     required this.selected,
-    required this.onTap,
+    required this.onSelect,
     this.onFork,
     this.onEdit,
     this.onShare,
     this.onDelete,
   });
 
-  final VedroSkin previewSkin;
+  final VedroSkin skinPreview;
   final bool selected;
-  final VoidCallback onTap;
+  final VoidCallback onSelect;
   final VoidCallback? onFork;
   final VoidCallback? onEdit;
   final VoidCallback? onShare;
@@ -514,32 +789,34 @@ class _SkinPreviewCardState extends State<_SkinPreviewCard> {
   @override
   Widget build(BuildContext context) {
     final hostSkin = VedroSkin.of(context);
-    final s = widget.previewSkin;
-    final outerR = s.cardRadius.clamp(8.0, 20.0);
-    final miniCardR = (s.cardRadius * 0.55).clamp(3.0, 11.0);
-    final miniPillR = s.radiusForPill(22);
+    final s = widget.skinPreview;
+    final outerR = hostSkin.cardRadius.clamp(10.0, 18.0);
+    final miniCardR = s.cardRadius.clamp(3.0, 10.0);
+    final miniPillR = s.radiusForPill(20);
+    final isLeftRail = s.navLayout == 'left_rail';
+    final isCapsuleNav = s.navLayout == 'centered_capsule';
 
     return PressableScale(
-      onTap: widget.onTap,
+      onTap: widget.onSelect,
       onHoverChanged: (v) => setState(() => _hovered = v),
-      hoverScale: 1.018,
-      pressScale: 0.975,
+      hoverScale: 1.015,
+      pressScale: 0.98,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: VedroTheme.easeOut,
         decoration: BoxDecoration(
-          color: hostSkin.surface,
+          color: hostSkin.panelSurface,
           borderRadius: BorderRadius.circular(outerR),
           border: Border.all(
             color: widget.selected
-                ? s.accent
+                ? hostSkin.accent
                 : (_hovered ? hostSkin.borderStrong : hostSkin.border),
-            width: widget.selected ? 1.8 : 0.9,
+            width: widget.selected ? 1.6 : 0.85,
           ),
           boxShadow: widget.selected
               ? [
                   BoxShadow(
-                    color: s.accent.withValues(alpha: hostSkin.isLight ? 0.20 : 0.28),
+                    color: hostSkin.accent.withValues(alpha: 0.22),
                     blurRadius: 18,
                     offset: const Offset(0, 6),
                   ),
@@ -550,168 +827,225 @@ class _SkinPreviewCardState extends State<_SkinPreviewCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Miniature App Stage Preview
+            // Miniature Structural App Stage
             SizedBox(
               height: 118,
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   color: s.canvas,
-                  gradient: s.ambientGlow
+                  gradient: s.ambientGlow || s.usesBlurredFanart
                       ? RadialGradient(
-                          center: const Alignment(-0.55, -0.85),
-                          radius: 1.3,
+                          center: const Alignment(-0.55, -0.7),
+                          radius: 1.35,
                           colors: [
-                            Color.lerp(s.canvas, s.canvasGlow, s.isLight ? 0.42 : 0.26)!,
+                            s.canvasGlow.withValues(alpha: s.isLight ? 0.55 : 0.50),
                             s.canvas,
                           ],
                         )
                       : null,
                 ),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Mini Header Bar
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: s.surface2,
-                              borderRadius: BorderRadius.circular(miniPillR),
-                              border: s.frameStyle == 'borderless'
-                                  ? null
-                                  : Border.all(color: s.border, width: 0.7),
-                            ),
-                            child: Text(
-                              s.badge,
-                              style: TextStyle(
-                                color: s.ctaStyle == 'contrast' ? s.fg2 : s.accent,
-                                fontSize: 9,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: 0.4,
-                              ),
-                            ),
-                          ),
-                          const Spacer(),
-                          if (widget.selected)
+                child: Row(
+                  children: [
+                    if (isLeftRail)
+                      Container(
+                        width: 22,
+                        decoration: BoxDecoration(
+                          color: s.surface,
+                          border: Border(right: BorderSide(color: s.border, width: 0.6)),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Column(
+                          children: [
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                              width: 10,
+                              height: 10,
                               decoration: BoxDecoration(
-                                color: s.activePillBg,
-                                borderRadius: BorderRadius.circular(miniPillR),
+                                color: s.accent,
+                                borderRadius: BorderRadius.circular(3),
                               ),
-                              child: Text(
-                                '使用中',
-                                style: TextStyle(
-                                  color: s.activePillFg,
-                                  fontSize: 9.5,
-                                  fontWeight: FontWeight.w700,
+                            ),
+                            const SizedBox(height: 6),
+                            for (var k = 0; k < 3; k++)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 5),
+                                child: Container(
+                                  width: 11,
+                                  height: 4,
+                                  decoration: BoxDecoration(
+                                    color: k == 0 ? s.fg : s.fg3.withValues(alpha: 0.45),
+                                    borderRadius: BorderRadius.circular(2),
+                                  ),
                                 ),
                               ),
-                            ),
-                        ],
+                          ],
+                        ),
                       ),
-                      const Spacer(),
-                      // Mini Hero Title + Play Pill + 2 Mini Poster Cards
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(11, 9, 11, 9),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
                               children: [
-                                Text(
-                                  'Cinema',
-                                  maxLines: 1,
-                                  style: s.applyHeadlineMood(
-                                    TextStyle(
-                                      color: s.fg,
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w700,
-                                      letterSpacing: -0.3,
-                                      height: 1.1,
+                                if (isCapsuleNav)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: s.surface2,
+                                      borderRadius: BorderRadius.circular(99),
+                                      border: Border.all(color: s.borderStrong, width: 0.6),
+                                    ),
+                                    child: Text(
+                                      s.badge,
+                                      style: TextStyle(
+                                        color: s.accent,
+                                        fontSize: 8.5,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  )
+                                else
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: s.surface2,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      s.badge,
+                                      style: TextStyle(
+                                        color: s.fg2,
+                                        fontSize: 8.5,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                const Spacer(),
+                                if (widget.selected)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                    decoration: BoxDecoration(
+                                      color: s.activePillBg,
+                                      borderRadius: BorderRadius.circular(99),
+                                    ),
+                                    child: Text(
+                                      '使用中',
+                                      style: TextStyle(
+                                        color: s.activePillFg,
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            const Spacer(),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Expanded(
+                                  child: Container(
+                                    padding: s.heroStyle == 'framed_stage'
+                                        ? const EdgeInsets.all(6)
+                                        : EdgeInsets.zero,
+                                    decoration: s.heroStyle == 'framed_stage'
+                                        ? BoxDecoration(
+                                            color: s.surface.withValues(alpha: 0.8),
+                                            borderRadius: BorderRadius.circular(miniCardR),
+                                            border: Border.all(color: s.border, width: 0.6),
+                                          )
+                                        : null,
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          'Cinema',
+                                          style: s.applyHeadlineMood(
+                                            TextStyle(
+                                              color: s.fg,
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Container(
+                                          height: 19,
+                                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                                          decoration: BoxDecoration(
+                                            color: s.primaryCtaBg,
+                                            gradient: s.primaryCtaGradient,
+                                            borderRadius: BorderRadius.circular(miniPillR),
+                                            border: s.primaryCtaBorder,
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(Icons.play_arrow_rounded, size: 11, color: s.primaryCtaFg),
+                                              const SizedBox(width: 2),
+                                              Text(
+                                                '播放',
+                                                style: TextStyle(
+                                                  color: s.primaryCtaFg,
+                                                  fontSize: 9.5,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  '4K · 杜比视界',
-                                  style: TextStyle(color: s.fg3, fontSize: 9.5),
-                                ),
-                                const SizedBox(height: 7),
-                                Container(
-                                  height: 22,
-                                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                                  decoration: BoxDecoration(
-                                    color: s.primaryCtaBg,
-                                    gradient: s.primaryCtaGradient,
-                                    borderRadius: BorderRadius.circular(miniPillR),
-                                    border: s.primaryCtaBorder,
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.play_arrow_rounded, size: 13, color: s.primaryCtaFg),
-                                      const SizedBox(width: 2),
-                                      Text(
-                                        '播放',
-                                        style: TextStyle(
-                                          color: s.primaryCtaFg,
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w700,
+                                const SizedBox(width: 7),
+                                for (var idx = 0; idx < 2; idx++)
+                                  Padding(
+                                    padding: EdgeInsets.only(left: idx == 0 ? 0 : 5),
+                                    child: Container(
+                                      width: 27,
+                                      height: 38,
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(miniCardR),
+                                        gradient: LinearGradient(
+                                          begin: Alignment.topLeft,
+                                          end: Alignment.bottomRight,
+                                          colors: idx == 0
+                                              ? [s.surface3, s.surface]
+                                              : [s.accent.withValues(alpha: 0.42), s.surface2],
                                         ),
+                                        border: s.cardBorder(hovered: idx == 1),
                                       ),
-                                    ],
+                                      alignment: Alignment.bottomLeft,
+                                      padding: const EdgeInsets.all(3),
+                                      child: s.cardStyle == 'overlay_poster'
+                                          ? Container(
+                                              height: 3,
+                                              width: 16,
+                                              decoration: BoxDecoration(
+                                                color: Colors.white.withValues(alpha: 0.85),
+                                                borderRadius: BorderRadius.circular(1.5),
+                                              ),
+                                            )
+                                          : null,
+                                    ),
                                   ),
-                                ),
                               ],
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          // Two miniature poster tiles showing surface + frameStyle + cardRadius
-                          for (var k = 0; k < 2; k++) ...[
-                            if (k > 0) const SizedBox(width: 6),
-                            Container(
-                              width: 34,
-                              height: 50,
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  begin: Alignment.topLeft,
-                                  end: Alignment.bottomRight,
-                                  colors: k == 0
-                                      ? [s.surface3, s.surface]
-                                      : [
-                                          Color.lerp(s.surface2, s.accent, 0.32)!,
-                                          s.surface,
-                                        ],
-                                ),
-                                borderRadius: BorderRadius.circular(miniCardR),
-                                border: s.cardBorder(hovered: k == 1 && s.frameStyle == 'neon'),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(alpha: s.isLight ? 0.08 : 0.30),
-                                    blurRadius: 6,
-                                    offset: const Offset(0, 3),
-                                  ),
-                                ],
-                              ),
-                            ),
                           ],
-                        ],
+                        ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
             ),
 
-            // Footer Metadata + Quick Actions
-            Container(
-              padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
-              color: hostSkin.surface,
+            // Footer Metadata & Actions
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
               child: Row(
                 children: [
                   Expanded(
@@ -725,7 +1059,7 @@ class _SkinPreviewCardState extends State<_SkinPreviewCard> {
                           style: TextStyle(
                             color: hostSkin.fg,
                             fontSize: 13.5,
-                            fontWeight: FontWeight.w600,
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
                         const SizedBox(height: 2),
@@ -740,7 +1074,7 @@ class _SkinPreviewCardState extends State<_SkinPreviewCard> {
                   ),
                   if (widget.onFork != null)
                     Tooltip(
-                      message: '以此风格为模板自定义',
+                      message: '以此皮肤为模板深度定制',
                       child: InkWell(
                         borderRadius: BorderRadius.circular(8),
                         onTap: widget.onFork,
@@ -796,7 +1130,7 @@ class _SkinPreviewCardState extends State<_SkinPreviewCard> {
   }
 }
 
-/// Interactive DIY Skin Creator Dialog with Live Preview, HSV Spectrum Sliders, Swatches & Geometry Controls.
+/// Full DIY Skin Studio Dialog with Structural Layout Tabs + HSV Color Spectrum + Live Preview.
 class _CustomSkinEditorDialog extends StatefulWidget {
   const _CustomSkinEditorDialog({required this.initial});
   final CustomSkinSpec initial;
@@ -808,16 +1142,13 @@ class _CustomSkinEditorDialog extends StatefulWidget {
 class _CustomSkinEditorDialogState extends State<_CustomSkinEditorDialog> {
   late CustomSkinSpec _spec;
   late final TextEditingController _nameCtrl;
-  String _editingColorSlot = 'accent'; // canvas | surface | accent | accent2
+  String _editingColorSlot = 'accent';
 
-  static const _canvasSwatchesDark = <String>[
-    '#09090B', '#000000', '#06101E', '#080514', '#120E0B', '#06130F', '#14060A', '#0F172A', '#18122B',
-  ];
-  static const _canvasSwatchesLight = <String>[
-    '#F2F4F8', '#FFFFFF', '#F7F2E7', '#EEF6FF', '#F3FAF6', '#FDF2F6', '#F5F3FF', '#FAF5EE', '#ECFDF5',
-  ];
-  static const _accentSwatches = <String>[
-    '#38BDF8', '#0A84FF', '#F43F5E', '#E5A93C', '#34D399', '#A78BFA', '#FB7185', '#22D3EE', '#F97316', '#111318',
+  static const _swatches = <String>[
+    '#09090B', '#06101E', '#080514', '#120E0B', '#06130F', '#14060A',
+    '#F2F4F8', '#F7F2E7', '#EEF5F0', '#FFF7ED',
+    '#38BDF8', '#0A84FF', '#818CF8', '#A855F7', '#F43F5E', '#FB7185',
+    '#E5A93C', '#C25E28', '#34D399', '#14B8A6', '#F97316', '#EAB308',
   ];
 
   @override
@@ -833,234 +1164,165 @@ class _CustomSkinEditorDialogState extends State<_CustomSkinEditorDialog> {
     super.dispose();
   }
 
-  String _currentHexForSlot(String slot) {
-    final preview = VedroSkin.fromCustom(_spec);
-    return switch (slot) {
-      'canvas' => colorToHex6(preview.canvas),
-      'surface' => colorToHex6(preview.surface),
-      'accent2' => colorToHex6(preview.accentSecondary),
-      _ => colorToHex6(preview.accent),
-    };
+  Color _currentSlotColor(VedroSkin live) {
+    switch (_editingColorSlot) {
+      case 'canvas':
+        return live.canvas;
+      case 'surface':
+        return live.surface;
+      case 'accent2':
+        return live.accentSecondary;
+      case 'accent':
+      default:
+        return live.accent;
+    }
   }
 
-  void _applyHexToSlot(String slot, String hex) {
+  void _updateSlotHex(String hex) {
     setState(() {
-      _spec = switch (slot) {
-        'canvas' => _spec.copyWith(canvasHex: hex),
-        'surface' => _spec.copyWith(surfaceHex: hex),
-        'accent2' => _spec.copyWith(accentSecondaryHex: hex),
-        _ => _spec.copyWith(accentHex: hex),
-      };
+      switch (_editingColorSlot) {
+        case 'canvas':
+          _spec = _spec.copyWith(canvasHex: hex);
+          break;
+        case 'surface':
+          _spec = _spec.copyWith(surfaceHex: hex);
+          break;
+        case 'accent2':
+          _spec = _spec.copyWith(accentSecondaryHex: hex);
+          break;
+        case 'accent':
+        default:
+          _spec = _spec.copyWith(accentHex: hex);
+          break;
+      }
     });
+  }
+
+  Widget _chipPicker(
+    VedroSkin host,
+    VedroSkin live,
+    String label,
+    String current,
+    List<(String, String)> opts,
+    ValueChanged<String> onPick,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: TextStyle(color: host.fg2, fontSize: 12, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: opts.map((o) {
+              final on = current == o.$1;
+              return GestureDetector(
+                onTap: () => setState(() => onPick(o.$1)),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: on ? live.accent : host.surface,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: on ? live.accent : host.border),
+                  ),
+                  child: Text(
+                    o.$2,
+                    style: TextStyle(
+                      color: on ? VedroTheme.highContrastOn(live.accent) : host.fg2,
+                      fontSize: 12,
+                      fontWeight: on ? FontWeight.w600 : FontWeight.w500,
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final hostSkin = VedroSkin.of(context);
     final liveSkin = VedroSkin.fromCustom(_spec.copyWith(name: _nameCtrl.text));
-    final activeColor = parseHexColor(_currentHexForSlot(_editingColorSlot), liveSkin.accent);
+    final activeColor = _currentSlotColor(liveSkin);
     final hsv = HSVColor.fromColor(activeColor);
-    final swatches = _editingColorSlot == 'canvas' || _editingColorSlot == 'surface'
-        ? (_spec.isLight ? _canvasSwatchesLight : _canvasSwatchesDark)
-        : _accentSwatches;
 
     return Dialog(
-      key: const ValueKey('diy-skin-editor-dialog'),
-      backgroundColor: hostSkin.surface,
+      backgroundColor: hostSkin.surface2,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
-        side: BorderSide(color: hostSkin.borderStrong, width: 1.0),
+        borderRadius: BorderRadius.circular(22),
+        side: BorderSide(color: hostSkin.borderStrong),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 620, maxHeight: 760),
+        constraints: const BoxConstraints(maxWidth: 780, maxHeight: 780),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Header
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
+              padding: const EdgeInsets.fromLTRB(22, 16, 16, 12),
               child: Row(
                 children: [
                   Icon(Icons.palette_outlined, size: 20, color: liveSkin.accent),
                   const SizedBox(width: 9),
-                  Expanded(
-                    child: Text(
-                      '自定义皮肤工坊',
-                      style: TextStyle(
-                        color: hostSkin.fg,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w700,
-                      ),
+                  Text(
+                    '全维度皮肤创作工坊',
+                    style: TextStyle(
+                      color: hostSkin.fg,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
-                  TextButton.icon(
-                    onPressed: () {
-                      final code = _spec.copyWith(name: _nameCtrl.text).encodeShareCode();
-                      Clipboard.setData(ClipboardData(text: code));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('皮肤分享码已复制到剪贴板')),
-                      );
-                    },
-                    icon: const Icon(Icons.copy_rounded, size: 14),
-                    label: const Text('复制皮肤码', style: TextStyle(fontSize: 12)),
-                  ),
+                  const Spacer(),
                   IconButton(
-                    icon: Icon(Icons.close_rounded, color: hostSkin.fg2),
                     onPressed: () => Navigator.pop(context),
+                    icon: Icon(Icons.close_rounded, color: hostSkin.fg2),
                   ),
                 ],
               ),
             ),
-
-            // Live Real-Time Interactive Preview Stage
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Container(
-                height: 124,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: liveSkin.canvas,
-                  gradient: liveSkin.ambientGlow
-                      ? RadialGradient(
-                          center: const Alignment(-0.5, -0.8),
-                          radius: 1.35,
-                          colors: [
-                            Color.lerp(liveSkin.canvas, liveSkin.canvasGlow, liveSkin.isLight ? 0.40 : 0.24)!,
-                            liveSkin.canvas,
-                          ],
-                        )
-                      : null,
-                  borderRadius: BorderRadius.circular(liveSkin.cardRadius.clamp(6.0, 20.0)),
-                  border: Border.all(color: liveSkin.borderStrong, width: 1.0),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            _nameCtrl.text.trim().isEmpty ? '我的专属皮肤' : _nameCtrl.text.trim(),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: liveSkin.applyHeadlineMood(
-                              TextStyle(
-                                color: liveSkin.fg,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '实时预览 · 4K Dolby Vision · 双声道与外挂字幕',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(color: liveSkin.fg2, fontSize: 11.5),
-                          ),
-                          const SizedBox(height: 10),
-                          Row(
-                            children: [
-                              Container(
-                                height: 30,
-                                padding: const EdgeInsets.symmetric(horizontal: 14),
-                                decoration: BoxDecoration(
-                                  color: liveSkin.primaryCtaBg,
-                                  gradient: liveSkin.primaryCtaGradient,
-                                  borderRadius: BorderRadius.circular(liveSkin.radiusForPill(30)),
-                                  border: liveSkin.primaryCtaBorder,
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.play_arrow_rounded, size: 16, color: liveSkin.primaryCtaFg),
-                                    const SizedBox(width: 3),
-                                    Text(
-                                      '立即播放',
-                                      style: TextStyle(
-                                        color: liveSkin.primaryCtaFg,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Container(
-                                height: 30,
-                                padding: const EdgeInsets.symmetric(horizontal: 11),
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color: liveSkin.surface2,
-                                  borderRadius: BorderRadius.circular(liveSkin.radiusForPill(30)),
-                                  border: liveSkin.cardBorder(),
-                                ),
-                                child: Text(
-                                  '简体中文 ASS',
-                                  style: TextStyle(color: liveSkin.fg, fontSize: 11, fontWeight: FontWeight.w500),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Container(
-                      width: 64,
-                      height: 92,
-                      decoration: BoxDecoration(
-                        color: liveSkin.surface,
-                        borderRadius: BorderRadius.circular(liveSkin.cardRadius.clamp(4.0, 18.0)),
-                        border: liveSkin.cardBorder(hovered: liveSkin.frameStyle == 'neon'),
-                        boxShadow: liveSkin.posterShadow(),
-                      ),
-                      alignment: Alignment.center,
-                      child: Icon(Icons.movie_filter_rounded, size: 24, color: liveSkin.accent),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 10),
-
+            Divider(height: 1, color: hostSkin.border),
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(20, 6, 20, 16),
+                padding: const EdgeInsets.fromLTRB(22, 16, 22, 18),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // 1. Name & Light/Dark Base
+                    // Live Structural Preview Card
+                    _SkinPreviewCard(
+                      skinPreview: liveSkin,
+                      selected: true,
+                      onSelect: () {},
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Name + Light/Dark Base
                     Row(
                       children: [
                         Expanded(
                           child: TextField(
                             controller: _nameCtrl,
-                            onChanged: (_) => setState(() {}),
-                            style: TextStyle(color: hostSkin.fg, fontSize: 13.5),
-                            decoration: const InputDecoration(
-                              labelText: '皮肤名称',
-                              hintText: '例如：午夜赛博 / 暖阳书房',
-                            ),
+                            onChanged: (v) => setState(() => _spec = _spec.copyWith(name: v)),
+                            style: TextStyle(color: hostSkin.fg, fontSize: 14),
+                            decoration: const InputDecoration(labelText: '皮肤名称'),
                           ),
                         ),
                         const SizedBox(width: 12),
                         SegmentedButton<bool>(
                           segments: const [
-                            ButtonSegment<bool>(value: false, label: Text('深色暗房', style: TextStyle(fontSize: 12))),
-                            ButtonSegment<bool>(value: true, label: Text('浅色昼白', style: TextStyle(fontSize: 12))),
+                            ButtonSegment(value: false, label: Text('深色')),
+                            ButtonSegment(value: true, label: Text('浅色')),
                           ],
                           selected: {_spec.isLight},
                           onSelectionChanged: (s) {
-                            final nextLight = s.first;
+                            final toLight = s.first;
                             setState(() {
                               _spec = _spec.copyWith(
-                                isLight: nextLight,
-                                canvasHex: nextLight ? '#F2F4F8' : '#0B1020',
+                                isLight: toLight,
+                                canvasHex: toLight ? '#F4F6FA' : '#0B1020',
                                 surfaceHex: '',
                               );
                             });
@@ -1068,48 +1330,111 @@ class _CustomSkinEditorDialogState extends State<_CustomSkinEditorDialog> {
                         ),
                       ],
                     ),
-
                     const SizedBox(height: 16),
 
-                    // 2. Color Slots Selector + Interactive HSV Picker
-                    Row(
-                      children: [
-                        Text(
-                          '色彩通道定制',
-                          style: TextStyle(color: hostSkin.fg2, fontSize: 12.5, fontWeight: FontWeight.w600),
-                        ),
-                        const Spacer(),
-                        if (_editingColorSlot == 'surface' && _spec.surfaceHex.isNotEmpty)
-                          GestureDetector(
-                            onTap: () => setState(() => _spec = _spec.copyWith(surfaceHex: '')),
-                            child: Text(
-                              '恢复自动和谐面板色',
-                              style: TextStyle(color: liveSkin.accent, fontSize: 11.5),
-                            ),
-                          ),
+                    _chipPicker(
+                      hostSkin,
+                      liveSkin,
+                      '导航栏架构',
+                      _spec.navLayout,
+                      const [
+                        ('top_floating', '顶部悬浮栏'),
+                        ('left_rail', '左侧垂直边栏'),
+                        ('centered_capsule', '居中胶囊岛'),
                       ],
+                      (v) => _spec = _spec.copyWith(navLayout: v),
+                    ),
+                    _chipPicker(
+                      hostSkin,
+                      liveSkin,
+                      '首页轮播舞台',
+                      _spec.heroStyle,
+                      const [
+                        ('full_bleed', '全屏巨幕'),
+                        ('framed_stage', '圆角画框 (ElegantFin)'),
+                        ('split_showcase', '双栏杂志橱窗'),
+                        ('compact_minimal', '极简无轮播'),
+                      ],
+                      (v) => _spec = _spec.copyWith(heroStyle: v),
+                    ),
+                    _chipPicker(
+                      hostSkin,
+                      liveSkin,
+                      '详情页构图 & 背景引擎',
+                      _spec.detailLayout,
+                      const [
+                        ('apple_immersive', '影院沉浸式'),
+                        ('jellyfin_glass', '毛玻璃悬浮卡片'),
+                        ('centered_editorial', '居中对称画报'),
+                      ],
+                      (v) => _spec = _spec.copyWith(
+                        detailLayout: v,
+                        backdropMode: v == 'jellyfin_glass' ? 'blurred_fanart' : _spec.backdropMode,
+                      ),
+                    ),
+                    _chipPicker(
+                      hostSkin,
+                      liveSkin,
+                      '海报卡片结构',
+                      _spec.cardStyle,
+                      const [
+                        ('classic_below', '图下标题'),
+                        ('overlay_poster', '海报内嵌渐变字'),
+                        ('hover_reveal', '纯海报悬停显字'),
+                      ],
+                      (v) => _spec = _spec.copyWith(cardStyle: v),
+                    ),
+                    _chipPicker(
+                      hostSkin,
+                      liveSkin,
+                      '演职人员样式',
+                      _spec.castStyle,
+                      const [
+                        ('circle_medallion', '圆形头像勋章'),
+                        ('portrait_card', '2:3 竖版写真卡'),
+                        ('compact_pill', '紧凑胶囊名牌'),
+                      ],
+                      (v) => _spec = _spec.copyWith(castStyle: v),
+                    ),
+                    _chipPicker(
+                      hostSkin,
+                      liveSkin,
+                      '主按钮风格 & 卡片边框',
+                      _spec.ctaStyle,
+                      const [
+                        ('contrast', '黑白高反差'),
+                        ('accent', '主题强调色'),
+                        ('gradient', '双色电光渐变'),
+                        ('outline', '极简线框'),
+                      ],
+                      (v) => _spec = _spec.copyWith(ctaStyle: v),
+                    ),
+
+                    const SizedBox(height: 6),
+                    Text(
+                      '色彩光谱调配',
+                      style: TextStyle(color: hostSkin.fg2, fontSize: 12, fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(height: 8),
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
                       children: [
-                        for (final (slot, label, col) in [
-                          ('canvas', '画布背景', liveSkin.canvas),
-                          ('surface', '卡片面板', liveSkin.surface),
+                        for (final slot in [
                           ('accent', '主强调色', liveSkin.accent),
                           ('accent2', '副渐变色', liveSkin.accentSecondary),
+                          ('canvas', '画布背景', liveSkin.canvas),
+                          ('surface', '卡片底色', liveSkin.surface),
                         ])
                           GestureDetector(
-                            onTap: () => setState(() => _editingColorSlot = slot),
+                            onTap: () => setState(() => _editingColorSlot = slot.$1),
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
                               decoration: BoxDecoration(
-                                color: _editingColorSlot == slot ? hostSkin.surface3 : hostSkin.surface2,
-                                borderRadius: BorderRadius.circular(10),
+                                color: _editingColorSlot == slot.$1 ? hostSkin.surface3 : hostSkin.surface,
+                                borderRadius: BorderRadius.circular(9),
                                 border: Border.all(
-                                  color: _editingColorSlot == slot ? liveSkin.accent : hostSkin.border,
-                                  width: _editingColorSlot == slot ? 1.3 : 0.8,
+                                  color: _editingColorSlot == slot.$1 ? liveSkin.accent : hostSkin.border,
                                 ),
                               ),
                               child: Row(
@@ -1119,239 +1444,53 @@ class _CustomSkinEditorDialogState extends State<_CustomSkinEditorDialog> {
                                     width: 14,
                                     height: 14,
                                     decoration: BoxDecoration(
-                                      color: col,
+                                      color: slot.$3,
                                       shape: BoxShape.circle,
-                                      border: Border.all(color: Colors.white.withValues(alpha: 0.4), width: 0.8),
+                                      border: Border.all(color: Colors.white30),
                                     ),
                                   ),
-                                  const SizedBox(width: 7),
-                                  Text(
-                                    label,
-                                    style: TextStyle(
-                                      color: hostSkin.fg,
-                                      fontSize: 12.5,
-                                      fontWeight: _editingColorSlot == slot ? FontWeight.w600 : FontWeight.w400,
-                                    ),
-                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(slot.$2, style: TextStyle(color: hostSkin.fg, fontSize: 12)),
                                 ],
                               ),
                             ),
                           ),
                       ],
                     ),
-
                     const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: hostSkin.surface2,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: hostSkin.border, width: 0.7),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              for (final hex in swatches)
-                                GestureDetector(
-                                  onTap: () => _applyHexToSlot(_editingColorSlot, hex),
-                                  child: Container(
-                                    width: 24,
-                                    height: 24,
-                                    decoration: BoxDecoration(
-                                      color: parseHexColor(hex, Colors.blue),
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: _currentHexForSlot(_editingColorSlot) == hex.toUpperCase()
-                                            ? hostSkin.fg
-                                            : hostSkin.borderStrong,
-                                        width: _currentHexForSlot(_editingColorSlot) == hex.toUpperCase() ? 2.0 : 0.8,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              const SizedBox(width: 6),
-                              Text(
-                                _currentHexForSlot(_editingColorSlot),
-                                style: TextStyle(
-                                  color: hostSkin.fg2,
-                                  fontSize: 12,
-                                  fontFamily: 'monospace',
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          VedroPrecisionSlider(
-                            label: '色相 (Hue)',
-                            valueText: '${hsv.hue.round()}°',
-                            value: hsv.hue,
-                            min: 0,
-                            max: 360,
-                            step: 1,
-                            onChanged: (h) {
-                              final next = hsv.withHue(h.clamp(0.0, 360.0)).toColor();
-                              _applyHexToSlot(_editingColorSlot, colorToHex6(next));
-                            },
-                          ),
-                          VedroPrecisionSlider(
-                            label: '饱和度 (Saturation)',
-                            valueText: '${(hsv.saturation * 100).round()}%',
-                            value: hsv.saturation,
-                            min: 0,
-                            max: 1,
-                            step: 0.02,
-                            onChanged: (sat) {
-                              final next = hsv.withSaturation(sat.clamp(0.0, 1.0)).toColor();
-                              _applyHexToSlot(_editingColorSlot, colorToHex6(next));
-                            },
-                          ),
-                          VedroPrecisionSlider(
-                            label: '明度 (Brightness)',
-                            valueText: '${(hsv.value * 100).round()}%',
-                            value: hsv.value,
-                            min: 0,
-                            max: 1,
-                            step: 0.02,
-                            onChanged: (val) {
-                              final next = hsv.withValue(val.clamp(0.0, 1.0)).toColor();
-                              _applyHexToSlot(_editingColorSlot, colorToHex6(next));
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    const SizedBox(height: 16),
-
-                    // 3. Button CTA Style & Frame Border Style
-                    Text(
-                      '主按钮风格',
-                      style: TextStyle(color: hostSkin.fg2, fontSize: 12.5, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 7),
                     Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final (id, label) in const [
-                          ('contrast', '高反差纯白/纯黑'),
-                          ('accent', '主题亮色实心'),
-                          ('gradient', '双色流光渐变'),
-                          ('outline', '通透琉璃描边'),
-                        ])
-                          _SmallOptionPill(
-                            label: label,
-                            selected: _spec.ctaStyle == id,
-                            onTap: () => setState(() => _spec = _spec.copyWith(ctaStyle: id)),
+                      spacing: 7,
+                      runSpacing: 7,
+                      children: _swatches.map((hex) {
+                        final col = VedroSkin.parseHex(hex, Colors.blue);
+                        return GestureDetector(
+                          onTap: () => _updateSlotHex(hex),
+                          child: Container(
+                            width: 24,
+                            height: 24,
+                            decoration: BoxDecoration(
+                              color: col,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white38, width: 0.8),
+                            ),
                           ),
-                      ],
+                        );
+                      }).toList(),
                     ),
-
-                    const SizedBox(height: 14),
-                    Text(
-                      '卡片边框性格',
-                      style: TextStyle(color: hostSkin.fg2, fontSize: 12.5, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 7),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final (id, label) in const [
-                          ('borderless', '无框柔和阴影 (Apple)'),
-                          ('hairline', '1px 精致建筑细线'),
-                          ('neon', '主题色霓虹描边光晕'),
-                        ])
-                          _SmallOptionPill(
-                            label: label,
-                            selected: _spec.frameStyle == id,
-                            onTap: () => setState(() => _spec = _spec.copyWith(frameStyle: id)),
-                          ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 14),
-                    Text(
-                      '按钮与胶囊切角',
-                      style: TextStyle(color: hostSkin.fg2, fontSize: 12.5, fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 7),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final (r, label) in const [
-                          (6.0, '硬朗机能切角 (6px)'),
-                          (12.0, '温润圆角矩形 (12px)'),
-                          (999.0, '全圆跑道胶囊 (Capsule)'),
-                        ])
-                          _SmallOptionPill(
-                            label: label,
-                            selected: (_spec.pillRadius - r).abs() < 2.0,
-                            onTap: () => setState(() => _spec = _spec.copyWith(pillRadius: r)),
-                          ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 10),
-                    VedroPrecisionSlider(
-                      label: '卡片与海报圆角',
-                      valueText: '${_spec.cardRadius.round()} px',
-                      value: _spec.cardRadius,
-                      min: 2.0,
-                      max: 26.0,
-                      step: 1.0,
-                      defaultValue: 14.0,
-                      ticks: const [
-                        (4.0, '胶片 4px'),
-                        (8.0, '极客 8px'),
-                        (14.0, '标准 14px'),
-                        (20.0, '圆润 20px'),
-                        (26.0, '超椭圆'),
-                      ],
-                      onChanged: (v) => setState(() => _spec = _spec.copyWith(cardRadius: v)),
-                    ),
-
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: SwitchListTile.adaptive(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            title: Text('顶部极光氛围背光', style: TextStyle(color: hostSkin.fg, fontSize: 13)),
-                            value: _spec.ambientGlow,
-                            activeColor: liveSkin.accent,
-                            onChanged: (v) => setState(() => _spec = _spec.copyWith(ambientGlow: v)),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: SwitchListTile.adaptive(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            title: Text('电影画报衬线标题', style: TextStyle(color: hostSkin.fg, fontSize: 13)),
-                            value: _spec.editorialSerif,
-                            activeColor: liveSkin.accent,
-                            onChanged: (v) => setState(() => _spec = _spec.copyWith(editorialSerif: v)),
-                          ),
-                        ),
-                      ],
+                    Slider(
+                      value: hsv.hue.clamp(0.0, 360.0),
+                      min: 0,
+                      max: 360,
+                      onChanged: (h) =>
+                          _updateSlotHex(VedroSkin.colorToHex(hsv.withHue(h).toColor())),
                     ),
                   ],
                 ),
               ),
             ),
-
-            // Footer Save Bar
+            Divider(height: 1, color: hostSkin.border),
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 14),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
@@ -1365,55 +1504,19 @@ class _CustomSkinEditorDialogState extends State<_CustomSkinEditorDialog> {
                     style: FilledButton.styleFrom(
                       backgroundColor: liveSkin.primaryCtaBg,
                       foregroundColor: liveSkin.primaryCtaFg,
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
                     ),
                     onPressed: () {
-                      final finalName = _nameCtrl.text.trim().isEmpty ? '我的专属皮肤' : _nameCtrl.text.trim();
+                      final finalName =
+                          _nameCtrl.text.trim().isEmpty ? '我的专属皮肤' : _nameCtrl.text.trim();
                       Navigator.pop(context, _spec.copyWith(name: finalName));
                     },
-                    icon: const Icon(Icons.check_rounded, size: 17),
-                    label: const Text('保存并启用皮肤', style: TextStyle(fontWeight: FontWeight.w700)),
+                    icon: const Icon(Icons.check_rounded, size: 18),
+                    label: const Text('保存并启用皮肤'),
                   ),
                 ],
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SmallOptionPill extends StatelessWidget {
-  const _SmallOptionPill({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final skin = VedroSkin.of(context);
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6.5),
-        decoration: BoxDecoration(
-          color: selected ? skin.activePillBg : skin.surface2,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: selected ? Colors.transparent : skin.border, width: 0.7),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: selected ? skin.activePillFg : skin.fg2,
-            fontSize: 12,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-          ),
         ),
       ),
     );

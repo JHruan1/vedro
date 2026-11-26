@@ -64,6 +64,9 @@ class _DetailScreenState extends State<DetailScreen> {
   String? _translatedOverview;
   bool _translating = false;
   DateTime? _lastDownloadTapAt;
+  final Map<String, MediaSourceModel> _probedSourcesByKey = {};
+  final Set<String> _probingKeys = {};
+  final Set<String> _probedAttemptedKeys = {};
 
   @override
   void initState() {
@@ -122,6 +125,10 @@ class _DetailScreenState extends State<DetailScreen> {
         if (_selectedSourceIndex >= _item.mediaSources.length) {
           _selectedSourceIndex = 0;
         }
+        if (_item.isPlayable && _item.mediaSources.isNotEmpty) {
+          final initSlot = _selectedSourceIndex.clamp(0, _item.mediaSources.length - 1);
+          unawaited(_ensureVersionProbed(_item.id, _item.mediaSources[initSlot], initSlot));
+        }
         if (_item.isSeries) {
           final sRes = await widget.appState.core.invoke('get_seasons', {'series_id': _item.id})
               as Map<String, dynamic>;
@@ -171,6 +178,85 @@ class _DetailScreenState extends State<DetailScreen> {
         _episodeViewMode = loaded.length >= 24 ? 'grid' : 'cards';
       }
     });
+    _probeSelectedSeriesEpisodeVersion();
+  }
+
+  String _probeKeyFor(String itemId, MediaSourceModel src, int slot) =>
+      '$itemId::${src.id.isNotEmpty ? src.id : "slot_$slot"}';
+
+  MediaSourceModel _effectiveSourceFor(String itemId, MediaSourceModel src, int slot) {
+    final probed = _probedSourcesByKey[_probeKeyFor(itemId, src, slot)];
+    if (probed == null) return src;
+    return MediaSourceModel(
+      id: src.id.isNotEmpty ? src.id : probed.id,
+      name: src.name ?? probed.name,
+      path: src.path ?? probed.path,
+      container: src.container ?? probed.container,
+      size: src.size ?? probed.size,
+      bitrate: src.bitrate ?? probed.bitrate,
+      runTimeTicks: src.runTimeTicks ?? probed.runTimeTicks,
+      directStreamUrl: probed.directStreamUrl ?? src.directStreamUrl,
+      supportsDirectPlay: src.supportsDirectPlay,
+      mediaStreams:
+          probed.mediaStreams.isNotEmpty ? probed.mediaStreams : src.mediaStreams,
+    );
+  }
+
+  MediaItemModel? _primaryEpisodeForSeries() {
+    if (_episodes.isEmpty) return null;
+    return _episodes.firstWhere(
+      (e) => e.resumeProgress > 0.01,
+      orElse: () => _episodes.firstWhere(
+        (e) => !e.played,
+        orElse: () => _episodes.first,
+      ),
+    );
+  }
+
+  void _probeSelectedSeriesEpisodeVersion() {
+    if (!_item.isSeries) return;
+    final ep = _primaryEpisodeForSeries();
+    if (ep == null) return;
+    final matched = _matchingSourceForEpisode(ep);
+    if (matched == null) return;
+    unawaited(_ensureVersionProbed(ep.id, matched, _selectedSeriesVersionIndex));
+  }
+
+  Future<void> _ensureVersionProbed(
+    String itemId,
+    MediaSourceModel source,
+    int slot,
+  ) async {
+    if (source.audioStreams.isNotEmpty || source.videoStreams.isNotEmpty) {
+      return;
+    }
+    final key = _probeKeyFor(itemId, source, slot);
+    if (_probingKeys.contains(key) || _probedSourcesByKey.containsKey(key)) {
+      return;
+    }
+    if (mounted) {
+      setState(() => _probingKeys.add(key));
+    } else {
+      _probingKeys.add(key);
+    }
+    try {
+      final raw = await widget.appState.core.invoke('probe_media_source', {
+        'item_id': itemId,
+        if (source.id.isNotEmpty) 'media_source_id': source.id,
+      });
+      if (raw is Map && raw['media_source'] is Map) {
+        final enriched = MediaSourceModel.fromJson(
+          Map<String, dynamic>.from(raw['media_source'] as Map),
+        );
+        _probedSourcesByKey[key] = enriched;
+        _probedAttemptedKeys.add(key);
+      }
+    } catch (_) {
+      // Non-fatal: fallback language preferences remain usable
+    } finally {
+      _probingKeys.remove(key);
+      if (mounted) setState(() {});
+    }
   }
 
   MediaItemModel? get _activeSeason {
@@ -181,8 +267,13 @@ class _DetailScreenState extends State<DetailScreen> {
     return _seasons.first;
   }
 
-  List<ResolvedMediaVersion> get _resolvedPlayableVersions =>
-      MediaSourceModel.resolveVersions(_item.mediaSources);
+  List<ResolvedMediaVersion> get _resolvedPlayableVersions {
+    final enriched = <MediaSourceModel>[
+      for (var i = 0; i < _item.mediaSources.length; i++)
+        _effectiveSourceFor(_item.id, _item.mediaSources[i], i),
+    ];
+    return MediaSourceModel.resolveVersions(enriched);
+  }
 
   MediaSourceModel? get _activeSource {
     final vers = _resolvedPlayableVersions;
@@ -194,13 +285,17 @@ class _DetailScreenState extends State<DetailScreen> {
   /// Collect representative multi-version sources for a Series from the episode with the most versions.
   List<MediaSourceModel> get _seriesSampleSources {
     if (!_item.isSeries || _episodes.isEmpty) return const [];
-    List<MediaSourceModel> best = const [];
+    MediaItemModel? bestEp;
     for (final ep in _episodes) {
-      if (ep.mediaSources.length > best.length) {
-        best = ep.mediaSources;
+      if (bestEp == null || ep.mediaSources.length > bestEp.mediaSources.length) {
+        bestEp = ep;
       }
     }
-    return best;
+    if (bestEp == null) return const [];
+    return [
+      for (var i = 0; i < bestEp.mediaSources.length; i++)
+        _effectiveSourceFor(bestEp.id, bestEp.mediaSources[i], i),
+    ];
   }
 
   List<ResolvedMediaVersion> get _resolvedSeriesVersions =>
@@ -948,8 +1043,26 @@ class _DetailScreenState extends State<DetailScreen> {
     if (_selectedSeriesVersionIndex >= seriesVersions.length && seriesVersions.isNotEmpty) {
       _selectedSeriesVersionIndex = 0;
     }
-    final activeSeriesEpSource =
+    final rawSeriesEpSource =
         nextEpToPlay != null ? _matchingSourceForEpisode(nextEpToPlay) : null;
+    final activeSeriesEpSource = (nextEpToPlay != null && rawSeriesEpSource != null)
+        ? _effectiveSourceFor(
+            nextEpToPlay.id,
+            rawSeriesEpSource,
+            _selectedSeriesVersionIndex,
+          )
+        : rawSeriesEpSource;
+    final activeProbeKey = _item.isSeries
+        ? (nextEpToPlay != null && rawSeriesEpSource != null
+            ? _probeKeyFor(nextEpToPlay.id, rawSeriesEpSource, _selectedSeriesVersionIndex)
+            : '')
+        : (src != null ? _probeKeyFor(_item.id, src, _selectedSourceIndex) : '');
+    final isProbingActiveSource =
+        activeProbeKey.isNotEmpty && _probingKeys.contains(activeProbeKey);
+    final hasProbedActiveSource = activeProbeKey.isNotEmpty &&
+        (_probedAttemptedKeys.contains(activeProbeKey) ||
+            ((_item.isSeries ? activeSeriesEpSource : src)?.audioStreams.isNotEmpty == true) ||
+            ((_item.isSeries ? activeSeriesEpSource : src)?.videoStreams.isNotEmpty == true));
 
     final isEpisodeWithStill = _item.type == 'Episode' && _item.primaryImageTag != null;
     final coverW = _item.type == 'Person'
@@ -1380,14 +1493,15 @@ class _DetailScreenState extends State<DetailScreen> {
 
     final c = skin.canvas;
     final heroVertStops = skin.isLight
-        ? const [0.0, 0.24, 0.54, 0.82, 1.0]
-        : const [0.0, 0.22, 0.56, 0.84, 1.0];
+        ? const [0.0, 0.24, 0.54, 0.82, 0.95, 1.0]
+        : const [0.0, 0.22, 0.56, 0.84, 0.95, 1.0];
     final heroVertColors = skin.isLight
         ? [
             c.withValues(alpha: 0.58),
             c.withValues(alpha: 0.68),
             c.withValues(alpha: 0.89),
             c.withValues(alpha: 0.98),
+            c,
             c,
           ]
         : [
@@ -1396,18 +1510,336 @@ class _DetailScreenState extends State<DetailScreen> {
             c.withValues(alpha: 0.64),
             c.withValues(alpha: 0.92),
             c,
+            c,
           ];
+
+    final fanartUrl = widget.appState.backdropArt(_item)?.url;
+    final isCenteredEditorial = skin.detailLayout == 'centered_editorial';
+    final isJellyfinGlass = skin.detailLayout == 'jellyfin_glass';
+
+    Widget buildHeroBodyContent() {
+      if (isCenteredEditorial) {
+        return Column(
+          key: const ValueKey('detail-centered-editorial-hero'),
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            coverCard,
+            const SizedBox(height: 22),
+            if (eyebrowText.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(
+                  eyebrowText.toUpperCase(),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: skin.ctaStyle == 'contrast' ? skin.fg3 : skin.accent,
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.9,
+                  ),
+                ),
+              ),
+            if (logoUrl != null && skin.preferClearLogo && !skin.isLight)
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: wide ? 82 : 60,
+                  maxWidth: wide ? 420 : 280,
+                ),
+                child: Image.network(
+                  logoUrl,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) =>
+                      _TitleHeadline(_item.displayName, wide, centered: true),
+                ),
+              )
+            else
+              _TitleHeadline(_item.displayName, wide, centered: true),
+            if (_item.originalTitle != null && _item.originalTitle != _item.name) ...[
+              const SizedBox(height: 4),
+              Text(
+                _item.originalTitle!,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: skin.fg3, fontSize: 13.5),
+              ),
+            ],
+            if (dotFacts.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                alignment: WrapAlignment.center,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                runSpacing: 4,
+                children: dotFacts,
+              ),
+            ],
+            if ((_item.communityRating ?? 0) > 0 ||
+                (_item.criticRating ?? 0) > 0 ||
+                (_item.officialRating?.isNotEmpty == true) ||
+                statusLabel.isNotEmpty ||
+                specChips.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (_item.communityRating != null && _item.communityRating! > 0)
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.star_rounded, size: 15.5, color: Color(0xFFF59E0B)),
+                        const SizedBox(width: 3),
+                        Text(
+                          _item.communityRating!.toStringAsFixed(1),
+                          style: TextStyle(
+                            color: skin.fg,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w700,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
+                    ),
+                  if (_item.officialRating != null && _item.officialRating!.isNotEmpty)
+                    _AppleMicroBadge(_item.officialRating!),
+                  if (statusLabel.isNotEmpty) _AppleMicroBadge(statusLabel),
+                  if (specChips.isNotEmpty) SpecGlyphRow(specs: specChips),
+                ],
+              ),
+            ],
+            if (tagline != null || overviewText.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 680),
+                child: buildOverviewBlock(),
+              ),
+            ],
+            const SizedBox(height: 22),
+            Center(child: buildActionRow()),
+          ],
+        );
+      }
+
+      final standardContent = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: wide ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            children: [
+              coverCard,
+              SizedBox(width: wide ? 32 : 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (eyebrowText.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Text(
+                          eyebrowText.toUpperCase(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: skin.ctaStyle == 'contrast' ? skin.fg3 : skin.accent,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 0.6,
+                          ),
+                        ),
+                      ),
+                    if (wide && logoUrl != null && skin.preferClearLogo && !skin.isLight)
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          maxHeight: 74,
+                          maxWidth: 400,
+                        ),
+                        child: Image.network(
+                          logoUrl,
+                          fit: BoxFit.contain,
+                          alignment: Alignment.centerLeft,
+                          errorBuilder: (_, __, ___) =>
+                              _TitleHeadline(_item.displayName, wide),
+                        ),
+                      )
+                    else
+                      _TitleHeadline(_item.displayName, wide),
+                    if (_item.originalTitle != null &&
+                        _item.originalTitle != _item.name) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        _item.originalTitle!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: skin.fg3,
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                    ],
+                    if (dotFacts.isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Wrap(
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        runSpacing: 4,
+                        children: dotFacts,
+                      ),
+                    ],
+                    if ((_item.communityRating ?? 0) > 0 ||
+                        (_item.criticRating ?? 0) > 0 ||
+                        (_item.officialRating?.isNotEmpty == true) ||
+                        statusLabel.isNotEmpty ||
+                        specChips.isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          if (_item.communityRating != null &&
+                              _item.communityRating! > 0)
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.star_rounded,
+                                    size: 15.5, color: Color(0xFFF59E0B)),
+                                const SizedBox(width: 3),
+                                Text(
+                                  _item.communityRating!.toStringAsFixed(1),
+                                  style: TextStyle(
+                                    color: skin.fg,
+                                    fontSize: 13.5,
+                                    fontWeight: FontWeight.w700,
+                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          if (_item.criticRating != null &&
+                              _item.criticRating! > 0)
+                            Text(
+                              '${_item.criticRating!.round()}% 好评',
+                              style: TextStyle(
+                                color: skin.fg2,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                                fontFeatures: const [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                          if (_item.officialRating != null &&
+                              _item.officialRating!.isNotEmpty)
+                            _AppleMicroBadge(_item.officialRating!),
+                          if (statusLabel.isNotEmpty && !ultraWide)
+                            _AppleMicroBadge(statusLabel),
+                          if (specChips.isNotEmpty) SpecGlyphRow(specs: specChips),
+                        ],
+                      ),
+                    ],
+                    if (wide) ...[
+                      if (tagline != null || overviewText.isNotEmpty) ...[
+                        const SizedBox(height: 14),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 680),
+                          child: buildOverviewBlock(),
+                        ),
+                      ],
+                      const SizedBox(height: 22),
+                      VedroStaggeredEntrance(
+                        index: 1,
+                        reduceMotion: widget.appState.prefs.reduceMotion,
+                        child: buildActionRow(),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (ultraWide && heroCreditRows.isNotEmpty) ...[
+                const SizedBox(width: 36),
+                SizedBox(
+                  width: 228,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (var i = 0; i < heroCreditRows.length; i++) ...[
+                          if (i > 0) const SizedBox(height: 10),
+                          Text.rich(
+                            TextSpan(
+                              children: [
+                                TextSpan(
+                                  text: '${heroCreditRows[i].$1}  ',
+                                  style: TextStyle(
+                                    color: skin.fg3,
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w500,
+                                    height: 1.45,
+                                  ),
+                                ),
+                                TextSpan(
+                                  text: heroCreditRows[i].$2,
+                                  style: TextStyle(
+                                    color: skin.fg2,
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w500,
+                                    height: 1.45,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          if (!wide) ...[
+            const SizedBox(height: 20),
+            VedroStaggeredEntrance(
+              index: 1,
+              reduceMotion: widget.appState.prefs.reduceMotion,
+              child: buildActionRow(),
+            ),
+            if (tagline != null || overviewText.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              buildOverviewBlock(),
+            ],
+          ],
+        ],
+      );
+
+      if (isJellyfinGlass) {
+        return GlassSurface(
+          key: const ValueKey('detail-jellyfin-glass-hero'),
+          borderRadius: skin.cardRadius.clamp(10.0, 24.0),
+          blur: 28,
+          color: skin.panelSurface,
+          borderColor: skin.borderStrong,
+          padding: EdgeInsets.all(wide ? 26 : 18),
+          child: standardContent,
+        );
+      }
+      return standardContent;
+    }
 
     return Scaffold(
       backgroundColor: skin.canvas,
       body: VedroSkinCanvas(
+        backdropImageUrl: fanartUrl,
         child: Stack(
           children: [
             CustomScrollView(
               slivers: [
-                // 1. Seamless Full-Stage Immersive Hero dissolving smoothly into active skin canvas
+                // 1. Seamless Full-Stage Hero adapting to `detailLayout` (`apple_immersive` | `jellyfin_glass` | `centered_editorial`)
                 SliverToBoxAdapter(
                   child: Stack(
+                    clipBehavior: Clip.none,
                     children: [
                       Positioned.fill(
                         child: ClipRect(
@@ -1422,7 +1854,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                 alignment: const Alignment(0, -0.32),
                                 showInitials: false,
                               ),
-                              if (wide)
+                              if (wide && !isCenteredEditorial)
                                 DecoratedBox(
                                   decoration: BoxDecoration(
                                     gradient: LinearGradient(
@@ -1451,220 +1883,28 @@ class _DetailScreenState extends State<DetailScreen> {
                           ),
                         ),
                       ),
-
+                      if (!skin.usesBlurredFanart)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: -2,
+                          height: 5,
+                          child: ColoredBox(color: c),
+                        ),
                       Padding(
                         padding: EdgeInsets.fromLTRB(
                           padX,
-                          wide ? (topSafe + 148) : (topSafe + 118),
+                          wide ? (topSafe + (isJellyfinGlass ? 112 : 144)) : (topSafe + 108),
                           padX,
                           wide ? 32 : 24,
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              crossAxisAlignment: wide ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-                              children: [
-                                coverCard,
-                                SizedBox(width: wide ? 32 : 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      if (eyebrowText.isNotEmpty)
-                                        Padding(
-                                          padding: const EdgeInsets.only(bottom: 6),
-                                          child: Text(
-                                            eyebrowText.toUpperCase(),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(
-                                              color: skin.ctaStyle == 'contrast' ? skin.fg3 : skin.accent,
-                                              fontSize: 11.5,
-                                              fontWeight: FontWeight.w600,
-                                              letterSpacing: 0.6,
-                                            ),
-                                          ),
-                                        ),
-
-                                      if (wide && logoUrl != null && !skin.isLight)
-                                        ConstrainedBox(
-                                          constraints: const BoxConstraints(
-                                            maxHeight: 74,
-                                            maxWidth: 400,
-                                          ),
-                                          child: Image.network(
-                                            logoUrl,
-                                            fit: BoxFit.contain,
-                                            alignment: Alignment.centerLeft,
-                                            errorBuilder: (_, __, ___) =>
-                                                _TitleHeadline(_item.displayName, wide),
-                                          ),
-                                        )
-                                      else
-                                        _TitleHeadline(_item.displayName, wide),
-
-                                      if (_item.originalTitle != null &&
-                                          _item.originalTitle != _item.name) ...[
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          _item.originalTitle!,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                            color: skin.fg3,
-                                            fontSize: 13.5,
-                                            fontWeight: FontWeight.w400,
-                                          ),
-                                        ),
-                                      ],
-
-                                      if (dotFacts.isNotEmpty) ...[
-                                        const SizedBox(height: 10),
-                                        Wrap(
-                                          crossAxisAlignment: WrapCrossAlignment.center,
-                                          runSpacing: 4,
-                                          children: dotFacts,
-                                        ),
-                                      ],
-
-                                      if ((_item.communityRating ?? 0) > 0 ||
-                                          (_item.criticRating ?? 0) > 0 ||
-                                          (_item.officialRating?.isNotEmpty == true) ||
-                                          statusLabel.isNotEmpty ||
-                                          specChips.isNotEmpty) ...[
-                                        const SizedBox(height: 10),
-                                        Wrap(
-                                          spacing: 8,
-                                          runSpacing: 6,
-                                          crossAxisAlignment: WrapCrossAlignment.center,
-                                          children: [
-                                            if (_item.communityRating != null &&
-                                                _item.communityRating! > 0)
-                                              Row(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  const Icon(Icons.star_rounded,
-                                                      size: 15.5, color: Color(0xFFF59E0B)),
-                                                  const SizedBox(width: 3),
-                                                  Text(
-                                                    _item.communityRating!.toStringAsFixed(1),
-                                                    style: TextStyle(
-                                                      color: skin.fg,
-                                                      fontSize: 13.5,
-                                                      fontWeight: FontWeight.w700,
-                                                      fontFeatures: const [FontFeature.tabularFigures()],
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            if (_item.criticRating != null &&
-                                                _item.criticRating! > 0)
-                                              Text(
-                                                '${_item.criticRating!.round()}% 好评',
-                                                style: TextStyle(
-                                                  color: skin.fg2,
-                                                  fontSize: 12.5,
-                                                  fontWeight: FontWeight.w600,
-                                                  fontFeatures: const [FontFeature.tabularFigures()],
-                                                ),
-                                              ),
-                                            if (_item.officialRating != null &&
-                                                _item.officialRating!.isNotEmpty)
-                                              _AppleMicroBadge(_item.officialRating!),
-                                            if (statusLabel.isNotEmpty && !ultraWide)
-                                              _AppleMicroBadge(statusLabel),
-                                            if (specChips.isNotEmpty) SpecGlyphRow(specs: specChips),
-                                          ],
-                                        ),
-                                      ],
-
-                                      if (wide) ...[
-                                        if (tagline != null || overviewText.isNotEmpty) ...[
-                                          const SizedBox(height: 14),
-                                          ConstrainedBox(
-                                            constraints: const BoxConstraints(maxWidth: 680),
-                                            child: buildOverviewBlock(),
-                                          ),
-                                        ],
-                                        const SizedBox(height: 22),
-                                        VedroStaggeredEntrance(
-                                          index: 1,
-                                          reduceMotion: widget.appState.prefs.reduceMotion,
-                                          child: buildActionRow(),
-                                        ),
-                                      ],
-                                    ],
-                                  ),
-                                ),
-
-                                if (ultraWide && heroCreditRows.isNotEmpty) ...[
-                                  const SizedBox(width: 36),
-                                  SizedBox(
-                                    width: 228,
-                                    child: Padding(
-                                      padding: const EdgeInsets.only(bottom: 4),
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          for (var i = 0; i < heroCreditRows.length; i++) ...[
-                                            if (i > 0) const SizedBox(height: 10),
-                                            Text.rich(
-                                              TextSpan(
-                                                children: [
-                                                  TextSpan(
-                                                    text: '${heroCreditRows[i].$1}  ',
-                                                    style: TextStyle(
-                                                      color: skin.fg3,
-                                                      fontSize: 12.5,
-                                                      fontWeight: FontWeight.w500,
-                                                      height: 1.45,
-                                                    ),
-                                                  ),
-                                                  TextSpan(
-                                                    text: heroCreditRows[i].$2,
-                                                    style: TextStyle(
-                                                      color: skin.fg2,
-                                                      fontSize: 12.5,
-                                                      fontWeight: FontWeight.w500,
-                                                      height: 1.45,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                              maxLines: 2,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ],
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-
-                            if (!wide) ...[
-                              const SizedBox(height: 20),
-                              VedroStaggeredEntrance(
-                                index: 1,
-                                reduceMotion: widget.appState.prefs.reduceMotion,
-                                child: buildActionRow(),
-                              ),
-                              if (tagline != null || overviewText.isNotEmpty) ...[
-                                const SizedBox(height: 16),
-                                buildOverviewBlock(),
-                              ],
-                            ],
-                          ],
-                        ),
+                        child: buildHeroBodyContent(),
                       ),
                     ],
                   ),
                 ),
 
-                // 2. Body Content: Strictly Single-Select Version Grid + Always-Visible Audio & Subtitle Selector!
+                // 2. Body Content: Strictly Single-Select Version Grid + Version-Following Audio & Subtitle Selector!
                 SliverToBoxAdapter(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1679,21 +1919,32 @@ class _DetailScreenState extends State<DetailScreen> {
                                 ? _selectedSeriesVersionIndex
                                 : _selectedSourceIndex,
                             activeStreamSource: _item.isSeries ? activeSeriesEpSource : src,
+                            isProbingStreams: isProbingActiveSource,
+                            hasBeenProbed: hasProbedActiveSource,
                             selectedAudioIndex: _selectedAudioIndex,
                             selectedSubtitleIndex: _selectedSubtitleIndex,
                             localExternalSubPath: _localExternalSubPath,
                             appState: widget.appState,
-                            onSelectVersionIndex: (idx) => setState(() {
+                            onSelectVersionIndex: (idx) {
+                              setState(() {
+                                if (_item.isSeries) {
+                                  _selectedSeriesVersionIndex = idx;
+                                } else {
+                                  _selectedSourceIndex = idx;
+                                }
+                                _selectedAudioIndex = null;
+                                if (_selectedSubtitleIndex != -1) {
+                                  _selectedSubtitleIndex = null;
+                                }
+                              });
                               if (_item.isSeries) {
-                                _selectedSeriesVersionIndex = idx;
-                              } else {
-                                _selectedSourceIndex = idx;
+                                _probeSelectedSeriesEpisodeVersion();
+                              } else if (idx >= 0 && idx < _item.mediaSources.length) {
+                                unawaited(
+                                  _ensureVersionProbed(_item.id, _item.mediaSources[idx], idx),
+                                );
                               }
-                              _selectedAudioIndex = null;
-                              if (_selectedSubtitleIndex != -1) {
-                                _selectedSubtitleIndex = null;
-                              }
-                            }),
+                            },
                             onSelectAudio: (idx) => setState(() => _selectedAudioIndex = idx),
                             onSelectSubtitle: (idx) => setState(() {
                               _selectedSubtitleIndex = idx;
@@ -1718,7 +1969,7 @@ class _DetailScreenState extends State<DetailScreen> {
                         const SizedBox(height: 34),
                       ],
 
-                      // 2d. Circular Cast & Crew Medallions
+                      // 2d. Skin-Adaptive Cast & Crew (`circle_medallion` | `portrait_card` | `compact_pill`)
                       if (_item.people.isNotEmpty) ...[
                         Padding(
                           padding: EdgeInsets.symmetric(horizontal: padX),
@@ -1752,10 +2003,14 @@ class _DetailScreenState extends State<DetailScreen> {
                         ),
                         const SizedBox(height: 12),
                         SmoothHorizontalStrip(
-                          height: 152,
+                          height: skin.castStyle == 'portrait_card'
+                              ? 242
+                              : (skin.castStyle == 'compact_pill' ? 68 : 152),
                           padX: padX,
-                          paddleCenterY: 48,
-                          spacing: 18,
+                          paddleCenterY: skin.castStyle == 'portrait_card'
+                              ? 84
+                              : (skin.castStyle == 'compact_pill' ? 28 : 48),
+                          spacing: skin.castStyle == 'compact_pill' ? 10 : 16,
                           itemCount: _item.people.take(36).length,
                           itemBuilder: (_, idx) {
                             final p = _item.people[idx];
@@ -1764,21 +2019,146 @@ class _DetailScreenState extends State<DetailScreen> {
                                     p.id,
                                     type: 'Primary',
                                     tag: p.primaryImageTag,
-                                    maxWidth: 240,
+                                    maxWidth: 320,
                                   )
                                 : '';
                             final roleLabel = (p.role ?? '').trim().isNotEmpty
                                 ? p.role!.trim()
                                 : localizePersonRole(p.type);
-                            return SizedBox(
-                              width: 90,
-                              child: PressableScale(
-                                onTap: () => _openItemDetail(MediaItemModel(
+                            void openPerson() => _openItemDetail(MediaItemModel(
                                   id: p.id,
                                   name: p.name,
                                   type: 'Person',
                                   primaryImageTag: p.primaryImageTag,
-                                )),
+                                ));
+
+                            if (skin.castStyle == 'portrait_card') {
+                              final cardR = skin.cardRadius.clamp(6.0, 16.0);
+                              return SizedBox(
+                                width: 114,
+                                child: PressableScale(
+                                  onTap: openPerson,
+                                  hoverScale: 1.03,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      AspectRatio(
+                                        aspectRatio: 2 / 3,
+                                        child: Container(
+                                          decoration: BoxDecoration(
+                                            color: skin.surface2,
+                                            borderRadius: BorderRadius.circular(cardR),
+                                            boxShadow: skin.posterShadow(),
+                                          ),
+                                          foregroundDecoration: BoxDecoration(
+                                            borderRadius: BorderRadius.circular(cardR),
+                                            border: skin.cardBorder(),
+                                          ),
+                                          clipBehavior: Clip.antiAlias,
+                                          child: Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              GeneratedArt(seed: p.id, label: p.name),
+                                              if (avatarUrl.isNotEmpty)
+                                                FadeNetworkImage(
+                                                  url: avatarUrl,
+                                                  alignment: const Alignment(0, -0.3),
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 7),
+                                      Text(
+                                        p.name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color: skin.fg,
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      Text(
+                                        roleLabel,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(color: skin.fg3, fontSize: 11),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }
+
+                            if (skin.castStyle == 'compact_pill') {
+                              final pillR = skin.radiusForPill(52);
+                              return PressableScale(
+                                onTap: openPerson,
+                                hoverScale: 1.02,
+                                child: Container(
+                                  padding: const EdgeInsets.fromLTRB(7, 6, 14, 6),
+                                  decoration: BoxDecoration(
+                                    color: skin.panelSurface,
+                                    borderRadius: BorderRadius.circular(pillR),
+                                    border: skin.cardBorder(),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Container(
+                                        width: 38,
+                                        height: 38,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: skin.surface2,
+                                        ),
+                                        clipBehavior: Clip.antiAlias,
+                                        child: Stack(
+                                          fit: StackFit.expand,
+                                          children: [
+                                            GeneratedArt(seed: p.id, label: p.name),
+                                            if (avatarUrl.isNotEmpty)
+                                              FadeNetworkImage(url: avatarUrl),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      ConstrainedBox(
+                                        constraints: const BoxConstraints(maxWidth: 140),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            Text(
+                                              p.name,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                color: skin.fg,
+                                                fontSize: 12.5,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            Text(
+                                              roleLabel,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(color: skin.fg3, fontSize: 11),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }
+
+                            return SizedBox(
+                              width: 90,
+                              child: PressableScale(
+                                onTap: openPerson,
                                 hoverScale: 1.04,
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.center,
@@ -3304,9 +3684,10 @@ class _SpecGroup extends StatelessWidget {
 }
 
 class _TitleHeadline extends StatelessWidget {
-  const _TitleHeadline(this.text, this.wide);
+  const _TitleHeadline(this.text, this.wide, {this.centered = false});
   final String text;
   final bool wide;
+  final bool centered;
 
   @override
   Widget build(BuildContext context) {
@@ -3314,6 +3695,7 @@ class _TitleHeadline extends StatelessWidget {
     return Text(
       text,
       maxLines: 2,
+      textAlign: centered ? TextAlign.center : TextAlign.start,
       overflow: TextOverflow.ellipsis,
       style: skin.applyHeadlineMood(
         TextStyle(
@@ -3776,6 +4158,8 @@ class _TracksPanel extends StatelessWidget {
     required this.versions,
     required this.selectedVersionIndex,
     required this.activeStreamSource,
+    this.isProbingStreams = false,
+    this.hasBeenProbed = false,
     required this.selectedAudioIndex,
     required this.selectedSubtitleIndex,
     required this.localExternalSubPath,
@@ -3791,6 +4175,8 @@ class _TracksPanel extends StatelessWidget {
   final List<ResolvedMediaVersion> versions;
   final int selectedVersionIndex;
   final MediaSourceModel? activeStreamSource;
+  final bool isProbingStreams;
+  final bool hasBeenProbed;
   final int? selectedAudioIndex;
   final int? selectedSubtitleIndex;
   final String? localExternalSubPath;
@@ -3950,213 +4336,268 @@ class _TracksPanel extends StatelessWidget {
           const SizedBox(height: 20),
         ],
 
-        // Always-Visible Audio & Subtitle Selector Container
+        // Version-Following Audio & Subtitle Selector Container (reacts live to selected version!)
         Container(
           key: const ValueKey('detail-audio-subtitle-panel'),
           width: double.infinity,
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 15),
           decoration: BoxDecoration(
-            color: skin.surface,
+            color: skin.panelSurface,
             borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 18.0)),
             border: skin.cardBorder(),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Wrap(
-                spacing: 10,
-                runSpacing: 4,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                alignment: WrapAlignment.spaceBetween,
-                children: [
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.subtitles_outlined, size: 15.5, color: skin.accent),
-                      const SizedBox(width: 6),
-                      Text(
-                        '音轨与字幕',
-                        style: TextStyle(
-                          color: skin.fg,
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (audios.isEmpty && subs.isEmpty)
-                    Text(
-                      '开播自动按偏好匹配内封/外挂轨道 · 也可挂载本地字幕',
-                      style: TextStyle(color: skin.fg3, fontSize: 11.5),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 12),
-
-              // 1. Audio Track / Preferred Audio Language Row
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6, right: 10),
-                    child: SizedBox(
-                      width: 42,
-                      child: Text(
-                        audios.isNotEmpty ? '音轨' : '配音',
-                        style: TextStyle(
-                          color: skin.fg3,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: Wrap(
-                      spacing: 7,
-                      runSpacing: 7,
-                      children: audios.isNotEmpty
-                          ? [
-                              _TrackChoiceChip(
-                                label: '默认',
-                                selected: selectedAudioIndex == null,
-                                onTap: () => onSelectAudio(null),
-                              ),
-                              ...audios.take(6).map((a) {
-                                final on = selectedAudioIndex == a.index;
-                                return _TrackChoiceChip(
-                                  label: a.label,
-                                  selected: on,
-                                  onTap: () => onSelectAudio(on ? null : a.index),
-                                );
-                              }),
-                              if (audios.length > 6)
-                                _TrackChoiceChip(
-                                  label: '全部 ${audios.length} 条音轨 ▾',
-                                  selected: selectedAudioIndex != null &&
-                                      !audios.take(6).any((a) => a.index == selectedAudioIndex),
-                                  onTap: () => _openAllTracksSheet(
-                                    context: context,
-                                    title: '选择音轨',
-                                    tracks: audios,
-                                    selectedIndex: selectedAudioIndex,
-                                    onSelect: onSelectAudio,
-                                  ),
-                                ),
-                            ]
-                          : audioLangOptions.map((opt) {
-                              final on = prefs.preferredAudioLang == opt.$1;
-                              return _TrackChoiceChip(
-                                label: opt.$2,
-                                selected: on,
-                                onTap: () => appState.updatePrefs(
-                                  prefs.copyWith(preferredAudioLang: opt.$1),
-                                ),
-                              );
-                            }).toList(),
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 10),
-
-              // 2. Subtitle Stream / Preferred Subtitle Language + External Subtitle File Row
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6, right: 10),
-                    child: SizedBox(
-                      width: 42,
-                      child: Text(
-                        '字幕',
-                        style: TextStyle(
-                          color: skin.fg3,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: Wrap(
-                      spacing: 7,
-                      runSpacing: 7,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            switchInCurve: Curves.easeOutCubic,
+            child: Column(
+              key: ValueKey('tracks_ver_${safeVerIdx}_${audios.length}_${subs.length}_$hasBeenProbed'),
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  alignment: WrapAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (subs.isNotEmpty) ...[
-                          _TrackChoiceChip(
-                            label: '默认',
-                            selected: selectedSubtitleIndex == null && extFileName == null,
-                            onTap: () => onSelectSubtitle(null),
+                        Icon(Icons.subtitles_outlined, size: 15.5, color: skin.accent),
+                        const SizedBox(width: 6),
+                        Text(
+                          '音轨与字幕',
+                          style: TextStyle(
+                            color: skin.fg,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
                           ),
-                          _TrackChoiceChip(
-                            label: '关闭字幕',
-                            selected: selectedSubtitleIndex == -1 && extFileName == null,
-                            onTap: () => onSelectSubtitle(-1),
-                          ),
-                          ...subs.take(8).map((s) {
-                            final on = selectedSubtitleIndex == s.index && extFileName == null;
-                            return _TrackChoiceChip(
-                              label: s.label,
-                              selected: on,
-                              onTap: () => onSelectSubtitle(on ? null : s.index),
-                            );
-                          }),
-                          if (subs.length > 8)
-                            _TrackChoiceChip(
-                              label: '全部 ${subs.length} 条字幕 ▾',
-                              selected: extFileName == null &&
-                                  selectedSubtitleIndex != null &&
-                                  selectedSubtitleIndex != -1 &&
-                                  !subs.take(8).any((s) => s.index == selectedSubtitleIndex),
-                              onTap: () => _openAllTracksSheet(
-                                context: context,
-                                title: '选择字幕轨道',
-                                tracks: subs,
-                                selectedIndex: selectedSubtitleIndex,
-                                onSelect: onSelectSubtitle,
-                                allowOff: true,
+                        ),
+                        if (versions.length > 1) ...[
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: skin.subtleChipBg,
+                                borderRadius: BorderRadius.circular(skin.radiusForPill(20)),
+                              ),
+                              child: Text(
+                                '跟随版本 ${safeVerIdx + 1}：${versions[safeVerIdx].displayTitle}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: skin.fg2,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w500,
+                                ),
                               ),
                             ),
-                        ] else ...[
-                          for (final opt in subLangOptions)
-                            _TrackChoiceChip(
-                              label: opt.$2,
-                              selected: extFileName == null &&
-                                  ((opt.$1 == 'off' &&
-                                          (selectedSubtitleIndex == -1 ||
-                                              prefs.preferredSubLang == 'off')) ||
-                                      (opt.$1 != 'off' &&
-                                          selectedSubtitleIndex != -1 &&
-                                          prefs.preferredSubLang == opt.$1)),
-                              onTap: () {
-                                onSelectSubtitle(opt.$1 == 'off' ? -1 : null);
-                                appState.updatePrefs(prefs.copyWith(preferredSubLang: opt.$1));
-                              },
-                            ),
-                        ],
-
-                        if (extFileName != null)
-                          _TrackChoiceChip(
-                            label: '外挂: $extFileName ×',
-                            selected: true,
-                            onTap: onClearExternalSubtitle,
                           ),
-
-                        _TrackChoiceChip(
-                          key: const ValueKey('detail-mount-local-sub-btn'),
-                          label: '+ 本地字幕',
-                          icon: Icons.upload_file_rounded,
-                          selected: false,
-                          onTap: onPickExternalSubtitle,
-                        ),
+                        ],
                       ],
                     ),
-                  ),
-                ],
-              ),
-            ],
+                    if (isProbingStreams)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 11,
+                            height: 11,
+                            child: CircularProgressIndicator(strokeWidth: 1.6, color: skin.accent),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            '正在读取该片源音轨与字幕…',
+                            style: TextStyle(color: skin.accent, fontSize: 11.5),
+                          ),
+                        ],
+                      )
+                    else if (audios.isEmpty && subs.isEmpty && !hasBeenProbed)
+                      Text(
+                        '开播自动按偏好匹配内封/外挂轨道 · 也可挂载本地字幕',
+                        style: TextStyle(color: skin.fg3, fontSize: 11.5),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // 1. Audio Track / Preferred Audio Language Row
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6, right: 10),
+                      child: SizedBox(
+                        width: 42,
+                        child: Text(
+                          audios.isNotEmpty ? '音轨' : '配音',
+                          style: TextStyle(
+                            color: skin.fg3,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Wrap(
+                        spacing: 7,
+                        runSpacing: 7,
+                        children: audios.isNotEmpty
+                            ? [
+                                _TrackChoiceChip(
+                                  label: '默认',
+                                  selected: selectedAudioIndex == null,
+                                  onTap: () => onSelectAudio(null),
+                                ),
+                                ...audios.take(6).map((a) {
+                                  final on = selectedAudioIndex == a.index;
+                                  return _TrackChoiceChip(
+                                    label: a.label,
+                                    selected: on,
+                                    onTap: () => onSelectAudio(on ? null : a.index),
+                                  );
+                                }),
+                                if (audios.length > 6)
+                                  _TrackChoiceChip(
+                                    label: '全部 ${audios.length} 条音轨 ▾',
+                                    selected: selectedAudioIndex != null &&
+                                        !audios.take(6).any((a) => a.index == selectedAudioIndex),
+                                    onTap: () => _openAllTracksSheet(
+                                      context: context,
+                                      title: '选择音轨',
+                                      tracks: audios,
+                                      selectedIndex: selectedAudioIndex,
+                                      onSelect: onSelectAudio,
+                                    ),
+                                  ),
+                              ]
+                            : audioLangOptions.map((opt) {
+                                final on = prefs.preferredAudioLang == opt.$1;
+                                return _TrackChoiceChip(
+                                  label: opt.$2,
+                                  selected: on,
+                                  onTap: () => appState.updatePrefs(
+                                    prefs.copyWith(preferredAudioLang: opt.$1),
+                                  ),
+                                );
+                              }).toList(),
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 10),
+
+                // 2. Subtitle Stream / Probed Empty State / Preferred Subtitle Language + External Subtitle File Row
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6, right: 10),
+                      child: SizedBox(
+                        width: 42,
+                        child: Text(
+                          '字幕',
+                          style: TextStyle(
+                            color: skin.fg3,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Wrap(
+                        spacing: 7,
+                        runSpacing: 7,
+                        children: [
+                          if (subs.isNotEmpty) ...[
+                            _TrackChoiceChip(
+                              label: '默认',
+                              selected: selectedSubtitleIndex == null && extFileName == null,
+                              onTap: () => onSelectSubtitle(null),
+                            ),
+                            _TrackChoiceChip(
+                              label: '关闭字幕',
+                              selected: selectedSubtitleIndex == -1 && extFileName == null,
+                              onTap: () => onSelectSubtitle(-1),
+                            ),
+                            ...subs.take(8).map((s) {
+                              final on = selectedSubtitleIndex == s.index && extFileName == null;
+                              return _TrackChoiceChip(
+                                label: s.label,
+                                selected: on,
+                                onTap: () => onSelectSubtitle(on ? null : s.index),
+                              );
+                            }),
+                            if (subs.length > 8)
+                              _TrackChoiceChip(
+                                label: '全部 ${subs.length} 条字幕 ▾',
+                                selected: extFileName == null &&
+                                    selectedSubtitleIndex != null &&
+                                    selectedSubtitleIndex != -1 &&
+                                    !subs.take(8).any((s) => s.index == selectedSubtitleIndex),
+                                onTap: () => _openAllTracksSheet(
+                                  context: context,
+                                  title: '选择字幕轨道',
+                                  tracks: subs,
+                                  selectedIndex: selectedSubtitleIndex,
+                                  onSelect: onSelectSubtitle,
+                                  allowOff: true,
+                                ),
+                              ),
+                          ] else if (hasBeenProbed && audios.isNotEmpty) ...[
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: skin.subtleChipBg,
+                                borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
+                              ),
+                              child: Text(
+                                '该版本无内封或服务端外挂字幕',
+                                style: TextStyle(color: skin.fg3, fontSize: 12),
+                              ),
+                            ),
+                          ] else ...[
+                            for (final opt in subLangOptions)
+                              _TrackChoiceChip(
+                                label: opt.$2,
+                                selected: extFileName == null &&
+                                    ((opt.$1 == 'off' &&
+                                            (selectedSubtitleIndex == -1 ||
+                                                prefs.preferredSubLang == 'off')) ||
+                                        (opt.$1 != 'off' &&
+                                            selectedSubtitleIndex != -1 &&
+                                            prefs.preferredSubLang == opt.$1)),
+                                onTap: () {
+                                  onSelectSubtitle(opt.$1 == 'off' ? -1 : null);
+                                  appState.updatePrefs(prefs.copyWith(preferredSubLang: opt.$1));
+                                },
+                              ),
+                          ],
+
+                          if (extFileName != null)
+                            _TrackChoiceChip(
+                              label: '外挂: $extFileName ×',
+                              selected: true,
+                              onTap: onClearExternalSubtitle,
+                            ),
+
+                          _TrackChoiceChip(
+                            key: const ValueKey('detail-mount-local-sub-btn'),
+                            label: '+ 本地字幕',
+                            icon: Icons.upload_file_rounded,
+                            selected: false,
+                            onTap: onPickExternalSubtitle,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ],

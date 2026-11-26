@@ -20,6 +20,7 @@ class HomeScreen extends StatefulWidget {
     required this.onItemTap,
     required this.onQuickPlay,
     required this.onLibraryTap,
+    this.topNavClearance = 72.0,
     this.onGenreTap,
     this.onOpenFavorites,
     this.onOpenLocalMedia,
@@ -33,6 +34,7 @@ class HomeScreen extends StatefulWidget {
   final void Function(MediaItemModel, {String? heroPrefix}) onItemTap;
   final void Function(MediaItemModel) onQuickPlay;
   final void Function(MediaItemModel) onLibraryTap;
+  final double topNavClearance;
   final ValueChanged<String>? onGenreTap;
   final VoidCallback? onOpenFavorites;
   final VoidCallback? onOpenLocalMedia;
@@ -113,9 +115,9 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final app = widget.appState;
+    final skin = VedroSkin.of(context);
     final wide = MediaQuery.sizeOf(context).width >= 820;
 
-    // SenPlayer / Forward Home Server Hub when no server is currently active!
     if (!app.isSignedIn) {
       return _ServerWelcomeHub(
         appState: app,
@@ -145,12 +147,12 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.cloud_off_rounded, size: 36, color: VedroTheme.fg3),
+              Icon(Icons.cloud_off_rounded, size: 36, color: skin.fg3),
               const SizedBox(height: 14),
               Text(
                 app.homeError!,
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: VedroTheme.fg2, fontSize: 14),
+                style: TextStyle(color: skin.fg2, fontSize: 14),
               ),
               const SizedBox(height: 18),
               Wrap(
@@ -172,7 +174,10 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    final featured = app.showHomeHero ? _pickFeatured() : const <({MediaItemModel item, String eyebrow})>[];
+    final showHero = app.showHomeHero && skin.heroStyle != 'compact_minimal';
+    final featured = showHero
+        ? _pickFeatured()
+        : const <({MediaItemModel item, String eyebrow})>[];
     final caps = app.capabilities;
     final resumeIds = app.resume.map((e) => e.id).toSet();
     final nextItems = app.nextUp.where((e) => !resumeIds.contains(e.id)).toList();
@@ -319,7 +324,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    final skin = VedroSkin.of(context);
     return RefreshIndicator(
       color: skin.fg,
       backgroundColor: skin.surface2,
@@ -333,6 +337,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 featured: featured,
                 appState: app,
                 scrollOffset: _scrollOffset,
+                topNavClearance: widget.topNavClearance,
                 showMobileHeader: !wide,
                 onPlay: widget.onQuickPlay,
                 onDetail: (item) => widget.onItemTap(item, heroPrefix: 'hero'),
@@ -344,7 +349,9 @@ class _HomeScreenState extends State<HomeScreen> {
             )
           else
             SliverToBoxAdapter(
-              child: SizedBox(height: wide ? 78 : MediaQuery.paddingOf(context).top + 16),
+              child: SizedBox(
+                height: wide ? widget.topNavClearance : MediaQuery.paddingOf(context).top + 16,
+              ),
             ),
 
           if (app.remoteBannerMessage != null)
@@ -383,7 +390,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
                     decoration: BoxDecoration(
-                      color: skin.surface,
+                      color: skin.panelSurface,
                       borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
                       border: Border.all(color: skin.border, width: 0.8),
                     ),
@@ -413,6 +420,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _confirmHideFromResume(BuildContext context, MediaItemModel item) {
+    final skin = VedroSkin.of(context);
     showGlassSheet<void>(
       context: context,
       builder: (ctx) => Padding(
@@ -423,24 +431,24 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Text(
               item.cardTitle,
-              style: const TextStyle(
-                color: VedroTheme.fg,
+              style: TextStyle(
+                color: skin.fg,
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
               ),
             ),
             const SizedBox(height: 4),
-            const Text(
+            Text(
               '从「继续观看」移除，保留已同步的播放进度。',
-              style: TextStyle(color: VedroTheme.fg3, fontSize: 13),
+              style: TextStyle(color: skin.fg3, fontSize: 13),
             ),
             const SizedBox(height: 16),
             SizedBox(
               height: 44,
               child: FilledButton(
                 style: FilledButton.styleFrom(
-                  backgroundColor: VedroTheme.surface3,
-                  foregroundColor: VedroTheme.fg,
+                  backgroundColor: skin.surface3,
+                  foregroundColor: skin.fg,
                 ),
                 onPressed: () {
                   Navigator.pop(ctx);
@@ -457,8 +465,6 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 /// SenPlayer / Forward Home Server Hub shown on startup when no server is active yet.
-/// Lets users pick a saved server, switch routes, discover LAN servers, add a new server,
-/// or jump right into Player Settings without ever being trapped behind a login wall.
 class _ServerWelcomeHub extends StatelessWidget {
   const _ServerWelcomeHub({
     required this.appState,
@@ -664,11 +670,16 @@ class _ServerWelcomeHub extends StatelessWidget {
   }
 }
 
+/// Multi-personality Home Hero Stage supporting 3 structural layouts:
+/// - `'full_bleed'`: Edge-to-edge full-screen cinema Hero (zero white border boxes on thumbnails, sealed bottom seam!)
+/// - `'framed_stage'`: ElegantFin / Jellyseerr inset panoramic rounded card stage
+/// - `'split_showcase'`: Criterion / Kinfolk editorial 2-column magazine showcase
 class _CinemaHeroBanner extends StatefulWidget {
   const _CinemaHeroBanner({
     required this.featured,
     required this.appState,
     required this.scrollOffset,
+    required this.topNavClearance,
     required this.showMobileHeader,
     required this.onPlay,
     required this.onDetail,
@@ -681,6 +692,7 @@ class _CinemaHeroBanner extends StatefulWidget {
   final List<({MediaItemModel item, String eyebrow})> featured;
   final VedroAppState appState;
   final double scrollOffset;
+  final double topNavClearance;
   final bool showMobileHeader;
   final void Function(MediaItemModel) onPlay;
   final void Function(MediaItemModel) onDetail;
@@ -734,24 +746,641 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     _armTimer();
   }
 
+  /// Borderless floating preview thumbnails (ZERO white border boxes!) + sleek active indicator bar.
+  Widget _buildBorderlessPreviewStrip(VedroSkin skin, {bool onLightSurface = false}) {
+    final barActiveColor = skin.ctaStyle == 'contrast'
+        ? (onLightSurface ? skin.fg : Colors.white)
+        : skin.accent;
+    return Row(
+      key: const ValueKey('hero-preview-strip'),
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(widget.featured.length, (i) {
+        final active = i == _active;
+        final entry = widget.featured[i];
+        return Padding(
+          padding: EdgeInsets.only(left: i == 0 ? 0 : 10),
+          child: PressableScale(
+            onTap: () => _select(i),
+            hoverScale: 1.05,
+            pressScale: 0.95,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedScale(
+                  scale: active ? 1.04 : 0.94,
+                  duration: const Duration(milliseconds: 220),
+                  curve: VedroTheme.easeOut,
+                  child: Container(
+                    width: 92,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 11.0)),
+                      boxShadow: active
+                          ? const [
+                              BoxShadow(
+                                color: Color(0xA6000000),
+                                blurRadius: 18,
+                                offset: Offset(0, 7),
+                              ),
+                            ]
+                          : const [
+                              BoxShadow(
+                                color: Color(0x40000000),
+                                blurRadius: 8,
+                                offset: Offset(0, 3),
+                              ),
+                            ],
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: AnimatedOpacity(
+                      opacity: active ? 1.0 : 0.42,
+                      duration: const Duration(milliseconds: 220),
+                      child: VedroArtwork(
+                        item: entry.item,
+                        appState: widget.appState,
+                        landscape: true,
+                        width: 320,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 220),
+                  curve: VedroTheme.easeOut,
+                  width: active ? 28 : 8,
+                  height: 3,
+                  decoration: BoxDecoration(
+                    color: active
+                        ? barActiveColor
+                        : (onLightSurface
+                            ? skin.fg.withValues(alpha: 0.18)
+                            : const Color(0x38FFFFFF)),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  Widget _buildCapsuleDots({bool onLightSurface = false, required VedroSkin skin}) {
+    final activeColor = onLightSurface ? skin.fg : Colors.white;
+    final inactiveColor = onLightSurface ? skin.fg.withValues(alpha: 0.24) : const Color(0x52FFFFFF);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: List.generate(widget.featured.length, (i) {
+        final active = i == _active;
+        return GestureDetector(
+          onTap: () => _select(i),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            curve: VedroTheme.easeOut,
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            width: active ? 22 : 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: active ? activeColor : inactiveColor,
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  Widget _buildMobileTopBar() {
+    final serverName = widget.appState.activeServerDisplayName;
+    final routeName = widget.appState.activeRouteDisplayName;
+    return SafeArea(
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+        child: Row(
+          children: [
+            PressableScale(
+              onTap: widget.onOpenServerHub,
+              child: GlassSurface(
+                borderRadius: 18,
+                blur: 18,
+                color: const Color(0x58141417),
+                borderColor: Colors.transparent,
+                padding: const EdgeInsets.fromLTRB(6, 5, 10, 5),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const VedroBrandMark(size: 22),
+                    const SizedBox(width: 7),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 160),
+                      child: Text(
+                        routeName != null ? '$serverName · $routeName' : serverName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 3),
+                    const Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      size: 16,
+                      color: Color(0xCCFFFFFF),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const Spacer(),
+            if (widget.onOpenFavorites != null) ...[
+              PressableScale(
+                onTap: widget.onOpenFavorites,
+                child: GlassSurface(
+                  borderRadius: 18,
+                  blur: 18,
+                  color: const Color(0x52141417),
+                  borderColor: Colors.transparent,
+                  padding: const EdgeInsets.all(8),
+                  child: const Icon(Icons.favorite_border_rounded, size: 17, color: Colors.white),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
+            PressableScale(
+              onTap: widget.onRefresh,
+              child: GlassSurface(
+                borderRadius: 18,
+                blur: 18,
+                color: const Color(0x52141417),
+                borderColor: Colors.transparent,
+                padding: const EdgeInsets.all(8),
+                child: const Icon(Icons.refresh_rounded, size: 17, color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeroInfoColumn({
+    required BuildContext context,
+    required VedroSkin skin,
+    required MediaItemModel item,
+    required String eyebrow,
+    required String? logoUrl,
+    required bool wide,
+    required bool onPhoto,
+  }) {
+    final textPrimary = onPhoto ? Colors.white : skin.fg;
+    final textSecondary = onPhoto ? const Color(0xD9FFFFFF) : skin.fg2;
+    final textMuted = onPhoto ? const Color(0xC0FFFFFF) : skin.fg3;
+    final pillR = skin.radiusForPill(44);
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 360),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, anim) => FadeTransition(
+        opacity: anim,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.04),
+            end: Offset.zero,
+          ).animate(anim),
+          child: child,
+        ),
+      ),
+      child: Column(
+        key: ValueKey(item.id),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            eyebrow,
+            style: TextStyle(
+              color: onPhoto ? textMuted : skin.accent,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.3,
+            ),
+          ),
+          const SizedBox(height: 8),
+          if (logoUrl != null && skin.preferClearLogo)
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: wide ? 104 : 74,
+                maxWidth: wide ? 420 : 280,
+              ),
+              child: Image.network(
+                logoUrl,
+                fit: BoxFit.contain,
+                alignment: Alignment.centerLeft,
+                errorBuilder: (_, __, ___) => _HeroTitleText(
+                  text: item.cardTitle,
+                  wide: wide,
+                  color: textPrimary,
+                ),
+              ),
+            )
+          else
+            _HeroTitleText(text: item.cardTitle, wide: wide, color: textPrimary),
+          if (item.communityRating != null ||
+              item.productionYear != null ||
+              item.genres.isNotEmpty ||
+              (item.type == 'Episode' && item.cardSubtitle.isNotEmpty)) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 10,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                if (item.type == 'Episode' && item.cardSubtitle.isNotEmpty)
+                  Text(
+                    item.cardSubtitle,
+                    style: TextStyle(color: textSecondary, fontSize: 13.5),
+                  ),
+                if (item.communityRating != null)
+                  Text(
+                    '★ ${item.communityRating!.toStringAsFixed(1)}',
+                    style: TextStyle(
+                      color: onPhoto ? const Color(0xF2FFFFFF) : const Color(0xFFD97706),
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w700,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                if (item.productionYear != null)
+                  Text(
+                    '${item.productionYear}',
+                    style: TextStyle(
+                      color: textSecondary,
+                      fontSize: 13.5,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                for (final g in item.genres.take(4))
+                  GestureDetector(
+                    onTap: widget.onGenreTap == null ? null : () => widget.onGenreTap!(g),
+                    child: MouseRegion(
+                      cursor: widget.onGenreTap != null
+                          ? SystemMouseCursors.click
+                          : MouseCursor.defer,
+                      child: Text(
+                        g,
+                        style: TextStyle(
+                          color: textSecondary,
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+          if (item.cleanOverview.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 540),
+              child: Text(
+                item.cleanOverview,
+                maxLines: wide ? 3 : 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: textSecondary,
+                  fontSize: 14,
+                  height: 1.55,
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 22),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              PressableScale(
+                onTap: () => widget.onPlay(item),
+                hoverScale: 1.03,
+                pressScale: 0.96,
+                child: Container(
+                  height: 44,
+                  padding: const EdgeInsets.symmetric(horizontal: 26),
+                  decoration: BoxDecoration(
+                    color: onPhoto && skin.isLight ? Colors.white : skin.primaryCtaBg,
+                    gradient: onPhoto && skin.isLight ? null : skin.primaryCtaGradient,
+                    borderRadius: BorderRadius.circular(pillR),
+                    border: onPhoto && skin.isLight ? null : skin.primaryCtaBorder,
+                    boxShadow: onPhoto
+                        ? const [
+                            BoxShadow(
+                              color: Color(0x48000000),
+                              blurRadius: 18,
+                              offset: Offset(0, 6),
+                            ),
+                          ]
+                        : skin.primaryCtaShadow,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.play_arrow_rounded,
+                        size: 22,
+                        color: onPhoto && skin.isLight
+                            ? const Color(0xFF09090B)
+                            : skin.primaryCtaFg,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '播放',
+                        style: TextStyle(
+                          color: onPhoto && skin.isLight
+                              ? const Color(0xFF09090B)
+                              : skin.primaryCtaFg,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              PressableScale(
+                onTap: () => widget.onDetail(item),
+                hoverScale: 1.03,
+                pressScale: 0.96,
+                child: onPhoto
+                    ? GlassSurface(
+                        borderRadius: pillR,
+                        blur: 24,
+                        color: const Color(0x40FFFFFF),
+                        borderColor: Colors.transparent,
+                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 11),
+                        child: const Text(
+                          '详情',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 14.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      )
+                    : Container(
+                        height: 44,
+                        padding: const EdgeInsets.symmetric(horizontal: 22),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: skin.surface2,
+                          borderRadius: BorderRadius.circular(pillR),
+                          border: Border.all(color: skin.borderStrong, width: 0.8),
+                        ),
+                        child: Text(
+                          '详情',
+                          style: TextStyle(
+                            color: skin.fg,
+                            fontSize: 14.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final size = MediaQuery.sizeOf(context);
     final wide = size.width >= 820;
-    final heroH = (size.height * (wide ? 0.72 : 0.60)).clamp(430.0, 740.0);
     final padX = wide ? 32.0 : 20.0;
     final current = widget.featured[_active];
     final item = current.item;
     final logoUrl = widget.appState.logoArtUrl(item);
-    final serverName = widget.appState.activeServerDisplayName;
-    final routeName = widget.appState.activeRouteDisplayName;
 
-    final facts = <String>[
-      if (item.type == 'Episode') item.cardSubtitle,
-      if (item.productionYear != null) '${item.productionYear}',
-      if (item.communityRating != null) '★ ${item.communityRating!.toStringAsFixed(1)}',
-      ...item.genres.take(3),
-    ];
+    // -------------------------------------------------------------------------
+    // Layout Mode B: Criterion / Kinfolk 2-Column Editorial Split Showcase
+    // -------------------------------------------------------------------------
+    if (wide && skin.heroStyle == 'split_showcase') {
+      final cardR = skin.cardRadius.clamp(8.0, 24.0);
+      return MouseRegion(
+        onEnter: (_) {
+          setState(() => _hovered = true);
+          _paused = true;
+          _autoTimer?.cancel();
+        },
+        onExit: (_) {
+          setState(() => _hovered = false);
+          _paused = false;
+          _armTimer();
+        },
+        child: Padding(
+          key: const ValueKey('hero-split-showcase'),
+          padding: EdgeInsets.fromLTRB(padX, widget.topNavClearance + 14, padX, 12),
+          child: Container(
+            padding: const EdgeInsets.all(28),
+            decoration: BoxDecoration(
+              color: skin.panelSurface,
+              borderRadius: BorderRadius.circular(cardR),
+              border: skin.cardBorder(),
+              boxShadow: skin.posterShadow(),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  flex: 5,
+                  child: _buildHeroInfoColumn(
+                    context: context,
+                    skin: skin,
+                    item: item,
+                    eyebrow: current.eyebrow,
+                    logoUrl: logoUrl,
+                    wide: true,
+                    onPhoto: false,
+                  ),
+                ),
+                const SizedBox(width: 28),
+                Expanded(
+                  flex: 6,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      AspectRatio(
+                        aspectRatio: 16 / 9,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(cardR),
+                            boxShadow: skin.posterShadow(hovered: true),
+                          ),
+                          foregroundDecoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(cardR),
+                            border: skin.cardBorder(),
+                          ),
+                          clipBehavior: Clip.antiAlias,
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              for (var i = 0; i < widget.featured.length; i++)
+                                AnimatedOpacity(
+                                  opacity: i == _active ? 1.0 : 0.0,
+                                  duration: const Duration(milliseconds: 480),
+                                  curve: Curves.easeOutCubic,
+                                  child: VedroArtwork(
+                                    item: widget.featured[i].item,
+                                    appState: widget.appState,
+                                    isHero: true,
+                                    showInitials: false,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      if (widget.featured.length > 1) ...[
+                        const SizedBox(height: 14),
+                        _buildBorderlessPreviewStrip(skin, onLightSurface: skin.isLight),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // -------------------------------------------------------------------------
+    // Layout Mode C: ElegantFin / Jellyseerr Framed Rounded Panoramic Stage
+    // -------------------------------------------------------------------------
+    if (skin.heroStyle == 'framed_stage') {
+      final stageR = skin.cardRadius.clamp(10.0, 26.0);
+      final stageH = (size.height * (wide ? 0.58 : 0.48)).clamp(360.0, 580.0);
+      return MouseRegion(
+        onEnter: (_) {
+          setState(() => _hovered = true);
+          _paused = true;
+          _autoTimer?.cancel();
+        },
+        onExit: (_) {
+          setState(() => _hovered = false);
+          _paused = false;
+          _armTimer();
+        },
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (widget.showMobileHeader) _buildMobileTopBar(),
+            Padding(
+              key: const ValueKey('hero-framed-stage'),
+              padding: EdgeInsets.fromLTRB(
+                padX,
+                wide ? widget.topNavClearance + 8 : 6,
+                padX,
+                8,
+              ),
+              child: Container(
+                height: stageH,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(stageR),
+                  boxShadow: skin.posterShadow(hovered: true),
+                ),
+                foregroundDecoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(stageR),
+                  border: skin.cardBorder(),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    for (var i = 0; i < widget.featured.length; i++)
+                      AnimatedOpacity(
+                        opacity: i == _active ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 520),
+                        curve: Curves.easeOutCubic,
+                        child: VedroArtwork(
+                          item: widget.featured[i].item,
+                          appState: widget.appState,
+                          isHero: true,
+                          alignment: const Alignment(0, -0.45),
+                          showInitials: false,
+                        ),
+                      ),
+                    const DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                          stops: [0.0, 0.55, 1.0],
+                          colors: [Color(0xD808090E), Color(0x6E08090E), Color(0x1808090E)],
+                        ),
+                      ),
+                    ),
+                    const DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          stops: [0.0, 0.45, 1.0],
+                          colors: [Color(0x2808090E), Color(0x3808090E), Color(0xDE08090E)],
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: wide ? 34 : 20,
+                      right: wide ? size.width * 0.34 : 20,
+                      bottom: wide ? 32 : 34,
+                      child: _buildHeroInfoColumn(
+                        context: context,
+                        skin: skin,
+                        item: item,
+                        eyebrow: current.eyebrow,
+                        logoUrl: logoUrl,
+                        wide: wide,
+                        onPhoto: true,
+                      ),
+                    ),
+                    if (widget.featured.length > 1)
+                      Positioned(
+                        right: wide ? 28 : 20,
+                        left: wide ? null : 20,
+                        bottom: wide ? 26 : 12,
+                        child: wide
+                            ? _buildBorderlessPreviewStrip(skin)
+                            : _buildCapsuleDots(skin: skin),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // -------------------------------------------------------------------------
+    // Layout Mode A (Default): Apple TV+ Full-Bleed Cinema Hero
+    // - Overscanned parallax (`top: -96, bottom: -48`) so scrolling NEVER exposes top edge!
+    // - Subpixel bottom canvas seal (`stop: 0.95 -> 1.0` + `bottom: -2` seal) so ZERO 1px line leaks!
+    // - Pure borderless floating preview thumbnails (ZERO white frames!)
+    // -------------------------------------------------------------------------
+    final heroH = (size.height * (wide ? 0.72 : 0.60)).clamp(430.0, 740.0);
+    final canvasColor = skin.canvas;
+    final parallaxDy = (widget.scrollOffset * 0.22).clamp(-40.0, 84.0);
 
     return MouseRegion(
       onEnter: (_) {
@@ -765,45 +1394,58 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
         _armTimer();
       },
       child: SizedBox(
+        key: const ValueKey('hero-full-bleed'),
         height: heroH,
         child: Stack(
+          clipBehavior: Clip.none,
           fit: StackFit.expand,
           children: [
             ClipRect(
-              child: Transform.translate(
-                offset: Offset(0, widget.scrollOffset * 0.28),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    for (var i = 0; i < widget.featured.length; i++)
-                      AnimatedOpacity(
-                        opacity: i == _active ? 1.0 : 0.0,
-                        duration: const Duration(milliseconds: 520),
-                        curve: Curves.easeOutCubic,
-                        child: VedroArtwork(
-                          item: widget.featured[i].item,
-                          appState: widget.appState,
-                          isHero: true,
-                          alignment: const Alignment(0, -0.55),
-                          showInitials: false,
-                        ),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Positioned(
+                    top: -96,
+                    left: 0,
+                    right: 0,
+                    bottom: -48,
+                    child: Transform.translate(
+                      offset: Offset(0, parallaxDy),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          for (var i = 0; i < widget.featured.length; i++)
+                            AnimatedOpacity(
+                              opacity: i == _active ? 1.0 : 0.0,
+                              duration: const Duration(milliseconds: 520),
+                              curve: Curves.easeOutCubic,
+                              child: VedroArtwork(
+                                item: widget.featured[i].item,
+                                appState: widget.appState,
+                                isHero: true,
+                                alignment: const Alignment(0, -0.50),
+                                showInitials: false,
+                              ),
+                            ),
+                        ],
                       ),
-                  ],
-                ),
+                    ),
+                  ),
+                ],
               ),
             ),
 
             if (wide)
-              DecoratedBox(
+              const DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.centerLeft,
                     end: Alignment.centerRight,
-                    stops: const [0.0, 0.48, 0.82, 1.0],
+                    stops: [0.0, 0.48, 0.82, 1.0],
                     colors: [
-                      const Color(0xDC0B0B0D),
-                      const Color(0x780B0B0D),
-                      const Color(0x140B0B0D),
+                      Color(0xDC0B0B0D),
+                      Color(0x780B0B0D),
+                      Color(0x140B0B0D),
                       Colors.transparent,
                     ],
                   ),
@@ -815,291 +1457,49 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  stops: const [0.0, 0.24, 0.58, 0.88, 1.0],
+                  stops: const [0.0, 0.24, 0.56, 0.84, 0.95, 1.0],
                   colors: [
                     const Color(0x660B0B0D),
                     Colors.transparent,
-                    const Color(0x660B0B0D),
-                    const Color(0xD80B0B0D),
-                    VedroSkin.of(context).canvas,
+                    const Color(0x5E0B0B0D),
+                    Color.lerp(const Color(0xD80B0B0D), canvasColor, 0.55)!,
+                    canvasColor,
+                    canvasColor,
                   ],
                 ),
               ),
             ),
+
+            // Subpixel anti-bleed bottom seal eliminating 1px rasterization seam on scroll!
+            if (!skin.usesBlurredFanart)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: -2,
+                height: 5,
+                child: ColoredBox(color: canvasColor),
+              ),
 
             if (widget.showMobileHeader)
               Positioned(
                 top: 0,
                 left: 0,
                 right: 0,
-                child: SafeArea(
-                  bottom: false,
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-                    child: Row(
-                      children: [
-                        PressableScale(
-                          onTap: widget.onOpenServerHub,
-                          child: GlassSurface(
-                            borderRadius: 18,
-                            blur: 18,
-                            color: const Color(0x58141417),
-                            padding: const EdgeInsets.fromLTRB(6, 5, 10, 5),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const VedroBrandMark(size: 22),
-                                const SizedBox(width: 7),
-                                ConstrainedBox(
-                                  constraints: const BoxConstraints(maxWidth: 160),
-                                  child: Text(
-                                    routeName != null ? '$serverName · $routeName' : serverName,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 13.5,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 3),
-                                const Icon(
-                                  Icons.keyboard_arrow_down_rounded,
-                                  size: 16,
-                                  color: Color(0xCCFFFFFF),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const Spacer(),
-                        if (widget.onOpenFavorites != null) ...[
-                          PressableScale(
-                            onTap: widget.onOpenFavorites,
-                            child: GlassSurface(
-                              borderRadius: 18,
-                              blur: 18,
-                              color: const Color(0x52141417),
-                              padding: const EdgeInsets.all(8),
-                              child: const Icon(Icons.favorite_border_rounded, size: 17, color: Colors.white),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                        ],
-                        PressableScale(
-                          onTap: widget.onRefresh,
-                          child: GlassSurface(
-                            borderRadius: 18,
-                            blur: 18,
-                            color: const Color(0x52141417),
-                            padding: const EdgeInsets.all(8),
-                            child: const Icon(Icons.refresh_rounded, size: 17, color: Colors.white),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+                child: _buildMobileTopBar(),
               ),
 
             Positioned(
               left: padX,
               right: wide ? size.width * 0.36 : padX,
               bottom: wide ? 44 : 42,
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 360),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                transitionBuilder: (child, anim) => FadeTransition(
-                  opacity: anim,
-                  child: SlideTransition(
-                    position: Tween<Offset>(
-                      begin: const Offset(0, 0.04),
-                      end: Offset.zero,
-                    ).animate(anim),
-                    child: child,
-                  ),
-                ),
-                child: Column(
-                  key: ValueKey(item.id),
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      current.eyebrow,
-                      style: const TextStyle(
-                        color: Color(0xC0FFFFFF),
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    if (logoUrl != null)
-                      ConstrainedBox(
-                        constraints: BoxConstraints(
-                          maxHeight: wide ? 104 : 74,
-                          maxWidth: wide ? 420 : 280,
-                        ),
-                        child: Image.network(
-                          logoUrl,
-                          fit: BoxFit.contain,
-                          alignment: Alignment.centerLeft,
-                          errorBuilder: (_, __, ___) => _HeroTitleText(
-                            text: item.cardTitle,
-                            wide: wide,
-                          ),
-                        ),
-                      )
-                    else
-                      _HeroTitleText(text: item.cardTitle, wide: wide),
-                    if (facts.isNotEmpty || item.genres.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 10,
-                        runSpacing: 4,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          if (item.type == 'Episode' && item.cardSubtitle.isNotEmpty)
-                            Text(
-                              item.cardSubtitle,
-                              style: const TextStyle(color: Color(0xD9FFFFFF), fontSize: 13.5),
-                            ),
-                          if (item.communityRating != null)
-                            Text(
-                              '★ ${item.communityRating!.toStringAsFixed(1)}',
-                              style: const TextStyle(
-                                color: Color(0xF2FFFFFF),
-                                fontSize: 13.5,
-                                fontWeight: FontWeight.w600,
-                                fontFeatures: [FontFeature.tabularFigures()],
-                              ),
-                            ),
-                          if (item.productionYear != null)
-                            Text(
-                              '${item.productionYear}',
-                              style: const TextStyle(
-                                color: Color(0xD9FFFFFF),
-                                fontSize: 13.5,
-                                fontFeatures: [FontFeature.tabularFigures()],
-                              ),
-                            ),
-                          for (final g in item.genres.take(4))
-                            GestureDetector(
-                              onTap: widget.onGenreTap == null ? null : () => widget.onGenreTap!(g),
-                              child: MouseRegion(
-                                cursor: widget.onGenreTap != null
-                                    ? SystemMouseCursors.click
-                                    : MouseCursor.defer,
-                                child: Text(
-                                  g,
-                                  style: const TextStyle(
-                                    color: Color(0xD9FFFFFF),
-                                    fontSize: 13.5,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ],
-                    if (item.cleanOverview.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 560),
-                        child: Text(
-                          item.cleanOverview,
-                          maxLines: wide ? 3 : 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Color(0xD9FFFFFF),
-                            fontSize: 14,
-                            height: 1.55,
-                          ),
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 22),
-                    Row(
-                      children: [
-                        Builder(
-                          builder: (ctx) {
-                            final skin = VedroSkin.of(ctx);
-                            final r = skin.radiusForPill(44);
-                            return PressableScale(
-                              onTap: () => widget.onPlay(item),
-                              hoverScale: 1.03,
-                              pressScale: 0.96,
-                              child: Container(
-                                height: 44,
-                                padding: const EdgeInsets.symmetric(horizontal: 26),
-                                decoration: BoxDecoration(
-                                  color: skin.isLight ? Colors.white : skin.primaryCtaBg,
-                                  gradient: skin.isLight ? null : skin.primaryCtaGradient,
-                                  borderRadius: BorderRadius.circular(r),
-                                  border: skin.isLight ? null : skin.primaryCtaBorder,
-                                  boxShadow: const [
-                                    BoxShadow(
-                                      color: Color(0x48000000),
-                                      blurRadius: 18,
-                                      offset: Offset(0, 6),
-                                    ),
-                                  ],
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.play_arrow_rounded,
-                                      size: 22,
-                                      color: skin.isLight ? const Color(0xFF09090B) : skin.primaryCtaFg,
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      '播放',
-                                      style: TextStyle(
-                                        color: skin.isLight ? const Color(0xFF09090B) : skin.primaryCtaFg,
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                        const SizedBox(width: 12),
-                        PressableScale(
-                          onTap: () => widget.onDetail(item),
-                          hoverScale: 1.03,
-                          pressScale: 0.96,
-                          child: GlassSurface(
-                            borderRadius: VedroSkin.of(context).radiusForPill(44),
-                            blur: 24,
-                            color: const Color(0x45FFFFFF),
-                            borderColor: Colors.transparent,
-                            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 11),
-                            child: const Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  '详情',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 14.5,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+              child: _buildHeroInfoColumn(
+                context: context,
+                skin: skin,
+                item: item,
+                eyebrow: current.eyebrow,
+                logoUrl: logoUrl,
+                wide: wide,
+                onPhoto: true,
               ),
             ),
 
@@ -1113,12 +1513,13 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                     opacity: _hovered ? 1.0 : 0.0,
                     duration: const Duration(milliseconds: 180),
                     child: PressableScale(
-                      onTap: () => _select((_active - 1 + widget.featured.length) % widget.featured.length),
+                      onTap: () =>
+                          _select((_active - 1 + widget.featured.length) % widget.featured.length),
                       child: GlassSurface(
                         borderRadius: 20,
                         blur: 18,
                         color: const Color(0x66141418),
-                        borderColor: const Color(0x2EFFFFFF),
+                        borderColor: Colors.transparent,
                         padding: const EdgeInsets.all(8),
                         child: const Icon(Icons.chevron_left_rounded, size: 22, color: Colors.white),
                       ),
@@ -1140,7 +1541,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                         borderRadius: 20,
                         blur: 18,
                         color: const Color(0x66141418),
-                        borderColor: const Color(0x2EFFFFFF),
+                        borderColor: Colors.transparent,
                         padding: const EdgeInsets.all(8),
                         child: const Icon(Icons.chevron_right_rounded, size: 22, color: Colors.white),
                       ),
@@ -1154,76 +1555,10 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               Positioned(
                 right: padX,
                 left: wide ? null : padX,
-                bottom: wide ? 46 : 16,
+                bottom: wide ? 40 : 16,
                 child: wide
-                    ? Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: List.generate(widget.featured.length, (i) {
-                          final active = i == _active;
-                          final entry = widget.featured[i];
-                          return Padding(
-                            padding: const EdgeInsets.only(left: 10),
-                            child: PressableScale(
-                              onTap: () => _select(i),
-                              hoverScale: 1.05,
-                              pressScale: 0.95,
-                              child: AnimatedContainer(
-                                duration: const Duration(milliseconds: 220),
-                                curve: VedroTheme.easeOut,
-                                width: 96,
-                                height: 54,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                    color: active ? Colors.white : const Color(0x30FFFFFF),
-                                    width: active ? 2 : 0.8,
-                                  ),
-                                  boxShadow: active
-                                      ? const [
-                                          BoxShadow(
-                                            color: Color(0x88000000),
-                                            blurRadius: 14,
-                                            offset: Offset(0, 6),
-                                          ),
-                                        ]
-                                      : null,
-                                ),
-                                clipBehavior: Clip.antiAlias,
-                                child: AnimatedOpacity(
-                                  opacity: active ? 1.0 : 0.52,
-                                  duration: const Duration(milliseconds: 220),
-                                  child: VedroArtwork(
-                                    item: entry.item,
-                                    appState: widget.appState,
-                                    landscape: true,
-                                    width: 320,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        }),
-                      )
-                    : Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: List.generate(widget.featured.length, (i) {
-                          final active = i == _active;
-                          return GestureDetector(
-                            onTap: () => _select(i),
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 220),
-                              curve: VedroTheme.easeOut,
-                              margin: const EdgeInsets.symmetric(horizontal: 3),
-                              width: active ? 20 : 6,
-                              height: 6,
-                              decoration: BoxDecoration(
-                                color: active ? Colors.white : const Color(0x60FFFFFF),
-                                borderRadius: BorderRadius.circular(3),
-                              ),
-                            ),
-                          );
-                        }),
-                      ),
+                    ? _buildBorderlessPreviewStrip(skin)
+                    : _buildCapsuleDots(skin: skin),
               ),
           ],
         ),
@@ -1233,9 +1568,14 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
 }
 
 class _HeroTitleText extends StatelessWidget {
-  const _HeroTitleText({required this.text, required this.wide});
+  const _HeroTitleText({
+    required this.text,
+    required this.wide,
+    this.color = Colors.white,
+  });
   final String text;
   final bool wide;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
@@ -1246,7 +1586,7 @@ class _HeroTitleText extends StatelessWidget {
       overflow: TextOverflow.ellipsis,
       style: skin.applyHeadlineMood(
         TextStyle(
-          color: Colors.white,
+          color: color,
           fontSize: wide ? 42 : 28,
           fontWeight: FontWeight.w700,
           letterSpacing: -0.9,

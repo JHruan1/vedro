@@ -63,7 +63,8 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
     final artHeight = widget.isResume || widget.landscape
         ? (cardWidth / (16 / 9))
         : (cardWidth / (2 / 3));
-    final railHeight = artHeight + 76;
+    final textBelow = widget.isResume || skin.cardStyle == 'classic_below';
+    final railHeight = artHeight + (textBelow ? 76 : 24);
 
     final titleStyle = skin.applyHeadlineMood(
       TextStyle(

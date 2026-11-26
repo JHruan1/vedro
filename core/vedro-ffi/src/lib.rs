@@ -1097,6 +1097,137 @@ impl VedroRuntime {
                 Ok(json!({"removed": true}))
             }
 
+            "probe_media_source" => {
+                let client = self.require_client()?;
+                let item_id = str_param(&params, "item_id")?;
+                let media_source_id = params
+                    .get("media_source_id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty());
+
+                let cache_key = format!(
+                    "source_probe_v1:{}:{}",
+                    item_id,
+                    media_source_id.unwrap_or("default")
+                );
+                if let Ok(Some(cached)) = self.store.get_setting::<Value>(&cache_key) {
+                    if cached
+                        .get("media_source")
+                        .and_then(|m| m.get("MediaStreams"))
+                        .and_then(Value::as_array)
+                        .map(|arr| {
+                            arr.iter().any(|s| {
+                                s.get("Type")
+                                    .and_then(Value::as_str)
+                                    .map(|t| {
+                                        t.eq_ignore_ascii_case("Audio")
+                                            || t.eq_ignore_ascii_case("Video")
+                                    })
+                                    .unwrap_or(false)
+                            })
+                        })
+                        .unwrap_or(false)
+                    {
+                        return Ok(cached);
+                    }
+                }
+
+                // 1. Ask server PlaybackInfo with EnableMediaProbe=true for this exact MediaSourceId
+                let pb = client
+                    .playback_info_with_probe(&item_id, media_source_id, None, None, true)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mut chosen = if let Some(target_id) = media_source_id {
+                    pb.media_sources
+                        .iter()
+                        .find(|s| s.id == target_id)
+                        .cloned()
+                        .or_else(|| pb.media_sources.first().cloned())
+                } else {
+                    pb.media_sources.first().cloned()
+                }
+                .ok_or_else(|| "no media source returned".to_string())?;
+
+                let has_embedded_av = chosen.media_streams.iter().any(|s| {
+                    s.stream_type.eq_ignore_ascii_case("Audio")
+                        || s.stream_type.eq_ignore_ascii_case("Video")
+                });
+
+                // 2. Fallback: if server still returned zero embedded AV streams (e.g. unprobed file or
+                //    version with sidecar subtitles), read first 512 KiB via HTTP Range & parse container tracks!
+                if !has_embedded_av {
+                    if let Some(dsu) = chosen.direct_stream_url.clone() {
+                        if let Ok(upstream_url) = client.resolve_media_url(&dsu) {
+                            let uses_ticket =
+                                vedro_protocol::auth::url_has_stream_ticket(upstream_url.as_str());
+                            let headers = if uses_ticket {
+                                let mut h = reqwest::header::HeaderMap::new();
+                                if let Ok(ua) = reqwest::header::HeaderValue::from_str(
+                                    &client.identity().user_agent(),
+                                ) {
+                                    h.insert(reqwest::header::USER_AGENT, ua);
+                                }
+                                h
+                            } else {
+                                client.auth_headers()
+                            };
+                            let (temp_id, _) = self.proxy.register_stream(
+                                upstream_url.to_string(),
+                                headers,
+                                chosen.size,
+                                chosen.container.as_deref().map(container_mime_type),
+                            );
+                            let header_bytes = self.proxy.read_range(&temp_id, 0, 512 * 1024).await;
+                            self.proxy.unregister_stream(&temp_id);
+
+                            if let Some(bytes) = header_bytes {
+                                let tracks = vedro_stream::inspect_media_tracks(&bytes);
+                                if !tracks.is_empty() {
+                                    let base_idx = chosen
+                                        .media_streams
+                                        .iter()
+                                        .map(|s| s.index + 1)
+                                        .max()
+                                        .unwrap_or(0)
+                                        .max(0);
+                                    for (offset, t) in tracks.into_iter().enumerate() {
+                                        chosen.media_streams.push(vedro_protocol::MediaStream {
+                                            index: base_idx + offset as i32,
+                                            stream_type: t.stream_type,
+                                            codec: Some(t.codec),
+                                            language: t.language,
+                                            title: t.title,
+                                            display_title: Some(t.display_title),
+                                            is_default: t.is_default,
+                                            is_forced: t.is_forced,
+                                            is_external: false,
+                                            is_text_subtitle_stream: t.is_text_subtitle,
+                                            width: t.width,
+                                            height: t.height,
+                                            channels: t.channels,
+                                            video_range: t.video_range,
+                                            ..Default::default()
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let out = json!({
+                    "media_source": chosen,
+                    "probed": true,
+                });
+                if chosen.media_streams.iter().any(|s| {
+                    s.stream_type.eq_ignore_ascii_case("Audio")
+                        || s.stream_type.eq_ignore_ascii_case("Video")
+                }) {
+                    let _ = self.store.set_setting(&cache_key, &out);
+                }
+                Ok(out)
+            }
+
             "prepare_playback" => {
                 let client = self.require_client()?;
                 let item_id = str_param(&params, "item_id")?;

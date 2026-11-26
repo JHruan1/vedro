@@ -780,6 +780,25 @@ impl EmbyClient {
         audio_stream_index: Option<i32>,
         subtitle_stream_index: Option<i32>,
     ) -> Result<PlaybackInfoResponse> {
+        self.playback_info_with_probe(
+            item_id,
+            media_source_id,
+            audio_stream_index,
+            subtitle_stream_index,
+            false,
+        )
+        .await
+    }
+
+    /// Negotiate direct-play sources & optionally request on-demand server media probing (`EnableMediaProbe`).
+    pub async fn playback_info_with_probe(
+        &self,
+        item_id: &str,
+        media_source_id: Option<&str>,
+        audio_stream_index: Option<i32>,
+        subtitle_stream_index: Option<i32>,
+        enable_media_probe: bool,
+    ) -> Result<PlaybackInfoResponse> {
         let uid = self.require_user_id()?;
         let caps = self.capabilities();
         let req = PlaybackInfoRequest {
@@ -790,6 +809,7 @@ impl EmbyClient {
             enable_direct_play: Some(true),
             enable_direct_stream: Some(true),
             enable_transcoding: Some(false),
+            enable_media_probe: if enable_media_probe { Some(true) } else { None },
             device_profile: if caps.omit_device_profile_on_playback_info
                 || caps.dialect == ServerDialect::EmbyGo
             {
@@ -799,11 +819,16 @@ impl EmbyClient {
             },
         };
         let body = serde_json::to_value(&req)?;
+        let query: Vec<(&str, String)> = if enable_media_probe {
+            vec![("EnableMediaProbe", "true".to_string())]
+        } else {
+            vec![]
+        };
         let resp: PlaybackInfoResponse = self
             .request_json(
                 Method::POST,
                 &format!("Items/{item_id}/PlaybackInfo"),
-                &[],
+                &query,
                 Some(body),
             )
             .await?;

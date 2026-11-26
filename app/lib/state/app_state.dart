@@ -1640,27 +1640,65 @@ class VedroAppState extends ChangeNotifier {
     return streamUrl;
   }
 
-  /// Fetch real danmaku comments from DandanPlay-compatible API or custom XML/JSON URL via Rust.
+  /// Fetch real danmaku comments from multi-source engine (DandanPlay + Bilibili PGC/Video + custom XML).
   Future<({String title, List<DanmakuComment> comments})> fetchDanmaku(
     String title, {
+    String? altTitle,
+    int? season,
     int? episode,
     String? apiOverride,
   }) async {
     final res = await core.invoke('danmaku_fetch', {
       'title': title,
-      if (episode != null) 'episode': episode,
+      if (altTitle != null && altTitle.trim().isNotEmpty) 'alt_title': altTitle.trim(),
+      if (season != null && season > 0) 'season': season,
+      if (episode != null && episode > 0) 'episode': episode,
       if ((apiOverride ?? prefs.danmakuApiUrl).trim().isNotEmpty)
         'api_base': (apiOverride ?? prefs.danmakuApiUrl).trim(),
     }) as Map<String, dynamic>;
+    return _parseDanmakuPayload(res, fallbackTitle: title);
+  }
+
+  Future<List<Map<String, dynamic>>> searchDanmakuCandidates(String keyword) async {
+    final trimmed = keyword.trim();
+    if (trimmed.isEmpty) return const [];
+    final res = await core.invoke('danmaku_search', {
+      'keyword': trimmed,
+      if (prefs.danmakuApiUrl.trim().isNotEmpty) 'api_base': prefs.danmakuApiUrl.trim(),
+    }) as Map<String, dynamic>;
+    return ((res['candidates'] as List<dynamic>?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
+
+  Future<({String title, List<DanmakuComment> comments})> loadDanmakuTarget({
+    required String provider,
+    required String targetId,
+    required String title,
+  }) async {
+    final res = await core.invoke('danmaku_load_target', {
+      'provider': provider,
+      'target_id': targetId,
+      'title': title,
+      if (prefs.danmakuApiUrl.trim().isNotEmpty) 'api_base': prefs.danmakuApiUrl.trim(),
+    }) as Map<String, dynamic>;
+    return _parseDanmakuPayload(res, fallbackTitle: title);
+  }
+
+  static ({String title, List<DanmakuComment> comments}) _parseDanmakuPayload(
+    Map<String, dynamic> res, {
+    required String fallbackTitle,
+  }) {
+    final epTitle = (res['episode_title'] ?? fallbackTitle).toString();
     if (res['raw'] is String) {
       return (
-        title: title,
+        title: epTitle,
         comments: DanmakuComment.parseBilibiliXml(res['raw'].toString()),
       );
     }
     final list = (res['comments'] as List<dynamic>?) ?? const [];
     return (
-      title: (res['episode_title'] ?? title).toString(),
+      title: epTitle,
       comments: DanmakuComment.parseDandanComments(list),
     );
   }

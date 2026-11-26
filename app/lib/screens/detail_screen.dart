@@ -562,19 +562,6 @@ class _DetailScreenState extends State<DetailScreen> {
               ),
             ],
           ),
-          if (dq != null && dq.enabled) ...[
-            const SizedBox(height: 6),
-            Text(
-              dq.adminExempt
-                  ? '下载流量包：管理员不限 · 在线播放不限流量'
-                  : '剩余下载流量包：${fmtQuotaBytes(dq.totalRemainingBytes)}（仅限原文件下载，播放不限）',
-              style: const TextStyle(
-                color: VedroTheme.fg2,
-                fontSize: 12,
-                fontFeatures: [FontFeature.tabularFigures()],
-              ),
-            ),
-          ],
           const SizedBox(height: 12),
           ...sources.map((s) {
             final existing = widget.appState.findDownloadForItem(target.id, mediaSourceId: s.id);
@@ -753,14 +740,6 @@ class _DetailScreenState extends State<DetailScreen> {
                       : (_item.mediaSources.length > 1 ? '离线下载到本地（选择版本）' : '离线下载到本地'),
                   style: const TextStyle(color: VedroTheme.fg, fontSize: 14),
                 ),
-                subtitle: widget.appState.meQuota?.downloadQuota?.enabled == true
-                    ? Text(
-                        widget.appState.meQuota!.downloadQuota!.adminExempt
-                            ? '下载流量包：管理员不限'
-                            : '剩余下载流量包 ${fmtQuotaBytes(widget.appState.meQuota!.downloadQuota!.totalRemainingBytes)}',
-                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
-                      )
-                    : null,
                 onTap: () {
                   Navigator.pop(ctx);
                   _startDownload();
@@ -880,17 +859,7 @@ class _DetailScreenState extends State<DetailScreen> {
         : _item.cleanOverview;
     final tagline = _item.taglines.isNotEmpty ? _item.taglines.first : null;
     final downloadTarget = _resolveDownloadTarget();
-    final downloadSource = _resolveDownloadSource(downloadTarget);
     final canDownload = widget.appState.canDownloadItem(downloadTarget);
-    final downloadQuota = widget.appState.meQuota?.downloadQuota;
-    final activeBytes = downloadSource?.size;
-    final quotaInsufficient = downloadQuota != null &&
-        downloadQuota.enabled &&
-        !downloadQuota.adminExempt &&
-        activeBytes != null &&
-        activeBytes > 0 &&
-        !downloadQuota.canFitBytes(activeBytes);
-    final quotaConcurrencyFull = downloadQuota != null && downloadQuota.isConcurrencyFull;
     final dlTask = widget.appState.findDownloadForItem(downloadTarget?.id ?? _item.id);
     final localReady = dlTask != null && dlTask.status == 'completed' && dlTask.filePath.isNotEmpty;
 
@@ -944,167 +913,250 @@ class _DetailScreenState extends State<DetailScreen> {
         : (isEpisodeWithStill ? 16 / 9 : 2 / 3);
 
     Widget buildActionRow() {
-      return Wrap(
-        spacing: 10,
-        runSpacing: 10,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          if (_item.isPlayable)
-            _ProgressPlayPill(
-              label: localReady
-                  ? '播放离线缓存'
-                  : (_item.playbackPositionTicks > 0
-                      ? '继续 ${fmtDurationTicks(_item.playbackPositionTicks)}'
-                      : '立即播放'),
-              progress: _item.resumeProgress,
-              accent: accent,
-              onTap: () => _play(
-                _item,
-                sourceId: _selectedSourceId,
-                localPath: localReady ? dlTask.filePath : null,
-              ),
-            )
-          else if (nextEpToPlay != null)
-            _ProgressPlayPill(
-              label: nextEpToPlay.resumeProgress > 0.01
+      final hasPrimaryPlay = _item.isPlayable || nextEpToPlay != null;
+      final String playLabel = _item.isPlayable
+          ? (localReady
+              ? '播放离线缓存'
+              : (_item.playbackPositionTicks > 0
+                  ? '继续 ${fmtDurationTicks(_item.playbackPositionTicks)}'
+                  : '立即播放'))
+          : (nextEpToPlay != null
+              ? (nextEpToPlay.resumeProgress > 0.01
                   ? '继续 ${nextEpToPlay.episodeCode ?? nextEpToPlay.displayName}'
-                  : '播放 ${nextEpToPlay.episodeCode ?? '第 1 集'}',
-              progress: nextEpToPlay.resumeProgress,
-              accent: accent,
-              onTap: () => _play(
-                nextEpToPlay!,
-                sourceId: _matchingSourceIdForEpisode(nextEpToPlay),
-              ),
-            ),
-          if (_item.isPlayable && _item.playbackPositionTicks > 0)
-            _CircleActionButton(
-              icon: Icons.replay_rounded,
-              tooltip: '从头播放',
-              onTap: () => _play(
-                _item,
-                sourceId: _selectedSourceId,
-                fromBeginning: true,
-              ),
-            ),
-          if (_item.type != 'Person')
-            _CircleActionButton(
-              icon: _item.played
-                  ? Icons.check_circle_rounded
-                  : Icons.check_circle_outline_rounded,
-              active: _item.played,
-              tooltip: _item.played ? '已看（点击取消）' : '标为已看',
-              onTap: () async {
-                await widget.appState.togglePlayed(_item);
-                await _loadDetails();
-              },
-            ),
-          _CircleActionButton(
-            icon: _item.isFavorite
-                ? Icons.favorite_rounded
-                : Icons.favorite_border_rounded,
-            iconColor: _item.isFavorite ? VedroTheme.danger : Colors.white,
-            tooltip: _item.isFavorite ? '取消收藏' : '收藏',
+                  : '播放 ${nextEpToPlay.episodeCode ?? '第 1 集'}')
+              : '立即播放');
+      final double playProgress =
+          _item.isPlayable ? _item.resumeProgress : (nextEpToPlay?.resumeProgress ?? 0.0);
+      void onPrimaryPlay() {
+        if (_item.isPlayable) {
+          _play(
+            _item,
+            sourceId: _selectedSourceId,
+            localPath: localReady ? dlTask.filePath : null,
+          );
+        } else if (nextEpToPlay != null) {
+          _play(
+            nextEpToPlay,
+            sourceId: _matchingSourceIdForEpisode(nextEpToPlay),
+          );
+        }
+      }
+
+      final actions = <({
+        Key? key,
+        IconData icon,
+        String label,
+        String tooltip,
+        bool active,
+        Color color,
+        VoidCallback onTap,
+      })>[
+        if (_item.isPlayable && _item.playbackPositionTicks > 0)
+          (
+            key: null,
+            icon: Icons.replay_rounded,
+            label: '从头',
+            tooltip: '从头播放',
+            active: false,
+            color: Colors.white,
+            onTap: () => _play(_item, sourceId: _selectedSourceId, fromBeginning: true),
+          ),
+        if (_item.type != 'Person')
+          (
+            key: null,
+            icon: _item.played ? Icons.check_circle_rounded : Icons.check_circle_outline_rounded,
+            label: _item.played ? '已看' : '标已看',
+            tooltip: _item.played ? '已看（点击取消）' : '标为已看',
+            active: _item.played,
+            color: _item.played ? accent : Colors.white,
             onTap: () async {
-              await widget.appState.toggleFavorite(_item);
+              await widget.appState.togglePlayed(_item);
               await _loadDetails();
             },
           ),
-          if (localReady || canDownload)
-            KeyedSubtree(
-              key: const ValueKey('detail-download-button'),
-              child: _CircleActionButton(
-                icon: localReady
-                    ? Icons.download_done_rounded
-                    : Icons.download_rounded,
-                iconColor: localReady
-                    ? const Color(0xFF34D399)
-                    : (quotaInsufficient
-                        ? VedroTheme.danger
-                        : (quotaConcurrencyFull ? const Color(0xFFFBBF24) : Colors.white)),
-                tooltip: localReady
-                    ? '已离线下载'
-                    : (quotaInsufficient
-                        ? '下载流量包余额不足'
-                        : (quotaConcurrencyFull
-                            ? '同时下载任务已满（${downloadQuota.activeDownloads}/${downloadQuota.maxConcurrentDownloads}）'
-                            : '离线下载')),
-                onTap: localReady
-                    ? () => _play(downloadTarget ?? _item, localPath: dlTask.filePath)
-                    : _startDownload,
-              ),
-            ),
-          _CircleActionButton(
-            icon: Icons.more_horiz_rounded,
-            tooltip: '更多（外部播放器 / 片单 / AI 翻译）',
-            onTap: _openMoreSheet,
+        (
+          key: null,
+          icon: _item.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+          label: _item.isFavorite ? '已收藏' : '收藏',
+          tooltip: _item.isFavorite ? '取消收藏' : '收藏',
+          active: _item.isFavorite,
+          color: _item.isFavorite ? VedroTheme.danger : Colors.white,
+          onTap: () async {
+            await widget.appState.toggleFavorite(_item);
+            await _loadDetails();
+          },
+        ),
+        if (localReady || canDownload)
+          (
+            key: const ValueKey('detail-download-button'),
+            icon: localReady ? Icons.download_done_rounded : Icons.download_rounded,
+            label: localReady ? '已缓存' : (_item.isSeries ? '下载' : '缓存'),
+            tooltip: localReady ? '播放已缓存文件' : '离线下载',
+            active: localReady,
+            color: localReady ? const Color(0xFF34D399) : Colors.white,
+            onTap: localReady
+                ? () => _play(downloadTarget ?? _item, localPath: dlTask.filePath)
+                : _startDownload,
           ),
-        ],
-      );
-    }
+        (
+          key: null,
+          icon: Icons.more_horiz_rounded,
+          label: '更多',
+          tooltip: '更多（外部播放器 / 片单 / AI 翻译）',
+          active: false,
+          color: Colors.white,
+          onTap: _openMoreSheet,
+        ),
+      ];
 
-    Widget buildDownloadQuotaPill() {
-      if (!canDownload || downloadQuota == null || !downloadQuota.enabled) {
-        return const SizedBox.shrink();
-      }
-      final Color tint;
-      final Color bg;
-      final IconData icon;
-      final String text;
-      if (downloadQuota.adminExempt) {
-        tint = const Color(0xFF34D399);
-        bg = const Color(0x1E34D399);
-        icon = Icons.verified_user_outlined;
-        text = '下载流量包：管理员不限 · 在线播放不限流量';
-      } else if (quotaInsufficient) {
-        tint = const Color(0xFFFCA5A5);
-        bg = const Color(0x2AEF4444);
-        icon = Icons.warning_amber_rounded;
-        text =
-            '下载流量包余额不足（剩 ${fmtQuotaBytes(downloadQuota.totalRemainingBytes)}，该文件需 ${fmtQuotaBytes(activeBytes)}）· 在线播放不限流量';
-      } else if (quotaConcurrencyFull) {
-        tint = const Color(0xFFFCD34D);
-        bg = const Color(0x28F59E0B);
-        icon = Icons.downloading_rounded;
-        text =
-            '同时下载已达上限（${downloadQuota.activeDownloads}/${downloadQuota.maxConcurrentDownloads}）· 流量包剩 ${fmtQuotaBytes(downloadQuota.totalRemainingBytes)}';
-      } else {
-        tint = const Color(0xFFCBD5E1);
-        bg = const Color(0xFF171A24);
-        icon = Icons.cloud_download_outlined;
-        final packHint = downloadQuota.packBytes > 0
-            ? '（含一次性永久包 ${fmtQuotaBytes(downloadQuota.packBytes)}）'
-            : '';
-        text = '下载流量包剩 ${fmtQuotaBytes(downloadQuota.totalRemainingBytes)}$packHint · 仅限原文件下载，播放不限';
-      }
-      return Padding(
-        padding: const EdgeInsets.only(top: 10),
-        child: Container(
-          key: const ValueKey('detail-download-quota-pill'),
-          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-          decoration: BoxDecoration(
-            color: bg,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: tint.withValues(alpha: 0.30), width: 0.8),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: 14.5, color: tint),
-              const SizedBox(width: 7),
-              Flexible(
-                child: Text(
-                  text,
-                  style: TextStyle(
-                    color: tint,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    fontFeatures: const [FontFeature.tabularFigures()],
+      return LayoutBuilder(
+        builder: (ctx, constraints) {
+          final singleLine = constraints.maxWidth >= 460;
+          if (singleLine) {
+            // Desktop / Tablet: Crisp single-line Play Pill + Unified Frosted Action Capsule (NEVER wraps 2+2!)
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (hasPrimaryPlay) ...[
+                  Flexible(
+                    child: _ProgressPlayPill(
+                      label: playLabel,
+                      progress: playProgress,
+                      accent: accent,
+                      onTap: onPrimaryPlay,
+                    ),
                   ),
+                  const SizedBox(width: 12),
+                ],
+                Container(
+                  height: 46,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xD8151722),
+                    borderRadius: BorderRadius.circular(23),
+                    border: Border.all(color: const Color(0x30FFFFFF), width: 0.9),
+                    boxShadow: const [
+                      BoxShadow(color: Color(0x52000000), blurRadius: 16, offset: Offset(0, 6)),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (var i = 0; i < actions.length; i++) ...[
+                        if (i > 0)
+                          Container(
+                            width: 1,
+                            height: 18,
+                            color: const Color(0x1EFFFFFF),
+                          ),
+                        KeyedSubtree(
+                          key: actions[i].key,
+                          child: Tooltip(
+                            message: actions[i].tooltip,
+                            child: PressableScale(
+                              onTap: actions[i].onTap,
+                              hoverScale: 1.08,
+                              pressScale: 0.90,
+                              child: Container(
+                                width: 44,
+                                height: 38,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: actions[i].active
+                                      ? actions[i].color.withValues(alpha: 0.16)
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(18),
+                                ),
+                                child: Icon(
+                                  actions[i].icon,
+                                  size: 19.5,
+                                  color: actions[i].color,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            );
+          }
+
+          // Mobile / Compact Portrait: Full-width Cinema Play CTA + Symmetrical Single-Row Action Bar!
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (hasPrimaryPlay) ...[
+                _ProgressPlayPill(
+                  label: playLabel,
+                  progress: playProgress,
+                  accent: accent,
+                  fullWidth: true,
+                  onTap: onPrimaryPlay,
+                ),
+                const SizedBox(height: 10),
+              ],
+              Container(
+                height: 52,
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF151721),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0x28FFFFFF), width: 0.85),
+                ),
+                child: Row(
+                  children: [
+                    for (var i = 0; i < actions.length; i++) ...[
+                      if (i > 0)
+                        Container(
+                          width: 1,
+                          height: 22,
+                          color: const Color(0x1AFFFFFF),
+                        ),
+                      Expanded(
+                        key: actions[i].key,
+                        child: PressableScale(
+                          onTap: actions[i].onTap,
+                          hoverScale: 1.03,
+                          pressScale: 0.93,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: actions[i].active
+                                  ? actions[i].color.withValues(alpha: 0.14)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(actions[i].icon, size: 18.5, color: actions[i].color),
+                                const SizedBox(height: 2),
+                                Text(
+                                  actions[i].label,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: actions[i].active
+                                        ? actions[i].color
+                                        : const Color(0xFFCFD3E0),
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ),
             ],
-          ),
-        ),
+          );
+        },
       );
     }
 
@@ -1464,8 +1516,11 @@ class _DetailScreenState extends State<DetailScreen> {
                                           ),
                                         ],
                                         const SizedBox(height: 18),
-                                        buildActionRow(),
-                                        buildDownloadQuotaPill(),
+                                        VedroStaggeredEntrance(
+                                          index: 1,
+                                          reduceMotion: widget.appState.prefs.reduceMotion,
+                                          child: buildActionRow(),
+                                        ),
                                       ],
                                     ],
                                   ),
@@ -1475,8 +1530,11 @@ class _DetailScreenState extends State<DetailScreen> {
                           ),
                           if (!wide) ...[
                             const SizedBox(height: 18),
-                            buildActionRow(),
-                            buildDownloadQuotaPill(),
+                            VedroStaggeredEntrance(
+                              index: 1,
+                              reduceMotion: widget.appState.prefs.reduceMotion,
+                              child: buildActionRow(),
+                            ),
                             if (tagline != null || overviewText.isNotEmpty) ...[
                               const SizedBox(height: 16),
                               buildOverviewBlock(),
@@ -3086,27 +3144,32 @@ class _ProgressPlayPill extends StatelessWidget {
     required this.progress,
     required this.accent,
     required this.onTap,
+    this.fullWidth = false,
   });
 
   final String label;
   final double progress;
   final Color accent;
   final VoidCallback onTap;
+  final bool fullWidth;
 
   @override
   Widget build(BuildContext context) {
     return PressableScale(
       onTap: onTap,
-      hoverScale: 1.03,
-      pressScale: 0.96,
+      hoverScale: fullWidth ? 1.015 : 1.03,
+      pressScale: 0.965,
       child: Container(
-        height: 44,
-        constraints: const BoxConstraints(minWidth: 168),
+        height: fullWidth ? 48 : 46,
+        width: fullWidth ? double.infinity : null,
+        constraints: fullWidth
+            ? const BoxConstraints(minHeight: 48)
+            : const BoxConstraints(minWidth: 158, maxWidth: 280),
         decoration: BoxDecoration(
-          color: const Color(0xF8FFFFFF),
-          borderRadius: BorderRadius.circular(22),
+          color: const Color(0xFAFFFFFF),
+          borderRadius: BorderRadius.circular(fullWidth ? 14 : 23),
           boxShadow: const [
-            BoxShadow(color: Color(0x55000000), blurRadius: 18, offset: Offset(0, 6)),
+            BoxShadow(color: Color(0x5A000000), blurRadius: 20, offset: Offset(0, 7)),
           ],
         ),
         clipBehavior: Clip.antiAlias,
@@ -3122,66 +3185,29 @@ class _ProgressPlayPill extends StatelessWidget {
                 ),
               ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
+              padding: const EdgeInsets.symmetric(horizontal: 22),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   const Icon(Icons.play_arrow_rounded, size: 22, color: VedroTheme.canvas),
                   const SizedBox(width: 4),
-                  Text(
-                    label,
-                    style: const TextStyle(
-                      color: VedroTheme.canvas,
-                      fontSize: 14.5,
-                      fontWeight: FontWeight.w600,
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: VedroTheme.canvas,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.15,
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CircleActionButton extends StatelessWidget {
-  const _CircleActionButton({
-    required this.icon,
-    required this.tooltip,
-    required this.onTap,
-    this.active = false,
-    this.iconColor = Colors.white,
-  });
-
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback onTap;
-  final bool active;
-  final Color iconColor;
-
-  @override
-  Widget build(BuildContext context) {
-    final accent = Theme.of(context).colorScheme.secondary;
-    return Tooltip(
-      message: tooltip,
-      child: PressableScale(
-        onTap: onTap,
-        hoverScale: 1.06,
-        pressScale: 0.92,
-        child: Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: active ? accent.withValues(alpha: 0.28) : const Color(0xCC181920),
-            border: Border.all(
-              color: active ? accent.withValues(alpha: 0.8) : const Color(0x36FFFFFF),
-              width: 0.9,
-            ),
-          ),
-          child: Icon(icon, size: 20, color: active ? accent : iconColor),
         ),
       ),
     );
@@ -4096,13 +4122,7 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
   Widget build(BuildContext context) {
     final accent = Theme.of(context).colorScheme.secondary;
     final versions = _availableVersions;
-    final dq = widget.appState.meQuota?.downloadQuota;
     final totalBytes = _selectedTotalBytes;
-    final quotaExceeded = dq != null &&
-        dq.enabled &&
-        !dq.adminExempt &&
-        totalBytes > 0 &&
-        !dq.canFitBytes(totalBytes);
 
     final chunkSize = _episodes.length >= 400 ? 100 : 50;
     final rangeCount = _episodes.isEmpty ? 0 : ((_episodes.length - 1) ~/ chunkSize) + 1;
@@ -4132,34 +4152,15 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                   Icon(Icons.download_for_offline_rounded, size: 20, color: accent),
                   const SizedBox(width: 9),
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '选择下载剧集与版本 · ${widget.series.displayName}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 15.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        if (dq != null && dq.enabled)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 2),
-                            child: Text(
-                              dq.adminExempt
-                                  ? '下载流量包：管理员不限 · 在线播放不限流量'
-                                  : '剩余下载流量包：${fmtQuotaBytes(dq.totalRemainingBytes)} · 并发上限 ${dq.maxConcurrentDownloads > 0 ? '${dq.maxConcurrentDownloads} 个文件（其余自动排队）' : '不限'}',
-                              style: const TextStyle(
-                                color: VedroTheme.fg2,
-                                fontSize: 11.5,
-                                fontFeatures: [FontFeature.tabularFigures()],
-                              ),
-                            ),
-                          ),
-                      ],
+                    child: Text(
+                      '选择下载剧集与版本 · ${widget.series.displayName}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15.5,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                   IconButton(
@@ -4471,26 +4472,16 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
               child: Row(
                 children: [
                   Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _selectedById.isEmpty
-                              ? '请勾选需要下载的剧集'
-                              : '已选 ${_selectedById.length} 集${totalBytes > 0 ? ' · 共 ${fmtQuotaBytes(totalBytes)}' : ''}',
-                          style: TextStyle(
-                            color: quotaExceeded ? const Color(0xFFFCA5A5) : Colors.white,
-                            fontSize: 13.5,
-                            fontWeight: FontWeight.w600,
-                            fontFeatures: const [FontFeature.tabularFigures()],
-                          ),
-                        ),
-                        if (quotaExceeded)
-                          Text(
-                            '超出剩余下载流量包 (${fmtQuotaBytes(dq.totalRemainingBytes)})',
-                            style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 11.5),
-                          ),
-                      ],
+                    child: Text(
+                      _selectedById.isEmpty
+                          ? '请勾选需要下载的剧集'
+                          : '已选 ${_selectedById.length} 集${totalBytes > 0 ? ' · 共 ${fmtQuotaBytes(totalBytes)}' : ''}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -4499,7 +4490,7 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                       backgroundColor: accent,
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                     ),
-                    onPressed: (_selectedById.isEmpty || quotaExceeded || _submitting)
+                    onPressed: (_selectedById.isEmpty || _submitting)
                         ? null
                         : _submit,
                     icon: const Icon(Icons.download_rounded, size: 17),

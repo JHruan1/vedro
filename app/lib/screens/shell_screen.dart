@@ -277,9 +277,19 @@ class _ShellScreenState extends State<ShellScreen> {
     ];
 
     final body = AnimatedSwitcher(
-      duration: const Duration(milliseconds: 220),
-      switchInCurve: Curves.easeOutCubic,
+      duration: Duration(milliseconds: widget.appState.prefs.reduceMotion ? 0 : 260),
+      switchInCurve: VedroTheme.easeOut,
       switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, anim) => FadeTransition(
+        opacity: anim,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.014),
+            end: Offset.zero,
+          ).animate(anim),
+          child: child,
+        ),
+      ),
       child: pages[_index],
     );
 
@@ -727,28 +737,37 @@ class _BottomTabButton extends StatelessWidget {
         behavior: HitTestBehavior.opaque,
         onTap: onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
+          duration: const Duration(milliseconds: 220),
           curve: VedroTheme.easeOut,
           padding: const EdgeInsets.symmetric(vertical: 7),
           decoration: BoxDecoration(
-            color: selected ? const Color(0x1EFFFFFF) : Colors.transparent,
+            color: selected ? const Color(0x22FFFFFF) : Colors.transparent,
             borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: selected ? const Color(0x1EFFFFFF) : Colors.transparent,
+              width: 0.6,
+            ),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                selected ? tab.activeIcon : tab.icon,
-                size: 20,
-                color: selected ? VedroTheme.fg : VedroTheme.fg3,
+              AnimatedScale(
+                scale: selected ? 1.08 : 1.0,
+                duration: const Duration(milliseconds: 220),
+                curve: VedroTheme.easeOut,
+                child: Icon(
+                  selected ? tab.activeIcon : tab.icon,
+                  size: 20,
+                  color: selected ? Colors.white : VedroTheme.fg3,
+                ),
               ),
-              const SizedBox(height: 2),
+              const SizedBox(height: 2.5),
               Text(
                 tab.label,
                 style: TextStyle(
-                  fontSize: 10,
+                  fontSize: 10.5,
                   fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                  color: selected ? VedroTheme.fg : VedroTheme.fg3,
+                  color: selected ? Colors.white : VedroTheme.fg3,
                 ),
               ),
             ],

@@ -8,9 +8,11 @@ import 'package:vedro/core/models/models.dart';
 import 'package:vedro/core/models/preferences.dart';
 import 'package:vedro/main.dart';
 import 'package:vedro/screens/detail_screen.dart';
+import 'package:vedro/screens/settings_screen.dart';
 import 'package:vedro/state/app_state.dart';
 import 'package:vedro/widgets/danmaku_engine.dart';
 import 'package:vedro/widgets/server_card_grid.dart';
+import 'package:vedro/widgets/vedro_ui.dart';
 
 class _MockVedroCore implements VedroCoreClient {
   _MockVedroCore({
@@ -170,6 +172,7 @@ class _MockVedroCore implements VedroCoreClient {
             'Name': '三体',
             'OriginalTitle': '3 Body Problem',
             'Type': 'Series',
+            'CanDownload': canDownload,
             'Overview': '简短的一句话简介，不需要展开按钮。',
             'ProductionYear': 2024,
             'PremiereDate': '2024-03-21T00:00:00Z',
@@ -252,6 +255,36 @@ class _MockVedroCore implements VedroCoreClient {
                   : <dynamic>[],
             };
           }),
+        };
+      case 'danmaku_fetch':
+        return <String, dynamic>{
+          'episode_title': '弹弹play · 三体 第1话',
+          'comments': <dynamic>[
+            <String, dynamic>{'p': '3.2,1,16777215', 'm': '物理学不存在了'},
+            <String, dynamic>{'p': '8.5,5,16711680', 'm': '整个宇宙将为你闪烁'},
+          ],
+        };
+      case 'danmaku_search':
+        return <String, dynamic>{
+          'candidates': <dynamic>[
+            <String, dynamic>{
+              'provider': 'bilibili_pgc',
+              'provider_label': '哔哩哔哩 · 剧集',
+              'title': '三体',
+              'episodes': <dynamic>[
+                <String, dynamic>{
+                  'target_id': '998877',
+                  'number': 1,
+                  'title': '第1话 倒计时',
+                },
+              ],
+            },
+          ],
+        };
+      case 'danmaku_load_target':
+        return <String, dynamic>{
+          'episode_title': '哔哩哔哩 · 三体 第1话',
+          'raw': '<i><d p="1.5,1,25,16777215,1700000000,0,abc,1">B站弹幕加载成功</d></i>',
         };
       default:
         return <String, dynamic>{};
@@ -581,7 +614,8 @@ void main() {
     expect(find.text('当前'), findsOneWidget);
   });
 
-  testWidgets('Download permission strictly hides download button on normal Emby and shows EmbyGo quota pill when permitted',
+  testWidgets(
+      'Download permission strictly hides download button on normal Emby and confines quota card strictly to Settings -> Downloads',
       (tester) async {
     tester.view.physicalSize = const Size(1100, 900);
     tester.view.devicePixelRatio = 1.0;
@@ -684,57 +718,40 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
+    // DetailScreen shows clean download button, ZERO download quota clutter!
     expect(find.byKey(const ValueKey('detail-download-button')), findsOneWidget);
-    expect(find.byKey(const ValueKey('detail-download-quota-pill')), findsOneWidget);
-    expect(find.textContaining('530.00 GB'), findsOneWidget);
-    expect(find.textContaining('一次性永久包 500.00 GB'), findsOneWidget);
+    expect(find.byKey(const ValueKey('detail-download-quota-pill')), findsNothing);
+    expect(find.textContaining('下载流量包'), findsNothing);
+    expect(find.textContaining('530.00 GB'), findsNothing);
 
-    // 2b. Tapping download on multi-version movie opens Version Download Picker with both versions!
+    // 2b. Tapping download on multi-version movie opens Version Download Picker cleanly (still zero quota clutter)
     await tester.tap(find.byKey(const ValueKey('detail-download-button')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('detail-version-download-sheet')), findsOneWidget);
     expect(find.text('选择下载版本 (2)'), findsOneWidget);
+    expect(find.textContaining('下载流量包'), findsNothing);
     await tester.tapAt(const Offset(10, 10));
     await tester.pumpAndSettle();
 
-    // 3. When remaining quota (10 GiB) is smaller than active 4K Remux (73.4 GB), warn clearly
-    embygoApp.meQuota = MeQuotaModel.fromJson(<String, dynamic>{
-      'limits': <String, dynamic>{'is_admin': false, 'allow_downloads': true},
-      'download_quota': <String, dynamic>{
-        'Enabled': true,
-        'AdminExempt': false,
-        'MonthlyQuotaBytes': 30 * gib,
-        'MonthlyUsedBytes': 20 * gib,
-        'MonthlyRemainingBytes': 10 * gib,
-        'PackBytes': 0,
-        'InFlightBytes': 0,
-        'ActiveDownloads': 0,
-        'MaxConcurrentDownloads': 2,
-        'TotalRemainingBytes': 10 * gib,
-        'CycleDownloadBytes': 20 * gib,
-      },
-    });
-    embygoApp.notifyListeners();
+    // 3. SettingsScreen -> 下载管理 is the ONLY place showing 下载流量包 card (sidebar subtitle also free of GB clutter)
+    await tester.pumpWidget(MaterialApp(
+      home: SettingsScreen(
+        appState: embygoApp,
+        onOpenServerHub: () {},
+        onOpenAddServer: ([_]) {},
+      ),
+    ));
     await tester.pumpAndSettle();
-    expect(find.textContaining('下载流量包余额不足'), findsOneWidget);
+    // Before clicking 下载管理, sidebar shows clean "无任务" without quota balance text
+    expect(find.byKey(const ValueKey('settings-download-quota-card')), findsNothing);
+    await tester.tap(find.text('下载管理'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings-download-quota-card')), findsOneWidget);
+    expect(find.text('下载流量包'), findsOneWidget);
+    expect(find.textContaining('530.00 GB'), findsOneWidget);
+    expect(find.textContaining('一次性永久下载流量包'), findsOneWidget);
 
     // 4. Series multi-episode & multi-version Batch Download Picker
-    embygoApp.meQuota = MeQuotaModel.fromJson(<String, dynamic>{
-      'limits': <String, dynamic>{'is_admin': false, 'allow_downloads': true},
-      'download_quota': <String, dynamic>{
-        'Enabled': true,
-        'AdminExempt': false,
-        'MonthlyQuotaBytes': 30 * gib,
-        'MonthlyUsedBytes': 0,
-        'MonthlyRemainingBytes': 30 * gib,
-        'PackBytes': 500 * gib,
-        'InFlightBytes': 0,
-        'ActiveDownloads': 0,
-        'MaxConcurrentDownloads': 2,
-        'TotalRemainingBytes': 530 * gib,
-        'CycleDownloadBytes': 0,
-      },
-    });
     await tester.pumpWidget(MaterialApp(
       home: DetailScreen(
         key: const ValueKey('embygo-series-batch-dl'),
@@ -744,6 +761,7 @@ void main() {
     ));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('detail-batch-download-btn')), findsOneWidget);
+    expect(find.textContaining('下载流量包'), findsNothing);
     await tester.tap(find.byKey(const ValueKey('detail-batch-download-btn')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('detail-batch-download-dialog')), findsOneWidget);
@@ -753,6 +771,7 @@ void main() {
     await tester.tap(find.text('全选本段'));
     await tester.pumpAndSettle();
     expect(find.textContaining('已选 50 集'), findsOneWidget);
+    expect(find.textContaining('下载流量包'), findsNothing);
 
     // 5. Resumable DownloadTaskModel metadata roundtrip & concurrency capping
     final task = DownloadTaskModel(
@@ -775,6 +794,114 @@ void main() {
     expect(roundtripped.retryCount, equals(2));
     expect(roundtripped.progress, closeTo(0.5, 0.001));
     expect(embygoApp.effectiveDownloadConcurrency, equals(2));
+  });
+
+  testWidgets(
+      'VedroPrecisionSlider interactive ticks/reset, compact 360px DetailScreen action deck & multi-source Danmaku RPCs',
+      (tester) async {
+    // 1. Compact 360x780 portrait DetailScreen action deck never wraps awkwardly or overflows
+    tester.view.physicalSize = const Size(360, 780);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final app = VedroAppState(_MockVedroCore(enableContentDownloading: true))
+      ..userId = 'u1'
+      ..connectedUrl = 'https://embygo.example.com'
+      ..enableContentDownloading = true;
+    await tester.pumpWidget(MaterialApp(
+      home: DetailScreen(
+        key: const ValueKey('compact-360-movie'),
+        item: MediaItemModel(id: 'm1', name: '沙丘2', type: 'Movie', canDownload: true),
+        appState: app,
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('detail-download-button')), findsOneWidget);
+    expect(find.text('缓存'), findsOneWidget);
+    expect(find.text('收藏'), findsOneWidget);
+    expect(find.text('标已看'), findsOneWidget);
+    expect(find.text('更多'), findsOneWidget);
+
+    await tester.pumpWidget(MaterialApp(
+      home: DetailScreen(
+        key: const ValueKey('compact-360-series'),
+        item: MediaItemModel(id: 'tv1', name: '三体', type: 'Series', canDownload: true),
+        appState: app,
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('detail-batch-download-btn')), findsOneWidget);
+    expect(find.byKey(const ValueKey('detail-download-button')), findsOneWidget);
+    expect(find.text('下载'), findsOneWidget);
+    expect(find.text('收藏'), findsOneWidget);
+    expect(find.text('标已看'), findsOneWidget);
+    expect(find.text('更多'), findsOneWidget);
+
+    // 2. VedroPrecisionSlider tick selection & one-tap reset
+    double speed = 1.0;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        backgroundColor: const Color(0xFF0B0B0D),
+        body: Center(
+          child: SizedBox(
+            width: 340,
+            child: StatefulBuilder(
+              builder: (_, setSt) => VedroPrecisionSlider(
+                label: '播放倍速',
+                valueText: '${speed.toStringAsFixed(speed == speed.roundToDouble() ? 1 : 2)}×',
+                value: speed,
+                min: 0.25,
+                max: 3.0,
+                step: 0.05,
+                defaultValue: 1.0,
+                ticks: const [
+                  (0.5, '0.5×'),
+                  (1.0, '1.0×'),
+                  (1.5, '1.5×'),
+                  (2.0, '2.0×'),
+                  (3.0, '3.0×'),
+                ],
+                onChanged: (v) => setSt(() => speed = v),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.text('播放倍速'), findsOneWidget);
+    expect(find.text('复位'), findsNothing);
+    await tester.tap(find.text('2.0×'));
+    await tester.pumpAndSettle();
+    expect(speed, closeTo(2.0, 0.01));
+    expect(find.text('复位'), findsOneWidget);
+    await tester.tap(find.text('复位'));
+    await tester.pumpAndSettle();
+    expect(speed, closeTo(1.0, 0.01));
+    expect(find.text('复位'), findsNothing);
+
+    // 3. Multi-source Danmaku auto-match, interactive search & explicit target loading
+    final autoRes = await app.fetchDanmaku(
+      '三体',
+      altTitle: '3 Body Problem',
+      season: 1,
+      episode: 1,
+    );
+    expect(autoRes.title, contains('弹弹play'));
+    expect(autoRes.comments.length, equals(2));
+
+    final candidates = await app.searchDanmakuCandidates('三体');
+    expect(candidates.length, equals(1));
+    expect((candidates.first['episodes'] as List).isNotEmpty, isTrue);
+
+    final targetRes = await app.loadDanmakuTarget(
+      provider: 'bilibili_pgc',
+      targetId: '998877',
+      title: '哔哩哔哩 · 三体 第1话',
+    );
+    expect(targetRes.comments.length, equals(1));
+    expect(targetRes.comments.first.text, equals('B站弹幕加载成功'));
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {

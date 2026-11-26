@@ -129,7 +129,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _dialogueBoost = false;
   bool _danmakuEnabled = false;
   List<DanmakuComment> _danmakuComments = const [];
+  List<Map<String, dynamic>> _danmakuCandidates = const [];
   bool _danmakuLoading = false;
+  bool _danmakuSearching = false;
   String? _danmakuMatchTitle;
   String? _danmakuError;
   double _danmakuOpacity = 0.82;
@@ -1031,6 +1033,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
+  String _fmtSpeed(double s) {
+    final rounded2 = (s * 100).round() / 100.0;
+    if ((rounded2 - rounded2.roundToDouble()).abs() < 0.005) {
+      return '${rounded2.toStringAsFixed(1)}×';
+    }
+    if (((rounded2 * 10) - (rounded2 * 10).roundToDouble()).abs() < 0.005) {
+      return '${rounded2.toStringAsFixed(1)}×';
+    }
+    return '${rounded2.toStringAsFixed(2)}×';
+  }
+
   Future<void> _loadDanmaku({String? queryOverride}) async {
     if (_danmakuLoading) return;
     final query = (queryOverride ?? (_currentItem.seriesName ?? _currentItem.displayName)).trim();
@@ -1042,6 +1055,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     try {
       final res = await widget.appState.fetchDanmaku(
         query,
+        altTitle: queryOverride == null ? _currentItem.originalTitle : null,
+        season: _currentItem.parentIndexNumber,
         episode: _currentItem.indexNumber,
       );
       if (!mounted) return;
@@ -1062,6 +1077,33 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _danmakuLoading = false;
         _danmakuError = e.toString().replaceFirst('Exception: ', '');
       });
+    }
+  }
+
+  Future<void> _pickLocalDanmakuXml() async {
+    final picked = await NativePlaybackChannel.pickFiles(
+      extensions: const ['xml'],
+      title: '选择本地 B 站格式 XML 弹幕文件',
+    );
+    if (picked.isEmpty) return;
+    try {
+      final raw = await File(picked.first).readAsString();
+      final parsed = DanmakuComment.parseBilibiliXml(raw);
+      if (!mounted) return;
+      final fileName = picked.first.split(Platform.pathSeparator).last;
+      setState(() {
+        _danmakuComments = parsed;
+        _danmakuMatchTitle = fileName;
+        _danmakuError = parsed.isEmpty ? '该 XML 文件未解析出有效弹幕' : null;
+        if (parsed.isNotEmpty) _danmakuEnabled = true;
+      });
+      if (parsed.isNotEmpty) {
+        _flashGestureHud('seek_feedback', text: '已加载本地弹幕 ${parsed.length} 条');
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _danmakuError = '读取本地弹幕失败：$e');
+      }
     }
   }
 
@@ -1757,13 +1799,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ),
 
-                  // Auto-hiding IINA / Infuse frosted chrome
+                  // Auto-hiding IINA / Apple TV+ frosted chrome with fluid directional glide
                   IgnorePointer(
                     ignoring: !_controlsVisible || _showEpisodeDrawer || _screenLocked,
                     child: AnimatedOpacity(
                       opacity: (_controlsVisible && !_showEpisodeDrawer && !_screenLocked) ? 1.0 : 0.0,
-                      duration: const Duration(milliseconds: 210),
-                      curve: Curves.easeOutCubic,
+                      duration: const Duration(milliseconds: 220),
+                      curve: VedroTheme.easeOut,
                       child: Stack(
                         children: [
                           // Top Bar
@@ -1771,18 +1813,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             top: 0,
                             left: 0,
                             right: 0,
-                            child: MouseRegion(
-                              onEnter: (_) {
-                                _hoveringChrome = true;
-                                _hideControlsTimer?.cancel();
-                              },
-                              onExit: (_) {
-                                _hoveringChrome = false;
-                                _scheduleHideControls();
-                              },
-                              child: Container(
-                                padding: EdgeInsets.fromLTRB(
-                                  (isMac && !_isFullscreen) ? 82 : 20,
+                            child: AnimatedSlide(
+                              offset: (_controlsVisible && !_showEpisodeDrawer && !_screenLocked)
+                                  ? Offset.zero
+                                  : const Offset(0, -0.22),
+                              duration: const Duration(milliseconds: 250),
+                              curve: VedroTheme.easeOut,
+                              child: MouseRegion(
+                                onEnter: (_) {
+                                  _hoveringChrome = true;
+                                  _hideControlsTimer?.cancel();
+                                },
+                                onExit: (_) {
+                                  _hoveringChrome = false;
+                                  _scheduleHideControls();
+                                },
+                                child: Container(
+                                  padding: EdgeInsets.fromLTRB(
+                                    (isMac && !_isFullscreen) ? 82 : 20,
                                   topPad + 12,
                                   20,
                                   28,
@@ -1839,272 +1887,382 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                       ),
                                       const SizedBox(width: 6),
                                     ],
-                                    Tooltip(
-                                      message: _hwDecodeEnabled ? '当前硬件解码，点击切至软解' : '当前软件解码，点击切至硬解',
-                                      child: _DeckPillButton(
-                                        label: _hwDecodeEnabled ? 'HW' : 'SW',
-                                        active: _hwDecodeEnabled,
-                                        onTap: _toggleHwDecode,
+                                      Tooltip(
+                                        message: _hwDecodeEnabled ? '当前硬件解码，点击切至软解' : '当前软件解码，点击切至硬解',
+                                        child: _DeckPillButton(
+                                          label: _hwDecodeEnabled ? 'HW' : 'SW',
+                                          active: _hwDecodeEnabled,
+                                          onTap: _toggleHwDecode,
+                                        ),
                                       ),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    if (_chapters.isNotEmpty) ...[
+                                      if (wide && _chapters.isNotEmpty) ...[
+                                        const SizedBox(width: 6),
+                                        _CircleHudButton(
+                                          icon: Icons.format_list_bulleted_rounded,
+                                          tooltip: '章节列表 (C)',
+                                          onTap: _openChaptersSheet,
+                                        ),
+                                      ],
+                                      if (wide) ...[
+                                        const SizedBox(width: 6),
+                                        _CircleHudButton(
+                                          icon: Icons.camera_alt_outlined,
+                                          tooltip: '截图 (S)',
+                                          onTap: _takeScreenshot,
+                                        ),
+                                      ],
+                                      if (_episodes.length > 1) ...[
+                                        const SizedBox(width: 6),
+                                        _CircleHudButton(
+                                          icon: Icons.video_library_outlined,
+                                          tooltip: '选集',
+                                          onTap: () => setState(() => _showEpisodeDrawer = true),
+                                        ),
+                                      ],
+                                      if (wide) ...[
+                                        const SizedBox(width: 6),
+                                        _CircleHudButton(
+                                          icon: Icons.aspect_ratio_rounded,
+                                          tooltip: '画面比例 / 旋转 / 缩放',
+                                          onTap: _openAspectSheet,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        _CircleHudButton(
+                                          icon: Icons.info_outline_rounded,
+                                          active: _showStats,
+                                          tooltip: '硬件信息 (I)',
+                                          onTap: () => setState(() => _showStats = !_showStats),
+                                        ),
+                                      ],
+                                      if (_isDesktop && wide) ...[
+                                        const SizedBox(width: 6),
+                                        _CircleHudButton(
+                                          icon: _alwaysOnTop ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                                          active: _alwaysOnTop,
+                                          tooltip: _alwaysOnTop ? '取消置顶 (T)' : '窗口置顶 (T)',
+                                          onTap: _toggleAlwaysOnTop,
+                                        ),
+                                      ],
+                                      if (widget.appState.prefs.enablePip) ...[
+                                        const SizedBox(width: 6),
+                                        _CircleHudButton(
+                                          icon: Icons.picture_in_picture_alt_rounded,
+                                          tooltip: '画中画',
+                                          onTap: NativePlaybackChannel.enterPictureInPicture,
+                                        ),
+                                      ],
+                                      const SizedBox(width: 6),
                                       _CircleHudButton(
-                                        icon: Icons.format_list_bulleted_rounded,
-                                        tooltip: '章节列表 (C)',
-                                        onTap: _openChaptersSheet,
+                                        icon: Icons.lock_outline_rounded,
+                                        tooltip: '锁屏防误触 (L)',
+                                        onTap: _toggleScreenLock,
                                       ),
                                       const SizedBox(width: 6),
-                                    ],
-                                    _CircleHudButton(
-                                      icon: Icons.camera_alt_outlined,
-                                      tooltip: '截图 (S)',
-                                      onTap: _takeScreenshot,
-                                    ),
-                                    const SizedBox(width: 6),
-                                    if (_episodes.length > 1) ...[
                                       _CircleHudButton(
-                                        icon: Icons.video_library_outlined,
-                                        tooltip: '选集',
-                                        onTap: () => setState(() => _showEpisodeDrawer = true),
-                                      ),
-                                      const SizedBox(width: 6),
-                                    ],
-                                    _CircleHudButton(
-                                      icon: Icons.aspect_ratio_rounded,
-                                      tooltip: '画面比例 / 旋转 / 缩放',
-                                      onTap: _openAspectSheet,
-                                    ),
-                                    const SizedBox(width: 6),
-                                    _CircleHudButton(
-                                      icon: Icons.info_outline_rounded,
-                                      active: _showStats,
-                                      tooltip: '硬件信息 (I)',
-                                      onTap: () => setState(() => _showStats = !_showStats),
-                                    ),
-                                    if (_isDesktop) ...[
-                                      const SizedBox(width: 6),
-                                      _CircleHudButton(
-                                        icon: _alwaysOnTop ? Icons.push_pin_rounded : Icons.push_pin_outlined,
-                                        active: _alwaysOnTop,
-                                        tooltip: _alwaysOnTop ? '取消置顶 (T)' : '窗口置顶 (T)',
-                                        onTap: _toggleAlwaysOnTop,
+                                        icon: Icons.more_horiz_rounded,
+                                        tooltip: '更多工具（定时 / A-B循环 / 色彩 / 快捷键）',
+                                        onTap: _openMoreToolsSheet,
                                       ),
                                     ],
-                                    if (widget.appState.prefs.enablePip) ...[
-                                      const SizedBox(width: 6),
-                                      _CircleHudButton(
-                                        icon: Icons.picture_in_picture_alt_rounded,
-                                        tooltip: '画中画',
-                                        onTap: NativePlaybackChannel.enterPictureInPicture,
-                                      ),
-                                    ],
-                                    const SizedBox(width: 6),
-                                    _CircleHudButton(
-                                      icon: Icons.lock_outline_rounded,
-                                      tooltip: '锁屏防误触 (L)',
-                                      onTap: _toggleScreenLock,
-                                    ),
-                                    const SizedBox(width: 6),
-                                    _CircleHudButton(
-                                      icon: Icons.more_horiz_rounded,
-                                      tooltip: '更多工具（定时 / A-B循环 / 色彩 / 快捷键）',
-                                      onTap: _openMoreToolsSheet,
-                                    ),
-                                  ],
+                                  ),
                                 ),
                               ),
                             ),
                           ),
 
-                          // Bottom Frosted Cinema Control Deck
+                          // Bottom Frosted Cinema Control Deck (responsive across all resolutions)
                           Positioned(
-                            left: wide ? 28 : 14,
-                            right: wide ? 28 : 14,
-                            bottom: MediaQuery.paddingOf(context).bottom + (wide ? 22 : 14),
-                            child: MouseRegion(
-                              onEnter: (_) {
-                                _hoveringChrome = true;
-                                _hideControlsTimer?.cancel();
-                              },
-                              onExit: (_) {
-                                _hoveringChrome = false;
-                                _scheduleHideControls();
-                              },
-                              child: Center(
-                                child: ConstrainedBox(
-                                  constraints: const BoxConstraints(maxWidth: 920),
-                                  child: GlassSurface(
-                                    borderRadius: 18,
-                                    blur: 28,
-                                    color: const Color(0xC8121317),
-                                    borderColor: const Color(0x26FFFFFF),
-                                    padding: EdgeInsets.fromLTRB(
-                                      wide ? 18 : 14,
-                                      12,
-                                      wide ? 18 : 14,
-                                      12,
-                                    ),
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        // Row 1: Custom precision Cinema Scrub Bar
-                                        _CinemaScrubBar(
-                                          positionSecs: _scrubbing ? _scrubTargetSecs : _positionSecs,
-                                          bufferedSecs: _bufferedSecs,
-                                          durationSecs: _durationSecs,
-                                          segments: _segments,
-                                          chapterTimes: _chapters.map((c) => c.timeSecs).toList(),
-                                          showRemaining: _showRemaining,
-                                          fmtTime: _fmtTime,
-                                          onToggleRemaining: () =>
-                                              setState(() => _showRemaining = !_showRemaining),
-                                          onScrubStart: () => _hideControlsTimer?.cancel(),
-                                          onScrubUpdate: (secs) =>
-                                              setState(() => _positionSecs = secs),
-                                          onScrubEnd: (secs) {
-                                            _seekTo(secs);
-                                            _scheduleHideControls();
-                                          },
-                                        ),
-                                        const SizedBox(height: 10),
-                                        // Row 2: Left volume | Center transport | Right clean pills
-                                        Row(
-                                          children: [
-                                            // Left: Volume controls (inline slider on desktop)
-                                            if (wide) ...[
+                            left: wide ? 28 : 12,
+                            right: wide ? 28 : 12,
+                            bottom: MediaQuery.paddingOf(context).bottom + (wide ? 22 : 12),
+                            child: AnimatedSlide(
+                              offset: (_controlsVisible && !_showEpisodeDrawer && !_screenLocked)
+                                  ? Offset.zero
+                                  : const Offset(0, 0.22),
+                              duration: const Duration(milliseconds: 260),
+                              curve: VedroTheme.easeOut,
+                              child: MouseRegion(
+                                onEnter: (_) {
+                                  _hoveringChrome = true;
+                                  _hideControlsTimer?.cancel();
+                                },
+                                onExit: (_) {
+                                  _hoveringChrome = false;
+                                  _scheduleHideControls();
+                                },
+                                child: Center(
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(maxWidth: 940),
+                                    child: GlassSurface(
+                                      borderRadius: 20,
+                                      blur: 30,
+                                      color: const Color(0xCC111319),
+                                      borderColor: const Color(0x28FFFFFF),
+                                      padding: EdgeInsets.fromLTRB(
+                                        wide ? 18 : 14,
+                                        12,
+                                        wide ? 18 : 14,
+                                        12,
+                                      ),
+                                      child: LayoutBuilder(
+                                        builder: (context, deckConstraints) {
+                                          final singleRowDeck = deckConstraints.maxWidth >= 680;
+                                          final speedPill = _DeckPillButton(
+                                            key: const ValueKey('player-speed-pill'),
+                                            label: '${_fmtSpeed(_speed)}×',
+                                            active: (_speed - 1.0).abs() > 0.01,
+                                            onTap: _openSpeedSheet,
+                                          );
+
+                                          final transportCluster = Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
                                               _DeckIconButton(
-                                                icon: _muted || _volume <= 0.1
-                                                    ? Icons.volume_off_rounded
-                                                    : (_volume < 50
-                                                        ? Icons.volume_down_rounded
-                                                        : Icons.volume_up_rounded),
-                                                tooltip: '静音 (M)',
-                                                onTap: _toggleMute,
+                                                icon: Icons.replay_10_rounded,
+                                                tooltip: '后退 ${step}s',
+                                                onTap: () => _seekBy(-step.toDouble(), showHud: true),
                                               ),
-                                              const SizedBox(width: 4),
-                                              SizedBox(
-                                                width: 82,
-                                                child: _MiniVolumeBar(
-                                                  value: (_volume / _maxVolume).clamp(0.0, 1.0),
-                                                  onChanged: (ratio) =>
-                                                      _setVolume(ratio * _maxVolume),
+                                              SizedBox(width: singleRowDeck ? 8 : 10),
+                                              PressableScale(
+                                                onTap: _togglePause,
+                                                hoverScale: 1.07,
+                                                pressScale: 0.9,
+                                                child: Container(
+                                                  width: 44,
+                                                  height: 44,
+                                                  decoration: const BoxDecoration(
+                                                    color: Colors.white,
+                                                    shape: BoxShape.circle,
+                                                    boxShadow: [
+                                                      BoxShadow(
+                                                        color: Color(0x55000000),
+                                                        blurRadius: 14,
+                                                        offset: Offset(0, 4),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  child: AnimatedSwitcher(
+                                                    duration: const Duration(milliseconds: 180),
+                                                    switchInCurve: VedroTheme.springCurve,
+                                                    transitionBuilder: (child, anim) => ScaleTransition(
+                                                      scale: Tween<double>(begin: 0.72, end: 1.0).animate(anim),
+                                                      child: FadeTransition(opacity: anim, child: child),
+                                                    ),
+                                                    child: Icon(
+                                                      _paused
+                                                          ? Icons.play_arrow_rounded
+                                                          : Icons.pause_rounded,
+                                                      key: ValueKey<bool>(_paused),
+                                                      size: 26,
+                                                      color: VedroTheme.canvas,
+                                                    ),
+                                                  ),
                                                 ),
                                               ),
-                                              const Spacer(),
-                                            ],
-
-                                            // Center Transport Cluster
-                                            _DeckIconButton(
-                                              icon: Icons.replay_10_rounded,
-                                              tooltip: '后退 ${step}s',
-                                              onTap: () => _seekBy(-step.toDouble(), showHud: true),
-                                            ),
-                                            const SizedBox(width: 8),
-                                            PressableScale(
-                                              onTap: _togglePause,
-                                              hoverScale: 1.06,
-                                              pressScale: 0.92,
-                                              child: Container(
-                                                width: 42,
-                                                height: 42,
-                                                decoration: const BoxDecoration(
-                                                  color: Colors.white,
-                                                  shape: BoxShape.circle,
-                                                ),
-                                                child: Icon(
-                                                  _paused
-                                                      ? Icons.play_arrow_rounded
-                                                      : Icons.pause_rounded,
-                                                  size: 25,
-                                                  color: VedroTheme.canvas,
-                                                ),
-                                              ),
-                                            ),
-                                            const SizedBox(width: 8),
-                                            _DeckIconButton(
-                                              icon: Icons.forward_10_rounded,
-                                              tooltip: '前进 ${step}s',
-                                              onTap: () => _seekBy(step.toDouble(), showHud: true),
-                                            ),
-                                            if (_nextEpisode != null) ...[
-                                              const SizedBox(width: 4),
+                                              SizedBox(width: singleRowDeck ? 8 : 10),
                                               _DeckIconButton(
-                                                icon: Icons.skip_next_rounded,
-                                                tooltip: '下一集 (N)',
-                                                onTap: () => _switchEpisode(_nextEpisode!),
+                                                icon: Icons.forward_10_rounded,
+                                                tooltip: '前进 ${step}s',
+                                                onTap: () => _seekBy(step.toDouble(), showHud: true),
                                               ),
+                                              if (_nextEpisode != null) ...[
+                                                const SizedBox(width: 4),
+                                                _DeckIconButton(
+                                                  icon: Icons.skip_next_rounded,
+                                                  tooltip: '下一集 (N)',
+                                                  onTap: () => _switchEpisode(_nextEpisode!),
+                                                ),
+                                              ],
                                             ],
+                                          );
 
-                                            const Spacer(),
+                                          final screenToggleBtn = _isDesktop
+                                              ? _DeckIconButton(
+                                                  icon: _isFullscreen
+                                                      ? Icons.fullscreen_exit_rounded
+                                                      : Icons.fullscreen_rounded,
+                                                  tooltip: _isFullscreen ? '退出全屏 (F / Esc)' : '进入全屏 (F / 双击画面)',
+                                                  onTap: _toggleFullscreen,
+                                                )
+                                              : (_isMobile
+                                                  ? _DeckIconButton(
+                                                      icon: Icons.screen_rotation_rounded,
+                                                      tooltip: _isLandscapeOrientation ? '切换竖屏' : '切换横屏',
+                                                      onTap: _toggleMobileOrientation,
+                                                    )
+                                                  : const SizedBox(width: 34));
 
-                                            // Right cohesive labeled pills (horizontally scrollable on narrow mobile screens)
-                                            Flexible(
-                                              child: SingleChildScrollView(
-                                                scrollDirection: Axis.horizontal,
-                                                reverse: true,
-                                                child: Row(
-                                                  mainAxisSize: MainAxisSize.min,
+                                          return Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              // Row 1: Custom precision Cinema Scrub Bar
+                                              _CinemaScrubBar(
+                                                positionSecs: _scrubbing ? _scrubTargetSecs : _positionSecs,
+                                                bufferedSecs: _bufferedSecs,
+                                                durationSecs: _durationSecs,
+                                                segments: _segments,
+                                                chapterTimes: _chapters.map((c) => c.timeSecs).toList(),
+                                                showRemaining: _showRemaining,
+                                                fmtTime: _fmtTime,
+                                                onToggleRemaining: () =>
+                                                    setState(() => _showRemaining = !_showRemaining),
+                                                onScrubStart: () => _hideControlsTimer?.cancel(),
+                                                onScrubUpdate: (secs) =>
+                                                    setState(() => _positionSecs = secs),
+                                                onScrubEnd: (secs) {
+                                                  _seekTo(secs);
+                                                  _scheduleHideControls();
+                                                },
+                                              ),
+                                              const SizedBox(height: 10),
+                                              if (singleRowDeck)
+                                                Row(
                                                   children: [
-                                                    _DeckPillButton(
-                                                      label:
-                                                          '${_speed.toStringAsFixed(_speed == _speed.roundToDouble() ? 1 : 2)}×',
-                                                      onTap: _openSpeedSheet,
+                                                    _DeckIconButton(
+                                                      icon: _muted || _volume <= 0.1
+                                                          ? Icons.volume_off_rounded
+                                                          : (_volume < 50
+                                                              ? Icons.volume_down_rounded
+                                                              : Icons.volume_up_rounded),
+                                                      tooltip: '静音 (M)',
+                                                      onTap: _toggleMute,
                                                     ),
-                                                    const SizedBox(width: 6),
-                                                    _DeckPillButton(
-                                                      label: _danmakuEnabled && _danmakuComments.isNotEmpty
-                                                          ? '弹幕 ${_danmakuComments.length}'
-                                                          : '弹幕',
-                                                      active: _danmakuEnabled,
-                                                      onTap: _openDanmakuSheet,
-                                                    ),
-                                                    const SizedBox(width: 6),
-                                                    _DeckPillButton(
-                                                      label: '字幕',
-                                                      onTap: _openSubtitleSheet,
-                                                    ),
-                                                    const SizedBox(width: 6),
-                                                    _DeckPillButton(
-                                                      label: '音轨',
-                                                      onTap: _openAudioSheet,
-                                                    ),
-                                                    const SizedBox(width: 6),
-                                                    _DeckPillButton(
-                                                      label: '画面',
-                                                      onTap: _openHdrSheet,
-                                                    ),
-                                                    if ((_prepared?.allSources.length ?? 0) > 1) ...[
-                                                      const SizedBox(width: 6),
-                                                      _DeckPillButton(
-                                                        label: '版本',
-                                                        onTap: _openVersionSheet,
+                                                    const SizedBox(width: 4),
+                                                    SizedBox(
+                                                      width: 78,
+                                                      child: _MiniVolumeBar(
+                                                        value: (_volume / _maxVolume).clamp(0.0, 1.0),
+                                                        onChanged: (ratio) =>
+                                                            _setVolume(ratio * _maxVolume),
                                                       ),
-                                                    ],
-                                                    if (_isDesktop) ...[
-                                                      const SizedBox(width: 6),
-                                                      _DeckIconButton(
-                                                        icon: _isFullscreen
-                                                            ? Icons.fullscreen_exit_rounded
-                                                            : Icons.fullscreen_rounded,
-                                                        tooltip: _isFullscreen ? '退出全屏 (F / Esc)' : '进入全屏 (F / 双击画面)',
-                                                        onTap: _toggleFullscreen,
-                                                      ),
-                                                    ] else if (_isMobile) ...[
-                                                      const SizedBox(width: 6),
-                                                      _DeckIconButton(
-                                                        icon: Icons.screen_rotation_rounded,
-                                                        tooltip: _isLandscapeOrientation ? '切换竖屏' : '切换横屏',
-                                                        onTap: _toggleMobileOrientation,
-                                                      ),
-                                                    ],
+                                                    ),
+                                                    const SizedBox(width: 10),
+                                                    speedPill,
+                                                    Expanded(child: Center(child: transportCluster)),
+                                                    Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        _DeckPillButton(
+                                                          label: _danmakuEnabled && _danmakuComments.isNotEmpty
+                                                              ? '弹幕 ${_danmakuComments.length}'
+                                                              : '弹幕',
+                                                          active: _danmakuEnabled,
+                                                          onTap: _openDanmakuSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: '字幕',
+                                                          onTap: _openSubtitleSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: '音轨',
+                                                          onTap: _openAudioSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: '画面',
+                                                          onTap: _openHdrSheet,
+                                                        ),
+                                                        if ((_prepared?.allSources.length ?? 0) > 1) ...[
+                                                          const SizedBox(width: 6),
+                                                          _DeckPillButton(
+                                                            label: '版本',
+                                                            onTap: _openVersionSheet,
+                                                          ),
+                                                        ],
+                                                        const SizedBox(width: 6),
+                                                        screenToggleBtn,
+                                                      ],
+                                                    ),
+                                                  ],
+                                                )
+                                              else ...[
+                                                // Compact portrait / narrow landscape 2-tier layout:
+                                                // Tier 1: [Speed Pill (never clipped)] | [Transport] | [Rotate/Fullscreen]
+                                                Row(
+                                                  children: [
+                                                    speedPill,
+                                                    Expanded(child: Center(child: transportCluster)),
+                                                    screenToggleBtn,
                                                   ],
                                                 ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ],
+                                                const SizedBox(height: 10),
+                                                // Tier 2: Full-width smooth scrollable quick-action strip
+                                                SizedBox(
+                                                  width: double.infinity,
+                                                  child: SingleChildScrollView(
+                                                    scrollDirection: Axis.horizontal,
+                                                    child: Row(
+                                                      children: [
+                                                        _DeckPillButton(
+                                                          label: _danmakuEnabled && _danmakuComments.isNotEmpty
+                                                              ? '弹幕 ${_danmakuComments.length}'
+                                                              : '弹幕',
+                                                          active: _danmakuEnabled,
+                                                          onTap: _openDanmakuSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: '字幕',
+                                                          onTap: _openSubtitleSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: '音轨',
+                                                          onTap: _openAudioSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: '画面',
+                                                          onTap: _openHdrSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: '比例',
+                                                          onTap: _openAspectSheet,
+                                                        ),
+                                                        if ((_prepared?.allSources.length ?? 0) > 1) ...[
+                                                          const SizedBox(width: 6),
+                                                          _DeckPillButton(
+                                                            label: '版本',
+                                                            onTap: _openVersionSheet,
+                                                          ),
+                                                        ],
+                                                        if (_episodes.length > 1) ...[
+                                                          const SizedBox(width: 6),
+                                                          _DeckPillButton(
+                                                            label: '选集',
+                                                            onTap: () => setState(() => _showEpisodeDrawer = true),
+                                                          ),
+                                                        ],
+                                                        if (_chapters.isNotEmpty) ...[
+                                                          const SizedBox(width: 6),
+                                                          _DeckPillButton(
+                                                            label: '章节',
+                                                            onTap: _openChaptersSheet,
+                                                          ),
+                                                        ],
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: '截图',
+                                                          onTap: _takeScreenshot,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: '参数',
+                                                          active: _showStats,
+                                                          onTap: () => setState(() => _showStats = !_showStats),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          );
+                                        },
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -2130,12 +2288,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                   // Slide-out high-contrast Episode Drawer (supports 1000+ episodes via ranges + grid + sort)
                   AnimatedPositioned(
-                    duration: const Duration(milliseconds: 240),
-                    curve: Curves.easeOutCubic,
+                    duration: const Duration(milliseconds: 260),
+                    curve: VedroTheme.easeOut,
                     top: topPad + (isMac ? 42 : 16),
                     bottom: 16,
-                    right: _showEpisodeDrawer ? 16 : -380,
-                    width: 356,
+                    right: _showEpisodeDrawer ? 16 : -390,
+                    width: (size.width - 32).clamp(260.0, 356.0),
                     child: Container(
                       decoration: BoxDecoration(
                         color: const Color(0xF8151720),
@@ -2517,38 +2675,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ],
               ),
             ),
-            _StepperRow(
+            VedroPrecisionSlider(
               label: '画面缩放',
+              value: _videoZoom,
+              min: -0.5,
+              max: 1.5,
+              step: 0.05,
+              defaultValue: 0.0,
+              snapValues: const [0.0, 0.25, 0.5, 1.0],
+              ticks: const [(-0.5, '50%'), (0.0, '100%'), (0.5, '150%'), (1.0, '200%'), (1.5, '250%')],
               valueText: '${(100 * (1 + _videoZoom)).round()}%',
-              onMinus: () {
-                final next = (_videoZoom - 0.1).clamp(-0.5, 1.5);
-                setModal(() => _videoZoom = next);
-                _setVideoZoom(next, showHud: false);
-              },
-              onPlus: () {
-                final next = (_videoZoom + 0.1).clamp(-0.5, 1.5);
+              onChanged: (next) {
                 setModal(() => _videoZoom = next);
                 _setVideoZoom(next, showHud: false);
               },
             ),
-            if (_videoZoom.abs() > 0.01 || _videoRotate != 0)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
-                child: Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: () {
-                      setModal(() {
-                        _videoZoom = 0.0;
-                        _videoRotate = 0;
-                      });
-                      _setVideoZoom(0.0, showHud: false);
-                      _rotateVideo(0);
-                    },
-                    child: const Text('重置旋转与缩放', style: TextStyle(fontSize: 12.5)),
-                  ),
-                ),
-              ),
           ],
         ),
       ),
@@ -2557,7 +2698,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   void _openDanmakuSheet() {
     final queryCtrl = TextEditingController(
-      text: _danmakuMatchTitle ?? _currentItem.seriesName ?? _currentItem.displayName,
+      text: _currentItem.seriesName ?? _currentItem.displayName,
     );
     showGlassSheet<void>(
       context: context,
@@ -2570,9 +2711,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
               children: [
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 8),
-                  child: Text('弹幕设置与匹配', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
+                  child: Text('弹幕匹配与样式', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
                 ),
                 const Spacer(),
+                TextButton.icon(
+                  style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    await _pickLocalDanmakuXml();
+                  },
+                  icon: const Icon(Icons.upload_file_rounded, size: 15),
+                  label: const Text('本地 XML', style: TextStyle(fontSize: 12)),
+                ),
                 Switch(
                   value: _danmakuEnabled,
                   onChanged: (v) {
@@ -2588,17 +2738,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ],
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(8, 2, 8, 12),
+              padding: const EdgeInsets.fromLTRB(8, 2, 8, 10),
               child: Text(
-                _danmakuLoading
-                    ? '正在从弹幕源匹配…'
+                _danmakuLoading || _danmakuSearching
+                    ? '正在从弹弹Play / B站弹幕库检索匹配…'
                     : (_danmakuError != null
-                        ? '匹配失败：$_danmakuError'
+                        ? '提示：$_danmakuError'
                         : (_danmakuComments.isNotEmpty
-                            ? '已匹配：${_danmakuMatchTitle ?? ''}（${_danmakuComments.length} 条弹幕）'
-                            : '输入番剧或电影名手动匹配弹幕（支持弹弹play / B站 XML 接口）')),
+                            ? '当前弹幕：${_danmakuMatchTitle ?? ''}（共 ${_danmakuComments.length} 条）'
+                            : '自动联合检索 弹弹Play + B站番剧/影视弹幕库')),
                 style: TextStyle(
-                  color: _danmakuError != null ? VedroTheme.danger : VedroTheme.fg3,
+                  color: _danmakuError != null
+                      ? VedroTheme.danger
+                      : (_danmakuComments.isNotEmpty ? const Color(0xFF34D399) : VedroTheme.fg3),
                   fontSize: 12,
                 ),
               ),
@@ -2610,97 +2762,234 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   Expanded(
                     child: TextField(
                       controller: queryCtrl,
+                      onSubmitted: (_) async {
+                        final kw = queryCtrl.text.trim();
+                        if (kw.isEmpty) return;
+                        setModal(() {
+                          _danmakuEnabled = true;
+                          _danmakuSearching = true;
+                        });
+                        setState(() => _danmakuEnabled = true);
+                        await Future.wait([
+                          _loadDanmaku(queryOverride: kw),
+                          widget.appState.searchDanmakuCandidates(kw).then((c) {
+                            if (mounted) _danmakuCandidates = c;
+                          }).catchError((_) {}),
+                        ]);
+                        if (ctx.mounted) setModal(() => _danmakuSearching = false);
+                      },
                       decoration: const InputDecoration(
                         isDense: true,
-                        hintText: '搜索弹幕关键词',
+                        hintText: '输入番剧或电影名称搜索弹幕…',
                       ),
                     ),
                   ),
                   const SizedBox(width: 8),
                   FilledButton(
-                    onPressed: _danmakuLoading
+                    onPressed: (_danmakuLoading || _danmakuSearching)
                         ? null
                         : () async {
-                            setModal(() => _danmakuEnabled = true);
+                            final kw = queryCtrl.text.trim();
+                            if (kw.isEmpty) return;
+                            setModal(() {
+                              _danmakuEnabled = true;
+                              _danmakuSearching = true;
+                            });
                             setState(() => _danmakuEnabled = true);
-                            await _loadDanmaku(queryOverride: queryCtrl.text.trim());
-                            if (ctx.mounted) setModal(() {});
+                            await Future.wait([
+                              _loadDanmaku(queryOverride: kw),
+                              widget.appState.searchDanmakuCandidates(kw).then((c) {
+                                if (mounted) _danmakuCandidates = c;
+                              }).catchError((_) {}),
+                            ]);
+                            if (ctx.mounted) setModal(() => _danmakuSearching = false);
                           },
-                    child: Text(_danmakuLoading ? '匹配中…' : '匹配弹幕', style: const TextStyle(fontSize: 12.5)),
+                    child: Text(
+                      (_danmakuLoading || _danmakuSearching) ? '搜索中…' : '搜索匹配',
+                      style: const TextStyle(fontSize: 12.5),
+                    ),
                   ),
                 ],
               ),
             ),
-            const Divider(height: 22),
-            _StepperRow(
-              label: '不透明度',
-              valueText: '${(_danmakuOpacity * 100).round()}%',
-              onMinus: () {
-                final v = (_danmakuOpacity - 0.1).clamp(0.2, 1.0);
-                setModal(() => _danmakuOpacity = v);
-                setState(() => _danmakuOpacity = v);
-                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuOpacity: v));
-              },
-              onPlus: () {
-                final v = (_danmakuOpacity + 0.1).clamp(0.2, 1.0);
-                setModal(() => _danmakuOpacity = v);
-                setState(() => _danmakuOpacity = v);
-                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuOpacity: v));
-              },
-            ),
-            _StepperRow(
-              label: '弹幕字号',
-              valueText: '${_danmakuFontSize.round()} pt',
-              onMinus: () {
-                final v = (_danmakuFontSize - 2).clamp(12.0, 30.0);
-                setModal(() => _danmakuFontSize = v);
-                setState(() => _danmakuFontSize = v);
-                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuFontSize: v));
-              },
-              onPlus: () {
-                final v = (_danmakuFontSize + 2).clamp(12.0, 30.0);
-                setModal(() => _danmakuFontSize = v);
-                setState(() => _danmakuFontSize = v);
-                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuFontSize: v));
-              },
-            ),
-            _StepperRow(
-              label: '滚动时长',
-              valueText: '${_danmakuSpeedSecs.round()}s',
-              onMinus: () {
-                final v = (_danmakuSpeedSecs - 1).clamp(5.0, 15.0);
-                setModal(() => _danmakuSpeedSecs = v);
-                setState(() => _danmakuSpeedSecs = v);
-                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuSpeedSecs: v));
-              },
-              onPlus: () {
-                final v = (_danmakuSpeedSecs + 1).clamp(5.0, 15.0);
-                setModal(() => _danmakuSpeedSecs = v);
-                setState(() => _danmakuSpeedSecs = v);
-                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuSpeedSecs: v));
-              },
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              child: Row(
-                children: [
-                  const Text('显示区域', style: TextStyle(color: VedroTheme.fg2, fontSize: 13.5)),
-                  const Spacer(),
-                  for (final (frac, lbl) in [(0.25, '1/4'), (0.5, '半屏'), (0.75, '3/4'), (1.0, '全屏')])
-                    Padding(
-                      padding: const EdgeInsets.only(left: 6),
-                      child: _DeckPillButton(
-                        label: lbl,
-                        active: (_danmakuArea - frac).abs() < 0.05,
-                        onTap: () {
-                          setModal(() => _danmakuArea = frac);
-                          setState(() => _danmakuArea = frac);
-                          widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuArea: frac));
-                        },
+            if (_danmakuCandidates.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 168),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  itemCount: _danmakuCandidates.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (_, cIdx) {
+                    final cand = _danmakuCandidates[cIdx];
+                    final badge = (cand['source_badge'] ?? '').toString();
+                    final cTitle = (cand['title'] ?? '').toString();
+                    final eps = ((cand['episodes'] as List<dynamic>?) ?? const [])
+                        .whereType<Map<String, dynamic>>()
+                        .toList();
+                    return Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1C1F2B),
+                        borderRadius: BorderRadius.circular(11),
+                        border: Border.all(color: const Color(0x22FFFFFF), width: 0.7),
                       ),
-                    ),
-                ],
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                decoration: BoxDecoration(
+                                  color: const Color(0x285B9BFF),
+                                  borderRadius: BorderRadius.circular(5),
+                                ),
+                                child: Text(
+                                  badge,
+                                  style: const TextStyle(
+                                    color: Color(0xFF93C5FD),
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 7),
+                              Expanded(
+                                child: Text(
+                                  cTitle,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 7),
+                          SizedBox(
+                            height: 28,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: eps.length,
+                              separatorBuilder: (_, __) => const SizedBox(width: 6),
+                              itemBuilder: (_, eIdx) {
+                                final ep = eps[eIdx];
+                                final lbl = (ep['label'] ?? '${eIdx + 1}').toString();
+                                return GestureDetector(
+                                  onTap: () async {
+                                    setModal(() => _danmakuLoading = true);
+                                    try {
+                                      final loaded = await widget.appState.loadDanmakuTarget(
+                                        provider: (ep['provider'] ?? 'dandan').toString(),
+                                        targetId: (ep['target_id'] ?? '').toString(),
+                                        title: '$cTitle · $lbl',
+                                      );
+                                      if (mounted) {
+                                        setState(() {
+                                          _danmakuComments = loaded.comments;
+                                          _danmakuMatchTitle = loaded.title;
+                                          _danmakuEnabled = true;
+                                          _danmakuError = loaded.comments.isEmpty
+                                              ? '该分集暂无弹幕'
+                                              : null;
+                                        });
+                                      }
+                                    } catch (e) {
+                                      if (mounted) {
+                                        setState(() => _danmakuError = '$e');
+                                      }
+                                    } finally {
+                                      if (mounted) _danmakuLoading = false;
+                                      if (ctx.mounted) setModal(() {});
+                                    }
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF25293A),
+                                      borderRadius: BorderRadius.circular(7),
+                                      border: Border.all(color: const Color(0x28FFFFFF), width: 0.6),
+                                    ),
+                                    alignment: Alignment.center,
+                                    child: Text(
+                                      lbl,
+                                      style: const TextStyle(color: Colors.white, fontSize: 11.5),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
               ),
+            ],
+            const Divider(height: 22),
+            VedroPrecisionSlider(
+              label: '不透明度',
+              value: _danmakuOpacity,
+              min: 0.2,
+              max: 1.0,
+              step: 0.05,
+              defaultValue: 0.82,
+              valueText: '${(_danmakuOpacity * 100).round()}%',
+              onChanged: (v) {
+                setModal(() => _danmakuOpacity = v);
+                setState(() => _danmakuOpacity = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuOpacity: v));
+              },
+            ),
+            VedroPrecisionSlider(
+              label: '弹幕字号',
+              value: _danmakuFontSize,
+              min: 12.0,
+              max: 32.0,
+              step: 1.0,
+              defaultValue: 18.0,
+              valueText: '${_danmakuFontSize.round()} pt',
+              onChanged: (v) {
+                setModal(() => _danmakuFontSize = v);
+                setState(() => _danmakuFontSize = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuFontSize: v));
+              },
+            ),
+            VedroPrecisionSlider(
+              label: '滚动时长（越小越快）',
+              value: _danmakuSpeedSecs,
+              min: 4.0,
+              max: 15.0,
+              step: 0.5,
+              defaultValue: 9.0,
+              valueText: '${_danmakuSpeedSecs.toStringAsFixed(1)}s',
+              onChanged: (v) {
+                setModal(() => _danmakuSpeedSecs = v);
+                setState(() => _danmakuSpeedSecs = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuSpeedSecs: v));
+              },
+            ),
+            VedroPrecisionSlider(
+              label: '显示区域',
+              value: _danmakuArea,
+              min: 0.25,
+              max: 1.0,
+              step: 0.05,
+              defaultValue: 0.5,
+              snapValues: const [0.25, 0.5, 0.75, 1.0],
+              ticks: const [(0.25, '1/4 屏'), (0.5, '半屏'), (0.75, '3/4 屏'), (1.0, '全屏')],
+              valueText: '${(_danmakuArea * 100).round()}%',
+              onChanged: (v) {
+                setModal(() => _danmakuArea = v);
+                setState(() => _danmakuArea = v);
+                widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuArea: v));
+              },
             ),
             SwitchListTile(
               dense: true,
@@ -2729,47 +3018,63 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _openSpeedSheet() {
-    const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0];
     showGlassSheet<void>(
       context: context,
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.fromLTRB(18, 14, 18, 22),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('播放倍速', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: speeds.map((s) {
-                final active = (_speed - s).abs() < 0.01;
-                return PressableScale(
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _setSpeed(s);
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                    decoration: BoxDecoration(
-                      color: active ? VedroTheme.fg : VedroTheme.surface2,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: active ? VedroTheme.fg : VedroTheme.line, width: 0.7),
-                    ),
-                    child: Text(
-                      '$s×',
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) => Padding(
+          key: const ValueKey('player-speed-sheet'),
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 22),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  children: [
+                    const Icon(Icons.speed_rounded, size: 19, color: Colors.white),
+                    const SizedBox(width: 8),
+                    const Text(
+                      '播放倍速',
                       style: TextStyle(
-                        color: active ? VedroTheme.canvas : VedroTheme.fg,
-                        fontSize: 13.5,
+                        color: Colors.white,
+                        fontSize: 16,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                  ),
-                );
-              }).toList(),
-            ),
-          ],
+                    const Spacer(),
+                    Text(
+                      '拖动滑块实时无级调节',
+                      style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              VedroPrecisionSlider(
+                label: '当前速率',
+                value: _speed.clamp(0.25, 3.0),
+                min: 0.25,
+                max: 3.0,
+                step: 0.05,
+                defaultValue: 1.0,
+                snapValues: const [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0],
+                ticks: const [
+                  (0.25, '0.25×'),
+                  (0.5, '0.5×'),
+                  (1.0, '1.0×'),
+                  (1.5, '1.5×'),
+                  (2.0, '2.0×'),
+                  (3.0, '3.0×'),
+                ],
+                valueText: _fmtSpeed(_speed),
+                onChanged: (s) {
+                  setModal(() {});
+                  _setSpeed(s);
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -2903,17 +3208,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
               },
             ),
             const Divider(height: 18),
-            _StepperRow(
+            VedroPrecisionSlider(
               label: '音频同步偏移',
-              valueText: '${_audioDelaySecs >= 0 ? '+' : ''}${_audioDelaySecs.toStringAsFixed(1)}s',
-              onMinus: () async {
-                final v = (_audioDelaySecs - 0.1).clamp(-5.0, 5.0);
-                setModal(() => _audioDelaySecs = v);
-                setState(() => _audioDelaySecs = v);
-                await _applyMpvProperty('audio-delay', v.toStringAsFixed(2));
-              },
-              onPlus: () async {
-                final v = (_audioDelaySecs + 0.1).clamp(-5.0, 5.0);
+              value: _audioDelaySecs,
+              min: -3.0,
+              max: 3.0,
+              step: 0.05,
+              defaultValue: 0.0,
+              centeredOrigin: true,
+              snapValues: const [0.0],
+              ticks: const [(-3.0, '-3s'), (-1.0, '-1s'), (0.0, '0s'), (1.0, '+1s'), (3.0, '+3s')],
+              valueText: '${_audioDelaySecs >= 0 ? '+' : ''}${_audioDelaySecs.toStringAsFixed(2)}s',
+              onChanged: (v) async {
                 setModal(() => _audioDelaySecs = v);
                 setState(() => _audioDelaySecs = v);
                 await _applyMpvProperty('audio-delay', v.toStringAsFixed(2));
@@ -3023,40 +3329,50 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   },
                 )),
             const Divider(height: 22),
-            _StepperRow(
+            VedroPrecisionSlider(
               label: '字号缩放',
+              value: _subScale,
+              min: 0.5,
+              max: 2.0,
+              step: 0.05,
+              defaultValue: 1.0,
+              snapValues: const [0.75, 1.0, 1.25, 1.5],
               valueText: '${(_subScale * 100).round()}%',
-              onMinus: () async {
-                setModal(() => _subScale = (_subScale - 0.1).clamp(0.5, 2.0));
-                await _applyMpvProperty('sub-scale', _subScale.toStringAsFixed(2));
-              },
-              onPlus: () async {
-                setModal(() => _subScale = (_subScale + 0.1).clamp(0.5, 2.0));
-                await _applyMpvProperty('sub-scale', _subScale.toStringAsFixed(2));
+              onChanged: (v) async {
+                setModal(() => _subScale = v);
+                setState(() => _subScale = v);
+                await _applyMpvProperty('sub-scale', v.toStringAsFixed(2));
               },
             ),
-            _StepperRow(
+            VedroPrecisionSlider(
               label: '垂直位置',
+              value: _subPos.toDouble(),
+              min: 60,
+              max: 100,
+              step: 1,
+              defaultValue: 96,
               valueText: '$_subPos%',
-              onMinus: () async {
-                setModal(() => _subPos = (_subPos - 4).clamp(60, 100));
-                await _applyMpvProperty('sub-pos', '$_subPos');
-              },
-              onPlus: () async {
-                setModal(() => _subPos = (_subPos + 4).clamp(60, 100));
-                await _applyMpvProperty('sub-pos', '$_subPos');
+              onChanged: (v) async {
+                final iv = v.round();
+                setModal(() => _subPos = iv);
+                setState(() => _subPos = iv);
+                await _applyMpvProperty('sub-pos', '$iv');
               },
             ),
-            _StepperRow(
+            VedroPrecisionSlider(
               label: '时间偏移',
+              value: _subDelaySecs.clamp(-5.0, 5.0),
+              min: -5.0,
+              max: 5.0,
+              step: 0.1,
+              defaultValue: 0.0,
+              centeredOrigin: true,
+              snapValues: const [0.0],
               valueText: '${_subDelaySecs >= 0 ? '+' : ''}${_subDelaySecs.toStringAsFixed(1)}s',
-              onMinus: () async {
-                setModal(() => _subDelaySecs -= 0.2);
-                await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
-              },
-              onPlus: () async {
-                setModal(() => _subDelaySecs += 0.2);
-                await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
+              onChanged: (v) async {
+                setModal(() => _subDelaySecs = v);
+                setState(() => _subDelaySecs = v);
+                await _applyMpvProperty('sub-delay', v.toStringAsFixed(2));
               },
             ),
             SwitchListTile(
@@ -3304,58 +3620,66 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ],
               ),
             ),
-            _StepperRow(
+            VedroPrecisionSlider(
               label: '亮度',
+              value: _eqBrightness.toDouble(),
+              min: -50,
+              max: 50,
+              step: 1,
+              defaultValue: 0,
+              centeredOrigin: true,
+              snapValues: const [0],
               valueText: '${_eqBrightness >= 0 ? '+' : ''}$_eqBrightness',
-              onMinus: () async {
-                final v = (_eqBrightness - 5).clamp(-50, 50);
-                setModal(() => _eqBrightness = v);
-                await _applyMpvProperty('brightness', '$v');
-              },
-              onPlus: () async {
-                final v = (_eqBrightness + 5).clamp(-50, 50);
+              onChanged: (val) async {
+                final v = val.round();
                 setModal(() => _eqBrightness = v);
                 await _applyMpvProperty('brightness', '$v');
               },
             ),
-            _StepperRow(
+            VedroPrecisionSlider(
               label: '对比度',
+              value: _eqContrast.toDouble(),
+              min: -50,
+              max: 50,
+              step: 1,
+              defaultValue: 0,
+              centeredOrigin: true,
+              snapValues: const [0],
               valueText: '${_eqContrast >= 0 ? '+' : ''}$_eqContrast',
-              onMinus: () async {
-                final v = (_eqContrast - 5).clamp(-50, 50);
-                setModal(() => _eqContrast = v);
-                await _applyMpvProperty('contrast', '$v');
-              },
-              onPlus: () async {
-                final v = (_eqContrast + 5).clamp(-50, 50);
+              onChanged: (val) async {
+                final v = val.round();
                 setModal(() => _eqContrast = v);
                 await _applyMpvProperty('contrast', '$v');
               },
             ),
-            _StepperRow(
+            VedroPrecisionSlider(
               label: '饱和度',
+              value: _eqSaturation.toDouble(),
+              min: -50,
+              max: 50,
+              step: 1,
+              defaultValue: 0,
+              centeredOrigin: true,
+              snapValues: const [0],
               valueText: '${_eqSaturation >= 0 ? '+' : ''}$_eqSaturation',
-              onMinus: () async {
-                final v = (_eqSaturation - 5).clamp(-50, 50);
-                setModal(() => _eqSaturation = v);
-                await _applyMpvProperty('saturation', '$v');
-              },
-              onPlus: () async {
-                final v = (_eqSaturation + 5).clamp(-50, 50);
+              onChanged: (val) async {
+                final v = val.round();
                 setModal(() => _eqSaturation = v);
                 await _applyMpvProperty('saturation', '$v');
               },
             ),
-            _StepperRow(
+            VedroPrecisionSlider(
               label: '伽马值',
+              value: _eqGamma.toDouble(),
+              min: -50,
+              max: 50,
+              step: 1,
+              defaultValue: 0,
+              centeredOrigin: true,
+              snapValues: const [0],
               valueText: '${_eqGamma >= 0 ? '+' : ''}$_eqGamma',
-              onMinus: () async {
-                final v = (_eqGamma - 5).clamp(-50, 50);
-                setModal(() => _eqGamma = v);
-                await _applyMpvProperty('gamma', '$v');
-              },
-              onPlus: () async {
-                final v = (_eqGamma + 5).clamp(-50, 50);
+              onChanged: (val) async {
+                final v = val.round();
                 setModal(() => _eqGamma = v);
                 await _applyMpvProperty('gamma', '$v');
               },
@@ -3572,6 +3896,7 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
     final trackH = active ? 6.5 : 4.0;
     final accent = Theme.of(context).colorScheme.secondary;
 
+    final compactTime = MediaQuery.sizeOf(context).width < 480;
     final rightTimeText = widget.showRemaining && widget.durationSecs > 0
         ? '-${widget.fmtTime((widget.durationSecs - widget.positionSecs).clamp(0, widget.durationSecs))}'
         : widget.fmtTime(widget.durationSecs);
@@ -3579,14 +3904,15 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
     return Row(
       children: [
         SizedBox(
-          width: 60,
+          width: compactTime ? 48 : 60,
           child: Text(
             widget.fmtTime(widget.positionSecs),
-            style: const TextStyle(
-              color: Color(0xE0FFFFFF),
-              fontSize: 12,
+            maxLines: 1,
+            style: TextStyle(
+              color: const Color(0xE0FFFFFF),
+              fontSize: compactTime ? 11.5 : 12,
               fontWeight: FontWeight.w500,
-              fontFeatures: [FontFeature.tabularFigures()],
+              fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
         ),
@@ -3744,14 +4070,15 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
           child: MouseRegion(
             cursor: SystemMouseCursors.click,
             child: SizedBox(
-              width: 64,
+              width: compactTime ? 54 : 64,
               child: Text(
                 rightTimeText,
+                maxLines: 1,
                 textAlign: TextAlign.right,
-                style: const TextStyle(
-                  color: Color(0xA6FFFFFF),
-                  fontSize: 12,
-                  fontFeatures: [FontFeature.tabularFigures()],
+                style: TextStyle(
+                  color: const Color(0xA6FFFFFF),
+                  fontSize: compactTime ? 11.5 : 12,
+                  fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
             ),
@@ -3919,6 +4246,7 @@ class _DeckIconButtonState extends State<_DeckIconButton> {
 
 class _DeckPillButton extends StatefulWidget {
   const _DeckPillButton({
+    super.key,
     required this.label,
     required this.onTap,
     this.active = false,
@@ -3944,68 +4272,32 @@ class _DeckPillButtonState extends State<_DeckPillButton> {
       hoverScale: 1.04,
       pressScale: 0.94,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 140),
-        height: 30,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
+        duration: const Duration(milliseconds: 150),
+        curve: VedroTheme.easeOut,
+        height: 31,
+        padding: const EdgeInsets.symmetric(horizontal: 10.5),
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: widget.active
               ? accent.withValues(alpha: 0.24)
-              : (_hovered ? const Color(0x28FFFFFF) : const Color(0x16FFFFFF)),
-          borderRadius: BorderRadius.circular(8),
+              : (_hovered ? const Color(0x2AFFFFFF) : const Color(0x18FFFFFF)),
+          borderRadius: BorderRadius.circular(9),
           border: Border.all(
-            color: widget.active ? accent.withValues(alpha: 0.65) : const Color(0x1CFFFFFF),
-            width: 0.7,
+            color: widget.active ? accent.withValues(alpha: 0.68) : const Color(0x20FFFFFF),
+            width: 0.75,
           ),
         ),
         child: Text(
           widget.label,
+          maxLines: 1,
+          softWrap: false,
           style: TextStyle(
-            color: widget.active ? accent : const Color(0xEBFFFFFF),
+            color: widget.active ? accent : const Color(0xF0FFFFFF),
             fontSize: 12,
-            fontWeight: FontWeight.w500,
+            fontWeight: widget.active ? FontWeight.w600 : FontWeight.w500,
             fontFeatures: const [FontFeature.tabularFigures()],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _StepperRow extends StatelessWidget {
-  const _StepperRow({
-    required this.label,
-    required this.valueText,
-    required this.onMinus,
-    required this.onPlus,
-  });
-
-  final String label;
-  final String valueText;
-  final VoidCallback onMinus;
-  final VoidCallback onPlus;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      child: Row(
-        children: [
-          Text(label, style: const TextStyle(color: VedroTheme.fg2, fontSize: 13.5)),
-          const SizedBox(width: 10),
-          Text(
-            valueText,
-            style: const TextStyle(
-              color: VedroTheme.fg,
-              fontSize: 13,
-              fontFeatures: [FontFeature.tabularFigures()],
-            ),
-          ),
-          const Spacer(),
-          _DeckIconButton(icon: Icons.remove_rounded, onTap: onMinus),
-          const SizedBox(width: 4),
-          _DeckIconButton(icon: Icons.add_rounded, onTap: onPlus),
-        ],
       ),
     );
   }

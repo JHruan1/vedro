@@ -248,12 +248,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case _SettingsSection.servers:
         return app.isSignedIn ? app.activeServerDisplayName : '${app.savedServers.length} 个';
       case _SettingsSection.downloads:
-        if (app.downloads.isNotEmpty) return '${app.downloads.length} 项';
-        final dq = app.meQuota?.downloadQuota;
-        if (dq != null && dq.enabled) {
-          return dq.adminExempt ? '不限额度' : '剩 ${fmtQuotaBytes(dq.totalRemainingBytes)}';
-        }
-        return '无任务';
+        return app.downloads.isEmpty ? '无任务' : '${app.downloads.length} 项';
       case _SettingsSection.fonts:
         return p.subtitleFontFamily.isEmpty ? '系统默认' : p.subtitleFontFamily;
       case _SettingsSection.style:
@@ -1821,17 +1816,48 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               items: const [(5, '5s'), (10, '10s'), (15, '15s'), (30, '30s')],
               onChanged: (v) => _updatePrefs(p.copyWith(seekStepSecs: v)),
             ),
-            _AppleMenuPickerRow<double>(
-              title: '默认播放倍速',
-              value: p.defaultSpeed,
-              items: {0.75: '0.75×', 1.0: '1.0×', 1.25: '1.25×', 1.5: '1.5×', 2.0: '2.0×'},
-              onChanged: (v) => _updatePrefs(p.copyWith(defaultSpeed: v)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+              child: VedroPrecisionSlider(
+                label: '默认播放倍速',
+                valueText:
+                    '${((p.defaultSpeed * 10 - (p.defaultSpeed * 10).round()).abs() < 0.001 ? p.defaultSpeed.toStringAsFixed(1) : p.defaultSpeed.toStringAsFixed(2))}×',
+                value: p.defaultSpeed,
+                min: 0.5,
+                max: 3.0,
+                step: 0.05,
+                defaultValue: 1.0,
+                ticks: const [
+                  (0.5, '0.5×'),
+                  (1.0, '1.0×'),
+                  (1.25, '1.25×'),
+                  (1.5, '1.5×'),
+                  (2.0, '2.0×'),
+                  (3.0, '3.0×'),
+                ],
+                onChanged: (v) => _updatePrefs(p.copyWith(defaultSpeed: v)),
+              ),
             ),
-            _InlineSegmentedRow<double>(
-              title: '长按屏幕倍速',
-              value: p.longPressSpeed,
-              items: const [(1.5, '1.5×'), (2.0, '2.0×'), (2.5, '2.5×'), (3.0, '3.0×')],
-              onChanged: (v) => _updatePrefs(p.copyWith(longPressSpeed: v)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+              child: VedroPrecisionSlider(
+                label: '长按屏幕倍速',
+                valueText:
+                    '${((p.longPressSpeed * 10 - (p.longPressSpeed * 10).round()).abs() < 0.001 ? p.longPressSpeed.toStringAsFixed(1) : p.longPressSpeed.toStringAsFixed(2))}×',
+                value: p.longPressSpeed,
+                min: 1.25,
+                max: 4.0,
+                step: 0.25,
+                defaultValue: 2.0,
+                ticks: const [
+                  (1.5, '1.5×'),
+                  (2.0, '2.0×'),
+                  (2.5, '2.5×'),
+                  (3.0, '3.0×'),
+                  (4.0, '4.0×'),
+                ],
+                onChanged: (v) => _updatePrefs(p.copyWith(longPressSpeed: v)),
+              ),
             ),
             _SwitchRow(
               title: '双指捏合缩放画面',
@@ -2261,7 +2287,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('自定义弹幕源接口（支持弹弹play 兼容 API 或 B站 XML 链接）',
+                  const Text('自定义弹幕源接口（留空默认启用内置多源匹配：弹弹play 镜像 + 哔哩哔哩番剧/影视）',
                       style: TextStyle(color: VedroTheme.fg2, fontSize: 12.5)),
                   const SizedBox(height: 8),
                   Row(
@@ -2269,7 +2295,9 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                       Expanded(
                         child: TextField(
                           controller: _danmakuApiCtrl,
-                          decoration: const InputDecoration(hintText: 'https://api.dandanplay.net'),
+                          decoration: const InputDecoration(
+                            hintText: '留空自动多源匹配，或填写弹弹play 兼容 API / XML 链接',
+                          ),
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -2937,50 +2965,17 @@ class _SliderRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final accent = Theme.of(context).colorScheme.secondary;
+    final step = divisions > 0 ? (max - min) / divisions : null;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(child: Text(title, style: const TextStyle(color: VedroTheme.fg, fontSize: 14))),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1D1F28),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  valueText,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  ),
-                ),
-              ),
-            ],
-          ),
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 3.0,
-              activeTrackColor: accent,
-              inactiveTrackColor: const Color(0x28FFFFFF),
-              thumbColor: Colors.white,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6.5),
-            ),
-            child: Slider(
-              value: value.clamp(min, max),
-              min: min,
-              max: max,
-              divisions: divisions,
-              onChanged: onChanged,
-            ),
-          ),
-        ],
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+      child: VedroPrecisionSlider(
+        label: title,
+        valueText: valueText,
+        value: value.clamp(min, max),
+        min: min,
+        max: max,
+        step: step,
+        onChanged: onChanged,
       ),
     );
   }

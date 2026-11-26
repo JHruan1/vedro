@@ -33,8 +33,8 @@ class VedroTheme {
   static const Duration fast = Duration(milliseconds: 160);
   static const Duration normal = Duration(milliseconds: 260);
   static const Duration slow = Duration(milliseconds: 420);
-  static const Curve easeOut = Cubic(0.2, 0.7, 0.2, 1.0);
-  static const Curve springCurve = Curves.easeOutExpo;
+  static const Curve easeOut = Cubic(0.16, 1.0, 0.3, 1.0);
+  static const Curve springCurve = Cubic(0.16, 1.0, 0.3, 1.0);
 
   static ThemeData dark({
     Color accentColor = accent,
@@ -164,26 +164,32 @@ class _VedroSmoothTransitionsBuilder extends PageTransitionsBuilder {
   }
 }
 
-/// Fluid cinema page route with Hero compatibility and smooth spring ease.
+/// Fluid cinema page route with Hero compatibility and Apple quintic ease-out.
 Route<T> vedroRoute<T>(Widget page) {
   return PageRouteBuilder<T>(
-    transitionDuration: const Duration(milliseconds: 300),
-    reverseTransitionDuration: const Duration(milliseconds: 240),
+    transitionDuration: const Duration(milliseconds: 340),
+    reverseTransitionDuration: const Duration(milliseconds: 250),
     pageBuilder: (_, __, ___) => page,
-    transitionsBuilder: (_, animation, __, child) {
+    transitionsBuilder: (_, animation, secondaryAnimation, child) {
       final curved = CurvedAnimation(
         parent: animation,
-        curve: Curves.easeOutCubic,
+        curve: VedroTheme.easeOut,
         reverseCurve: Curves.easeInCubic,
       );
-      return FadeTransition(
-        opacity: curved,
-        child: SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0, 0.02),
-            end: Offset.zero,
-          ).animate(curved),
-          child: child,
+      final bgScale = Tween<double>(begin: 1.0, end: 0.985).animate(
+        CurvedAnimation(parent: secondaryAnimation, curve: VedroTheme.easeOut),
+      );
+      return ScaleTransition(
+        scale: bgScale,
+        child: FadeTransition(
+          opacity: curved,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.022),
+              end: Offset.zero,
+            ).animate(curved),
+            child: child,
+          ),
         ),
       );
     },

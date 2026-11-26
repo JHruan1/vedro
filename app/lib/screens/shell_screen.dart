@@ -37,6 +37,8 @@ class ShellScreen extends StatefulWidget {
 class _ShellScreenState extends State<ShellScreen> {
   int _index = 0;
   bool _homeScrolled = false;
+  bool _topHovering = false;
+  final GlobalKey _pageStageKey = GlobalKey(debugLabel: 'vedro-shell-page-stage');
 
   @override
   void initState() {
@@ -243,12 +245,15 @@ class _ShellScreenState extends State<ShellScreen> {
     final signedIn = widget.appState.isSignedIn;
     final isLeftRail = wide && skin.navLayout == 'left_rail';
     final isCenteredCapsule = wide && skin.navLayout == 'centered_capsule';
+    final isMinimalAutoHide = wide && skin.navLayout == 'minimal_auto_hide';
     final topBarClear = _index == 0 &&
         signedIn &&
         !_homeScrolled &&
         !skin.isLight &&
         skin.heroStyle == 'full_bleed';
-    final childTopInset = wide ? (isLeftRail ? 16.0 : 68.0) : 0.0;
+    final childTopInset = wide
+        ? (isLeftRail ? 16.0 : (isMinimalAutoHide ? 52.0 : 68.0))
+        : 0.0;
 
     final pages = [
       HomeScreen(
@@ -317,6 +322,11 @@ class _ShellScreenState extends State<ShellScreen> {
       child: pages[_index],
     );
 
+    final keyedStage = KeyedSubtree(
+      key: _pageStageKey,
+      child: pageSwitcher,
+    );
+
     final fanartUrl = skin.usesBlurredFanart ? _resolveHomeFanartUrl() : null;
 
     if (wide) {
@@ -331,33 +341,35 @@ class _ShellScreenState extends State<ShellScreen> {
             backgroundColor: skin.canvas,
             body: VedroSkinCanvas(
               backdropImageUrl: fanartUrl,
-              child: isLeftRail
-                  ? Row(
+              // Unified stable Row -> Expanded -> Stack tree so switching `navLayout`
+              // (`left_rail` <-> `top_floating` <-> `centered_capsule` <-> `minimal_auto_hide`)
+              // NEVER unmounts or resets `SettingsScreen` or scroll positions!
+              child: Row(
+                key: const ValueKey('shell-unified-desktop-row'),
+                children: [
+                  if (isLeftRail)
+                    _VerticalSidebarRail(
                       key: const ValueKey('shell-left-rail-layout'),
+                      appState: widget.appState,
+                      compact: size.width < 1120,
+                      activeIndex: _index,
+                      navItems: _desktopNav,
+                      onSelectIndex: (i) => setState(() => _index = i),
+                      onOpenServerHub: _openServerHub,
+                      onOpenSearch: _openSpotlight,
+                      onOpenLocalMedia: _openLocalMediaPicker,
+                      onOpenFavorites: _openFavorites,
+                      onOpenLayout: () => showHomeLayoutSheet(
+                        context: context,
+                        appState: widget.appState,
+                      ),
+                      onRefresh: widget.appState.refreshHome,
+                    ),
+                  Expanded(
+                    child: Stack(
                       children: [
-                        _VerticalSidebarRail(
-                          appState: widget.appState,
-                          compact: size.width < 1120,
-                          activeIndex: _index,
-                          navItems: _desktopNav,
-                          onSelectIndex: (i) => setState(() => _index = i),
-                          onOpenServerHub: _openServerHub,
-                          onOpenSearch: _openSpotlight,
-                          onOpenLocalMedia: _openLocalMediaPicker,
-                          onOpenFavorites: _openFavorites,
-                          onOpenLayout: () => showHomeLayoutSheet(
-                            context: context,
-                            appState: widget.appState,
-                          ),
-                          onRefresh: widget.appState.refreshHome,
-                        ),
-                        Expanded(child: pageSwitcher),
-                      ],
-                    )
-                  : Stack(
-                      children: [
-                        Positioned.fill(child: pageSwitcher),
-                        if (isCenteredCapsule)
+                        Positioned.fill(child: keyedStage),
+                        if (!isLeftRail && isCenteredCapsule)
                           Positioned(
                             top: 12,
                             left: 20,
@@ -375,7 +387,37 @@ class _ShellScreenState extends State<ShellScreen> {
                               onRefresh: widget.appState.refreshHome,
                             ),
                           )
-                        else
+                        else if (!isLeftRail && isMinimalAutoHide)
+                          Positioned(
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            child: MouseRegion(
+                              onEnter: (_) => setState(() => _topHovering = true),
+                              onExit: (_) => setState(() => _topHovering = false),
+                              child: AnimatedOpacity(
+                                duration: const Duration(milliseconds: 200),
+                                opacity: (_topHovering || !_homeScrolled || _index != 0) ? 1.0 : 0.12,
+                                child: _FloatingDesktopHeader(
+                                  appState: widget.appState,
+                                  clear: topBarClear && !_topHovering,
+                                  activeIndex: _index,
+                                  navItems: _desktopNav,
+                                  onSelectIndex: (i) => setState(() => _index = i),
+                                  onOpenServerHub: _openServerHub,
+                                  onOpenSearch: _openSpotlight,
+                                  onOpenLocalMedia: _openLocalMediaPicker,
+                                  onOpenFavorites: _openFavorites,
+                                  onOpenLayout: () => showHomeLayoutSheet(
+                                    context: context,
+                                    appState: widget.appState,
+                                  ),
+                                  onRefresh: widget.appState.refreshHome,
+                                ),
+                              ),
+                            ),
+                          )
+                        else if (!isLeftRail)
                           Positioned(
                             top: 0,
                             left: 0,
@@ -399,6 +441,9 @@ class _ShellScreenState extends State<ShellScreen> {
                           ),
                       ],
                     ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -411,7 +456,7 @@ class _ShellScreenState extends State<ShellScreen> {
       extendBody: true,
       body: VedroSkinCanvas(
         backdropImageUrl: fanartUrl,
-        child: pageSwitcher,
+        child: keyedStage,
       ),
       bottomNavigationBar: SafeArea(
         top: false,
@@ -452,6 +497,7 @@ class _ShellScreenState extends State<ShellScreen> {
 /// Scyfin / Plex / Infuse Pro Left Vertical Navigation Rail (`navLayout == 'left_rail'`).
 class _VerticalSidebarRail extends StatelessWidget {
   const _VerticalSidebarRail({
+    super.key,
     required this.appState,
     required this.compact,
     required this.activeIndex,

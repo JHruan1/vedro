@@ -46,14 +46,14 @@ class _MediaCardState extends State<MediaCard> {
     final item = widget.item;
     final prefs = widget.appState.prefs;
     final radius = prefs.effectiveCardRadius(skin);
-    final aspect = widget.landscape ? 16 / 9 : 2 / 3;
+    final aspect = widget.landscape ? (16 / 9) : skin.mediaAspectRatio;
     final showPlayFab = widget.onQuickPlay != null && !item.isFolderish && item.type != 'Person';
 
     Widget artBox = VedroArtwork(
       item: item,
       appState: widget.appState,
-      landscape: widget.landscape,
-      width: widget.landscape ? 640 : 420,
+      landscape: widget.landscape || skin.posterAspect == 'landscape_16_9',
+      width: (widget.landscape || skin.posterAspect == 'landscape_16_9') ? 640 : 420,
     );
 
     if (widget.heroPrefix != null) {
@@ -70,7 +70,9 @@ class _MediaCardState extends State<MediaCard> {
 
     final isOverlayCard = skin.cardStyle == 'overlay_poster';
     final isHoverReveal = skin.cardStyle == 'hover_reveal';
-    final showBelowCaption = !isOverlayCard && !isHoverReveal;
+    final isMinimalClean = skin.cardStyle == 'minimal_clean';
+    final showBelowCaption = !isOverlayCard && !isHoverReveal && !isMinimalClean;
+    final hideBadges = skin.badgeStyle == 'hidden';
 
     return SizedBox(
       width: widget.width,
@@ -166,39 +168,108 @@ class _MediaCardState extends State<MediaCard> {
                           ),
                         ),
                       ),
-                    if (prefs.showWatchedBadge && item.played)
-                      const Positioned(
-                        top: 7,
-                        right: 7,
-                        child: _CornerBadge(
-                          child: Icon(Icons.check_rounded, size: 12, color: Colors.white),
-                        ),
+                    if (!hideBadges && prefs.showWatchedBadge && item.played)
+                      Positioned(
+                        top: skin.badgeStyle == 'accent_ribbon' ? 0 : 7,
+                        right: skin.badgeStyle == 'accent_ribbon' ? 0 : 7,
+                        child: skin.badgeStyle == 'minimal_dot'
+                            ? Container(
+                                width: 9,
+                                height: 9,
+                                decoration: BoxDecoration(
+                                  color: skin.accent,
+                                  shape: BoxShape.circle,
+                                  boxShadow: const [
+                                    BoxShadow(color: Color(0x88000000), blurRadius: 4),
+                                  ],
+                                ),
+                              )
+                            : _CornerBadge(
+                                accentRibbon: skin.badgeStyle == 'accent_ribbon',
+                                accentColor: skin.accent,
+                                child: Icon(
+                                  Icons.check_rounded,
+                                  size: 12,
+                                  color: skin.badgeStyle == 'accent_ribbon'
+                                      ? highContrastOn(skin.accent)
+                                      : Colors.white,
+                                ),
+                              ),
                       )
-                    else if (prefs.showUnplayedCount &&
+                    else if (!hideBadges &&
+                        prefs.showUnplayedCount &&
                         item.unplayedItemCount != null &&
                         item.unplayedItemCount! > 0)
                       Positioned(
-                        top: 7,
-                        right: 7,
-                        child: _CornerBadge(
-                          child: Text(
-                            '${item.unplayedItemCount}',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.w600,
-                              fontFeatures: [FontFeature.tabularFigures()],
-                            ),
-                          ),
-                        ),
+                        top: skin.badgeStyle == 'accent_ribbon' ? 0 : 7,
+                        right: skin.badgeStyle == 'accent_ribbon' ? 0 : 7,
+                        child: skin.badgeStyle == 'minimal_dot'
+                            ? Container(
+                                width: 9,
+                                height: 9,
+                                decoration: BoxDecoration(
+                                  color: skin.accent,
+                                  shape: BoxShape.circle,
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: skin.accent.withValues(alpha: 0.6),
+                                      blurRadius: 6,
+                                    ),
+                                  ],
+                                ),
+                              )
+                            : _CornerBadge(
+                                accentRibbon: skin.badgeStyle == 'accent_ribbon',
+                                accentColor: skin.accent,
+                                child: Text(
+                                  '${item.unplayedItemCount}',
+                                  style: TextStyle(
+                                    color: skin.badgeStyle == 'accent_ribbon'
+                                        ? highContrastOn(skin.accent)
+                                        : Colors.white,
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w700,
+                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                              ),
                       ),
-                    if (item.isFavorite || item.versionCount > 1)
+                    if (!hideBadges &&
+                        (item.isFavorite ||
+                            item.versionCount > 1 ||
+                            (skin.showCardRating && (item.communityRating ?? 0) > 0)))
                       Positioned(
                         top: 7,
                         left: 7,
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            if (skin.showCardRating && (item.communityRating ?? 0) > 0) ...[
+                              _CornerBadge(
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.star_rounded,
+                                      size: 11,
+                                      color: Color(0xFFFBBF24),
+                                    ),
+                                    const SizedBox(width: 2),
+                                    Text(
+                                      item.communityRating!.toStringAsFixed(1),
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        fontFeatures: [FontFeature.tabularFigures()],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (item.isFavorite || item.versionCount > 1)
+                                const SizedBox(width: 4),
+                            ],
                             if (item.isFavorite)
                               const _CornerBadge(
                                 child: Icon(Icons.favorite_rounded, size: 11, color: Colors.white),
@@ -220,32 +291,50 @@ class _MediaCardState extends State<MediaCard> {
                         ),
                       ),
                     if (item.resumeProgress > 0.01) ...[
-                      const Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        height: 30,
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: [Colors.transparent, Color(0xB3000000)],
+                      if (skin.progressStyle != 'edge_flush')
+                        const Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          height: 30,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [Colors.transparent, Color(0xB3000000)],
+                              ),
                             ),
                           ),
                         ),
-                      ),
                       Positioned(
-                        left: 8,
-                        right: 8,
-                        bottom: 8,
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(2),
-                          child: LinearProgressIndicator(
-                            value: item.resumeProgress,
-                            minHeight: 3,
-                            backgroundColor: const Color(0x45FFFFFF),
-                            color: skin.ctaStyle == 'contrast' ? Colors.white : skin.accent,
+                        left: skin.progressStyle == 'edge_flush' ? 0 : 8,
+                        right: skin.progressStyle == 'edge_flush' ? 0 : 8,
+                        bottom: skin.progressStyle == 'edge_flush' ? 0 : 8,
+                        child: Container(
+                          decoration: skin.progressStyle == 'glow_accent'
+                              ? BoxDecoration(
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: skin.accent.withValues(alpha: 0.75),
+                                      blurRadius: 8,
+                                    ),
+                                  ],
+                                )
+                              : null,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(
+                              skin.progressStyle == 'edge_flush' ? 0 : 2.5,
+                            ),
+                            child: LinearProgressIndicator(
+                              value: item.resumeProgress,
+                              minHeight: skin.progressStyle == 'edge_flush' ? 3.5 : 3,
+                              backgroundColor: const Color(0x45FFFFFF),
+                              color: (skin.ctaStyle == 'contrast' &&
+                                      skin.progressStyle != 'glow_accent')
+                                  ? Colors.white
+                                  : skin.accent,
+                            ),
                           ),
                         ),
                       ),
@@ -648,11 +737,40 @@ class _LibraryCardState extends State<LibraryCard> {
 }
 
 class _CornerBadge extends StatelessWidget {
-  const _CornerBadge({required this.child});
+  const _CornerBadge({
+    required this.child,
+    this.accentRibbon = false,
+    this.accentColor,
+  });
+
   final Widget child;
+  final bool accentRibbon;
+  final Color? accentColor;
 
   @override
   Widget build(BuildContext context) {
+    if (accentRibbon && accentColor != null) {
+      return Container(
+        height: 22,
+        constraints: const BoxConstraints(minWidth: 24),
+        padding: const EdgeInsets.symmetric(horizontal: 7),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: accentColor,
+          borderRadius: const BorderRadius.only(
+            bottomLeft: Radius.circular(9),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: accentColor!.withValues(alpha: 0.45),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: child,
+      );
+    }
     return Container(
       height: 20,
       constraints: const BoxConstraints(minWidth: 20),

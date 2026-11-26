@@ -78,6 +78,9 @@ class VedroAppState extends ChangeNotifier {
   List<HomeSectionConfig> homeSections = List<HomeSectionConfig>.from(HomeSectionConfig.defaults);
   bool showHomeHero = true;
 
+  // Preserves active Settings section across skin layout switches & window resizes
+  String activeSettingsSection = 'servers';
+
   // Network transport options (auto-detected OS/Android proxy or user override)
   String systemProxyUrl = '';
   String customProxyUrl = '';

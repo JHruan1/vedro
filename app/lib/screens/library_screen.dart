@@ -421,37 +421,52 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                 );
                               },
                             )
-                          : GridView.builder(
-                              controller: _scrollCtrl,
-                              padding: EdgeInsets.fromLTRB(padX, 6, padX, wide ? 44 : 108),
-                              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: cols,
-                                mainAxisSpacing: 20,
-                                crossAxisSpacing: 16,
-                                childAspectRatio: 0.56,
-                              ),
-                              itemCount: _items.length + (_loading ? 1 : 0),
-                              itemBuilder: (context, idx) {
-                                if (idx >= _items.length) {
-                                  return const Center(
-                                    child: SizedBox(
-                                      width: 20,
-                                      height: 20,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: VedroTheme.fg2,
-                                      ),
-                                    ),
-                                  );
-                                }
-                                final item = _items[idx];
-                                return MediaCard(
-                                  item: item,
-                                  appState: widget.appState,
-                                  onTap: () => widget.onItemTap(item),
-                                  onQuickPlay: widget.onQuickPlay == null
-                                      ? null
-                                      : () => widget.onQuickPlay!(item),
+                          : Builder(
+                              builder: (context) {
+                                final isWideThumb = skin.posterAspect == 'landscape_16_9';
+                                final textBelow = skin.cardStyle == 'classic_below';
+                                final gridCols = isWideThumb
+                                    ? (cols ~/ 1.65).clamp(1, 6)
+                                    : cols;
+                                final double gridAspect = isWideThumb
+                                    ? (textBelow ? 1.24 : 1.68)
+                                    : (skin.posterAspect == 'cinema_4_5'
+                                        ? (textBelow ? 0.65 : 0.78)
+                                        : (textBelow ? 0.56 : 0.66));
+                                return GridView.builder(
+                                  controller: _scrollCtrl,
+                                  padding: EdgeInsets.fromLTRB(padX, 6, padX, wide ? 44 : 108),
+                                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: gridCols,
+                                    mainAxisSpacing: 20,
+                                    crossAxisSpacing: 16,
+                                    childAspectRatio: gridAspect,
+                                  ),
+                                  itemCount: _items.length + (_loading ? 1 : 0),
+                                  itemBuilder: (context, idx) {
+                                    if (idx >= _items.length) {
+                                      return const Center(
+                                        child: SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: VedroTheme.fg2,
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                    final item = _items[idx];
+                                    return MediaCard(
+                                      item: item,
+                                      appState: widget.appState,
+                                      landscape: isWideThumb,
+                                      onTap: () => widget.onItemTap(item),
+                                      onQuickPlay: widget.onQuickPlay == null
+                                          ? null
+                                          : () => widget.onQuickPlay!(item),
+                                    );
+                                  },
                                 );
                               },
                             ),
@@ -527,7 +542,7 @@ class _LibraryListTile extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
-          color: skin.surface,
+          color: skin.unifiedTileColor(),
           borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 14.0)),
           border: skin.cardBorder(),
         ),

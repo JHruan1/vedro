@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 
-/// Geometric aperture mark for Vedro that adapts its sheen & accent to the active skin.
+/// Signature Anamorphic Cinema 'V' + Play Prism brand mark for Vedro, matching the 5-platform app icon.
 class VedroBrandMark extends StatelessWidget {
   const VedroBrandMark({super.key, this.size = 44});
   final double size;
@@ -14,41 +14,37 @@ class VedroBrandMark extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    final useTinted = skin.ctaStyle != 'contrast';
     return Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
-        gradient: LinearGradient(
+        gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: useTinted
-              ? [
-                  Color.lerp(skin.surface2, skin.accent, 0.38)!,
-                  Color.lerp(skin.surface, skin.accentSecondary, 0.22)!,
-                ]
-              : (skin.isLight
-                  ? [const Color(0xFF1E2028), const Color(0xFF101116)]
-                  : [const Color(0xFF23252C), const Color(0xFF141519)]),
+          colors: [
+            Color(0xFF151C32),
+            Color(0xFF0C101E),
+            Color(0xFF070911),
+          ],
         ),
         borderRadius: BorderRadius.circular(
-          skin.cardRadius <= 8 ? (size * 0.18) : (size * 0.27),
+          skin.cardRadius <= 6 ? (size * 0.20) : (size * 0.26),
         ),
         border: Border.all(
-          color: useTinted ? skin.accent.withValues(alpha: 0.45) : skin.borderStrong,
+          color: Colors.white.withValues(alpha: 0.16),
           width: 0.85,
         ),
         boxShadow: [
           BoxShadow(
-            color: (useTinted ? skin.accent : Colors.black).withValues(alpha: skin.isLight ? 0.18 : 0.42),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
+            color: skin.accent.withValues(alpha: skin.isLight ? 0.18 : 0.28),
+            blurRadius: size * 0.38,
+            offset: Offset(0, size * 0.14),
           ),
         ],
       ),
       child: CustomPaint(
         painter: _VedroMarkPainter(
-          fgColor: useTinted ? skin.accent : Colors.white,
+          accent: skin.accent,
         ),
       ),
     );
@@ -100,31 +96,80 @@ class _BreathingBrandMarkState extends State<BreathingBrandMark>
 }
 
 class _VedroMarkPainter extends CustomPainter {
-  const _VedroMarkPainter({required this.fgColor});
-  final Color fgColor;
+  const _VedroMarkPainter({required this.accent});
+  final Color accent;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final cx = size.width * 0.52;
-    final cy = size.height * 0.5;
-    final r = size.width * 0.21;
+    final cx = size.width * 0.50;
+    final cy = size.height * 0.50;
+    final u = size.width * 0.33;
 
-    final playPath = Path()
-      ..moveTo(cx - r * 0.72, cy - r * 0.92)
-      ..lineTo(cx + r * 0.92, cy)
-      ..lineTo(cx - r * 0.72, cy + r * 0.92)
-      ..close();
-
-    final paint = Paint()
-      ..color = fgColor
-      ..style = PaintingStyle.fill
+    // Subtle optical cinema lens ring
+    final ringPaint = Paint()
+      ..color = const Color(0x2893C5FD)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = (size.width * 0.022).clamp(0.6, 1.4)
       ..isAntiAlias = true;
-    canvas.drawPath(playPath, paint);
+    canvas.drawCircle(Offset(cx, cy), u * 0.88, ringPaint);
+
+    // Upper indigo crown facet
+    final crown = Path()
+      ..moveTo(cx - u * 0.01, cy - u * 0.02)
+      ..lineTo(cx + u * 0.24, cy - u * 0.50)
+      ..lineTo(cx + u * 0.50, cy - u * 0.50)
+      ..lineTo(cx + u * 0.64, cy - u * 0.02)
+      ..close();
+    final crownPaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomRight,
+        colors: [Color(0xFF818CF8), Color(0xFF4F46E5)],
+      ).createShader(Rect.fromCenter(center: Offset(cx, cy), width: u * 1.4, height: u * 1.2))
+      ..isAntiAlias = true;
+    canvas.drawPath(crown, crownPaint);
+
+    // Right warm champagne-gold Cinema Play Prism (▶)
+    final rightPrism = Path()
+      ..moveTo(cx - u * 0.24, cy + u * 0.54)
+      ..lineTo(cx - u * 0.01, cy - u * 0.02)
+      ..lineTo(cx + u * 0.24, cy - u * 0.50)
+      ..lineTo(cx + u * 0.64, cy - u * 0.02)
+      ..close();
+    final rightPaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topRight,
+        end: Alignment.bottomLeft,
+        colors: [Color(0xFFFFFBEB), Color(0xFFFCD34D), Color(0xFFF59E0B), Color(0xFFEA580C)],
+      ).createShader(Rect.fromCenter(center: Offset(cx, cy), width: u * 1.4, height: u * 1.2))
+      ..isAntiAlias = true;
+    canvas.drawPath(rightPrism, rightPaint);
+
+    // Left sapphire-cyan optical 'V' blade
+    final leftWing = Path()
+      ..moveTo(cx - u * 0.62, cy - u * 0.50)
+      ..lineTo(cx - u * 0.28, cy - u * 0.50)
+      ..lineTo(cx + u * 0.06, cy + u * 0.54)
+      ..lineTo(cx - u * 0.24, cy + u * 0.54)
+      ..close();
+    final leftPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          const Color(0xFFF0F9FF),
+          const Color(0xFF7DD3FC),
+          Color.lerp(const Color(0xFF38BDF8), accent, 0.35)!,
+          const Color(0xFF2563EB),
+        ],
+      ).createShader(Rect.fromCenter(center: Offset(cx, cy), width: u * 1.4, height: u * 1.2))
+      ..isAntiAlias = true;
+    canvas.drawPath(leftWing, leftPaint);
   }
 
   @override
   bool shouldRepaint(covariant _VedroMarkPainter oldDelegate) =>
-      oldDelegate.fgColor != fgColor;
+      oldDelegate.accent != accent;
 }
 
 /// Frosted glass surface reserved for floating chrome (nav bars, sheets, HUD).

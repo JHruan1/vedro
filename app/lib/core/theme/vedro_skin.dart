@@ -39,9 +39,15 @@ class CustomSkinSpec {
     this.backdropMode = 'ambient_orb', // solid_clean | ambient_orb | blurred_fanart
     this.backdropBlur = 38.0,
     this.surfaceOpacity = 0.86,
-    this.cardStyle = 'classic_below', // classic_below | overlay_poster | hover_reveal
+    this.surfaceMaterial = 'auto', // auto | unified_glass | tinted_acrylic | matte_solid | oled_borderless
+    this.posterAspect = 'poster_2_3', // poster_2_3 | landscape_16_9 | cinema_4_5
+    this.cardStyle = 'classic_below', // classic_below | overlay_poster | hover_reveal | minimal_clean
     this.cardHoverEffect = 'lift', // lift | glow_ring | zoom_art
+    this.badgeStyle = 'glass_pill', // glass_pill | accent_ribbon | minimal_dot | hidden
+    this.progressStyle = 'floating_bar', // floating_bar | edge_flush | glow_accent
     this.castStyle = 'circle_medallion', // circle_medallion | portrait_card | compact_pill
+    this.osdStyle = 'floating_island', // floating_island | cinema_gradient | minimal_glass
+    this.showCardRating = false,
     this.preferClearLogo = true,
   });
 
@@ -64,9 +70,15 @@ class CustomSkinSpec {
   final String backdropMode;
   final double backdropBlur;
   final double surfaceOpacity;
+  final String surfaceMaterial;
+  final String posterAspect;
   final String cardStyle;
   final String cardHoverEffect;
+  final String badgeStyle;
+  final String progressStyle;
   final String castStyle;
+  final String osdStyle;
+  final bool showCardRating;
   final bool preferClearLogo;
 
   CustomSkinSpec copyWith({
@@ -89,9 +101,15 @@ class CustomSkinSpec {
     String? backdropMode,
     double? backdropBlur,
     double? surfaceOpacity,
+    String? surfaceMaterial,
+    String? posterAspect,
     String? cardStyle,
     String? cardHoverEffect,
+    String? badgeStyle,
+    String? progressStyle,
     String? castStyle,
+    String? osdStyle,
+    bool? showCardRating,
     bool? preferClearLogo,
   }) =>
       CustomSkinSpec(
@@ -114,9 +132,15 @@ class CustomSkinSpec {
         backdropMode: backdropMode ?? this.backdropMode,
         backdropBlur: backdropBlur ?? this.backdropBlur,
         surfaceOpacity: surfaceOpacity ?? this.surfaceOpacity,
+        surfaceMaterial: surfaceMaterial ?? this.surfaceMaterial,
+        posterAspect: posterAspect ?? this.posterAspect,
         cardStyle: cardStyle ?? this.cardStyle,
         cardHoverEffect: cardHoverEffect ?? this.cardHoverEffect,
+        badgeStyle: badgeStyle ?? this.badgeStyle,
+        progressStyle: progressStyle ?? this.progressStyle,
         castStyle: castStyle ?? this.castStyle,
+        osdStyle: osdStyle ?? this.osdStyle,
+        showCardRating: showCardRating ?? this.showCardRating,
         preferClearLogo: preferClearLogo ?? this.preferClearLogo,
       );
 
@@ -140,9 +164,15 @@ class CustomSkinSpec {
         'backdrop_mode': backdropMode,
         'backdrop_blur': backdropBlur,
         'surface_opacity': surfaceOpacity,
+        'surface_material': surfaceMaterial,
+        'poster_aspect': posterAspect,
         'card_style': cardStyle,
         'card_hover_effect': cardHoverEffect,
+        'badge_style': badgeStyle,
+        'progress_style': progressStyle,
         'cast_style': castStyle,
+        'osd_style': osdStyle,
+        'show_card_rating': showCardRating,
         'prefer_clear_logo': preferClearLogo,
       };
 
@@ -167,10 +197,16 @@ class CustomSkinSpec {
       detailLayout: (j['detail_layout'] ?? 'apple_immersive').toString(),
       backdropMode: (j['backdrop_mode'] ?? (glow ? 'ambient_orb' : 'solid_clean')).toString(),
       backdropBlur: ((j['backdrop_blur'] as num?)?.toDouble() ?? 38.0).clamp(10.0, 64.0),
-      surfaceOpacity: ((j['surface_opacity'] as num?)?.toDouble() ?? 0.86).clamp(0.45, 1.0),
+      surfaceOpacity: ((j['surface_opacity'] as num?)?.toDouble() ?? 0.86).clamp(0.40, 1.0),
+      surfaceMaterial: (j['surface_material'] ?? 'auto').toString(),
+      posterAspect: (j['poster_aspect'] ?? 'poster_2_3').toString(),
       cardStyle: (j['card_style'] ?? 'classic_below').toString(),
       cardHoverEffect: (j['card_hover_effect'] ?? 'lift').toString(),
+      badgeStyle: (j['badge_style'] ?? 'glass_pill').toString(),
+      progressStyle: (j['progress_style'] ?? 'floating_bar').toString(),
       castStyle: (j['cast_style'] ?? 'circle_medallion').toString(),
+      osdStyle: (j['osd_style'] ?? 'floating_island').toString(),
+      showCardRating: j['show_card_rating'] == true,
       preferClearLogo: j['prefer_clear_logo'] != false,
     );
   }
@@ -242,9 +278,15 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     this.backdropMode = 'ambient_orb', // solid_clean | ambient_orb | blurred_fanart
     this.backdropBlur = 38.0,
     this.surfaceOpacity = 0.88,
-    this.cardStyle = 'classic_below', // classic_below | overlay_poster | hover_reveal
+    this.surfaceMaterial = 'auto', // auto | unified_glass | tinted_acrylic | matte_solid | oled_borderless
+    this.posterAspect = 'poster_2_3', // poster_2_3 | landscape_16_9 | cinema_4_5
+    this.cardStyle = 'classic_below', // classic_below | overlay_poster | hover_reveal | minimal_clean
     this.cardHoverEffect = 'lift', // lift | glow_ring | zoom_art
+    this.badgeStyle = 'glass_pill', // glass_pill | accent_ribbon | minimal_dot | hidden
+    this.progressStyle = 'floating_bar', // floating_bar | edge_flush | glow_accent
     this.castStyle = 'circle_medallion', // circle_medallion | portrait_card | compact_pill
+    this.osdStyle = 'floating_island', // floating_island | cinema_gradient | minimal_glass
+    this.showCardRating = false,
     this.preferClearLogo = true,
     this.isCustom = false,
   });
@@ -282,7 +324,7 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
   final bool ambientGlow;
   final bool editorialSerif;
 
-  /// `'top_floating'` | `'left_rail'` | `'centered_capsule'`
+  /// `'top_floating'` | `'left_rail'` | `'centered_capsule'` | `'minimal_auto_hide'`
   final String navLayout;
 
   /// `'full_bleed'` | `'framed_stage'` | `'split_showcase'` | `'compact_minimal'`
@@ -297,31 +339,127 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
   final double backdropBlur;
   final double surfaceOpacity;
 
-  /// `'classic_below'` | `'overlay_poster'` | `'hover_reveal'`
+  /// `'auto'` | `'unified_glass'` | `'tinted_acrylic'` | `'matte_solid'` | `'oled_borderless'`
+  final String surfaceMaterial;
+
+  /// `'poster_2_3'` | `'landscape_16_9'` | `'cinema_4_5'`
+  final String posterAspect;
+
+  /// `'classic_below'` | `'overlay_poster'` | `'hover_reveal'` | `'minimal_clean'`
   final String cardStyle;
 
   /// `'lift'` | `'glow_ring'` | `'zoom_art'`
   final String cardHoverEffect;
 
+  /// `'glass_pill'` | `'accent_ribbon'` | `'minimal_dot'` | `'hidden'`
+  final String badgeStyle;
+
+  /// `'floating_bar'` | `'edge_flush'` | `'glow_accent'`
+  final String progressStyle;
+
   /// `'circle_medallion'` | `'portrait_card'` | `'compact_pill'`
   final String castStyle;
 
+  /// `'floating_island'` | `'cinema_gradient'` | `'minimal_glass'`
+  final String osdStyle;
+
+  final bool showCardRating;
   final bool preferClearLogo;
   final bool isCustom;
 
   Brightness get brightness => isLight ? Brightness.light : Brightness.dark;
 
   bool get usesBlurredFanart => backdropMode == 'blurred_fanart';
-  bool get usesGlassPanels => detailLayout == 'jellyfin_glass' || backdropMode == 'blurred_fanart';
 
-  /// Effective panel surface color accounting for frosted-glass skins (`jellyfin_glass` / `blurred_fanart`).
-  Color get panelSurface => usesGlassPanels
-      ? surface.withValues(alpha: surfaceOpacity.clamp(0.48, 0.96))
-      : surface;
+  /// Resolved surface physics so frosted glass NEVER clashes with opaque solid cards:
+  String get effectiveSurfaceMaterial {
+    if (surfaceMaterial != 'auto' && surfaceMaterial.isNotEmpty) {
+      return surfaceMaterial;
+    }
+    if (id == 'pure_oled') return 'oled_borderless';
+    if (usesBlurredFanart || detailLayout == 'jellyfin_glass') {
+      return 'unified_glass';
+    }
+    if (backdropMode == 'ambient_orb' && !isLight) {
+      return 'tinted_acrylic';
+    }
+    return 'matte_solid';
+  }
 
-  Color get panelSurface2 => usesGlassPanels
-      ? surface2.withValues(alpha: (surfaceOpacity + 0.05).clamp(0.55, 0.98))
-      : surface2;
+  bool get usesGlassPanels => effectiveSurfaceMaterial == 'unified_glass';
+
+  double get mediaAspectRatio {
+    switch (posterAspect) {
+      case 'landscape_16_9':
+        return 16 / 9;
+      case 'cinema_4_5':
+        return 4 / 5;
+      case 'poster_2_3':
+      default:
+        return 2 / 3;
+    }
+  }
+
+  /// Harmonized container fill across panels, sections, sidebars, and cards (zero solid-brick clash!).
+  Color get unifiedPanelColor {
+    switch (effectiveSurfaceMaterial) {
+      case 'unified_glass':
+        final base = Color.lerp(surface, accent, isLight ? 0.04 : 0.08)!;
+        final alpha = isLight
+            ? surfaceOpacity.clamp(0.58, 0.88)
+            : (surfaceOpacity * 0.72).clamp(0.38, 0.76);
+        return base.withValues(alpha: alpha);
+      case 'tinted_acrylic':
+        final base = Color.lerp(surface, canvasGlow, isLight ? 0.08 : 0.12)!;
+        return base.withValues(alpha: surfaceOpacity.clamp(0.62, 0.90));
+      case 'oled_borderless':
+        return isLight
+            ? surface.withValues(alpha: 0.72)
+            : Colors.white.withValues(alpha: 0.035);
+      case 'matte_solid':
+      default:
+        return surface;
+    }
+  }
+
+  /// Harmonized nested tile/chip/episode-row fill inside or alongside panels.
+  Color unifiedTileColor({bool selected = false, bool hovered = false}) {
+    switch (effectiveSurfaceMaterial) {
+      case 'unified_glass':
+        if (isLight) {
+          if (selected) return accent.withValues(alpha: 0.16);
+          if (hovered) return Colors.white.withValues(alpha: 0.78);
+          return Colors.white.withValues(alpha: 0.52);
+        }
+        if (selected) {
+          return Color.lerp(Colors.white, accent, 0.42)!.withValues(alpha: 0.20);
+        }
+        if (hovered) return Colors.white.withValues(alpha: 0.13);
+        return Colors.white.withValues(alpha: 0.075);
+      case 'tinted_acrylic':
+        if (selected) {
+          return Color.lerp(surface3, accent, 0.24)!
+              .withValues(alpha: (surfaceOpacity + 0.06).clamp(0.68, 0.94));
+        }
+        if (hovered) {
+          return surface3.withValues(alpha: surfaceOpacity.clamp(0.64, 0.90));
+        }
+        return surface2.withValues(alpha: (surfaceOpacity * 0.88).clamp(0.54, 0.86));
+      case 'oled_borderless':
+        if (selected) return accent.withValues(alpha: 0.18);
+        if (hovered) return (isLight ? Colors.black : Colors.white).withValues(alpha: 0.08);
+        return (isLight ? Colors.black : Colors.white).withValues(alpha: 0.04);
+      case 'matte_solid':
+      default:
+        if (selected) return surface3;
+        if (hovered) return surface2;
+        return surface2;
+    }
+  }
+
+  Color get panelSurface => unifiedPanelColor;
+
+  Color get panelSurface2 => unifiedTileColor(hovered: true);
 
   /// Resolve active skin from BuildContext (falls back to `obsidian` safely in isolated tests).
   static VedroSkin of(BuildContext context) =>
@@ -417,7 +555,7 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       ? Colors.black.withValues(alpha: 0.095)
       : Colors.white.withValues(alpha: 0.16);
 
-  /// Card border decoration respecting `frameStyle` & `cardHoverEffect`.
+  /// Card border decoration respecting `frameStyle`, `effectiveSurfaceMaterial` & `cardHoverEffect`.
   BoxBorder? cardBorder({bool hovered = false, bool selected = false}) {
     if (selected) {
       return Border.all(
@@ -427,6 +565,20 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     }
     if (hovered && cardHoverEffect == 'glow_ring') {
       return Border.all(color: accent, width: 2.0);
+    }
+    if (effectiveSurfaceMaterial == 'unified_glass') {
+      return Border.all(
+        color: isLight
+            ? Colors.white.withValues(alpha: hovered ? 0.85 : 0.65)
+            : Colors.white.withValues(alpha: hovered ? 0.24 : 0.14),
+        width: 0.9,
+      );
+    }
+    if (effectiveSurfaceMaterial == 'oled_borderless') {
+      return Border.all(
+        color: (isLight ? Colors.black : Colors.white).withValues(alpha: hovered ? 0.22 : 0.10),
+        width: 0.75,
+      );
     }
     switch (frameStyle) {
       case 'neon':
@@ -524,9 +676,15 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       backdropMode: o['backdrop_mode']?.toString(),
       backdropBlur: (o['backdrop_blur'] as num?)?.toDouble(),
       surfaceOpacity: (o['surface_opacity'] as num?)?.toDouble(),
+      surfaceMaterial: o['surface_material']?.toString(),
+      posterAspect: o['poster_aspect']?.toString(),
       cardStyle: o['card_style']?.toString(),
       cardHoverEffect: o['card_hover_effect']?.toString(),
+      badgeStyle: o['badge_style']?.toString(),
+      progressStyle: o['progress_style']?.toString(),
       castStyle: o['cast_style']?.toString(),
+      osdStyle: o['osd_style']?.toString(),
+      showCardRating: o['show_card_rating'] is bool ? o['show_card_rating'] as bool : null,
       preferClearLogo: o['prefer_clear_logo'] is bool ? o['prefer_clear_logo'] as bool : null,
       editorialSerif: o['editorial_serif'] is bool ? o['editorial_serif'] as bool : null,
       ctaStyle: o['cta_style']?.toString(),
@@ -557,9 +715,15 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
         backdropMode: backdropMode,
         backdropBlur: backdropBlur,
         surfaceOpacity: surfaceOpacity,
+        surfaceMaterial: surfaceMaterial,
+        posterAspect: posterAspect,
         cardStyle: cardStyle,
         cardHoverEffect: cardHoverEffect,
+        badgeStyle: badgeStyle,
+        progressStyle: progressStyle,
         castStyle: castStyle,
+        osdStyle: osdStyle,
+        showCardRating: showCardRating,
         preferClearLogo: preferClearLogo,
       );
 
@@ -1047,9 +1211,15 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       backdropMode: spec.backdropMode,
       backdropBlur: spec.backdropBlur,
       surfaceOpacity: spec.surfaceOpacity,
+      surfaceMaterial: spec.surfaceMaterial,
+      posterAspect: spec.posterAspect,
       cardStyle: spec.cardStyle,
       cardHoverEffect: spec.cardHoverEffect,
+      badgeStyle: spec.badgeStyle,
+      progressStyle: spec.progressStyle,
       castStyle: spec.castStyle,
+      osdStyle: spec.osdStyle,
+      showCardRating: spec.showCardRating,
       preferClearLogo: spec.preferClearLogo,
       isCustom: true,
     );
@@ -1102,9 +1272,15 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     String? backdropMode,
     double? backdropBlur,
     double? surfaceOpacity,
+    String? surfaceMaterial,
+    String? posterAspect,
     String? cardStyle,
     String? cardHoverEffect,
+    String? badgeStyle,
+    String? progressStyle,
     String? castStyle,
+    String? osdStyle,
+    bool? showCardRating,
     bool? preferClearLogo,
     bool? isCustom,
   }) =>
@@ -1141,9 +1317,15 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
         backdropMode: backdropMode ?? this.backdropMode,
         backdropBlur: backdropBlur ?? this.backdropBlur,
         surfaceOpacity: surfaceOpacity ?? this.surfaceOpacity,
+        surfaceMaterial: surfaceMaterial ?? this.surfaceMaterial,
+        posterAspect: posterAspect ?? this.posterAspect,
         cardStyle: cardStyle ?? this.cardStyle,
         cardHoverEffect: cardHoverEffect ?? this.cardHoverEffect,
+        badgeStyle: badgeStyle ?? this.badgeStyle,
+        progressStyle: progressStyle ?? this.progressStyle,
         castStyle: castStyle ?? this.castStyle,
+        osdStyle: osdStyle ?? this.osdStyle,
+        showCardRating: showCardRating ?? this.showCardRating,
         preferClearLogo: preferClearLogo ?? this.preferClearLogo,
         isCustom: isCustom ?? this.isCustom,
       );
@@ -1184,9 +1366,15 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       backdropMode: t < 0.5 ? backdropMode : other.backdropMode,
       backdropBlur: lerpDoubleD(backdropBlur, other.backdropBlur, t),
       surfaceOpacity: lerpDoubleD(surfaceOpacity, other.surfaceOpacity, t),
+      surfaceMaterial: t < 0.5 ? surfaceMaterial : other.surfaceMaterial,
+      posterAspect: t < 0.5 ? posterAspect : other.posterAspect,
       cardStyle: t < 0.5 ? cardStyle : other.cardStyle,
       cardHoverEffect: t < 0.5 ? cardHoverEffect : other.cardHoverEffect,
+      badgeStyle: t < 0.5 ? badgeStyle : other.badgeStyle,
+      progressStyle: t < 0.5 ? progressStyle : other.progressStyle,
       castStyle: t < 0.5 ? castStyle : other.castStyle,
+      osdStyle: t < 0.5 ? osdStyle : other.osdStyle,
+      showCardRating: t < 0.5 ? showCardRating : other.showCardRating,
       preferClearLogo: t < 0.5 ? preferClearLogo : other.preferClearLogo,
       isCustom: t < 0.5 ? isCustom : other.isCustom,
     );
@@ -1286,6 +1474,77 @@ class VedroSkinCanvas extends StatelessWidget {
           child,
         ],
       ),
+    );
+  }
+}
+
+/// Cohesive skin-adaptive surface panel that automatically harmonizes Frosted Glass (`unified_glass`),
+/// Tinted Acrylic (`tinted_acrylic`), OLED Borderless (`oled_borderless`), and Matte Solid (`matte_solid`)
+/// so glass effects NEVER clash awkwardly with opaque solid rectangles!
+class VedroAdaptiveSurface extends StatelessWidget {
+  const VedroAdaptiveSurface({
+    super.key,
+    required this.child,
+    this.padding,
+    this.borderRadius,
+    this.hovered = false,
+    this.selected = false,
+    this.blurSigma = 22.0,
+  });
+
+  final Widget child;
+  final EdgeInsetsGeometry? padding;
+  final double? borderRadius;
+  final bool hovered;
+  final bool selected;
+  final double blurSigma;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final r = borderRadius ?? skin.cardRadius.clamp(8.0, 20.0);
+    final radius = BorderRadius.circular(r);
+    final fill = hovered ? skin.unifiedTileColor(hovered: true, selected: selected) : skin.unifiedPanelColor;
+    final mat = skin.effectiveSurfaceMaterial;
+
+    if (mat == 'unified_glass') {
+      return Container(
+        foregroundDecoration: BoxDecoration(
+          borderRadius: radius,
+          border: skin.cardBorder(hovered: hovered, selected: selected),
+        ),
+        child: ClipRRect(
+          borderRadius: radius,
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: blurSigma, sigmaY: blurSigma),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: fill,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: skin.isLight ? 0.34 : 0.065),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+              child: padding != null ? Padding(padding: padding!, child: child) : child,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      padding: padding,
+      decoration: BoxDecoration(
+        color: fill,
+        borderRadius: radius,
+        border: skin.cardBorder(hovered: hovered, selected: selected),
+      ),
+      child: child,
     );
   }
 }

@@ -15,8 +15,9 @@ use vedro_playback::{
     PlaybackStats, ToneMappingAlgorithm,
 };
 use vedro_protocol::{
-    discover_lan_servers, ClientIdentity, ClientTransportOptions, EmbyClient, ItemsQuery,
-    MediaBadges, MediaSourceInfo, PlaybackProgressPayload, WebSocketSession,
+    discover_lan_servers, BaseItemDto, ClientIdentity, ClientTransportOptions, EmbyClient,
+    ItemsQuery, MediaBadges, MediaSourceInfo, MediaStream, PlaybackProgressPayload,
+    WebSocketSession,
 };
 use vedro_storage::{ServerProfile, ServerRoute, VedroStore};
 use vedro_stream::{
@@ -175,6 +176,45 @@ impl VedroRuntime {
         let eng = PlaybackEngine::new(cfg).map_err(|e| e.to_string())?;
         *guard = Some(Arc::clone(&eng));
         Ok(eng)
+    }
+
+    fn enrich_item_with_learned_tracks(&self, item: &mut BaseItemDto) {
+        if item.id.is_empty() || item.media_sources.is_empty() {
+            return;
+        }
+        for ms in &mut item.media_sources {
+            let has_av = ms.media_streams.iter().any(|s| {
+                s.stream_type.eq_ignore_ascii_case("Audio")
+                    || s.stream_type.eq_ignore_ascii_case("Video")
+            });
+            if has_av {
+                continue;
+            }
+            let src_id = if ms.id.is_empty() {
+                "default"
+            } else {
+                ms.id.as_str()
+            };
+            let learned_key = format!("learned_streams_v1:{}:{}", item.id, src_id);
+            if let Ok(Some(learned)) = self.store.get_setting::<Vec<MediaStream>>(&learned_key) {
+                if !learned.is_empty() {
+                    let mut merged: Vec<MediaStream> = ms
+                        .media_streams
+                        .iter()
+                        .filter(|s| s.is_external)
+                        .cloned()
+                        .collect();
+                    let offset = merged.iter().map(|s| s.index + 1).max().unwrap_or(0).max(0);
+                    for (idx, mut st) in learned.into_iter().enumerate() {
+                        if offset > 0 && st.index < offset {
+                            st.index = offset + idx as i32;
+                        }
+                        merged.push(st);
+                    }
+                    ms.media_streams = merged;
+                }
+            }
+        }
     }
 
     fn start_websocket(&self, client: EmbyClient) {
@@ -773,7 +813,8 @@ impl VedroRuntime {
                     client.similar(&id, 12),
                     client.media_segments(&id),
                 );
-                let item = item_r.map_err(|e| e.to_string())?;
+                let mut item = item_r.map_err(|e| e.to_string())?;
+                self.enrich_item_with_learned_tracks(&mut item);
                 let similar = similar_r.unwrap_or_default();
                 let segments = segments_r.unwrap_or_default();
                 Ok(json!({
@@ -799,10 +840,13 @@ impl VedroRuntime {
                 let season_id = params.get("season_id").and_then(Value::as_str);
                 let start_index = params.get("start_index").and_then(Value::as_u64);
                 let limit = params.get("limit").and_then(Value::as_u64);
-                let res = client
+                let mut res = client
                     .episodes(&series_id, season_id, start_index, limit)
                     .await
                     .map_err(|e| e.to_string())?;
+                for ep in &mut res.items {
+                    self.enrich_item_with_learned_tracks(ep);
+                }
                 Ok(serde_json::to_value(res).unwrap())
             }
 
@@ -1228,6 +1272,24 @@ impl VedroRuntime {
                 Ok(out)
             }
 
+            "save_learned_tracks" => {
+                let item_id = str_param(&params, "item_id")?;
+                let media_source_id = params
+                    .get("media_source_id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("default");
+                let streams: Vec<MediaStream> = serde_json::from_value(
+                    params.get("streams").cloned().unwrap_or_else(|| json!([])),
+                )
+                .map_err(|e| format!("invalid learned streams: {e}"))?;
+                if !streams.is_empty() {
+                    let learned_key = format!("learned_streams_v1:{item_id}:{media_source_id}");
+                    let _ = self.store.set_setting(&learned_key, &streams);
+                }
+                Ok(json!({"saved": true}))
+            }
+
             "prepare_playback" => {
                 let client = self.require_client()?;
                 let item_id = str_param(&params, "item_id")?;
@@ -1296,13 +1358,53 @@ impl VedroRuntime {
                     chosen.container.as_deref().map(container_mime_type),
                 );
 
-                // Inspect the first 256 KiB via our proxy (reuses chunk 0 cache!) to detect
-                // exact Dolby Vision Profile 5/7/8 & Dolby Atmos even on unprobed embygo items!
+                // Inspect the first 256 KiB via our proxy (reuses chunk 0 cache — 0 extra upstream requests!)
+                // to detect Dolby Vision / Atmos AND cache embedded track table naturally while playing!
                 let inspected = if inspect_header {
                     self.proxy
                         .read_range(&stream_id, 0, 256 * 1024)
                         .await
-                        .map(|bytes| inspect_media_header(&bytes))
+                        .map(|bytes| {
+                            let has_av = chosen.media_streams.iter().any(|s| {
+                                s.stream_type.eq_ignore_ascii_case("Audio")
+                                    || s.stream_type.eq_ignore_ascii_case("Video")
+                            });
+                            if !has_av {
+                                let tracks = vedro_stream::inspect_media_tracks(&bytes);
+                                if !tracks.is_empty() {
+                                    let learned: Vec<MediaStream> = tracks
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(idx, t)| MediaStream {
+                                            index: idx as i32,
+                                            stream_type: t.stream_type,
+                                            codec: Some(t.codec),
+                                            language: t.language,
+                                            title: t.title,
+                                            display_title: Some(t.display_title),
+                                            is_default: t.is_default,
+                                            is_forced: t.is_forced,
+                                            is_external: false,
+                                            is_text_subtitle_stream: t.is_text_subtitle,
+                                            width: t.width,
+                                            height: t.height,
+                                            channels: t.channels,
+                                            video_range: t.video_range,
+                                            ..Default::default()
+                                        })
+                                        .collect();
+                                    let src_id = if chosen.id.is_empty() {
+                                        "default"
+                                    } else {
+                                        chosen.id.as_str()
+                                    };
+                                    let learned_key =
+                                        format!("learned_streams_v1:{item_id}:{src_id}");
+                                    let _ = self.store.set_setting(&learned_key, &learned);
+                                }
+                            }
+                            inspect_media_header(&bytes)
+                        })
                 } else {
                     None
                 };

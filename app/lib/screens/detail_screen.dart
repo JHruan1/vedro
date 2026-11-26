@@ -51,9 +51,6 @@ class _DetailScreenState extends State<DetailScreen> {
   String? _selectedSeasonId;
   int _selectedSourceIndex = 0;
   int _selectedSeriesVersionIndex = 0;
-  int? _selectedAudioIndex;
-  int? _selectedSubtitleIndex;
-  String? _localExternalSubPath;
   bool _loading = true;
   String _episodeViewMode = 'cards'; // 'grid' | 'cards' | 'list'
   bool _episodeModeUserChosen = false;
@@ -64,9 +61,35 @@ class _DetailScreenState extends State<DetailScreen> {
   String? _translatedOverview;
   bool _translating = false;
   DateTime? _lastDownloadTapAt;
-  final Map<String, MediaSourceModel> _probedSourcesByKey = {};
-  final Set<String> _probingKeys = {};
-  final Set<String> _probedAttemptedKeys = {};
+  final Map<String, int?> _audioIndexByVer = {};
+  final Map<String, int?> _subIndexByVer = {};
+  final Map<String, String> _audioLangByVer = {};
+  final Map<String, String> _subLangByVer = {};
+  final Map<String, String?> _extSubByVer = {};
+
+  String get _activeVersionStateKey {
+    if (_item.isSeries) {
+      final vers = _resolvedSeriesVersions;
+      if (vers.isEmpty) return 'series_v0';
+      final idx = _selectedSeriesVersionIndex.clamp(0, vers.length - 1);
+      final id = vers[idx].source.id;
+      return 'series_${idx}_${id.isEmpty ? vers[idx].seriesMatchSignature : id}';
+    }
+    final vers = _resolvedPlayableVersions;
+    if (vers.isEmpty) return 'movie_v0';
+    final idx = _selectedSourceIndex.clamp(0, vers.length - 1);
+    final id = vers[idx].source.id;
+    return 'movie_${idx}_${id.isEmpty ? "slot_$idx" : id}';
+  }
+
+  int? get _selectedAudioIndex => _audioIndexByVer[_activeVersionStateKey];
+  set _selectedAudioIndex(int? v) => _audioIndexByVer[_activeVersionStateKey] = v;
+
+  int? get _selectedSubtitleIndex => _subIndexByVer[_activeVersionStateKey];
+  set _selectedSubtitleIndex(int? v) => _subIndexByVer[_activeVersionStateKey] = v;
+
+  String? get _localExternalSubPath => _extSubByVer[_activeVersionStateKey];
+  set _localExternalSubPath(String? v) => _extSubByVer[_activeVersionStateKey] = v;
 
   @override
   void initState() {
@@ -125,10 +148,6 @@ class _DetailScreenState extends State<DetailScreen> {
         if (_selectedSourceIndex >= _item.mediaSources.length) {
           _selectedSourceIndex = 0;
         }
-        if (_item.isPlayable && _item.mediaSources.isNotEmpty) {
-          final initSlot = _selectedSourceIndex.clamp(0, _item.mediaSources.length - 1);
-          unawaited(_ensureVersionProbed(_item.id, _item.mediaSources[initSlot], initSlot));
-        }
         if (_item.isSeries) {
           final sRes = await widget.appState.core.invoke('get_seasons', {'series_id': _item.id})
               as Map<String, dynamic>;
@@ -178,85 +197,35 @@ class _DetailScreenState extends State<DetailScreen> {
         _episodeViewMode = loaded.length >= 24 ? 'grid' : 'cards';
       }
     });
-    _probeSelectedSeriesEpisodeVersion();
   }
 
-  String _probeKeyFor(String itemId, MediaSourceModel src, int slot) =>
-      '$itemId::${src.id.isNotEmpty ? src.id : "slot_$slot"}';
-
-  MediaSourceModel _effectiveSourceFor(String itemId, MediaSourceModel src, int slot) {
-    final probed = _probedSourcesByKey[_probeKeyFor(itemId, src, slot)];
-    if (probed == null) return src;
-    return MediaSourceModel(
-      id: src.id.isNotEmpty ? src.id : probed.id,
-      name: src.name ?? probed.name,
-      path: src.path ?? probed.path,
-      container: src.container ?? probed.container,
-      size: src.size ?? probed.size,
-      bitrate: src.bitrate ?? probed.bitrate,
-      runTimeTicks: src.runTimeTicks ?? probed.runTimeTicks,
-      directStreamUrl: probed.directStreamUrl ?? src.directStreamUrl,
-      supportsDirectPlay: src.supportsDirectPlay,
-      mediaStreams:
-          probed.mediaStreams.isNotEmpty ? probed.mediaStreams : src.mediaStreams,
-    );
-  }
-
-  MediaItemModel? _primaryEpisodeForSeries() {
-    if (_episodes.isEmpty) return null;
-    return _episodes.firstWhere(
-      (e) => e.resumeProgress > 0.01,
-      orElse: () => _episodes.firstWhere(
-        (e) => !e.played,
-        orElse: () => _episodes.first,
-      ),
-    );
-  }
-
-  void _probeSelectedSeriesEpisodeVersion() {
-    if (!_item.isSeries) return;
-    final ep = _primaryEpisodeForSeries();
-    if (ep == null) return;
-    final matched = _matchingSourceForEpisode(ep);
-    if (matched == null) return;
-    unawaited(_ensureVersionProbed(ep.id, matched, _selectedSeriesVersionIndex));
-  }
-
-  Future<void> _ensureVersionProbed(
-    String itemId,
-    MediaSourceModel source,
-    int slot,
-  ) async {
-    if (source.audioStreams.isNotEmpty || source.videoStreams.isNotEmpty) {
-      return;
-    }
-    final key = _probeKeyFor(itemId, source, slot);
-    if (_probingKeys.contains(key) || _probedSourcesByKey.containsKey(key)) {
-      return;
-    }
-    if (mounted) {
-      setState(() => _probingKeys.add(key));
-    } else {
-      _probingKeys.add(key);
-    }
+  /// Silent background refresh after returning from PlayerScreen so newly played versions
+  /// immediately surface their real embedded audio & subtitle tracks with 0 extra cloud probes!
+  Future<void> _refreshAfterPlayback() async {
+    if (!mounted || _item.type == 'Person') return;
     try {
-      final raw = await widget.appState.core.invoke('probe_media_source', {
-        'item_id': itemId,
-        if (source.id.isNotEmpty) 'media_source_id': source.id,
-      });
-      if (raw is Map && raw['media_source'] is Map) {
-        final enriched = MediaSourceModel.fromJson(
-          Map<String, dynamic>.from(raw['media_source'] as Map),
-        );
-        _probedSourcesByKey[key] = enriched;
-        _probedAttemptedKeys.add(key);
+      final res = await widget.appState.core.invoke('get_item', {'item_id': _item.id})
+          as Map<String, dynamic>;
+      if (!mounted) return;
+      final refreshedItem = MediaItemModel.fromJson(res['item'] as Map<String, dynamic>);
+      List<MediaItemModel>? refreshedEps;
+      if (_item.isSeries && _selectedSeasonId != null) {
+        final eRes = await widget.appState.core.invoke('get_episodes', {
+          'series_id': _item.id,
+          'season_id': _selectedSeasonId,
+          'limit': 5000,
+        }) as Map<String, dynamic>;
+        refreshedEps = ((eRes['Items'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(MediaItemModel.fromJson)
+            .toList();
       }
-    } catch (_) {
-      // Non-fatal: fallback language preferences remain usable
-    } finally {
-      _probingKeys.remove(key);
-      if (mounted) setState(() {});
-    }
+      if (!mounted) return;
+      setState(() {
+        _item = refreshedItem;
+        if (refreshedEps != null) _episodes = refreshedEps;
+      });
+    } catch (_) {}
   }
 
   MediaItemModel? get _activeSeason {
@@ -267,13 +236,8 @@ class _DetailScreenState extends State<DetailScreen> {
     return _seasons.first;
   }
 
-  List<ResolvedMediaVersion> get _resolvedPlayableVersions {
-    final enriched = <MediaSourceModel>[
-      for (var i = 0; i < _item.mediaSources.length; i++)
-        _effectiveSourceFor(_item.id, _item.mediaSources[i], i),
-    ];
-    return MediaSourceModel.resolveVersions(enriched);
-  }
+  List<ResolvedMediaVersion> get _resolvedPlayableVersions =>
+      MediaSourceModel.resolveVersions(_item.mediaSources);
 
   MediaSourceModel? get _activeSource {
     final vers = _resolvedPlayableVersions;
@@ -291,11 +255,7 @@ class _DetailScreenState extends State<DetailScreen> {
         bestEp = ep;
       }
     }
-    if (bestEp == null) return const [];
-    return [
-      for (var i = 0; i < bestEp.mediaSources.length; i++)
-        _effectiveSourceFor(bestEp.id, bestEp.mediaSources[i], i),
-    ];
+    return bestEp?.mediaSources ?? const [];
   }
 
   List<ResolvedMediaVersion> get _resolvedSeriesVersions =>
@@ -496,15 +456,15 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
-  void _play(
+  Future<void> _play(
     MediaItemModel target, {
     String? sourceId,
     bool fromBeginning = false,
     int? startPositionTicks,
     String? localPath,
-  }) {
+  }) async {
     if (localPath == null && widget.appState.prefs.externalPlayer != 'builtin') {
-      _launchExternal(target, sourceId: sourceId);
+      await _launchExternal(target, sourceId: sourceId);
       return;
     }
     final overrideTicks = startPositionTicks ?? (fromBeginning ? 0 : null);
@@ -523,7 +483,11 @@ class _DetailScreenState extends State<DetailScreen> {
           )
         : target;
 
-    Navigator.of(context).push(
+    final verKey = _activeVersionStateKey;
+    final verAudioLang = _audioLangByVer[verKey];
+    final verSubLang = _subLangByVer[verKey];
+
+    await Navigator.of(context).push(
       vedroRoute(PlayerScreen(
         item: playTarget,
         appState: widget.appState,
@@ -533,9 +497,12 @@ class _DetailScreenState extends State<DetailScreen> {
         initialAudioStreamIndex: _selectedAudioIndex,
         initialSubtitleStreamIndex: _selectedSubtitleIndex,
         initialExternalSubtitlePath: _localExternalSubPath,
+        preferredAudioLangOverride: verAudioLang,
+        preferredSubLangOverride: verSubLang,
         localFilePath: localPath,
       )),
     );
+    await _refreshAfterPlayback();
   }
 
   void _openItemDetail(MediaItemModel other) {
@@ -1043,26 +1010,11 @@ class _DetailScreenState extends State<DetailScreen> {
     if (_selectedSeriesVersionIndex >= seriesVersions.length && seriesVersions.isNotEmpty) {
       _selectedSeriesVersionIndex = 0;
     }
-    final rawSeriesEpSource =
+    final activeSeriesEpSource =
         nextEpToPlay != null ? _matchingSourceForEpisode(nextEpToPlay) : null;
-    final activeSeriesEpSource = (nextEpToPlay != null && rawSeriesEpSource != null)
-        ? _effectiveSourceFor(
-            nextEpToPlay.id,
-            rawSeriesEpSource,
-            _selectedSeriesVersionIndex,
-          )
-        : rawSeriesEpSource;
-    final activeProbeKey = _item.isSeries
-        ? (nextEpToPlay != null && rawSeriesEpSource != null
-            ? _probeKeyFor(nextEpToPlay.id, rawSeriesEpSource, _selectedSeriesVersionIndex)
-            : '')
-        : (src != null ? _probeKeyFor(_item.id, src, _selectedSourceIndex) : '');
-    final isProbingActiveSource =
-        activeProbeKey.isNotEmpty && _probingKeys.contains(activeProbeKey);
-    final hasProbedActiveSource = activeProbeKey.isNotEmpty &&
-        (_probedAttemptedKeys.contains(activeProbeKey) ||
-            ((_item.isSeries ? activeSeriesEpSource : src)?.audioStreams.isNotEmpty == true) ||
-            ((_item.isSeries ? activeSeriesEpSource : src)?.videoStreams.isNotEmpty == true));
+    final activeEffSource = _item.isSeries ? activeSeriesEpSource : src;
+    final hasKnownEmbeddedStreams = activeEffSource != null &&
+        (activeEffSource.audioStreams.isNotEmpty || activeEffSource.videoStreams.isNotEmpty);
 
     final isEpisodeWithStill = _item.type == 'Episode' && _item.primaryImageTag != null;
     final coverW = _item.type == 'Person'
@@ -1492,25 +1444,28 @@ class _DetailScreenState extends State<DetailScreen> {
     }
 
     final c = skin.canvas;
+    final endCanvas = skin.usesBlurredFanart
+        ? c.withValues(alpha: skin.isLight ? 0.56 : 0.42)
+        : c;
     final heroVertStops = skin.isLight
         ? const [0.0, 0.24, 0.54, 0.82, 0.95, 1.0]
         : const [0.0, 0.22, 0.56, 0.84, 0.95, 1.0];
     final heroVertColors = skin.isLight
         ? [
-            c.withValues(alpha: 0.58),
-            c.withValues(alpha: 0.68),
-            c.withValues(alpha: 0.89),
-            c.withValues(alpha: 0.98),
-            c,
-            c,
+            c.withValues(alpha: 0.48),
+            c.withValues(alpha: 0.56),
+            c.withValues(alpha: skin.usesBlurredFanart ? 0.52 : 0.89),
+            endCanvas,
+            endCanvas,
+            endCanvas,
           ]
         : [
-            c.withValues(alpha: 0.35),
-            c.withValues(alpha: 0.10),
-            c.withValues(alpha: 0.64),
-            c.withValues(alpha: 0.92),
-            c,
-            c,
+            c.withValues(alpha: 0.30),
+            c.withValues(alpha: 0.08),
+            c.withValues(alpha: skin.usesBlurredFanart ? 0.36 : 0.64),
+            c.withValues(alpha: skin.usesBlurredFanart ? 0.42 : 0.92),
+            endCanvas,
+            endCanvas,
           ];
 
     final fanartUrl = widget.appState.backdropArt(_item)?.url;
@@ -1844,46 +1799,69 @@ class _DetailScreenState extends State<DetailScreen> {
                       Positioned.fill(
                         child: ClipRect(
                           key: const ValueKey('detail-backdrop-banner'),
-                          child: Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              VedroArtwork(
-                                item: _item,
-                                appState: widget.appState,
-                                isHero: true,
-                                alignment: const Alignment(0, -0.32),
-                                showInitials: false,
-                              ),
-                              if (wide && !isCenteredEditorial)
+                          child: ShaderMask(
+                            blendMode: skin.backdropMode != 'solid'
+                                ? BlendMode.dstIn
+                                : BlendMode.dst,
+                            shaderCallback: (bounds) => LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              stops: const [0.0, 0.46, 0.82, 1.0],
+                              colors: skin.backdropMode != 'solid'
+                                  ? const [
+                                      Colors.white,
+                                      Colors.white,
+                                      Color(0x55FFFFFF),
+                                      Colors.transparent,
+                                    ]
+                                  : const [
+                                      Colors.white,
+                                      Colors.white,
+                                      Colors.white,
+                                      Colors.white,
+                                    ],
+                            ).createShader(bounds),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                VedroArtwork(
+                                  item: _item,
+                                  appState: widget.appState,
+                                  isHero: true,
+                                  alignment: const Alignment(0, -0.32),
+                                  showInitials: false,
+                                ),
+                                if (wide && !isCenteredEditorial)
+                                  DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        begin: Alignment.centerLeft,
+                                        end: Alignment.centerRight,
+                                        stops: const [0.0, 0.55, 1.0],
+                                        colors: [
+                                          c.withValues(alpha: skin.isLight ? 0.86 : 0.78),
+                                          c.withValues(alpha: skin.isLight ? 0.55 : 0.40),
+                                          c.withValues(alpha: skin.isLight ? 0.25 : 0.22),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                                 DecoratedBox(
                                   decoration: BoxDecoration(
                                     gradient: LinearGradient(
-                                      begin: Alignment.centerLeft,
-                                      end: Alignment.centerRight,
-                                      stops: const [0.0, 0.55, 1.0],
-                                      colors: [
-                                        c.withValues(alpha: skin.isLight ? 0.86 : 0.78),
-                                        c.withValues(alpha: skin.isLight ? 0.55 : 0.40),
-                                        c.withValues(alpha: skin.isLight ? 0.25 : 0.22),
-                                      ],
+                                      begin: Alignment.topCenter,
+                                      end: Alignment.bottomCenter,
+                                      stops: heroVertStops,
+                                      colors: heroVertColors,
                                     ),
                                   ),
                                 ),
-                              DecoratedBox(
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topCenter,
-                                    end: Alignment.bottomCenter,
-                                    stops: heroVertStops,
-                                    colors: heroVertColors,
-                                  ),
-                                ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                       ),
-                      if (!skin.usesBlurredFanart)
+                      if (skin.backdropMode == 'solid')
                         Positioned(
                           left: 0,
                           right: 0,
@@ -1918,11 +1896,12 @@ class _DetailScreenState extends State<DetailScreen> {
                             selectedVersionIndex: _item.isSeries
                                 ? _selectedSeriesVersionIndex
                                 : _selectedSourceIndex,
-                            activeStreamSource: _item.isSeries ? activeSeriesEpSource : src,
-                            isProbingStreams: isProbingActiveSource,
-                            hasBeenProbed: hasProbedActiveSource,
+                            activeStreamSource: activeEffSource,
+                            hasKnownEmbeddedStreams: hasKnownEmbeddedStreams,
                             selectedAudioIndex: _selectedAudioIndex,
                             selectedSubtitleIndex: _selectedSubtitleIndex,
+                            preferredAudioLangOverride: _audioLangByVer[_activeVersionStateKey],
+                            preferredSubLangOverride: _subLangByVer[_activeVersionStateKey],
                             localExternalSubPath: _localExternalSubPath,
                             appState: widget.appState,
                             onSelectVersionIndex: (idx) {
@@ -1932,23 +1911,19 @@ class _DetailScreenState extends State<DetailScreen> {
                                 } else {
                                   _selectedSourceIndex = idx;
                                 }
-                                _selectedAudioIndex = null;
-                                if (_selectedSubtitleIndex != -1) {
-                                  _selectedSubtitleIndex = null;
-                                }
                               });
-                              if (_item.isSeries) {
-                                _probeSelectedSeriesEpisodeVersion();
-                              } else if (idx >= 0 && idx < _item.mediaSources.length) {
-                                unawaited(
-                                  _ensureVersionProbed(_item.id, _item.mediaSources[idx], idx),
-                                );
-                              }
                             },
                             onSelectAudio: (idx) => setState(() => _selectedAudioIndex = idx),
                             onSelectSubtitle: (idx) => setState(() {
                               _selectedSubtitleIndex = idx;
                               if (idx != null) _localExternalSubPath = null;
+                            }),
+                            onSelectVersionAudioLang: (lang) => setState(() {
+                              _audioLangByVer[_activeVersionStateKey] = lang;
+                            }),
+                            onSelectVersionSubLang: (lang) => setState(() {
+                              _subLangByVer[_activeVersionStateKey] = lang;
+                              _selectedSubtitleIndex = lang == 'off' ? -1 : null;
                             }),
                             onPickExternalSubtitle: _pickExternalSubtitleForDetail,
                             onClearExternalSubtitle: () =>
@@ -3381,13 +3356,9 @@ class _NfoMetadataSection extends StatelessWidget {
     }
 
     final skin = VedroSkin.of(context);
-    return Container(
+    return VedroAdaptiveSurface(
       padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: skin.surface,
-        borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 22.0)),
-        border: skin.cardBorder(),
-      ),
+      borderRadius: skin.cardRadius.clamp(8.0, 22.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -3573,13 +3544,9 @@ class _MediaSpecsSection extends StatelessWidget {
         (source.size ?? 0) > 0;
     if (!hasAnything) return const SizedBox.shrink();
 
-    return Container(
+    return VedroAdaptiveSurface(
       padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: skin.surface,
-        borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 22.0)),
-        border: skin.cardBorder(),
-      ),
+      borderRadius: skin.cardRadius.clamp(8.0, 22.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -4057,7 +4024,7 @@ class _VersionOptionTile extends StatelessWidget {
           vertical: compact ? 10.5 : 13,
         ),
         decoration: BoxDecoration(
-          color: selected ? skin.surface2 : skin.surface,
+          color: skin.unifiedTileColor(selected: selected),
           borderRadius: BorderRadius.circular(r),
           border: skin.cardBorder(selected: selected),
           boxShadow: selected && skin.isLight
@@ -4158,15 +4125,18 @@ class _TracksPanel extends StatelessWidget {
     required this.versions,
     required this.selectedVersionIndex,
     required this.activeStreamSource,
-    this.isProbingStreams = false,
-    this.hasBeenProbed = false,
+    this.hasKnownEmbeddedStreams = false,
     required this.selectedAudioIndex,
     required this.selectedSubtitleIndex,
+    this.preferredAudioLangOverride,
+    this.preferredSubLangOverride,
     required this.localExternalSubPath,
     required this.appState,
     required this.onSelectVersionIndex,
     required this.onSelectAudio,
     required this.onSelectSubtitle,
+    required this.onSelectVersionAudioLang,
+    required this.onSelectVersionSubLang,
     required this.onPickExternalSubtitle,
     required this.onClearExternalSubtitle,
   });
@@ -4175,17 +4145,69 @@ class _TracksPanel extends StatelessWidget {
   final List<ResolvedMediaVersion> versions;
   final int selectedVersionIndex;
   final MediaSourceModel? activeStreamSource;
-  final bool isProbingStreams;
-  final bool hasBeenProbed;
+  final bool hasKnownEmbeddedStreams;
   final int? selectedAudioIndex;
   final int? selectedSubtitleIndex;
+  final String? preferredAudioLangOverride;
+  final String? preferredSubLangOverride;
   final String? localExternalSubPath;
   final VedroAppState appState;
   final ValueChanged<int> onSelectVersionIndex;
   final ValueChanged<int?> onSelectAudio;
   final ValueChanged<int?> onSelectSubtitle;
+  final ValueChanged<String> onSelectVersionAudioLang;
+  final ValueChanged<String> onSelectVersionSubLang;
   final VoidCallback onPickExternalSubtitle;
   final VoidCallback onClearExternalSubtitle;
+
+  /// Passively extract version-specific AV / language / subtitle tags from the selected version's
+  /// filename & folder path (ZERO cloud-drive API calls!), so switching between unplayed versions
+  /// still reflects each version's distinct release traits immediately.
+  List<String> _inferPassiveVersionTraits(
+    MediaSourceModel? src,
+    ResolvedMediaVersion? ver,
+  ) {
+    if (src == null) return const [];
+    final raw = '${ver?.displayTitle ?? ''} ${ver?.folderBadge ?? ''} ${src.name ?? ''} ${src.path ?? ''}'
+        .toLowerCase();
+    final out = <String>[];
+    void add(String s) {
+      if (s.isNotEmpty && !out.contains(s)) out.add(s);
+    }
+
+    for (final f in src.factChips) {
+      add(f);
+    }
+    if (raw.contains('国粤英')) {
+      add('国粤英多音轨');
+    } else if (raw.contains('国粤') || (raw.contains('mandarin') && raw.contains('cantonese'))) {
+      add('国粤双语');
+    } else if (raw.contains('国英')) {
+      add('国英双语');
+    } else if (raw.contains('台配') || raw.contains('国配') || raw.contains('国语')) {
+      add('国语配音');
+    } else if (raw.contains('粤语') || raw.contains('粤配') || raw.contains('cantonese')) {
+      add('粤语配音');
+    } else if (raw.contains('日语音轨') || raw.contains('双语') || raw.contains('dual')) {
+      add('多音轨封装');
+    }
+
+    if (raw.contains('特效') || raw.contains('ass')) {
+      add('ASS 特效字幕');
+    } else if (raw.contains('简繁英') || raw.contains('中英')) {
+      add('中英双语字幕');
+    } else if (raw.contains('简繁') || raw.contains('chs') || raw.contains('cht')) {
+      add('内封中文字幕');
+    } else if (raw.contains('sup') || raw.contains('pgs')) {
+      add('原盘图形字幕');
+    }
+    if (src.container != null && src.container!.isNotEmpty) {
+      add(src.container!.toUpperCase());
+    }
+    final sz = fmtFileSize(src.size);
+    if (sz.isNotEmpty) add(sz);
+    return out.take(7).toList();
+  }
 
   void _openAllTracksSheet({
     required BuildContext context,
@@ -4253,10 +4275,13 @@ class _TracksPanel extends StatelessWidget {
     final safeVerIdx = versions.isEmpty
         ? 0
         : selectedVersionIndex.clamp(0, versions.length - 1);
-    final streamSrc = activeStreamSource ??
-        (versions.isNotEmpty ? versions[safeVerIdx].source : null);
+    final activeVer = versions.isNotEmpty ? versions[safeVerIdx] : null;
+    final streamSrc = activeStreamSource ?? activeVer?.source;
     final audios = streamSrc?.audioStreams ?? const <MediaStreamModel>[];
     final subs = streamSrc?.subtitleStreams ?? const <MediaStreamModel>[];
+    final passiveTraits = _inferPassiveVersionTraits(streamSrc, activeVer);
+    final effAudioLang = preferredAudioLangOverride ?? prefs.preferredAudioLang;
+    final effSubLang = preferredSubLangOverride ?? prefs.preferredSubLang;
     final extFileName = localExternalSubPath?.trim().isNotEmpty == true
         ? localExternalSubPath!.replaceAll('\\', '/').split('/').last
         : null;
@@ -4336,26 +4361,23 @@ class _TracksPanel extends StatelessWidget {
           const SizedBox(height: 20),
         ],
 
-        // Version-Following Audio & Subtitle Selector Container (reacts live to selected version!)
-        Container(
+        // Harmonized Glass / Acrylic / Solid Audio & Subtitle Selector (100% passive — 0 cloud API calls!)
+        VedroAdaptiveSurface(
           key: const ValueKey('detail-audio-subtitle-panel'),
-          width: double.infinity,
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 15),
-          decoration: BoxDecoration(
-            color: skin.panelSurface,
-            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 18.0)),
-            border: skin.cardBorder(),
-          ),
+          borderRadius: skin.cardRadius.clamp(8.0, 18.0),
           child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 200),
             switchInCurve: Curves.easeOutCubic,
             child: Column(
-              key: ValueKey('tracks_ver_${safeVerIdx}_${audios.length}_${subs.length}_$hasBeenProbed'),
+              key: ValueKey(
+                'tracks_ver_${safeVerIdx}_${streamSrc?.id ?? ''}_${audios.length}_${subs.length}_$hasKnownEmbeddedStreams',
+              ),
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Wrap(
                   spacing: 10,
-                  runSpacing: 4,
+                  runSpacing: 6,
                   crossAxisAlignment: WrapCrossAlignment.center,
                   alignment: WrapAlignment.spaceBetween,
                   children: [
@@ -4372,23 +4394,23 @@ class _TracksPanel extends StatelessWidget {
                             fontWeight: FontWeight.w600,
                           ),
                         ),
-                        if (versions.length > 1) ...[
+                        if (activeVer != null && versions.length > 1) ...[
                           const SizedBox(width: 8),
                           Flexible(
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
                               decoration: BoxDecoration(
-                                color: skin.subtleChipBg,
+                                color: skin.accent.withValues(alpha: skin.isLight ? 0.12 : 0.16),
                                 borderRadius: BorderRadius.circular(skin.radiusForPill(20)),
                               ),
                               child: Text(
-                                '跟随版本 ${safeVerIdx + 1}：${versions[safeVerIdx].displayTitle}',
+                                '跟随版本 ${safeVerIdx + 1}：${activeVer.displayTitle}',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  color: skin.fg2,
+                                  color: skin.isLight ? skin.accent : skin.fg,
                                   fontSize: 11,
-                                  fontWeight: FontWeight.w500,
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ),
@@ -4396,41 +4418,56 @@ class _TracksPanel extends StatelessWidget {
                         ],
                       ],
                     ),
-                    if (isProbingStreams)
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SizedBox(
-                            width: 11,
-                            height: 11,
-                            child: CircularProgressIndicator(strokeWidth: 1.6, color: skin.accent),
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            '正在读取该片源音轨与字幕…',
-                            style: TextStyle(color: skin.accent, fontSize: 11.5),
-                          ),
-                        ],
-                      )
-                    else if (audios.isEmpty && subs.isEmpty && !hasBeenProbed)
+                    if (!hasKnownEmbeddedStreams && audios.isEmpty)
                       Text(
-                        '开播自动按偏好匹配内封/外挂轨道 · 也可挂载本地字幕',
+                        '网盘尚未缓存该版本内封轨道 · 首次播放后自动展示',
                         style: TextStyle(color: skin.fg3, fontSize: 11.5),
                       ),
                   ],
                 ),
+                if (!hasKnownEmbeddedStreams && passiveTraits.isNotEmpty) ...[
+                  const SizedBox(height: 9),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 5,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text(
+                        '当前片源特征：',
+                        style: TextStyle(color: skin.fg3, fontSize: 11.5, fontWeight: FontWeight.w500),
+                      ),
+                      for (final t in passiveTraits)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: skin.subtleChipBg,
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                          child: Text(
+                            t,
+                            style: TextStyle(
+                              color: skin.fg2,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
                 const SizedBox(height: 12),
 
-                // 1. Audio Track / Preferred Audio Language Row
+                // 1. Audio Track (when played/cached) OR Per-Version Pre-Play Audio Language Preference
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Padding(
                       padding: const EdgeInsets.only(top: 6, right: 10),
                       child: SizedBox(
-                        width: 42,
+                        width: 58,
                         child: Text(
-                          audios.isNotEmpty ? '音轨' : '配音',
+                          audios.isNotEmpty ? '音轨' : '首选配音',
                           style: TextStyle(
                             color: skin.fg3,
                             fontSize: 12,
@@ -4473,13 +4510,11 @@ class _TracksPanel extends StatelessWidget {
                                   ),
                               ]
                             : audioLangOptions.map((opt) {
-                                final on = prefs.preferredAudioLang == opt.$1;
+                                final on = effAudioLang == opt.$1;
                                 return _TrackChoiceChip(
                                   label: opt.$2,
                                   selected: on,
-                                  onTap: () => appState.updatePrefs(
-                                    prefs.copyWith(preferredAudioLang: opt.$1),
-                                  ),
+                                  onTap: () => onSelectVersionAudioLang(opt.$1),
                                 );
                               }).toList(),
                       ),
@@ -4489,16 +4524,16 @@ class _TracksPanel extends StatelessWidget {
 
                 const SizedBox(height: 10),
 
-                // 2. Subtitle Stream / Probed Empty State / Preferred Subtitle Language + External Subtitle File Row
+                // 2. Subtitle Stream (when played/sidecar) OR Per-Version Pre-Play Subtitle Preference + Local Mount
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Padding(
                       padding: const EdgeInsets.only(top: 6, right: 10),
                       child: SizedBox(
-                        width: 42,
+                        width: 58,
                         child: Text(
-                          '字幕',
+                          subs.isNotEmpty || hasKnownEmbeddedStreams ? '字幕' : '首选字幕',
                           style: TextStyle(
                             color: skin.fg3,
                             fontSize: 12,
@@ -4547,7 +4582,7 @@ class _TracksPanel extends StatelessWidget {
                                   allowOff: true,
                                 ),
                               ),
-                          ] else if (hasBeenProbed && audios.isNotEmpty) ...[
+                          ] else if (hasKnownEmbeddedStreams) ...[
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
                               decoration: BoxDecoration(
@@ -4561,18 +4596,21 @@ class _TracksPanel extends StatelessWidget {
                             ),
                           ] else ...[
                             for (final opt in subLangOptions)
-                              _TrackChoiceChip(
-                                label: opt.$2,
-                                selected: extFileName == null &&
-                                    ((opt.$1 == 'off' &&
-                                            (selectedSubtitleIndex == -1 ||
-                                                prefs.preferredSubLang == 'off')) ||
-                                        (opt.$1 != 'off' &&
-                                            selectedSubtitleIndex != -1 &&
-                                            prefs.preferredSubLang == opt.$1)),
-                                onTap: () {
-                                  onSelectSubtitle(opt.$1 == 'off' ? -1 : null);
-                                  appState.updatePrefs(prefs.copyWith(preferredSubLang: opt.$1));
+                              Builder(
+                                builder: (_) {
+                                  final isSel = extFileName == null &&
+                                      ((opt.$1 == 'off' &&
+                                              (selectedSubtitleIndex == -1 ||
+                                                  effSubLang == 'off')) ||
+                                          (opt.$1 != 'off' &&
+                                              selectedSubtitleIndex != -1 &&
+                                              effSubLang == opt.$1));
+                                  return _TrackChoiceChip(
+                                    key: ValueKey('preplay-sub-${opt.$1}-${isSel ? 'on' : 'off'}'),
+                                    label: opt.$2,
+                                    selected: isSel,
+                                    onTap: () => onSelectVersionSubLang(opt.$1),
+                                  );
                                 },
                               ),
                           ],
@@ -4631,9 +4669,9 @@ class _TrackChoiceChip extends StatelessWidget {
         curve: VedroTheme.easeOut,
         padding: const EdgeInsets.symmetric(horizontal: 12.5, vertical: 6),
         decoration: BoxDecoration(
-          color: selected ? skin.activePillBg : skin.surface2,
+          color: selected ? skin.activePillBg : skin.unifiedTileColor(),
           borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
-          border: (!selected && skin.frameStyle == 'neon')
+          border: (!selected && skin.frameStyle != 'borderless')
               ? Border.all(color: skin.border, width: 0.7)
               : null,
         ),
@@ -4712,7 +4750,7 @@ class _EpisodeRowState extends State<_EpisodeRow> {
           duration: const Duration(milliseconds: 180),
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: _hovered ? skin.surface2 : skin.surface,
+            color: skin.unifiedTileColor(hovered: _hovered),
             borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 18.0)),
             border: skin.cardBorder(hovered: _hovered),
           ),

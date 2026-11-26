@@ -503,7 +503,8 @@ class VedroPreferences {
       aiEnabled && aiBaseUrl.trim().isNotEmpty && aiModel.trim().isNotEmpty;
 
   double posterCardWidth(bool wide) {
-    switch (listDensity) {
+    final effDensity = skinOverrides['grid_density']?.toString() ?? listDensity;
+    switch (effDensity) {
       case 'compact':
         return wide ? 136.0 : 112.0;
       case 'spacious':

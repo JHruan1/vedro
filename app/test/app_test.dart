@@ -11,6 +11,7 @@ import 'package:vedro/core/theme/vedro_theme.dart';
 import 'package:vedro/main.dart';
 import 'package:vedro/screens/detail_screen.dart';
 import 'package:vedro/screens/settings_screen.dart';
+import 'package:vedro/screens/shell_screen.dart';
 import 'package:vedro/state/app_state.dart';
 import 'package:vedro/widgets/danmaku_engine.dart';
 import 'package:vedro/widgets/server_card_grid.dart';
@@ -29,6 +30,7 @@ class _MockVedroCore implements VedroCoreClient {
   final bool canDownload;
   final bool enableContentDownloading;
   final Map<String, dynamic>? meQuotaJson;
+  int probeMediaSourceCalls = 0;
 
   @override
   String get coreVersion => '0.2.2-test';
@@ -138,7 +140,7 @@ class _MockVedroCore implements VedroCoreClient {
               'Name': '星际穿越',
               'Type': 'Movie',
               'CanDownload': true,
-              'Overview': '切换不同版本时，音轨与字幕随片源实时联动。',
+              'Overview': '切换不同版本时，音轨与字幕随片源实时联动且零网盘预读。',
               'ProductionYear': 2014,
               'CommunityRating': 9.4,
               'MediaSources': <dynamic>[
@@ -147,11 +149,16 @@ class _MockVedroCore implements VedroCoreClient {
                   'Name': '4K UHD REMUX',
                   'Container': 'mkv',
                   'Size': 68000000000,
-                  'MediaStreams': <dynamic>[],
+                  'MediaStreams': <dynamic>[
+                    <String, dynamic>{'Index': 0, 'Type': 'Video', 'Codec': 'hevc', 'Height': 2160},
+                    <String, dynamic>{'Index': 1, 'Type': 'Audio', 'Language': 'eng', 'Codec': 'truehd', 'DisplayTitle': 'English TrueHD Atmos 7.1'},
+                    <String, dynamic>{'Index': 2, 'Type': 'Subtitle', 'Language': 'chi', 'Codec': 'ass', 'DisplayTitle': '简英双语特效 ASS'},
+                  ],
                 },
                 <String, dynamic>{
                   'Id': 'ver-dub',
                   'Name': '1080p 国粤双语版',
+                  'Path': '/mnt/cloud/Interstellar.1080p.BluRay.国粤双语.特效字幕.mkv',
                   'Container': 'mkv',
                   'Size': 16000000000,
                   'MediaStreams': <dynamic>[],
@@ -161,7 +168,10 @@ class _MockVedroCore implements VedroCoreClient {
                   'Name': '1080p 生肉无字版',
                   'Container': 'mp4',
                   'Size': 6000000000,
-                  'MediaStreams': <dynamic>[],
+                  'MediaStreams': <dynamic>[
+                    <String, dynamic>{'Index': 0, 'Type': 'Video', 'Codec': 'h264', 'Height': 1080},
+                    <String, dynamic>{'Index': 1, 'Type': 'Audio', 'Language': 'jpn', 'Codec': 'aac', 'DisplayTitle': '日语原声 AAC 2.0'},
+                  ],
                 },
               ],
             },
@@ -467,6 +477,7 @@ class _MockVedroCore implements VedroCoreClient {
           'raw': '<i><d p="1.5,1,25,16777215,1700000000,0,abc,1">B站弹幕加载成功</d></i>',
         };
       case 'probe_media_source':
+        probeMediaSourceCalls += 1;
         final itemId = params['item_id']?.toString() ?? '';
         final msId = params['media_source_id']?.toString() ?? '';
         if (itemId == 'm-probe-ver') {
@@ -1182,15 +1193,25 @@ void main() {
       expect(find.text('当前'), findsOneWidget);
     }
 
-    // Tap '繁体中文' & '关闭字幕' on unprobed Movie DetailScreen -> updates preferredSubLang
+    // Tap '繁体中文' & '关闭字幕' on unprobed Movie DetailScreen -> follows EACH version independently!
     await tester.ensureVisible(find.text('繁体中文'));
     await tester.tap(find.text('繁体中文'));
     await tester.pumpAndSettle();
-    expect(app.prefs.preferredSubLang, equals('zh-Hant'));
+    expect(find.byKey(const ValueKey('preplay-sub-zh-Hant-on')), findsOneWidget);
+
+    // Switch to version #2 -> resets to version #2's independent default ('zh'), then switch back -> restores 'zh-Hant'!
+    await tester.tap(find.byKey(const ValueKey('movie-version-card-1')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('preplay-sub-zh-on')), findsOneWidget);
+    expect(find.byKey(const ValueKey('preplay-sub-zh-Hant-on')), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('movie-version-card-0')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('preplay-sub-zh-Hant-on')), findsOneWidget);
 
     await tester.tap(find.text('关闭字幕'));
     await tester.pumpAndSettle();
-    expect(app.prefs.preferredSubLang, equals('off'));
+    expect(find.byKey(const ValueKey('preplay-sub-off-on')), findsOneWidget);
 
     // 2. 5-version Series with colliding Name="S01E01" & empty Id="" & empty MediaStreams=[]
     await tester.pumpWidget(MaterialApp(
@@ -1303,25 +1324,56 @@ void main() {
     expect(app.prefs.customSkins.length, equals(1));
     expect(app.prefs.skinId, equals(app.prefs.customSkins.first.id));
 
-    // Live modular layout customizer (Jellyfin Skin Manager style overrides)
+    // Live modular layout customizer inside full ShellScreen NEVER kicks user out of 应用风格!
+    await tester.pumpWidget(
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) => MaterialApp(
+          theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+          home: ShellScreen(appState: app),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('skin-studio-pane')), findsOneWidget);
+    expect(find.byKey(const ValueKey('skin-live-preview-stage')), findsOneWidget);
+
+    // Switch live preview tabs (Detail & Player HUD)
+    await tester.tap(find.byKey(const ValueKey('skin-preview-tab-detail')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('skin-preview-tab-player')));
+    await tester.pumpAndSettle();
+
+    // Switch navLayout between left_rail & centered_capsule -> stays in 应用风格!
     await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-left_rail')));
     await tester.tap(find.byKey(const ValueKey('skin-mod-left_rail')));
     await tester.pumpAndSettle();
     expect(app.prefs.activeSkin.navLayout, equals('left_rail'));
+    expect(find.byKey(const ValueKey('skin-studio-pane')), findsOneWidget);
+
+    await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-unified_glass')));
+    await tester.tap(find.byKey(const ValueKey('skin-mod-unified_glass')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.activeSkin.effectiveSurfaceMaterial, equals('unified_glass'));
+    expect(find.byKey(const ValueKey('skin-studio-pane')), findsOneWidget);
 
     await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-overlay_poster')));
     await tester.tap(find.byKey(const ValueKey('skin-mod-overlay_poster')));
     await tester.pumpAndSettle();
     expect(app.prefs.activeSkin.cardStyle, equals('overlay_poster'));
+    expect(find.byKey(const ValueKey('skin-studio-pane')), findsOneWidget);
   });
 
-  testWidgets('Audio & Subtitle tracks dynamically follow selected video version via probe_media_source',
+  testWidgets('Audio & Subtitle tracks follow selected video version passively with ZERO cloud-drive API probes',
       (tester) async {
     tester.view.physicalSize = const Size(1280, 1000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    final app = VedroAppState(_MockVedroCore());
+    final mock = _MockVedroCore();
+    final app = VedroAppState(mock);
     await tester.pumpWidget(MaterialApp(
       theme: VedroTheme.fromSkin(app.prefs.activeSkin),
       home: DetailScreen(
@@ -1332,24 +1384,25 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    // Version 0 (4K UHD REMUX) probed automatically -> shows its exact Audio & Subtitle streams!
+    // Version 0 (already played/cached) shows its exact Audio & Subtitle streams with 0 cloud probes!
+    expect(mock.probeMediaSourceCalls, equals(0));
     expect(find.text('English TrueHD Atmos 7.1'), findsOneWidget);
     expect(find.text('简英双语特效 ASS'), findsOneWidget);
     expect(find.textContaining('跟随版本 1'), findsOneWidget);
 
-    // Switch to Version 1 (1080p 国粤双语版) -> Audio & Subtitle chips immediately follow Version 1!
+    // Switch to Version 1 (unplayed on cloud drive) -> 0 cloud probes, shows Version 1 passive traits!
     await tester.tap(find.byKey(const ValueKey('movie-version-card-1')));
     await tester.pumpAndSettle();
+    expect(mock.probeMediaSourceCalls, equals(0));
     expect(find.text('English TrueHD Atmos 7.1'), findsNothing);
-    expect(find.text('国语配音 EAC3 5.1'), findsOneWidget);
-    expect(find.text('粤语原声 FLAC 2.0'), findsOneWidget);
-    expect(find.text('繁体中文 SRT'), findsOneWidget);
+    expect(find.textContaining('网盘尚未缓存该版本内封轨道'), findsOneWidget);
+    expect(find.text('国粤双语'), findsOneWidget);
     expect(find.textContaining('跟随版本 2'), findsOneWidget);
 
-    // Switch to Version 2 (1080p 生肉无字版) -> Shows Japanese AAC audio + explicit "该版本无内封或服务端外挂字幕"
+    // Switch to Version 2 (played raw version) -> Shows Japanese AAC audio + "该版本无内封或服务端外挂字幕"
     await tester.tap(find.byKey(const ValueKey('movie-version-card-2')));
     await tester.pumpAndSettle();
-    expect(find.text('国语配音 EAC3 5.1'), findsNothing);
+    expect(mock.probeMediaSourceCalls, equals(0));
     expect(find.text('日语原声 AAC 2.0'), findsOneWidget);
     expect(find.text('该版本无内封或服务端外挂字幕'), findsOneWidget);
     expect(find.textContaining('跟随版本 3'), findsOneWidget);
@@ -1370,6 +1423,14 @@ void main() {
       await bridge.invoke('set_kv', {'key': 'test_k', 'value': {'ok': true}});
       final kv = await bridge.invoke('get_kv', {'key': 'test_k'}) as Map<String, dynamic>;
       expect(kv['value'], equals({'ok': true}));
+      final savedTracks = await bridge.invoke('save_learned_tracks', {
+        'item_id': 'item-1',
+        'media_source_id': 'src-1',
+        'streams': [
+          {'Index': 1, 'Type': 'Audio', 'Codec': 'eac3', 'Language': 'chi', 'Title': '国语配音'},
+        ],
+      }) as Map<String, dynamic>;
+      expect(savedTracks['saved'], isTrue);
     } finally {
       bridge.dispose();
     }

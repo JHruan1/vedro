@@ -36,6 +36,8 @@ class PlayerScreen extends StatefulWidget {
     this.initialAudioStreamIndex,
     this.initialSubtitleStreamIndex,
     this.initialExternalSubtitlePath,
+    this.preferredAudioLangOverride,
+    this.preferredSubLangOverride,
     this.localFilePath,
     this.localPlaylistPaths,
   });
@@ -48,6 +50,8 @@ class PlayerScreen extends StatefulWidget {
   final int? initialAudioStreamIndex;
   final int? initialSubtitleStreamIndex;
   final String? initialExternalSubtitlePath;
+  final String? preferredAudioLangOverride;
+  final String? preferredSubLangOverride;
   final String? localFilePath;
   final List<String>? localPlaylistPaths;
 
@@ -143,6 +147,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _danmakuHideTop = false;
   bool _danmakuHideBottom = false;
   final Set<String> _autoSkippedSegKeys = {};
+  final Set<String> _savedLearnedTrackKeys = {};
   bool _customIntroSkipped = false;
   bool _customOutroSkipped = false;
   bool _completedTriggered = false;
@@ -334,6 +339,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
     }));
     _subs.add(_player.stream.videoParams.listen(_onVideoParamsChanged));
+    _subs.add(_player.stream.tracks.listen(_onTracksChanged));
     _subs.add(_player.stream.error.listen((err) {
       if (mounted && err.isNotEmpty) {
         setState(() => _error = err);
@@ -427,6 +433,66 @@ class _PlayerScreenState extends State<PlayerScreen> {
     });
     _applyMobileOrientation(landscape: nextLandscape);
     _flashGestureHud('seek_feedback', text: nextLandscape ? '已切换横屏播放' : '已切换竖屏播放');
+  }
+
+  void _onTracksChanged(Tracks tracks) {
+    if (!mounted || (_activeLocalPath != null && _activeLocalPath!.isNotEmpty)) return;
+    final realAudios = tracks.audio.where((t) => t.id != 'auto' && t.id != 'no').toList();
+    final realSubs = tracks.subtitle.where((t) => t.id != 'auto' && t.id != 'no').toList();
+    if (realAudios.isEmpty && realSubs.isEmpty) return;
+
+    final srcId = (widget.mediaSourceId != null && widget.mediaSourceId!.isNotEmpty)
+        ? widget.mediaSourceId!
+        : (_prepared?.allSources.isNotEmpty == true ? _prepared!.allSources.first.id : 'default');
+    final cacheKey = '${_currentItem.id}::$srcId::${realAudios.length}::${realSubs.length}';
+    if (!_savedLearnedTrackKeys.add(cacheKey)) return;
+
+    final streams = <Map<String, dynamic>>[];
+    var nextIdx = 0;
+    for (final v in tracks.video.where((t) => t.id != 'auto' && t.id != 'no')) {
+      streams.add({
+        'Index': nextIdx++,
+        'Type': 'Video',
+        if (v.codec != null && v.codec!.isNotEmpty) 'Codec': v.codec,
+        if (v.w != null && v.w! > 0) 'Width': v.w,
+        if (v.h != null && v.h! > 0) 'Height': v.h,
+      });
+    }
+    for (final a in realAudios) {
+      streams.add({
+        'Index': int.tryParse(a.id) ?? nextIdx,
+        'Type': 'Audio',
+        if (a.codec != null && a.codec!.isNotEmpty) 'Codec': a.codec,
+        if (a.language != null && a.language!.isNotEmpty) 'Language': a.language,
+        if (a.title != null && a.title!.isNotEmpty) 'Title': a.title,
+        if (a.channelscount != null && a.channelscount! > 0) 'Channels': a.channelscount,
+      });
+      nextIdx++;
+    }
+    for (final s in realSubs) {
+      // Skip external URLs already tracked separately as external sidecars
+      if ((s.uri == true) || (s.id.startsWith('http'))) continue;
+      streams.add({
+        'Index': int.tryParse(s.id) ?? nextIdx,
+        'Type': 'Subtitle',
+        if (s.codec != null && s.codec!.isNotEmpty) 'Codec': s.codec,
+        if (s.language != null && s.language!.isNotEmpty) 'Language': s.language,
+        if (s.title != null && s.title!.isNotEmpty) 'Title': s.title,
+        'IsExternal': false,
+      });
+      nextIdx++;
+    }
+    if (streams.isNotEmpty) {
+      unawaited(
+        widget.appState.core
+            .invoke('save_learned_tracks', {
+              'item_id': _currentItem.id,
+              'media_source_id': srcId,
+              'streams': streams,
+            })
+            .catchError((_) => null),
+      );
+    }
   }
 
   void _onVideoParamsChanged(VideoParams vp) {
@@ -920,8 +986,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await _applyMpvProperty('video-sync', p.videoSync);
     await _applyMpvProperty('demuxer-max-bytes', '${p.bufferSizeMb}MiB');
 
-    // Apply preferred audio & subtitle language priorities so unprobed embygo streams auto-match!
-    final alang = switch (p.preferredAudioLang) {
+    // Apply preferred audio & subtitle language priorities (honoring per-version override if set!)
+    final effAudioPref = widget.preferredAudioLangOverride ?? p.preferredAudioLang;
+    final effSubPref = widget.preferredSubLangOverride ?? p.preferredSubLang;
+    final alang = switch (effAudioPref) {
       'zh' => 'cmn,zh,chi,zho,chs,cn,mandarin',
       'yue' => 'yue,cantonese,zh-hk,zho,chi',
       'ja' => 'ja,jpn,jp',
@@ -932,10 +1000,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (alang.isNotEmpty) {
       await _applyMpvProperty('alang', alang);
     }
-    if (widget.initialSubtitleStreamIndex == -1 || p.preferredSubLang == 'off') {
+    if (widget.initialSubtitleStreamIndex == -1 || effSubPref == 'off') {
       await _applyMpvProperty('sid', 'no');
     } else {
-      final slang = switch (p.preferredSubLang) {
+      final slang = switch (effSubPref) {
         'zh' => 'chs,sc,zh-cn,zh-hans,zh,chi,zho,cn',
         'zh-Hant' => 'cht,tc,zh-tw,zh-hk,zh-hant,zho,chi,zh',
         'en' => 'en,eng',
@@ -2071,20 +2139,44 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                   _scheduleHideControls();
                                 },
                                 child: Center(
-                                  child: ConstrainedBox(
-                                    constraints: const BoxConstraints(maxWidth: 940),
-                                    child: GlassSurface(
-                                      borderRadius: 20,
-                                      blur: 30,
-                                      color: const Color(0xCC111319),
-                                      borderColor: const Color(0x28FFFFFF),
-                                      padding: EdgeInsets.fromLTRB(
-                                        wide ? 18 : 14,
-                                        12,
-                                        wide ? 18 : 14,
-                                        12,
-                                      ),
-                                      child: LayoutBuilder(
+                                  child: Builder(
+                                    builder: (context) {
+                                      final activeSkin = widget.appState.prefs.activeSkin;
+                                      final osd = activeSkin.osdStyle;
+                                      final isFullGradient = osd == 'cinema_gradient';
+                                      final isMinimalGlass = osd == 'minimal_glass';
+                                      return ConstrainedBox(
+                                        constraints: BoxConstraints(
+                                          maxWidth: isFullGradient
+                                              ? 1680
+                                              : (isMinimalGlass ? 820 : 940),
+                                        ),
+                                        child: GlassSurface(
+                                          borderRadius: isFullGradient
+                                              ? 12
+                                              : (isMinimalGlass
+                                                  ? 28
+                                                  : activeSkin.cardRadius.clamp(12.0, 24.0)),
+                                          blur: isFullGradient ? 14 : (isMinimalGlass ? 40 : 30),
+                                          color: isFullGradient
+                                              ? const Color(0xE608090E)
+                                              : (isMinimalGlass
+                                                  ? Color.lerp(
+                                                      const Color(0xAA0C101C),
+                                                      activeSkin.accent,
+                                                      0.12,
+                                                    )!
+                                                  : const Color(0xCC111319)),
+                                          borderColor: isMinimalGlass
+                                              ? activeSkin.accent.withValues(alpha: 0.34)
+                                              : const Color(0x28FFFFFF),
+                                          padding: EdgeInsets.fromLTRB(
+                                            wide ? 18 : 14,
+                                            12,
+                                            wide ? 18 : 14,
+                                            12,
+                                          ),
+                                          child: LayoutBuilder(
                                         builder: (context, deckConstraints) {
                                           final singleRowDeck = deckConstraints.maxWidth >= 680;
                                           final speedPill = _DeckPillButton(
@@ -2338,16 +2430,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                                     ),
                                                   ),
                                                 ),
+                                                ],
                                               ],
-                                            ],
-                                          );
-                                        },
+                                            );
+                                          },
+                                        ),
                                       ),
-                                    ),
-                                  ),
+                                    );
+                                  },
                                 ),
                               ),
                             ),
+                          ),
                           ),
                         ],
                       ),

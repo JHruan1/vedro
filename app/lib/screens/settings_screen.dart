@@ -76,9 +76,28 @@ class _NavItemMeta {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  _SettingsSection _active = _SettingsSection.servers;
+  late _SettingsSection _active;
   final _filterCtrl = TextEditingController();
+  final _detailScrollCtrl = ScrollController();
   String _filter = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _active = _SettingsSection.values.firstWhere(
+      (s) => s.name == widget.appState.activeSettingsSection,
+      orElse: () => _SettingsSection.servers,
+    );
+  }
+
+  void _selectSection(_SettingsSection sec) {
+    if (_active == sec) return;
+    widget.appState.activeSettingsSection = sec.name;
+    setState(() => _active = sec);
+    if (_detailScrollCtrl.hasClients) {
+      _detailScrollCtrl.jumpTo(0);
+    }
+  }
 
   static const _baseNavItems = <_NavItemMeta>[
     // 媒体源与管理
@@ -226,6 +245,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _filterCtrl.dispose();
+    _detailScrollCtrl.dispose();
     super.dispose();
   }
 
@@ -305,7 +325,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Container(
                   width: 268,
                   decoration: BoxDecoration(
-                    color: skin.surface.withValues(alpha: skin.isLight ? 0.78 : 0.85),
+                    color: skin.unifiedPanelColor,
                     border: Border(right: BorderSide(color: skin.border, width: 0.8)),
                   ),
                   child: Column(
@@ -317,7 +337,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             Container(
                               height: 34,
                               decoration: BoxDecoration(
-                                color: skin.surface2,
+                                color: skin.unifiedTileColor(),
                                 borderRadius: BorderRadius.circular(10),
                                 border: Border.all(color: skin.border, width: 0.7),
                               ),
@@ -351,7 +371,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             _SidebarServerMiniCard(
                               appState: widget.appState,
                               selected: _active == _SettingsSection.servers,
-                              onTap: () => setState(() => _active = _SettingsSection.servers),
+                              onTap: () => _selectSection(_SettingsSection.servers),
                             ),
                           ],
                         ),
@@ -367,23 +387,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
 
-                // Right Detail Pane
+                // Right Detail Pane (preserves scroll position across live skin changes!)
                 Expanded(
                   child: SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(40, 28, 40, 64),
+                    controller: _detailScrollCtrl,
+                    padding: const EdgeInsets.fromLTRB(36, 26, 36, 64),
                     child: Center(
                       child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 820),
-                        child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 160),
-                          child: KeyedSubtree(
-                            key: ValueKey(_active),
-                            child: _SettingsDetailPane(
-                              section: _active,
-                              appState: widget.appState,
-                              onOpenServerHub: widget.onOpenServerHub,
-                              onOpenAddServer: widget.onOpenAddServer,
-                            ),
+                        constraints: BoxConstraints(
+                          maxWidth: _active == _SettingsSection.style ? 1180 : 840,
+                        ),
+                        child: KeyedSubtree(
+                          key: ValueKey(_active),
+                          child: _SettingsDetailPane(
+                            section: _active,
+                            appState: widget.appState,
+                            onOpenServerHub: widget.onOpenServerHub,
+                            onOpenAddServer: widget.onOpenAddServer,
                           ),
                         ),
                       ),
@@ -497,12 +517,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: MouseRegion(
             cursor: SystemMouseCursors.click,
             child: GestureDetector(
-              onTap: () => setState(() => _active = meta.section),
+              onTap: () => _selectSection(meta.section),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 140),
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7.5),
                 decoration: BoxDecoration(
-                  color: selected ? skin.surface2 : Colors.transparent,
+                  color: selected ? skin.unifiedTileColor(selected: true) : Colors.transparent,
                   borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 11.0)),
                   border: selected
                       ? Border.all(color: skin.borderStrong, width: 0.8)
@@ -647,7 +667,7 @@ class _SidebarServerMiniCard extends StatelessWidget {
   }
 }
 
-class _MobileSettingsSubPage extends StatelessWidget {
+class _MobileSettingsSubPage extends StatefulWidget {
   const _MobileSettingsSubPage({
     required this.title,
     required this.section,
@@ -663,26 +683,51 @@ class _MobileSettingsSubPage extends StatelessWidget {
   final void Function([String? initialUrl]) onOpenAddServer;
 
   @override
+  State<_MobileSettingsSubPage> createState() => _MobileSettingsSubPageState();
+}
+
+class _MobileSettingsSubPageState extends State<_MobileSettingsSubPage> {
+  final _scrollCtrl = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    widget.appState.activeSettingsSection = widget.section.name;
+  }
+
+  @override
+  void dispose() {
+    _scrollCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final skin = VedroSkin.of(context);
-    return Scaffold(
-      backgroundColor: skin.canvas,
-      appBar: AppBar(title: Text(title)),
-      body: VedroSkinCanvas(
-        child: ListenableBuilder(
-          listenable: appState,
-          builder: (context, _) => SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 48),
-            child: _SettingsDetailPane(
-              section: section,
-              appState: appState,
-              onOpenServerHub: onOpenServerHub,
-              onOpenAddServer: onOpenAddServer,
-              hideHeading: true,
+    return ListenableBuilder(
+      listenable: widget.appState,
+      builder: (context, _) {
+        final skin = widget.appState.prefs.activeSkin;
+        return Theme(
+          data: VedroTheme.fromSkin(skin),
+          child: Scaffold(
+            backgroundColor: skin.canvas,
+            appBar: AppBar(title: Text(widget.title)),
+            body: VedroSkinCanvas(
+              child: SingleChildScrollView(
+                controller: _scrollCtrl,
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 48),
+                child: _SettingsDetailPane(
+                  section: widget.section,
+                  appState: widget.appState,
+                  onOpenServerHub: widget.onOpenServerHub,
+                  onOpenAddServer: widget.onOpenAddServer,
+                  hideHeading: true,
+                ),
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }

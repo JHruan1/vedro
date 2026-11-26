@@ -55,14 +55,17 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
     final skin = VedroSkin.of(context);
     final wide = MediaQuery.sizeOf(context).width >= 820;
     final padX = wide ? 32.0 : 20.0;
+    final isLandscapePoster = widget.landscape || skin.posterAspect == 'landscape_16_9';
     final cardWidth = widget.isResume
         ? (wide ? 306.0 : 268.0)
-        : (widget.landscape
-            ? (wide ? 286.0 : 252.0)
+        : (isLandscapePoster
+            ? (wide ? 286.0 : 244.0)
             : widget.appState.prefs.posterCardWidth(wide));
-    final artHeight = widget.isResume || widget.landscape
+    final artHeight = widget.isResume
         ? (cardWidth / (16 / 9))
-        : (cardWidth / (2 / 3));
+        : (isLandscapePoster
+            ? (cardWidth / (16 / 9))
+            : (cardWidth / skin.mediaAspectRatio));
     final textBelow = widget.isResume || skin.cardStyle == 'classic_below';
     final railHeight = artHeight + (textBelow ? 76 : 24);
 

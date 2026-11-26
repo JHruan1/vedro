@@ -111,6 +111,42 @@ class _MockVedroCore implements VedroCoreClient {
           'latest_by_library': <dynamic>[],
         };
       case 'get_item':
+        if (params['item_id'] == 'm1') {
+          return <String, dynamic>{
+            'item': <String, dynamic>{
+              'Id': 'm1',
+              'Name': '沙丘2',
+              'OriginalTitle': 'Dune: Part Two',
+              'Type': 'Movie',
+              'Overview': '保罗·厄崔迪与弗雷曼人联手展开复仇。',
+              'ProductionYear': 2024,
+              'CommunityRating': 8.6,
+              'MediaSources': <dynamic>[
+                <String, dynamic>{
+                  'Id': 'src-dv',
+                  'Name': '4K · Dolby Vision · TrueHD Atmos · REMUX',
+                  'Container': 'mkv',
+                  'Size': 73400320000,
+                  'Bitrate': 64200000,
+                  'MediaStreams': <dynamic>[
+                    <String, dynamic>{'Index': 0, 'Type': 'Video', 'Codec': 'hevc', 'Height': 2160},
+                    <String, dynamic>{'Index': 1, 'Type': 'Audio', 'Language': 'eng', 'Codec': 'truehd', 'DisplayTitle': 'English TrueHD Atmos'},
+                    <String, dynamic>{'Index': 2, 'Type': 'Subtitle', 'Language': 'chi', 'DisplayTitle': '简体中文 ASS'},
+                  ],
+                },
+                <String, dynamic>{
+                  'Id': 'src-sdr',
+                  'Name': '1080p · BluRay · x264',
+                  'Container': 'mkv',
+                  'Size': 14200000000,
+                  'Bitrate': 11800000,
+                },
+              ],
+            },
+            'similar': <dynamic>[],
+            'segments': <dynamic>[],
+          };
+        }
         return <String, dynamic>{
           'item': <String, dynamic>{
             'Id': 'tv1',
@@ -136,7 +172,42 @@ class _MockVedroCore implements VedroCoreClient {
           'segments': <dynamic>[],
         };
       case 'get_seasons':
-        return <String, dynamic>{'Items': <dynamic>[]};
+        return <String, dynamic>{
+          'Items': <dynamic>[
+            <String, dynamic>{'Id': 's1', 'Name': '第 1 季', 'Type': 'Season', 'IndexNumber': 1},
+          ],
+        };
+      case 'get_episodes':
+        return <String, dynamic>{
+          'Items': <dynamic>[
+            <String, dynamic>{
+              'Id': 'ep1',
+              'Name': '倒计时',
+              'Type': 'Episode',
+              'SeriesId': 'tv1',
+              'SeriesName': '三体',
+              'ParentIndexNumber': 1,
+              'IndexNumber': 1,
+              'MediaSourceCount': 2,
+              'MediaSources': <dynamic>[
+                <String, dynamic>{
+                  'Id': 'ms-4k',
+                  'Name': '4K · Dolby Vision · Atmos',
+                  'Container': 'mkv',
+                  'Size': 8589934592,
+                  'Bitrate': 28500000,
+                },
+                <String, dynamic>{
+                  'Id': 'ms-1080',
+                  'Name': '1080p · BluRay · x265',
+                  'Container': 'mkv',
+                  'Size': 2147483648,
+                  'Bitrate': 7200000,
+                },
+              ],
+            },
+          ],
+        };
       default:
         return <String, dynamic>{};
     }
@@ -355,9 +426,9 @@ void main() {
     await tester.pump();
   });
 
-  testWidgets('Series DetailScreen renders full NFO metadata and hides 展开全部 for short overview',
+  testWidgets('Series DetailScreen renders Poster Cover, Backdrop, Series Version Selector & NFO',
       (tester) async {
-    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.physicalSize = const Size(1280, 1200);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
@@ -368,6 +439,18 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
+    // Dedicated Poster Cover & Backdrop Banner MUST both be rendered
+    expect(find.byKey(const ValueKey('detail-backdrop-banner')), findsOneWidget);
+    expect(find.byKey(const ValueKey('detail-poster-cover')), findsOneWidget);
+    // Series multi-version selector MUST be clearly visible and switchable
+    expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
+    expect(find.text('选择剧集片源版本 (2)'), findsOneWidget);
+    expect(find.text('4K · Dolby Vision · Atmos'), findsOneWidget);
+    expect(find.text('1080p · BluRay · x265'), findsOneWidget);
+
+    await tester.tap(find.text('1080p · BluRay · x265'));
+    await tester.pumpAndSettle();
+
     expect(find.text('影片资料与 NFO 信息'), findsOneWidget);
     expect(find.text('Netflix'), findsOneWidget);
     expect(find.text('# 科幻'), findsOneWidget);
@@ -375,6 +458,33 @@ void main() {
     expect(find.text('2024-03-21'), findsWidgets);
     // Short overview MUST NOT show 展开全部
     expect(find.text('展开全部'), findsNothing);
+  });
+
+  testWidgets('Mobile Movie DetailScreen renders Poster Cover & solid Version/Audio/Subtitle Selector without overflow',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final app = VedroAppState(_MockVedroCore());
+    final stub = MediaItemModel(id: 'm1', name: '沙丘2', type: 'Movie');
+    await tester.pumpWidget(MaterialApp(
+      home: DetailScreen(item: stub, appState: app),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('detail-backdrop-banner')), findsOneWidget);
+    expect(find.byKey(const ValueKey('detail-poster-cover')), findsOneWidget);
+    expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
+    expect(find.text('选择片源版本 (2)'), findsOneWidget);
+    expect(find.text('4K · Dolby Vision · TrueHD Atmos · REMUX'), findsOneWidget);
+    expect(find.text('1080p · BluRay · x264'), findsOneWidget);
+    expect(find.text('English TrueHD Atmos'), findsOneWidget);
+    expect(find.text('简体中文 ASS'), findsOneWidget);
+
+    await tester.tap(find.text('1080p · BluRay · x264'));
+    await tester.pumpAndSettle();
+    expect(find.text('当前'), findsOneWidget);
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {

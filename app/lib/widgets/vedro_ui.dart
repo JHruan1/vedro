@@ -317,7 +317,9 @@ class VedroSegmentedControl<T> extends StatelessWidget {
   }
 }
 
-/// Present a frosted dark glass sheet (centered floating HUD panel on desktop, bottom sheet on mobile).
+/// Present a crisp, high-contrast solid elevated modal sheet (centered dialog on desktop,
+/// bottom sheet on mobile). Avoids heavy BackdropFilter smearing over video/artwork so text
+/// and selection rows are always razor-sharp and readable.
 Future<T?> showGlassSheet<T>({
   required BuildContext context,
   required WidgetBuilder builder,
@@ -325,7 +327,7 @@ Future<T?> showGlassSheet<T>({
   return showModalBottomSheet<T>(
     context: context,
     backgroundColor: Colors.transparent,
-    barrierColor: const Color(0x8A000000),
+    barrierColor: const Color(0xA6000000),
     isScrollControlled: true,
     builder: (ctx) {
       final size = MediaQuery.sizeOf(ctx);
@@ -338,14 +340,23 @@ Future<T?> showGlassSheet<T>({
             padding: EdgeInsets.fromLTRB(16, wide ? 24 : 0, 16, wide ? 24 : 14),
             child: ConstrainedBox(
               constraints: BoxConstraints(
-                maxWidth: wide ? 480 : 520,
-                maxHeight: size.height * 0.80,
+                maxWidth: wide ? 500 : 540,
+                maxHeight: size.height * 0.82,
               ),
-              child: GlassSurface(
-                borderRadius: 20,
-                blur: 30,
-                color: VedroTheme.glassStrong,
-                borderColor: const Color(0x28FFFFFF),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF161821),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0xFF2D3142), width: 1.0),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0xB8000000),
+                      blurRadius: 32,
+                      offset: Offset(0, 12),
+                    ),
+                  ],
+                ),
+                clipBehavior: Clip.antiAlias,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -355,7 +366,7 @@ Future<T?> showGlassSheet<T>({
                         width: 36,
                         height: 4,
                         decoration: BoxDecoration(
-                          color: const Color(0x40FFFFFF),
+                          color: const Color(0xFF3E4357),
                           borderRadius: BorderRadius.circular(2),
                         ),
                       ),

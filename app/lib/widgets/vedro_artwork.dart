@@ -99,7 +99,7 @@ class FadeNetworkImage extends StatelessWidget {
   }
 }
 
-/// Portrait poster displayed inside a 16:9 slot: blurred ambient-glow poster fills
+/// Portrait poster displayed inside a 16:9 slot: clipped soft ambient poster fills
 /// the field while the crisp poster sits framed with a soft cinema float shadow.
 class FramedPoster extends StatelessWidget {
   const FramedPoster({super.key, required this.url});
@@ -107,72 +107,75 @@ class FramedPoster extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Transform.scale(
-          scale: 1.25,
-          child: ImageFiltered(
-            imageFilter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-            child: ColorFiltered(
-              colorFilter: const ColorFilter.matrix(<double>[
-                0.58, 0, 0, 0, 0,
-                0, 0.58, 0, 0, 0,
-                0, 0, 0.58, 0, 0,
-                0, 0, 0, 1, 0,
-              ]),
-              child: FadeNetworkImage(url: url, fit: BoxFit.cover),
-            ),
-          ),
-        ),
-        Center(
-          child: FractionallySizedBox(
-            heightFactor: 0.84,
-            child: AspectRatio(
-              aspectRatio: 2 / 3,
-              child: Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(6),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x99000000),
-                      blurRadius: 24,
-                      offset: Offset(0, 10),
-                    ),
-                  ],
-                ),
-                clipBehavior: Clip.antiAlias,
+    return ClipRect(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Transform.scale(
+            scale: 1.18,
+            child: ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+              child: ColorFiltered(
+                colorFilter: const ColorFilter.matrix(<double>[
+                  0.62, 0, 0, 0, 0,
+                  0, 0.62, 0, 0, 0,
+                  0, 0, 0.62, 0, 0,
+                  0, 0, 0, 1, 0,
+                ]),
                 child: FadeNetworkImage(url: url, fit: BoxFit.cover),
               ),
             ),
           ),
-        ),
-      ],
+          Center(
+            child: FractionallySizedBox(
+              heightFactor: 0.84,
+              child: AspectRatio(
+                aspectRatio: 2 / 3,
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(6),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x99000000),
+                        blurRadius: 20,
+                        offset: Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: FadeNetworkImage(url: url, fit: BoxFit.cover),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
 
-/// Full-bleed darkened ambient blur when a detail page item lacks a widescreen backdrop.
-/// Unlike `FramedPoster` (for 16:9 cards), never places a duplicate vertical poster in the center
-/// where hero typography & overview live.
+/// Strictly clipped ambient blur when a detail banner lacks a widescreen backdrop.
+/// Uses moderate blur & brightness so it never smears outside bounds or turns pitch black.
 class _AmbientBlurBackdrop extends StatelessWidget {
   const _AmbientBlurBackdrop({required this.url});
   final String url;
 
   @override
   Widget build(BuildContext context) {
-    return Transform.scale(
-      scale: 1.28,
-      child: ImageFiltered(
-        imageFilter: ImageFilter.blur(sigmaX: 36, sigmaY: 36),
-        child: ColorFiltered(
-          colorFilter: const ColorFilter.matrix(<double>[
-            0.36, 0, 0, 0, 0,
-            0, 0.36, 0, 0, 0,
-            0, 0, 0.36, 0, 0,
-            0, 0, 0, 1, 0,
-          ]),
-          child: FadeNetworkImage(url: url, fit: BoxFit.cover),
+    return ClipRect(
+      child: Transform.scale(
+        scale: 1.16,
+        child: ImageFiltered(
+          imageFilter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: ColorFiltered(
+            colorFilter: const ColorFilter.matrix(<double>[
+              0.56, 0, 0, 0, 0,
+              0, 0.56, 0, 0, 0,
+              0, 0, 0.56, 0, 0,
+              0, 0, 0, 1, 0,
+            ]),
+            child: FadeNetworkImage(url: url, fit: BoxFit.cover),
+          ),
         ),
       ),
     );
@@ -186,6 +189,7 @@ class VedroArtwork extends StatelessWidget {
     super.key,
     required this.item,
     required this.appState,
+    this.fallbackItem,
     this.landscape = false,
     this.isHero = false,
     this.width,
@@ -195,6 +199,7 @@ class VedroArtwork extends StatelessWidget {
 
   final MediaItemModel item;
   final VedroAppState appState;
+  final MediaItemModel? fallbackItem;
   final bool landscape;
   final bool isHero;
   final int? width;
@@ -212,32 +217,37 @@ class VedroArtwork extends StatelessWidget {
 
     Widget? artLayer;
     if (isHero) {
-      final art = appState.backdropArt(item, width: width ?? 1920);
+      final art = appState.backdropArt(item, width: width ?? 1920) ??
+          (fallbackItem != null ? appState.backdropArt(fallbackItem!, width: width ?? 1920) : null);
       if (art != null) {
         artLayer = art.isPoster
             ? _AmbientBlurBackdrop(url: art.url)
             : FadeNetworkImage(url: art.url, fit: BoxFit.cover, alignment: alignment);
       }
     } else if (landscape) {
-      final art = appState.wideArt(item, width: width ?? 640);
+      final art = appState.wideArt(item, width: width ?? 640) ??
+          (fallbackItem != null ? appState.wideArt(fallbackItem!, width: width ?? 640) : null);
       if (art != null) {
         artLayer = art.isPoster
             ? FramedPoster(url: art.url)
             : FadeNetworkImage(url: art.url, fit: BoxFit.cover, alignment: alignment);
       }
     } else {
-      final url = appState.posterArtUrl(item, width: width ?? 420);
+      final url = appState.posterArtUrl(item, width: width ?? 420) ??
+          (fallbackItem != null ? appState.posterArtUrl(fallbackItem!, width: width ?? 420) : null);
       if (url != null) {
         artLayer = FadeNetworkImage(url: url, fit: BoxFit.cover, alignment: alignment);
       }
     }
 
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        GeneratedArt(seed: seed, label: label),
-        if (artLayer != null) artLayer,
-      ],
+    return ClipRect(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          GeneratedArt(seed: seed, label: label),
+          if (artLayer != null) artLayer,
+        ],
+      ),
     );
   }
 }

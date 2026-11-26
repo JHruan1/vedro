@@ -3214,18 +3214,50 @@ class _PlayerScreenState extends State<PlayerScreen> {
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
         children: [
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Text('切换版本', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Row(
+              children: [
+                const Icon(Icons.layers_rounded, size: 18, color: VedroTheme.fg2),
+                const SizedBox(width: 8),
+                Text(
+                  '切换片源版本 (${sources.length})',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
           ),
-          ...sources.map((src) => _SheetOptionRow(
-                label: src.displayLabel,
+          const SizedBox(height: 6),
+          ...sources.map((src) {
+            final title = src.name?.isNotEmpty == true
+                ? src.name!
+                : (src.container?.toUpperCase() ?? '原画');
+            final meta = [
+              if (src.container != null && src.container!.isNotEmpty) src.container!.toUpperCase(),
+              if (src.videoStreams.isNotEmpty && src.videoStreams.first.height != null)
+                '${src.videoStreams.first.height}p',
+              if (fmtFileSize(src.size).isNotEmpty) fmtFileSize(src.size),
+              if ((src.bitrate ?? 0) > 0) '${(src.bitrate! / 1000000).toStringAsFixed(1)} Mbps',
+              if (src.audioStreams.isNotEmpty) '${src.audioStreams.length} 音轨',
+              if (src.subtitleStreams.isNotEmpty) '${src.subtitleStreams.length} 字幕',
+            ].join(' · ');
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _SheetOptionRow(
+                label: title,
+                subtitle: meta.isNotEmpty ? meta : null,
                 selected: src.id == _prepared?.mediaSourceId,
                 onTap: () {
                   Navigator.pop(ctx);
                   _startPlayback(src.id);
                 },
-              )),
+              ),
+            );
+          }),
         ],
       ),
     );
@@ -3756,36 +3788,75 @@ class _SheetOptionRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final accent = Theme.of(context).colorScheme.secondary;
     return InkWell(
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(12),
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
-          color: selected ? const Color(0x16FFFFFF) : Colors.transparent,
-          borderRadius: BorderRadius.circular(10),
+          color: selected ? const Color(0xFF1F2A42) : const Color(0xFF1E202B),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? accent : const Color(0xFF2D3142),
+            width: selected ? 1.4 : 0.9,
+          ),
         ),
         child: Row(
           children: [
+            Icon(
+              selected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+              size: 19,
+              color: selected ? accent : const Color(0xFF6E748A),
+            ),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     label,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: selected ? Colors.white : VedroTheme.fg,
+                      color: Colors.white,
                       fontSize: 14,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                      height: 1.35,
                     ),
                   ),
                   if (subtitle != null && subtitle!.isNotEmpty) ...[
-                    const SizedBox(height: 2),
-                    Text(subtitle!, style: const TextStyle(color: VedroTheme.fg3, fontSize: 12)),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFFB3B9C9),
+                        fontSize: 12,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    ),
                   ],
                 ],
               ),
             ),
-            if (selected) Icon(Icons.check_rounded, size: 18, color: accent),
+            if (selected) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: accent,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Text(
+                  '当前',
+                  style: TextStyle(
+                    color: Color(0xFF0B0B0D),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),

@@ -47,6 +47,7 @@ class _DetailScreenState extends State<DetailScreen> {
   List<MediaItemModel> _personCredits = [];
   String? _selectedSeasonId;
   String? _selectedSourceId;
+  String? _selectedSeriesVersionKey;
   int? _selectedAudioIndex;
   int? _selectedSubtitleIndex;
   bool _loading = true;
@@ -127,6 +128,157 @@ class _DetailScreenState extends State<DetailScreen> {
       if (s.id == _selectedSourceId) return s;
     }
     return _item.mediaSources.first;
+  }
+
+  /// Build a stable human-readable version key for matching sources across episodes of a Series.
+  String _sourceVersionKey(MediaSourceModel s) {
+    final name = (s.name ?? '').trim();
+    if (name.isNotEmpty) return name;
+    final parts = <String>[
+      if (s.videoStreams.isNotEmpty && s.videoStreams.first.height != null)
+        '${s.videoStreams.first.height}p',
+      if (s.container != null && s.container!.isNotEmpty) s.container!.toUpperCase(),
+    ];
+    return parts.isNotEmpty ? parts.join(' · ') : s.id;
+  }
+
+  /// Collect representative multi-version sources for a Series from its loaded episodes.
+  List<MediaSourceModel> get _seriesSampleSources {
+    if (!_item.isSeries) return const [];
+    for (final ep in _episodes) {
+      if (ep.mediaSources.length > 1) return ep.mediaSources;
+    }
+    return const [];
+  }
+
+  String? _matchingSourceIdForEpisode(MediaItemModel ep) {
+    if (ep.mediaSources.length <= 1) return null;
+    final key = _selectedSeriesVersionKey;
+    if (key == null || key.isEmpty) return ep.mediaSources.first.id;
+    for (final s in ep.mediaSources) {
+      if (_sourceVersionKey(s) == key) return s.id;
+    }
+    // Fuzzy match on resolution/codec tokens when filenames differ per episode (e.g. S01E01 vs S01E02)
+    final keyTokens = key.toLowerCase().split(RegExp(r'[\s._\-·/]+')).where((t) => t.length >= 2).toSet();
+    MediaSourceModel? best;
+    var bestScore = 0;
+    for (final s in ep.mediaSources) {
+      final sTokens = _sourceVersionKey(s)
+          .toLowerCase()
+          .split(RegExp(r'[\s._\-·/]+'))
+          .where((t) => t.length >= 2)
+          .toSet();
+      final score = keyTokens.intersection(sTokens).length;
+      if (score > bestScore) {
+        bestScore = score;
+        best = s;
+      }
+    }
+    return best?.id ?? ep.mediaSources.first.id;
+  }
+
+  Future<void> _openEpisodeVersionSheet(MediaItemModel ep) async {
+    var target = ep;
+    if (target.mediaSources.length <= 1 && target.versionCount > 1) {
+      try {
+        final res = await widget.appState.core.invoke('get_item', {'item_id': ep.id})
+            as Map<String, dynamic>;
+        target = MediaItemModel.fromJson(res['item'] as Map<String, dynamic>);
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    final sources = target.mediaSources;
+    if (sources.isEmpty) {
+      _openItemDetail(target);
+      return;
+    }
+    final activeId = _matchingSourceIdForEpisode(target) ?? sources.first.id;
+    final accent = Theme.of(context).colorScheme.secondary;
+    showGlassSheet<void>(
+      context: context,
+      builder: (ctx) => ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '选择片源版本 (${sources.length})',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '${target.episodeCode ?? ''} ${target.displayName}'.trim(),
+                  style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...sources.map((s) {
+            final on = s.id == activeId;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _VersionOptionTile(
+                source: s,
+                selected: on,
+                accent: accent,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  setState(() => _selectedSeriesVersionKey = _sourceVersionKey(s));
+                  _play(target, sourceId: s.id);
+                },
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  void _openPosterLightbox() {
+    final posterUrl = widget.appState.posterArtUrl(_item, width: 1200);
+    if (posterUrl == null || posterUrl.isEmpty) return;
+    showDialog<void>(
+      context: context,
+      barrierColor: const Color(0xDE000000),
+      builder: (ctx) => GestureDetector(
+        onTap: () => Navigator.pop(ctx),
+        child: Stack(
+          children: [
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(28),
+                child: InteractiveViewer(
+                  minScale: 0.8,
+                  maxScale: 3.0,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
+                    child: Image.network(posterUrl, fit: BoxFit.contain),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: MediaQuery.paddingOf(ctx).top + 16,
+              right: 20,
+              child: IconButton(
+                style: IconButton.styleFrom(backgroundColor: const Color(0xCC181A24)),
+                icon: const Icon(Icons.close_rounded, color: Colors.white),
+                onPressed: () => Navigator.pop(ctx),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _play(MediaItemModel target, {String? sourceId, bool fromBeginning = false, String? localPath}) {
@@ -390,7 +542,179 @@ class _DetailScreenState extends State<DetailScreen> {
       );
     }
 
-    final heroMinH = (size.height * (wide ? 0.56 : 0.44)).clamp(340.0, 540.0);
+    final seriesSources = _seriesSampleSources;
+    if (seriesSources.length > 1 && _selectedSeriesVersionKey == null) {
+      _selectedSeriesVersionKey = _sourceVersionKey(seriesSources.first);
+    }
+
+    final bannerH = (size.height * (wide ? 0.38 : 0.28)).clamp(wide ? 260.0 : 190.0, wide ? 360.0 : 250.0);
+    final posterOverlap = wide ? 112.0 : 66.0;
+    final isEpisodeWithStill = _item.type == 'Episode' && _item.primaryImageTag != null;
+    final coverW = _item.type == 'Person'
+        ? (wide ? 148.0 : 104.0)
+        : isEpisodeWithStill
+            ? (wide ? 256.0 : 144.0)
+            : (wide ? 176.0 : 112.0);
+    final coverAspect = _item.type == 'Person'
+        ? 1.0
+        : (isEpisodeWithStill ? 16 / 9 : 2 / 3);
+
+    Widget buildActionRow() {
+      return Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          if (_item.isPlayable)
+            _ProgressPlayPill(
+              label: localReady
+                  ? '播放离线缓存'
+                  : (_item.playbackPositionTicks > 0
+                      ? '继续 ${fmtDurationTicks(_item.playbackPositionTicks)}'
+                      : '立即播放'),
+              progress: _item.resumeProgress,
+              accent: accent,
+              onTap: () => _play(
+                _item,
+                sourceId: _selectedSourceId,
+                localPath: localReady ? dlTask.filePath : null,
+              ),
+            )
+          else if (nextEpToPlay != null)
+            _ProgressPlayPill(
+              label: nextEpToPlay.resumeProgress > 0.01
+                  ? '继续 ${nextEpToPlay.episodeCode ?? nextEpToPlay.displayName}'
+                  : '播放 ${nextEpToPlay.episodeCode ?? '第 1 集'}',
+              progress: nextEpToPlay.resumeProgress,
+              accent: accent,
+              onTap: () => _play(
+                nextEpToPlay!,
+                sourceId: _matchingSourceIdForEpisode(nextEpToPlay),
+              ),
+            ),
+          if (_item.isPlayable && _item.playbackPositionTicks > 0)
+            _CircleActionButton(
+              icon: Icons.replay_rounded,
+              tooltip: '从头播放',
+              onTap: () => _play(
+                _item,
+                sourceId: _selectedSourceId,
+                fromBeginning: true,
+              ),
+            ),
+          if (_item.type != 'Person')
+            _CircleActionButton(
+              icon: _item.played
+                  ? Icons.check_circle_rounded
+                  : Icons.check_circle_outline_rounded,
+              active: _item.played,
+              tooltip: _item.played ? '已看（点击取消）' : '标为已看',
+              onTap: () async {
+                await widget.appState.togglePlayed(_item);
+                await _loadDetails();
+              },
+            ),
+          _CircleActionButton(
+            icon: _item.isFavorite
+                ? Icons.favorite_rounded
+                : Icons.favorite_border_rounded,
+            iconColor: _item.isFavorite ? VedroTheme.danger : Colors.white,
+            tooltip: _item.isFavorite ? '取消收藏' : '收藏',
+            onTap: () async {
+              await widget.appState.toggleFavorite(_item);
+              await _loadDetails();
+            },
+          ),
+          if (_item.isPlayable || _episodes.isNotEmpty)
+            _CircleActionButton(
+              icon: localReady
+                  ? Icons.download_done_rounded
+                  : Icons.download_rounded,
+              iconColor: localReady ? const Color(0xFF34D399) : Colors.white,
+              tooltip: localReady ? '已离线下载' : '离线下载',
+              onTap: localReady
+                  ? () => _play(_item, localPath: dlTask.filePath)
+                  : _startDownload,
+            ),
+          _CircleActionButton(
+            icon: Icons.more_horiz_rounded,
+            tooltip: '更多（外部播放器 / 片单 / AI 翻译）',
+            onTap: _openMoreSheet,
+          ),
+        ],
+      );
+    }
+
+    Widget buildOverviewBlock() {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (tagline != null) ...[
+            Text(
+              tagline,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -0.1,
+              ),
+            ),
+            const SizedBox(height: 6),
+          ],
+          if (overviewText.isNotEmpty)
+            _ExpandableOverview(
+              text: overviewText,
+              collapsedLines: wide ? 4 : 3,
+              accent: accent,
+              aiReady: widget.appState.prefs.isAiReady,
+              translating: _translating,
+              isTranslated: _translatedOverview != null,
+              onTranslateToggle: _translatedOverview != null
+                  ? () => setState(() => _translatedOverview = null)
+                  : _translateOverview,
+            ),
+        ],
+      );
+    }
+
+    Widget coverCard = GestureDetector(
+      onTap: _openPosterLightbox,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          key: const ValueKey('detail-poster-cover'),
+          width: coverW,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: VedroTheme.surface2,
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0xB8000000),
+                blurRadius: 24,
+                offset: Offset(0, 10),
+              ),
+            ],
+          ),
+          foregroundDecoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0x38FFFFFF), width: 0.9),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: AspectRatio(
+            aspectRatio: coverAspect,
+            child: VedroArtwork(
+              item: _item,
+              appState: widget.appState,
+              landscape: isEpisodeWithStill,
+              width: 600,
+            ),
+          ),
+        ),
+      ),
+    );
+    if (widget.heroTag != null) {
+      coverCard = Hero(tag: widget.heroTag!, child: coverCard);
+    }
 
     return Scaffold(
       backgroundColor: VedroTheme.canvas,
@@ -398,13 +722,18 @@ class _DetailScreenState extends State<DetailScreen> {
         children: [
           CustomScrollView(
             slivers: [
-              // Clean Seamless Cinema Hero (dissolves cleanly to solid VedroTheme.canvas — zero seam!)
+              // Clean Unobstructed Backdrop Banner + Dedicated Crisp Poster Cover Header
               SliverToBoxAdapter(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(minHeight: heroMinH),
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
+                child: Stack(
+                  children: [
+                    // 1. Clean Top Backdrop Banner (fixed height, strictly clipped, gentle bottom fade ONLY)
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: bannerH,
+                      child: ClipRect(
+                        key: const ValueKey('detail-backdrop-banner'),
                         child: Stack(
                           fit: StackFit.expand,
                           children: [
@@ -412,36 +741,19 @@ class _DetailScreenState extends State<DetailScreen> {
                               item: _item,
                               appState: widget.appState,
                               isHero: true,
-                              alignment: const Alignment(0, -0.35),
+                              alignment: const Alignment(0, -0.25),
                               showInitials: false,
                             ),
-                            if (wide)
-                              const DecoratedBox(
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.centerLeft,
-                                    end: Alignment.centerRight,
-                                    stops: [0.0, 0.48, 0.78, 1.0],
-                                    colors: [
-                                      Color(0xF00B0B0D),
-                                      Color(0xBA0B0B0D),
-                                      Color(0x400B0B0D),
-                                      Colors.transparent,
-                                    ],
-                                  ),
-                                ),
-                              ),
                             const DecoratedBox(
                               decoration: BoxDecoration(
                                 gradient: LinearGradient(
                                   begin: Alignment.topCenter,
                                   end: Alignment.bottomCenter,
-                                  stops: [0.0, 0.22, 0.60, 0.88, 1.0],
+                                  stops: [0.0, 0.28, 0.70, 1.0],
                                   colors: [
-                                    Color(0x880B0B0D),
-                                    Color(0x180B0B0D),
-                                    Color(0xB80B0B0D),
-                                    Color(0xF50B0B0D),
+                                    Color(0x520B0B0D),
+                                    Color(0x100B0B0D),
+                                    Color(0xBF0B0B0D),
                                     VedroTheme.canvas,
                                   ],
                                 ),
@@ -450,325 +762,265 @@ class _DetailScreenState extends State<DetailScreen> {
                           ],
                         ),
                       ),
+                    ),
 
-                      // Foreground Hero Content
-                      Padding(
-                        padding: EdgeInsets.fromLTRB(
-                          padX,
-                          topSafe + (wide ? 96 : 112),
-                          padX,
-                          24,
-                        ),
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 820),
-                          child: Column(
+                    // 2. Foreground Header: Crisp Poster Cover + High-Contrast Info on Solid Canvas
+                    Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        padX,
+                        (bannerH - posterOverlap).clamp(topSafe + 60.0, bannerH),
+                        padX,
+                        20,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              if (_item.type == 'Episode' && _item.seriesName != null)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 6),
-                                  child: Text(
-                                    '${_item.seriesName} · ${_item.episodeCode ?? ''}',
-                                    style: const TextStyle(
-                                      color: Color(0xE0FFFFFF),
-                                      fontSize: 13.5,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                ),
+                              coverCard,
+                              SizedBox(width: wide ? 28 : 16),
+                              Expanded(
+                                child: Padding(
+                                  padding: EdgeInsets.only(top: wide ? 44 : 18),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      if (_item.type == 'Episode' && _item.seriesName != null)
+                                        Padding(
+                                          padding: const EdgeInsets.only(bottom: 5),
+                                          child: Text(
+                                            '${_item.seriesName} · ${_item.episodeCode ?? ''}',
+                                            style: const TextStyle(
+                                              color: Color(0xE0FFFFFF),
+                                              fontSize: 13.5,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                        ),
 
-                              // Title Logo or Display Headline
-                              if (logoUrl != null)
-                                ConstrainedBox(
-                                  constraints: BoxConstraints(
-                                    maxHeight: wide ? 92 : 70,
-                                    maxWidth: wide ? 440 : 300,
-                                  ),
-                                  child: Image.network(
-                                    logoUrl,
-                                    fit: BoxFit.contain,
-                                    alignment: Alignment.centerLeft,
-                                    errorBuilder: (_, __, ___) => _TitleHeadline(_item.displayName, wide),
-                                  ),
-                                )
-                              else
-                                _TitleHeadline(_item.displayName, wide),
+                                      // Title Logo (desktop) or Crisp Display Headline
+                                      if (wide && logoUrl != null)
+                                        ConstrainedBox(
+                                          constraints: const BoxConstraints(
+                                            maxHeight: 68,
+                                            maxWidth: 380,
+                                          ),
+                                          child: Image.network(
+                                            logoUrl,
+                                            fit: BoxFit.contain,
+                                            alignment: Alignment.centerLeft,
+                                            errorBuilder: (_, __, ___) =>
+                                                _TitleHeadline(_item.displayName, wide),
+                                          ),
+                                        )
+                                      else
+                                        _TitleHeadline(_item.displayName, wide),
 
-                              if (_item.originalTitle != null &&
-                                  _item.originalTitle != _item.name) ...[
-                                const SizedBox(height: 5),
-                                Text(
-                                  _item.originalTitle!,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: Color(0xBDFFFFFF), fontSize: 13.5),
-                                ),
-                              ],
-
-                              const SizedBox(height: 12),
-
-                              // Rich NFO Metadata Strip
-                              Wrap(
-                                spacing: 10,
-                                runSpacing: 6,
-                                crossAxisAlignment: WrapCrossAlignment.center,
-                                children: [
-                                  if (_item.communityRating != null && _item.communityRating! > 0)
-                                    Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(Icons.star_rounded, size: 16, color: Color(0xFFFBBF24)),
-                                        const SizedBox(width: 3),
+                                      if (_item.originalTitle != null &&
+                                          _item.originalTitle != _item.name) ...[
+                                        const SizedBox(height: 5),
                                         Text(
-                                          _item.communityRating!.toStringAsFixed(1),
+                                          _item.originalTitle!,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                           style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w600,
-                                            fontFeatures: [FontFeature.tabularFigures()],
+                                            color: Color(0xFFB8BCC8),
+                                            fontSize: 13.5,
                                           ),
                                         ),
                                       ],
-                                    ),
-                                  if (_item.criticRating != null && _item.criticRating! > 0)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 6.5, vertical: 1.5),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0x22FB7185),
-                                        borderRadius: BorderRadius.circular(5),
-                                        border: Border.all(color: const Color(0x55FB7185), width: 0.7),
+
+                                      const SizedBox(height: 10),
+
+                                      // Rich NFO Metadata Strip
+                                      Wrap(
+                                        spacing: 10,
+                                        runSpacing: 6,
+                                        crossAxisAlignment: WrapCrossAlignment.center,
+                                        children: [
+                                          if (_item.communityRating != null &&
+                                              _item.communityRating! > 0)
+                                            Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(Icons.star_rounded,
+                                                    size: 16, color: Color(0xFFFBBF24)),
+                                                const SizedBox(width: 3),
+                                                Text(
+                                                  _item.communityRating!.toStringAsFixed(1),
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 14,
+                                                    fontWeight: FontWeight.w600,
+                                                    fontFeatures: [FontFeature.tabularFigures()],
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          if (_item.criticRating != null &&
+                                              _item.criticRating! > 0)
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                  horizontal: 6.5, vertical: 1.5),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0x28FB7185),
+                                                borderRadius: BorderRadius.circular(5),
+                                                border: Border.all(
+                                                    color: const Color(0x66FB7185), width: 0.7),
+                                              ),
+                                              child: Text(
+                                                '媒体 ${_item.criticRating!.round()}%',
+                                                style: const TextStyle(
+                                                  color: Color(0xFFFDA4AF),
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.w600,
+                                                  fontFeatures: [FontFeature.tabularFigures()],
+                                                ),
+                                              ),
+                                            ),
+                                          if (_item.officialRating != null &&
+                                              _item.officialRating!.isNotEmpty)
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                  horizontal: 6, vertical: 1.5),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFF1C1F2B),
+                                                borderRadius: BorderRadius.circular(5),
+                                                border: Border.all(
+                                                    color: const Color(0xFF393E52), width: 0.8),
+                                              ),
+                                              child: Text(
+                                                _item.officialRating!,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                          if (statusLabel.isNotEmpty)
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                  horizontal: 7, vertical: 1.5),
+                                              decoration: BoxDecoration(
+                                                color: statusLabel == '连载中'
+                                                    ? const Color(0x2634D399)
+                                                    : const Color(0xFF1C1F2B),
+                                                borderRadius: BorderRadius.circular(5),
+                                              ),
+                                              child: Text(
+                                                statusLabel,
+                                                style: TextStyle(
+                                                  color: statusLabel == '连载中'
+                                                      ? const Color(0xFF34D399)
+                                                      : const Color(0xFFD6DAE6),
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                          if (premiere.isNotEmpty)
+                                            Text(
+                                              premiere,
+                                              style: const TextStyle(
+                                                color: Color(0xFFE6E8F0),
+                                                fontSize: 13.5,
+                                                fontFeatures: [FontFeature.tabularFigures()],
+                                              ),
+                                            )
+                                          else if (_item.productionYear != null)
+                                            Text(
+                                              '${_item.productionYear}',
+                                              style: const TextStyle(
+                                                  color: Color(0xFFE6E8F0), fontSize: 13.5),
+                                            ),
+                                          if (!_item.isFolderish &&
+                                              fmtDurationTicks(_item.runTimeTicks).isNotEmpty)
+                                            Text(
+                                              fmtDurationTicks(_item.runTimeTicks),
+                                              style: const TextStyle(
+                                                  color: Color(0xFFE6E8F0), fontSize: 13.5),
+                                            ),
+                                          if (_item.isSeries) ...[
+                                            if (_seasons.isNotEmpty || (_item.childCount ?? 0) > 0)
+                                              Text(
+                                                '共 ${_seasons.isNotEmpty ? _seasons.length : _item.childCount} 季${(_item.recursiveItemCount ?? 0) > 0 ? ' · ${_item.recursiveItemCount} 集' : ''}',
+                                                style: const TextStyle(
+                                                    color: Color(0xFFE6E8F0), fontSize: 13.5),
+                                              ),
+                                            if (fmtDurationTicks(_item.runTimeTicks).isNotEmpty)
+                                              Text(
+                                                '单集约 ${fmtDurationTicks(_item.runTimeTicks)}',
+                                                style: const TextStyle(
+                                                    color: Color(0xFFB8BCC8), fontSize: 13),
+                                              ),
+                                          ],
+                                          if (_item.productionLocations.isNotEmpty)
+                                            Text(
+                                              _item.productionLocations.take(2).join(' / '),
+                                              style: const TextStyle(
+                                                  color: Color(0xFFC8CCD8), fontSize: 13),
+                                            ),
+                                          for (final g in _item.genres.take(6))
+                                            GestureDetector(
+                                              onTap: widget.onGenreTap == null
+                                                  ? null
+                                                  : () => widget.onGenreTap!(g),
+                                              child: MouseRegion(
+                                                cursor: widget.onGenreTap != null
+                                                    ? SystemMouseCursors.click
+                                                    : MouseCursor.defer,
+                                                child: Text(
+                                                  g,
+                                                  style: TextStyle(
+                                                    color: const Color(0xFFE6E8F0),
+                                                    fontSize: 13.5,
+                                                    decoration: widget.onGenreTap != null
+                                                        ? TextDecoration.underline
+                                                        : TextDecoration.none,
+                                                    decorationColor: const Color(0x77FFFFFF),
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                        ],
                                       ),
-                                      child: Text(
-                                        '媒体 ${_item.criticRating!.round()}%',
-                                        style: const TextStyle(
-                                          color: Color(0xFFFDA4AF),
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                          fontFeatures: [FontFeature.tabularFigures()],
-                                        ),
-                                      ),
-                                    ),
-                                  if (_item.officialRating != null && _item.officialRating!.isNotEmpty)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0x18FFFFFF),
-                                        borderRadius: BorderRadius.circular(5),
-                                        border: Border.all(color: const Color(0x58FFFFFF), width: 0.8),
-                                      ),
-                                      child: Text(
-                                        _item.officialRating!,
-                                        style: const TextStyle(
-                                          color: Color(0xF0FFFFFF),
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                    ),
-                                  if (statusLabel.isNotEmpty)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
-                                      decoration: BoxDecoration(
-                                        color: statusLabel == '连载中'
-                                            ? const Color(0x2634D399)
-                                            : const Color(0x1CFFFFFF),
-                                        borderRadius: BorderRadius.circular(5),
-                                      ),
-                                      child: Text(
-                                        statusLabel,
-                                        style: TextStyle(
-                                          color: statusLabel == '连载中'
-                                              ? const Color(0xFF34D399)
-                                              : const Color(0xD8FFFFFF),
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                    ),
-                                  if (premiere.isNotEmpty)
-                                    Text(
-                                      premiere,
-                                      style: const TextStyle(
-                                        color: Color(0xEBFFFFFF),
-                                        fontSize: 13.5,
-                                        fontFeatures: [FontFeature.tabularFigures()],
-                                      ),
-                                    )
-                                  else if (_item.productionYear != null)
-                                    Text(
-                                      '${_item.productionYear}',
-                                      style: const TextStyle(color: Color(0xEBFFFFFF), fontSize: 13.5),
-                                    ),
-                                  if (!_item.isFolderish && fmtDurationTicks(_item.runTimeTicks).isNotEmpty)
-                                    Text(
-                                      fmtDurationTicks(_item.runTimeTicks),
-                                      style: const TextStyle(color: Color(0xEBFFFFFF), fontSize: 13.5),
-                                    ),
-                                  if (_item.isSeries) ...[
-                                    if (_seasons.isNotEmpty || (_item.childCount ?? 0) > 0)
-                                      Text(
-                                        '共 ${_seasons.isNotEmpty ? _seasons.length : _item.childCount} 季${(_item.recursiveItemCount ?? 0) > 0 ? ' · ${_item.recursiveItemCount} 集' : ''}',
-                                        style: const TextStyle(color: Color(0xEBFFFFFF), fontSize: 13.5),
-                                      ),
-                                    if (fmtDurationTicks(_item.runTimeTicks).isNotEmpty)
-                                      Text(
-                                        '单集约 ${fmtDurationTicks(_item.runTimeTicks)}',
-                                        style: const TextStyle(color: Color(0xCCFFFFFF), fontSize: 13),
-                                      ),
-                                  ],
-                                  if (_item.productionLocations.isNotEmpty)
-                                    Text(
-                                      _item.productionLocations.take(2).join(' / '),
-                                      style: const TextStyle(color: Color(0xD8FFFFFF), fontSize: 13),
-                                    ),
-                                  for (final g in _item.genres.take(6))
-                                    GestureDetector(
-                                      onTap: widget.onGenreTap == null ? null : () => widget.onGenreTap!(g),
-                                      child: MouseRegion(
-                                        cursor: widget.onGenreTap != null
-                                            ? SystemMouseCursors.click
-                                            : MouseCursor.defer,
-                                        child: Text(
-                                          g,
-                                          style: TextStyle(
-                                            color: const Color(0xE8FFFFFF),
-                                            fontSize: 13.5,
-                                            decoration: widget.onGenreTap != null
-                                                ? TextDecoration.underline
-                                                : TextDecoration.none,
-                                            decorationColor: const Color(0x77FFFFFF),
+
+                                      if (specChips.isNotEmpty) ...[
+                                        const SizedBox(height: 10),
+                                        SpecGlyphRow(specs: specChips),
+                                      ],
+
+                                      if (wide) ...[
+                                        if (tagline != null || overviewText.isNotEmpty) ...[
+                                          const SizedBox(height: 14),
+                                          ConstrainedBox(
+                                            constraints: const BoxConstraints(maxWidth: 780),
+                                            child: buildOverviewBlock(),
                                           ),
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-
-                              if (specChips.isNotEmpty) ...[
-                                const SizedBox(height: 10),
-                                SpecGlyphRow(specs: specChips),
-                              ],
-
-                              if (tagline != null) ...[
-                                const SizedBox(height: 14),
-                                Text(
-                                  tagline,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w600,
-                                    letterSpacing: -0.1,
+                                        ],
+                                        const SizedBox(height: 18),
+                                        buildActionRow(),
+                                      ],
+                                    ],
                                   ),
                                 ),
-                              ],
-
-                              // Exact TextPainter-measured overview: NEVER shows "展开全部" when short!
-                              if (overviewText.isNotEmpty) ...[
-                                SizedBox(height: tagline != null ? 6 : 14),
-                                _ExpandableOverview(
-                                  text: overviewText,
-                                  collapsedLines: wide ? 4 : 3,
-                                  accent: accent,
-                                  aiReady: widget.appState.prefs.isAiReady,
-                                  translating: _translating,
-                                  isTranslated: _translatedOverview != null,
-                                  onTranslateToggle: _translatedOverview != null
-                                      ? () => setState(() => _translatedOverview = null)
-                                      : _translateOverview,
-                                ),
-                              ],
-
-                              const SizedBox(height: 22),
-
-                              // Primary Play Pill + Circular Action Buttons
-                              Wrap(
-                                spacing: 10,
-                                runSpacing: 10,
-                                crossAxisAlignment: WrapCrossAlignment.center,
-                                children: [
-                                  if (_item.isPlayable)
-                                    _ProgressPlayPill(
-                                      label: localReady
-                                          ? '播放离线缓存'
-                                          : (_item.playbackPositionTicks > 0
-                                              ? '继续 ${fmtDurationTicks(_item.playbackPositionTicks)}'
-                                              : '立即播放'),
-                                      progress: _item.resumeProgress,
-                                      accent: accent,
-                                      onTap: () => _play(
-                                        _item,
-                                        sourceId: _selectedSourceId,
-                                        localPath: localReady ? dlTask.filePath : null,
-                                      ),
-                                    )
-                                  else if (nextEpToPlay != null)
-                                    _ProgressPlayPill(
-                                      label: nextEpToPlay.resumeProgress > 0.01
-                                          ? '继续 ${nextEpToPlay.episodeCode ?? nextEpToPlay.displayName}'
-                                          : '播放 ${nextEpToPlay.episodeCode ?? '第 1 集'}',
-                                      progress: nextEpToPlay.resumeProgress,
-                                      accent: accent,
-                                      onTap: () => _play(nextEpToPlay!),
-                                    ),
-
-                                  if (_item.isPlayable && _item.playbackPositionTicks > 0)
-                                    _CircleActionButton(
-                                      icon: Icons.replay_rounded,
-                                      tooltip: '从头播放',
-                                      onTap: () => _play(
-                                        _item,
-                                        sourceId: _selectedSourceId,
-                                        fromBeginning: true,
-                                      ),
-                                    ),
-                                  if (_item.type != 'Person')
-                                    _CircleActionButton(
-                                      icon: _item.played
-                                          ? Icons.check_circle_rounded
-                                          : Icons.check_circle_outline_rounded,
-                                      active: _item.played,
-                                      tooltip: _item.played ? '已看（点击取消）' : '标为已看',
-                                      onTap: () async {
-                                        await widget.appState.togglePlayed(_item);
-                                        await _loadDetails();
-                                      },
-                                    ),
-                                  _CircleActionButton(
-                                    icon: _item.isFavorite
-                                        ? Icons.favorite_rounded
-                                        : Icons.favorite_border_rounded,
-                                    iconColor: _item.isFavorite ? VedroTheme.danger : Colors.white,
-                                    tooltip: _item.isFavorite ? '取消收藏' : '收藏',
-                                    onTap: () async {
-                                      await widget.appState.toggleFavorite(_item);
-                                      await _loadDetails();
-                                    },
-                                  ),
-                                  if (_item.isPlayable || _episodes.isNotEmpty)
-                                    _CircleActionButton(
-                                      icon: localReady
-                                          ? Icons.download_done_rounded
-                                          : Icons.download_rounded,
-                                      iconColor: localReady ? const Color(0xFF34D399) : Colors.white,
-                                      tooltip: localReady ? '已离线下载' : '离线下载',
-                                      onTap: localReady
-                                          ? () => _play(_item, localPath: dlTask.filePath)
-                                          : _startDownload,
-                                    ),
-                                  _CircleActionButton(
-                                    icon: Icons.more_horiz_rounded,
-                                    tooltip: '更多（外部播放器 / 片单 / AI 翻译）',
-                                    onTap: _openMoreSheet,
-                                  ),
-                                ],
                               ),
                             ],
                           ),
-                        ),
+                          if (!wide) ...[
+                            const SizedBox(height: 18),
+                            buildActionRow(),
+                            if (tagline != null || overviewText.isNotEmpty) ...[
+                              const SizedBox(height: 16),
+                              buildOverviewBlock(),
+                            ],
+                          ],
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
 
@@ -795,6 +1047,53 @@ class _DetailScreenState extends State<DetailScreen> {
                           onSelectSubtitle: (idx) => setState(() => _selectedSubtitleIndex = idx),
                         ),
                         const SizedBox(height: 28),
+                      ],
+
+                      // 1b. Series-level Version Selector (when episodes have multiple versions)
+                      if (_item.isSeries && seriesSources.length > 1) ...[
+                        Container(
+                          key: const ValueKey('detail-version-selector'),
+                          padding: const EdgeInsets.all(18),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF151720),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: const Color(0xFF282B38), width: 1.0),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  const Icon(Icons.layers_rounded, size: 17, color: Colors.white),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    '选择剧集片源版本 (${seriesSources.length})',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              ...seriesSources.map((s) {
+                                final vKey = _sourceVersionKey(s);
+                                final on = vKey == _selectedSeriesVersionKey;
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 8),
+                                  child: _VersionOptionTile(
+                                    source: s,
+                                    selected: on,
+                                    accent: accent,
+                                    onTap: () => setState(() => _selectedSeriesVersionKey = vKey),
+                                  ),
+                                );
+                              }),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 26),
                       ],
 
                       // 2. TV Series Seasons & Rich Episode Cards
@@ -857,28 +1156,39 @@ class _DetailScreenState extends State<DetailScreen> {
                         const SizedBox(height: 14),
                         if (!_episodeListVertical)
                           SizedBox(
-                            height: wide ? 268 : 232,
+                            height: wide ? 276 : 240,
                             child: ListView.separated(
                               scrollDirection: Axis.horizontal,
                               clipBehavior: Clip.none,
                               itemCount: _episodes.length,
                               separatorBuilder: (_, __) => const SizedBox(width: 14),
-                              itemBuilder: (_, idx) => _EpisodeHorizontalCard(
-                                episode: _episodes[idx],
-                                appState: widget.appState,
-                                width: wide ? 264 : 216,
-                                accent: accent,
-                                onTap: () => _play(_episodes[idx]),
-                                onOpenDetail: () => _openItemDetail(_episodes[idx]),
-                              ),
+                              itemBuilder: (_, idx) {
+                                final ep = _episodes[idx];
+                                return _EpisodeHorizontalCard(
+                                  episode: ep,
+                                  seriesFallback: _item,
+                                  appState: widget.appState,
+                                  width: wide ? 264 : 216,
+                                  accent: accent,
+                                  onTap: () => _play(ep, sourceId: _matchingSourceIdForEpisode(ep)),
+                                  onOpenDetail: () => _openItemDetail(ep),
+                                  onPickVersion: ep.versionCount > 1
+                                      ? () => _openEpisodeVersionSheet(ep)
+                                      : null,
+                                );
+                              },
                             ),
                           )
                         else
                           ..._episodes.map((ep) => _EpisodeRow(
                                 episode: ep,
+                                seriesFallback: _item,
                                 appState: widget.appState,
-                                onTap: () => _play(ep),
+                                onTap: () => _play(ep, sourceId: _matchingSourceIdForEpisode(ep)),
                                 onOpenDetail: () => _openItemDetail(ep),
+                                onPickVersion: ep.versionCount > 1
+                                    ? () => _openEpisodeVersionSheet(ep)
+                                    : null,
                               )),
                         const SizedBox(height: 28),
                       ],
@@ -896,12 +1206,18 @@ class _DetailScreenState extends State<DetailScreen> {
                                 letterSpacing: -0.2,
                               ),
                             ),
-                            const Spacer(),
-                            if (directors.isNotEmpty)
-                              Text(
-                                '导演：${directors.take(2).join(' · ')}',
-                                style: const TextStyle(color: VedroTheme.fg2, fontSize: 13),
+                            if (directors.isNotEmpty) ...[
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  '导演：${directors.take(2).join(' · ')}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.right,
+                                  style: const TextStyle(color: VedroTheme.fg2, fontSize: 13),
+                                ),
                               ),
+                            ],
                           ],
                         ),
                         const SizedBox(height: 14),
@@ -1495,21 +1811,30 @@ class _MediaSpecsSection extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              const Icon(Icons.memory_rounded, size: 17, color: VedroTheme.fg2),
-              const SizedBox(width: 8),
-              const Text(
-                '媒体文件规格',
-                style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600),
+              const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.memory_rounded, size: 17, color: VedroTheme.fg2),
+                  SizedBox(width: 8),
+                  Text(
+                    '媒体文件规格',
+                    style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                ],
               ),
-              const Spacer(),
               if (source.container != null && source.container!.isNotEmpty)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: const Color(0x18FFFFFF),
+                    color: const Color(0xFF1F2230),
                     borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFF2F3346), width: 0.7),
                   ),
                   child: Text(
                     [
@@ -1519,7 +1844,7 @@ class _MediaSpecsSection extends StatelessWidget {
                         '${(source.bitrate! / 1000000).toStringAsFixed(1)} Mbps',
                     ].join(' · '),
                     style: const TextStyle(
-                      color: VedroTheme.fg2,
+                      color: Color(0xFFD0D5E2),
                       fontSize: 11.5,
                       fontWeight: FontWeight.w500,
                       fontFeatures: [FontFeature.tabularFigures()],
@@ -1719,19 +2044,23 @@ class _CircleActionButton extends StatelessWidget {
 class _EpisodeHorizontalCard extends StatefulWidget {
   const _EpisodeHorizontalCard({
     required this.episode,
+    required this.seriesFallback,
     required this.appState,
     required this.width,
     required this.accent,
     required this.onTap,
     required this.onOpenDetail,
+    this.onPickVersion,
   });
 
   final MediaItemModel episode;
+  final MediaItemModel seriesFallback;
   final VedroAppState appState;
   final double width;
   final Color accent;
   final VoidCallback onTap;
   final VoidCallback onOpenDetail;
+  final VoidCallback? onPickVersion;
 
   @override
   State<_EpisodeHorizontalCard> createState() => _EpisodeHorizontalCardState();
@@ -1781,6 +2110,7 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                   children: [
                     VedroArtwork(
                       item: ep,
+                      fallbackItem: widget.seriesFallback,
                       appState: widget.appState,
                       landscape: true,
                       width: 480,
@@ -1793,7 +2123,7 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                           decoration: BoxDecoration(
-                            color: const Color(0xC00B0B0D),
+                            color: const Color(0xD80B0B0D),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Text(
@@ -1807,19 +2137,42 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                           ),
                         ),
                       ),
-                    // Top-right Episode Detail / Specs button
+                    // Top-right Episode Detail / Version actions
                     Positioned(
                       top: 6,
                       right: 6,
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          if (widget.onPickVersion != null)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 4),
+                              child: GestureDetector(
+                                onTap: widget.onPickVersion,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xE8161821),
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: const Color(0x55FFFFFF), width: 0.7),
+                                  ),
+                                  child: Text(
+                                    '${ep.versionCount} 版本',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
                           if (ep.played)
                             const Padding(
                               padding: EdgeInsets.only(right: 4),
                               child: CircleAvatar(
                                 radius: 10,
-                                backgroundColor: Color(0xC00B0B0D),
+                                backgroundColor: Color(0xD80B0B0D),
                                 child: Icon(Icons.check_rounded, size: 12, color: Colors.white),
                               ),
                             ),
@@ -1831,9 +2184,9 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                                 width: 22,
                                 height: 22,
                                 decoration: BoxDecoration(
-                                  color: const Color(0xC00B0B0D),
+                                  color: const Color(0xD80B0B0D),
                                   shape: BoxShape.circle,
-                                  border: Border.all(color: const Color(0x38FFFFFF), width: 0.6),
+                                  border: Border.all(color: const Color(0x45FFFFFF), width: 0.7),
                                 ),
                                 child: const Icon(Icons.info_outline_rounded, size: 13, color: Colors.white),
                               ),
@@ -1905,7 +2258,119 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
   }
 }
 
-/// Crystal-clear high-contrast Version / Audio / Subtitle selector panel.
+/// Reusable high-contrast solid option row for a single media version (used in DetailScreen & sheets).
+class _VersionOptionTile extends StatelessWidget {
+  const _VersionOptionTile({
+    required this.source,
+    required this.selected,
+    required this.accent,
+    required this.onTap,
+  });
+
+  final MediaSourceModel source;
+  final bool selected;
+  final Color accent;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = source.name?.isNotEmpty == true
+        ? source.name!
+        : (source.container?.toUpperCase() ?? '原画');
+    final video = source.videoStreams.isNotEmpty ? source.videoStreams.first : null;
+    final tags = <String>[
+      if (video != null && video.height != null) '${video.height}p',
+      if (video?.codec != null && video!.codec!.isNotEmpty) video.codec!.toUpperCase(),
+      if (source.container != null && source.container!.isNotEmpty) source.container!.toUpperCase(),
+      if (fmtFileSize(source.size).isNotEmpty) fmtFileSize(source.size),
+      if ((source.bitrate ?? 0) > 0) '${(source.bitrate! / 1000000).toStringAsFixed(1)} Mbps',
+      if (source.audioStreams.isNotEmpty) '${source.audioStreams.length} 音轨',
+      if (source.subtitleStreams.isNotEmpty) '${source.subtitleStreams.length} 字幕',
+    ];
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFF1E2940) : const Color(0xFF1D202B),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? accent : const Color(0xFF2D3142),
+              width: selected ? 1.5 : 0.9,
+            ),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Icon(
+                selected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                size: 19,
+                color: selected ? accent : const Color(0xFF6F758B),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                        height: 1.35,
+                      ),
+                    ),
+                    if (tags.isNotEmpty) ...[
+                      const SizedBox(height: 5),
+                      Text(
+                        tags.join(' · '),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFFB4BAC9),
+                          fontSize: 12,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (selected) ...[
+                const SizedBox(width: 10),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: accent,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Text(
+                    '当前',
+                    style: TextStyle(
+                      color: Color(0xFF0B0B0D),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Crystal-clear high-contrast solid Version / Audio / Subtitle selector panel.
 class _TracksPanel extends StatelessWidget {
   const _TracksPanel({
     required this.sources,
@@ -1934,13 +2399,15 @@ class _TracksPanel extends StatelessWidget {
     final audios = active.audioStreams;
     final subs = active.subtitleStreams;
     final accent = Theme.of(context).colorScheme.secondary;
+    final accentFill = Theme.of(context).colorScheme.primary;
 
     return Container(
+      key: const ValueKey('detail-version-selector'),
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: const Color(0xFF14151C),
+        color: const Color(0xFF151720),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x26FFFFFF), width: 0.9),
+        border: Border.all(color: const Color(0xFF282B38), width: 1.0),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1948,178 +2415,117 @@ class _TracksPanel extends StatelessWidget {
           if (sources.length > 1) ...[
             Row(
               children: [
-                const Icon(Icons.layers_outlined, size: 16, color: VedroTheme.fg2),
-                const SizedBox(width: 7),
+                const Icon(Icons.layers_rounded, size: 17, color: Colors.white),
+                const SizedBox(width: 8),
                 Text(
                   '选择片源版本 (${sources.length})',
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 14,
+                    fontSize: 15,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 12),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: sources.map((s) {
-                final on = s.id == active.id;
-                final subMeta = [
-                  if (s.container != null && s.container!.isNotEmpty) s.container!.toUpperCase(),
-                  if (fmtFileSize(s.size).isNotEmpty) fmtFileSize(s.size),
-                  if ((s.bitrate ?? 0) > 0) '${(s.bitrate! / 1000000).toStringAsFixed(1)} Mbps',
-                  if (s.subtitleStreams.isNotEmpty) '${s.subtitleStreams.length} 字幕',
-                ].join(' · ');
-                return PressableScale(
-                  onTap: () => onSelectSource(s.id),
-                  hoverScale: 1.015,
-                  pressScale: 0.97,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 160),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: on ? accent.withValues(alpha: 0.22) : const Color(0xFF1E2029),
-                      borderRadius: BorderRadius.circular(11),
-                      border: Border.all(
-                        color: on ? accent : const Color(0x2EFFFFFF),
-                        width: on ? 1.4 : 0.85,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (on) ...[
-                          Icon(Icons.check_circle_rounded, size: 16, color: accent),
-                          const SizedBox(width: 8),
-                        ],
-                        Flexible(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                s.name?.isNotEmpty == true ? s.name! : (s.container?.toUpperCase() ?? '原画'),
-                                style: TextStyle(
-                                  color: on ? Colors.white : const Color(0xFFE5E7EE),
-                                  fontSize: 13.5,
-                                  fontWeight: on ? FontWeight.w600 : FontWeight.w500,
-                                ),
-                              ),
-                              if (subMeta.isNotEmpty) ...[
-                                const SizedBox(height: 3),
-                                Text(
-                                  subMeta,
-                                  style: TextStyle(
-                                    color: on ? const Color(0xDCE6EBF5) : const Color(0xFF9EA2B0),
-                                    fontSize: 11.5,
-                                    fontFeatures: const [FontFeature.tabularFigures()],
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
+            ...sources.map((s) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _VersionOptionTile(
+                    source: s,
+                    selected: s.id == active.id,
+                    accent: accent,
+                    onTap: () => onSelectSource(s.id),
                   ),
-                );
-              }).toList(),
-            ),
+                )),
           ] else
             Row(
               children: [
-                const Icon(Icons.high_quality_outlined, size: 16, color: VedroTheme.fg2),
+                const Icon(Icons.high_quality_rounded, size: 17, color: Color(0xFFB4BAC9)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     active.displayLabel,
-                    style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                 ),
               ],
             ),
 
           if (audios.isNotEmpty) ...[
-            const SizedBox(height: 14),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Divider(height: 1, color: Color(0xFF252836)),
+            ),
             Text(
               '音轨 (${audios.length})',
-              style: const TextStyle(color: Color(0xFFB5B9C6), fontSize: 12.5, fontWeight: FontWeight.w600),
+              style: const TextStyle(
+                color: Color(0xFFD0D5E2),
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: audios.map((a) {
-                final on = selectedAudioIndex == a.index;
-                return GestureDetector(
-                  onTap: () => onSelectAudio(on ? null : a.index),
-                  child: MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6.5),
-                      decoration: BoxDecoration(
-                        color: on ? accent.withValues(alpha: 0.22) : const Color(0xFF1E2029),
-                        borderRadius: BorderRadius.circular(9),
-                        border: Border.all(
-                          color: on ? accent : const Color(0x28FFFFFF),
-                          width: on ? 1.2 : 0.8,
-                        ),
-                      ),
-                      child: Text(
-                        a.label,
-                        style: TextStyle(
-                          color: on ? Colors.white : const Color(0xFFDCE0EA),
-                          fontSize: 12.5,
-                          fontWeight: on ? FontWeight.w600 : FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              }).toList(),
+              children: [
+                _TrackChoiceChip(
+                  label: '默认',
+                  selected: selectedAudioIndex == null,
+                  accentFill: accentFill,
+                  onTap: () => onSelectAudio(null),
+                ),
+                ...audios.map((a) {
+                  final on = selectedAudioIndex == a.index;
+                  return _TrackChoiceChip(
+                    label: a.label,
+                    selected: on,
+                    accentFill: accentFill,
+                    onTap: () => onSelectAudio(on ? null : a.index),
+                  );
+                }),
+              ],
             ),
           ],
 
           if (subs.isNotEmpty) ...[
-            const SizedBox(height: 14),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Divider(height: 1, color: Color(0xFF252836)),
+            ),
             Text(
               '字幕 (${subs.length})',
-              style: const TextStyle(color: Color(0xFFB5B9C6), fontSize: 12.5, fontWeight: FontWeight.w600),
+              style: const TextStyle(
+                color: Color(0xFFD0D5E2),
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Wrap(
               spacing: 8,
               runSpacing: 8,
-              children: subs.take(16).map((s) {
-                final on = selectedSubtitleIndex == s.index;
-                return GestureDetector(
-                  onTap: () => onSelectSubtitle(on ? null : s.index),
-                  child: MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6.5),
-                      decoration: BoxDecoration(
-                        color: on ? accent.withValues(alpha: 0.22) : const Color(0xFF1E2029),
-                        borderRadius: BorderRadius.circular(9),
-                        border: Border.all(
-                          color: on ? accent : const Color(0x28FFFFFF),
-                          width: on ? 1.2 : 0.8,
-                        ),
-                      ),
-                      child: Text(
-                        s.label,
-                        style: TextStyle(
-                          color: on ? Colors.white : const Color(0xFFDCE0EA),
-                          fontSize: 12.5,
-                          fontWeight: on ? FontWeight.w600 : FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              }).toList(),
+              children: [
+                _TrackChoiceChip(
+                  label: '默认',
+                  selected: selectedSubtitleIndex == null,
+                  accentFill: accentFill,
+                  onTap: () => onSelectSubtitle(null),
+                ),
+                ...subs.take(16).map((s) {
+                  final on = selectedSubtitleIndex == s.index;
+                  return _TrackChoiceChip(
+                    label: s.label,
+                    selected: on,
+                    accentFill: accentFill,
+                    onTap: () => onSelectSubtitle(on ? null : s.index),
+                  );
+                }),
+              ],
             ),
           ],
         ],
@@ -2128,18 +2534,65 @@ class _TracksPanel extends StatelessWidget {
   }
 }
 
+class _TrackChoiceChip extends StatelessWidget {
+  const _TrackChoiceChip({
+    required this.label,
+    required this.selected,
+    required this.accentFill,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final Color accentFill;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: selected ? accentFill : const Color(0xFF1F2230),
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+              color: selected ? accentFill : const Color(0xFF32364A),
+              width: 1.0,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.white : const Color(0xFFE3E6F0),
+              fontSize: 12.5,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _EpisodeRow extends StatefulWidget {
   const _EpisodeRow({
     required this.episode,
+    required this.seriesFallback,
     required this.appState,
     required this.onTap,
     required this.onOpenDetail,
+    this.onPickVersion,
   });
 
   final MediaItemModel episode;
+  final MediaItemModel seriesFallback;
   final VedroAppState appState;
   final VoidCallback onTap;
   final VoidCallback onOpenDetail;
+  final VoidCallback? onPickVersion;
 
   @override
   State<_EpisodeRow> createState() => _EpisodeRowState();
@@ -2191,6 +2644,7 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                       children: [
                         VedroArtwork(
                           item: ep,
+                          fallbackItem: widget.seriesFallback,
                           appState: widget.appState,
                           landscape: true,
                           width: 420,
@@ -2237,6 +2691,29 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                             ),
                           ),
                         ),
+                        if (widget.onPickVersion != null)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: GestureDetector(
+                              onTap: widget.onPickVersion,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF1F2230),
+                                  borderRadius: BorderRadius.circular(7),
+                                  border: Border.all(color: const Color(0xFF353A4E), width: 0.9),
+                                ),
+                                child: Text(
+                                  '${ep.versionCount} 版本',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                         if (ep.played)
                           const Padding(
                             padding: EdgeInsets.only(right: 6),

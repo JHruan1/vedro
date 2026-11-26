@@ -69,7 +69,11 @@ class _VedroAppState extends State<VedroApp> {
     return ListenableBuilder(
       listenable: _appState,
       builder: (context, _) {
-        final skin = _appState.prefs.activeSkin;
+        final sysBrightness = View.of(context).platformDispatcher.platformBrightness;
+        final skin = _appState.prefs.activeSkinFor(
+          systemBrightness: sysBrightness,
+          dynamicSeedOverride: _appState.dynamicPageSeedColor,
+        );
         final overlayStyle = SystemUiOverlayStyle(
           statusBarColor: Colors.transparent,
           statusBarIconBrightness: skin.isLight ? Brightness.dark : Brightness.light,

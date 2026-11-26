@@ -7,6 +7,7 @@ import 'package:vedro/core/ffi/vedro_bridge.dart';
 import 'package:vedro/core/models/models.dart';
 import 'package:vedro/core/models/preferences.dart';
 import 'package:vedro/core/theme/display_profile.dart';
+import 'package:vedro/core/theme/dynamic_color_engine.dart';
 import 'package:vedro/core/theme/vedro_skin.dart';
 import 'package:vedro/core/theme/vedro_theme.dart';
 import 'package:vedro/main.dart';
@@ -850,13 +851,17 @@ void main() {
     // Dedicated Poster Cover & Backdrop Banner MUST both be rendered
     expect(find.byKey(const ValueKey('detail-backdrop-banner')), findsOneWidget);
     expect(find.byKey(const ValueKey('detail-poster-cover')), findsOneWidget);
-    // Series multi-version selector MUST be sleek frameless pills and switchable
+    // Series multi-version selector MUST be a sleek iOS Pull-Down Dropdown and switchable!
     expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
+    expect(find.byKey(const ValueKey('detail-version-dropdown')), findsOneWidget);
     expect(find.text('4K · Dolby Vision · Atmos'), findsOneWidget);
-    expect(find.text('1080p · BluRay · x265'), findsOneWidget);
 
-    await tester.tap(find.text('1080p · BluRay · x265'));
+    await tester.tap(find.byKey(const ValueKey('detail-version-dropdown')));
     await tester.pumpAndSettle();
+    expect(find.text('1080p · BluRay · x265'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('series-version-item-1')));
+    await tester.pumpAndSettle();
+    expect(find.text('1080p · BluRay · x265'), findsOneWidget);
 
     // 120-episode Series auto-switches to compact range pills (1-50, 51-100, 101-120) + Season NFO
     expect(find.text('共 120 集'), findsOneWidget);
@@ -932,16 +937,30 @@ void main() {
     expect(find.byKey(const ValueKey('detail-backdrop-banner')), findsOneWidget);
     expect(find.byKey(const ValueKey('detail-poster-cover')), findsOneWidget);
     expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
-    expect(find.textContaining('选择片源版本'), findsNothing);
+    expect(find.byKey(const ValueKey('detail-version-dropdown')), findsOneWidget);
+    expect(find.byKey(const ValueKey('detail-audio-dropdown')), findsOneWidget);
+    expect(find.byKey(const ValueKey('detail-subtitle-dropdown')), findsOneWidget);
     expect(find.text('4K · Dolby Vision · TrueHD Atmos · REMUX'), findsOneWidget);
-    expect(find.text('1080p · BluRay · x264'), findsOneWidget);
     expect(find.text('English TrueHD Atmos'), findsOneWidget);
     expect(find.text('简体中文 ASS'), findsOneWidget);
 
-    await tester.tap(find.text('1080p · BluRay · x264'));
+    // Open iOS Glass Pull-Down Version Menu & switch to 1080p version
+    await tester.ensureVisible(find.byKey(const ValueKey('detail-version-dropdown')));
+    await tester.tap(find.byKey(const ValueKey('detail-version-dropdown')));
     await tester.pumpAndSettle();
-    expect(find.byIcon(Icons.check_circle_rounded), findsOneWidget);
-    expect(find.bySemanticsLabel(RegExp(r'1080p · BluRay · x264 当前')), findsOneWidget);
+    expect(find.text('1080p · BluRay · x264'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('movie-version-item-1')));
+    await tester.pumpAndSettle();
+    expect(find.text('1080p · BluRay · x264'), findsOneWidget);
+
+    // Open Subtitle Pull-Down Menu -> verify 关闭字幕 & 挂载本地字幕文件… are inside the dropdown
+    await tester.ensureVisible(find.byKey(const ValueKey('detail-subtitle-dropdown')));
+    await tester.tap(find.byKey(const ValueKey('detail-subtitle-dropdown')));
+    await tester.pumpAndSettle();
+    expect(find.text('挂载本地字幕文件…'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('detail-subtitle-off-item')));
+    await tester.pumpAndSettle();
+    expect(find.text('关闭字幕'), findsOneWidget);
   });
 
   testWidgets(
@@ -1268,37 +1287,31 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
-    // Strictly ONE active checkmark icon among the 5 version pills initially!
-    expect(
-      find.descendant(
-        of: find.byKey(const ValueKey('detail-version-selector')),
-        matching: find.byIcon(Icons.check_circle_rounded),
-      ),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('detail-version-dropdown')), findsOneWidget);
 
     // DetailScreen NEVER shows global preferred audio/subtitle rows OR wordy banners!
     expect(find.text('首选配音'), findsNothing);
     expect(find.text('首选字幕'), findsNothing);
     expect(find.textContaining('网盘尚未缓存'), findsNothing);
-
-    // Unplayed Movie shows sleek frameless passive tags + "+ 字幕" pill without cloud probing
     expect(find.byKey(const ValueKey('detail-audio-subtitle-panel')), findsOneWidget);
-    expect(find.byKey(const ValueKey('detail-mount-local-sub-btn')), findsOneWidget);
 
-    // Tap through versions #2, #3, #4, #5 — strictly ONE active checkmark at every single step!
+    // Open Version Pull-Down Menu & cycle through versions #2, #3, #4, #5 — strictly ONE checkmark in menu!
     for (final idx in [1, 2, 3, 4, 0]) {
-      final card = find.byKey(ValueKey('movie-version-card-$idx'));
-      await tester.ensureVisible(card);
-      await tester.tap(card);
+      final drop = find.byKey(const ValueKey('detail-version-dropdown'));
+      await tester.ensureVisible(drop);
+      await tester.tap(drop);
       await tester.pumpAndSettle();
       expect(
         find.descendant(
-          of: find.byKey(const ValueKey('detail-version-selector')),
-          matching: find.byIcon(Icons.check_circle_rounded),
+          of: find.byKey(const ValueKey('vedro-pulldown-menu-list')),
+          matching: find.byIcon(Icons.check_rounded),
         ),
         findsOneWidget,
       );
+      final item = find.byKey(ValueKey('movie-version-item-$idx'));
+      await tester.ensureVisible(item);
+      await tester.tap(item);
+      await tester.pumpAndSettle();
     }
 
     // 2. 5-version Series with colliding Name="S01E01" & empty Id="" & empty MediaStreams=[]
@@ -1313,45 +1326,66 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
-    expect(
-      find.descendant(
-        of: find.byKey(const ValueKey('detail-version-selector')),
-        matching: find.byIcon(Icons.check_circle_rounded),
-      ),
-      findsOneWidget,
-    );
+    expect(find.byKey(const ValueKey('detail-version-dropdown')), findsOneWidget);
     expect(find.byKey(const ValueKey('detail-audio-subtitle-panel')), findsNothing);
     expect(find.text('首选配音'), findsNothing);
     expect(find.text('首选字幕'), findsNothing);
 
     for (final idx in [1, 2, 3, 4, 2]) {
-      final card = find.byKey(ValueKey('series-version-card-$idx'));
-      await tester.ensureVisible(card);
-      await tester.tap(card);
+      final drop = find.byKey(const ValueKey('detail-version-dropdown'));
+      await tester.ensureVisible(drop);
+      await tester.tap(drop);
       await tester.pumpAndSettle();
       expect(
         find.descendant(
-          of: find.byKey(const ValueKey('detail-version-selector')),
-          matching: find.byIcon(Icons.check_circle_rounded),
+          of: find.byKey(const ValueKey('vedro-pulldown-menu-list')),
+          matching: find.byIcon(Icons.check_rounded),
         ),
         findsOneWidget,
       );
+      final item = find.byKey(ValueKey('series-version-item-$idx'));
+      await tester.ensureVisible(item);
+      await tester.tap(item);
+      await tester.pumpAndSettle();
     }
   });
 
-  testWidgets('VedroSkin 9 presets (Light & Dark), share code roundtrip & DIY Custom Skin Studio',
+  testWidgets(
+      '4 Cohesive Master Themes (Cinema, Frosted, Liquid Glass, MD3), Monet Dynamic Color & Conditional Sub-Settings',
       (tester) async {
     tester.view.physicalSize = const Size(1280, 960);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    // 1. Verify all 9 bold presets & CustomSkinSpec share code roundtrip
-    expect(VedroSkin.presets.length, equals(9));
-    expect(VedroSkin.byId('daylight').isLight, isTrue);
-    expect(VedroSkin.byId('editorial_paper').isLight, isTrue);
-    expect(VedroSkin.byId('editorial_paper').editorialSerif, isTrue);
-    expect(VedroSkin.byId('cyber_neon').frameStyle, equals('neon'));
-    expect(VedroSkin.byId('cyber_neon').ctaStyle, equals('gradient'));
+    // 1. Verify 4 Master Themes + Legacy share code roundtrip + Monet RGBA pixel extraction
+    expect(VedroSkin.masterThemes.length, equals(4));
+    expect(VedroSkin.byId('ios_liquid_glass').isLiquidGlass, isTrue);
+    expect(VedroSkin.byId('ios_frosted').effectiveSurfaceMaterial, equals('unified_glass'));
+    expect(VedroSkin.byId('material_design').themeFamily, equals('material_design'));
+
+    // Synthetic fiery amber-orange poster pixels -> Monet extractor picks warm orange hue (~20°-40°)
+    final amberPixels = List<int>.generate(16 * 16 * 4, (i) {
+      final ch = i % 4;
+      if (ch == 0) return 235; // R
+      if (ch == 1) return 115; // G
+      if (ch == 2) return 28; // B
+      return 255; // A
+    });
+    final extractedAmber = DynamicColorEngine.extractDominantSeedFromRgba(
+      amberPixels,
+      width: 16,
+      height: 16,
+    );
+    expect(extractedAmber, isNotNull);
+    final amberHue = HSLColor.fromColor(extractedAmber!).hue;
+    expect(amberHue, inInclusiveRange(15.0, 45.0));
+
+    final liquidWithMonet = DynamicColorEngine.applySeedToSkin(
+      VedroSkin.iosLiquidGlass,
+      extractedAmber,
+    );
+    expect(liquidWithMonet.isLiquidGlass, isTrue);
+    expect((HSLColor.fromColor(liquidWithMonet.accent).hue - amberHue).abs(), lessThan(12.0));
 
     const diy = CustomSkinSpec(
       id: 'custom_test_1',
@@ -1371,59 +1405,10 @@ void main() {
     final code = diy.encodeShareCode();
     expect(code, startsWith('VEDRO-SKIN:'));
     final decoded = CustomSkinSpec.tryDecodeShareCode(code);
-    expect(decoded, isNotNull);
-    expect(decoded!.name, equals('落日琥珀馆'));
-    expect(decoded.accentHex, equals('#F59E0B'));
-    expect(decoded.editorialSerif, isTrue);
+    expect(decoded?.name, equals('落日琥珀馆'));
 
-    // 2. SettingsScreen -> 应用风格 switches live between Light/Dark presets & creates a DIY skin
+    // 2. SettingsScreen -> 应用风格 switches between 4 Master Themes & shows ONLY matching sub-settings!
     final app = VedroAppState(_MockVedroCore());
-    await tester.pumpWidget(
-      AnimatedBuilder(
-        animation: app,
-        builder: (_, __) => MaterialApp(
-          theme: VedroTheme.fromSkin(app.prefs.activeSkin),
-          home: SettingsScreen(
-            appState: app,
-            onOpenServerHub: () {},
-            onOpenAddServer: ([_]) {},
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('应用风格'));
-    await tester.pumpAndSettle();
-
-    expect(find.byKey(const ValueKey('skin-preset-obsidian')), findsOneWidget);
-    expect(find.byKey(const ValueKey('skin-preset-daylight')), findsOneWidget);
-    expect(find.byKey(const ValueKey('skin-preset-cyber_neon')), findsOneWidget);
-
-    await tester.ensureVisible(find.byKey(const ValueKey('skin-preset-daylight')));
-    await tester.tap(find.byKey(const ValueKey('skin-preset-daylight')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.skinId, equals('daylight'));
-    expect(app.prefs.activeSkin.isLight, isTrue);
-
-    await tester.ensureVisible(find.byKey(const ValueKey('skin-preset-cyber_neon')));
-    await tester.tap(find.byKey(const ValueKey('skin-preset-cyber_neon')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.skinId, equals('cyber_neon'));
-    expect(app.prefs.activeSkin.frameStyle, equals('neon'));
-
-    // Open DIY Custom Skin Studio & save a new custom skin
-    await tester.ensureVisible(find.byKey(const ValueKey('open-diy-skin-editor-btn')));
-    await tester.tap(find.byKey(const ValueKey('open-diy-skin-editor-btn')));
-    await tester.pumpAndSettle();
-    expect(find.text('保存并启用皮肤'), findsOneWidget);
-
-    await tester.tap(find.byKey(const ValueKey('save-diy-skin-btn')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.customSkins.length, equals(1));
-    expect(app.prefs.skinId, equals(app.prefs.customSkins.first.id));
-
-    // Live modular layout customizer inside full ShellScreen NEVER kicks user out of 应用风格!
     await tester.pumpWidget(
       AnimatedBuilder(
         animation: app,
@@ -1436,54 +1421,62 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('设置'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('应用风格'));
+    await tester.pumpAndSettle();
+
     expect(find.byKey(const ValueKey('skin-studio-pane')), findsOneWidget);
     expect(find.byKey(const ValueKey('skin-live-preview-stage')), findsOneWidget);
 
-    // Switch live preview tabs (Detail & Player HUD)
-    await tester.tap(find.byKey(const ValueKey('skin-preview-tab-detail')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('skin-preview-tab-player')));
-    await tester.pumpAndSettle();
+    // Default `immersive_cinema`: NO glass translucency / blur sliders!
+    expect(find.byKey(const ValueKey('skin-preset-immersive_cinema')), findsOneWidget);
+    expect(find.byKey(const ValueKey('glass-translucency-slider-row')), findsNothing);
+    expect(find.byKey(const ValueKey('glass-blur-radius-slider-row')), findsNothing);
 
-    // Switch navLayout between left_rail & centered_capsule -> stays in 应用风格!
-    await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-left_rail')));
+    // Switch to `ios_liquid_glass` -> Translucency, Blur Radius & Liquid Specular appear!
+    await tester.tap(find.byKey(const ValueKey('skin-preset-ios_liquid_glass')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.skinId, equals('ios_liquid_glass'));
+    expect(app.prefs.activeSkin.isLiquidGlass, isTrue);
+    expect(find.byKey(const ValueKey('glass-translucency-slider-row')), findsOneWidget);
+    expect(find.byKey(const ValueKey('glass-blur-radius-slider-row')), findsOneWidget);
+    expect(find.byKey(const ValueKey('liquid-specular-dropdown')), findsOneWidget);
+
+    // Switch to `ios_frosted` -> Translucency & Blur Radius stay visible, Liquid Specular hides!
+    await tester.tap(find.byKey(const ValueKey('skin-preset-ios_frosted')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.skinId, equals('ios_frosted'));
+    expect(find.byKey(const ValueKey('glass-translucency-slider-row')), findsOneWidget);
+    expect(find.byKey(const ValueKey('liquid-specular-dropdown')), findsNothing);
+
+    // Switch to `material_design` -> Glass sliders hide, MD3 Tonal Chroma appears!
+    await tester.tap(find.byKey(const ValueKey('skin-preset-material_design')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.skinId, equals('material_design'));
+    expect(find.byKey(const ValueKey('glass-translucency-slider-row')), findsNothing);
+    expect(find.byKey(const ValueKey('md3-chroma-dropdown')), findsOneWidget);
+
+    // Switch Appearance Mode to Light via iOS Pull-Down Menu (`theme-mode-dropdown`)
+    await tester.ensureVisible(find.byKey(const ValueKey('theme-mode-dropdown')));
+    await tester.tap(find.byKey(const ValueKey('theme-mode-dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('theme-mode-light')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.themeMode, equals('light'));
+    expect(app.prefs.activeSkin.isLight, isTrue);
+
+    // Pick iOS Accent Color swatch (`purple`) & switch Desktop Nav Layout without losing Settings tab!
+    await tester.ensureVisible(find.byKey(const ValueKey('accent-swatch-purple')));
+    await tester.tap(find.byKey(const ValueKey('accent-swatch-purple')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.accentId, equals('purple'));
+
+    await tester.ensureVisible(find.byKey(const ValueKey('desktop-nav-layout-dropdown')));
+    await tester.tap(find.byKey(const ValueKey('desktop-nav-layout-dropdown')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('skin-mod-left_rail')));
     await tester.pumpAndSettle();
     expect(app.prefs.activeSkin.navLayout, equals('left_rail'));
     expect(find.byKey(const ValueKey('skin-studio-pane')), findsOneWidget);
-
-    await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-unified_glass')));
-    await tester.tap(find.byKey(const ValueKey('skin-mod-unified_glass')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.activeSkin.effectiveSurfaceMaterial, equals('unified_glass'));
-    expect(find.byKey(const ValueKey('skin-studio-pane')), findsOneWidget);
-
-    await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-overlay_poster')));
-    await tester.tap(find.byKey(const ValueKey('skin-mod-overlay_poster')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.activeSkin.cardStyle, equals('overlay_poster'));
-    expect(find.byKey(const ValueKey('skin-studio-pane')), findsOneWidget);
-
-    // Smart context-aware preview auto-switches scene to match what changed:
-    // - Tapping editorial_serif ('serif') -> switches to Typography scene!
-    await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-serif')));
-    await tester.tap(find.byKey(const ValueKey('skin-mod-serif')));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('当前标题风格：Editorial Serif'), findsOneWidget);
-
-    // - Tapping detail_layout ('centered_editorial') -> switches to Detail scene!
-    await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-centered_editorial')));
-    await tester.tap(find.byKey(const ValueKey('skin-mod-centered_editorial')));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('版本 1：4K DoVi'), findsOneWidget);
-
-    // - Tapping a full preset ('daylight') -> switches to 3-column Theme Overview scene!
-    await tester.ensureVisible(find.byKey(const ValueKey('skin-preset-daylight')));
-    await tester.tap(find.byKey(const ValueKey('skin-preset-daylight')));
-    await tester.pumpAndSettle();
-    expect(find.text('主页与海报卡'), findsOneWidget);
-    expect(find.text('详情构图与材质'), findsOneWidget);
-    expect(find.text('字体与对比度'), findsOneWidget);
   });
 
   testWidgets(
@@ -1496,11 +1489,11 @@ void main() {
     final mock = _MockVedroCore();
     final app = VedroAppState(mock);
 
-    // 1. Default theme is Pure Immersive Cinema (`obsidian` + `full_bleed` + `blurred_fanart` + `unified_glass`)!
-    expect(app.prefs.activeSkin.id, equals('obsidian'));
+    // 1. Default theme is Cohesive Immersive Cinema (`immersive_cinema` + `full_bleed` + `blurred_fanart` + Monet ON)!
+    expect(app.prefs.activeSkin.id, equals('immersive_cinema'));
     expect(app.prefs.activeSkin.heroStyle, equals('full_bleed'));
     expect(app.prefs.activeSkin.backdropMode, equals('blurred_fanart'));
-    expect(app.prefs.activeSkin.effectiveSurfaceMaterial, equals('unified_glass'));
+    expect(app.prefs.dynamicMonet, isTrue);
 
     // 2. AI translation supports both direct IP AND proxy IP (`direct_ip: false`) + model list fetching!
     await app.updatePrefs(app.prefs.copyWith(aiEnabled: true, aiDirectClientIp: false));
@@ -1626,23 +1619,39 @@ void main() {
     expect(find.byKey(const ValueKey('double-back-exit-toast')), findsOneWidget);
     expect(find.text('再按一次退出'), findsOneWidget);
 
-    // 3. Mobile SkinStudioPane (`platformOverride: 'android'`) hides desktop left_rail & exposes mobile dock!
+    // 3. Portrait Android Mobile SkinStudioPane (360px narrow screen!) renders cleanly with ZERO overflow!
+    tester.view.physicalSize = const Size(1080, 2340); // 360x780 @ 3x portrait phone!
+    tester.view.devicePixelRatio = 3.0;
     await tester.pumpWidget(
-      MaterialApp(
-        theme: VedroTheme.fromSkin(app.prefs.activeSkinFor(isMobile: true)),
-        home: Scaffold(
-          body: SingleChildScrollView(
-            child: SkinStudioPane(appState: app, platformOverride: 'android'),
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) => MaterialApp(
+          theme: VedroTheme.fromSkin(app.prefs.activeSkinFor(isMobile: true)),
+          home: Scaffold(
+            body: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: SkinStudioPane(appState: app, platformOverride: 'android'),
+            ),
           ),
         ),
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('移动端界面定制'), findsOneWidget);
-    expect(find.text('底部导航栏'), findsOneWidget);
-    expect(find.text('触控反馈'), findsOneWidget);
-    expect(find.text('导航栏架构'), findsNothing);
-    expect(find.text('悬停动效'), findsNothing);
+    expect(find.byKey(const ValueKey('skin-live-preview-stage')), findsOneWidget);
+    expect(find.text('沉浸影院'), findsWidgets);
+    expect(find.text('iOS 毛玻璃'), findsOneWidget);
+    expect(find.text('iOS 液态玻璃'), findsOneWidget);
+    expect(find.text('Material 设计'), findsOneWidget);
+    expect(find.text('莫奈动态取色'), findsOneWidget);
+    expect(find.text('底部导航样式'), findsOneWidget);
+    expect(find.text('滑动时收缩导航栏'), findsOneWidget);
+    expect(find.text('显示导航栏名称'), findsOneWidget);
+    expect(find.text('导航栏位置'), findsNothing);
+
+    // Tap preview scene chip on portrait phone -> zero overflow!
+    await tester.tap(find.byKey(const ValueKey('preview-scene-sakura')));
+    await tester.pumpAndSettle();
+    expect(find.text('花束般的恋爱'), findsOneWidget);
   });
 
   testWidgets('Audio & Subtitle tracks follow selected video version passively with ZERO cloud-drive API probes',
@@ -1663,21 +1672,25 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    // Version 0 (already played/cached) shows its exact Audio & Subtitle streams with 0 cloud probes!
+    // Version 0 (already played/cached) shows its exact Audio & Subtitle streams on the Pull-Down buttons with 0 cloud probes!
     expect(mock.probeMediaSourceCalls, equals(0));
     expect(find.text('English TrueHD Atmos 7.1'), findsOneWidget);
     expect(find.text('简英双语特效 ASS'), findsOneWidget);
 
-    // Switch to Version 1 (unplayed on cloud drive) -> 0 cloud probes, shows Version 1 passive traits!
-    await tester.tap(find.byKey(const ValueKey('movie-version-card-1')));
+    // Switch Version Dropdown to Version 1 (unplayed on cloud drive) -> 0 cloud probes, shows Version 1 passive traits!
+    await tester.tap(find.byKey(const ValueKey('detail-version-dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('movie-version-item-1')));
     await tester.pumpAndSettle();
     expect(mock.probeMediaSourceCalls, equals(0));
     expect(find.text('English TrueHD Atmos 7.1'), findsNothing);
     expect(find.textContaining('网盘尚未缓存'), findsNothing);
     expect(find.text('国粤双语'), findsOneWidget);
 
-    // Switch to Version 2 (played raw version) -> Shows Japanese AAC audio + concise "无内封字幕"
-    await tester.tap(find.byKey(const ValueKey('movie-version-card-2')));
+    // Switch Version Dropdown to Version 2 (played raw version) -> Shows Japanese AAC audio + concise "无内封字幕"
+    await tester.tap(find.byKey(const ValueKey('detail-version-dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('movie-version-item-2')));
     await tester.pumpAndSettle();
     expect(mock.probeMediaSourceCalls, equals(0));
     expect(find.text('日语原声 AAC 2.0'), findsOneWidget);

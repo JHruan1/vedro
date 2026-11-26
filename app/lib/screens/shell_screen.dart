@@ -451,9 +451,13 @@ class _ShellScreenState extends State<ShellScreen> {
       );
     }
 
-    final dockR = skin.pillRadius >= 100 ? 28.0 : skin.pillRadius.clamp(10.0, 24.0);
+    final dockR = skin.pillRadius >= 100 ? 30.0 : skin.pillRadius.clamp(12.0, 26.0);
     final mobileNav = skin.mobileNavStyle;
-    final compactIcons = mobileNav == 'compact_icon_only';
+    final shrunkByScroll =
+        widget.appState.prefs.autoShrinkNavOnScroll && _index == 0 && _homeScrolled;
+    final compactIcons = mobileNav == 'compact_icon_only' ||
+        !widget.appState.prefs.showNavLabels ||
+        shrunkByScroll;
     final fullTabBar = mobileNav == 'full_tab_bar';
 
     void triggerMobileTabTap(int i) {
@@ -500,22 +504,24 @@ class _ShellScreenState extends State<ShellScreen> {
     } else {
       bottomBar = SafeArea(
         top: false,
-        child: Padding(
+        child: AnimatedPadding(
+          duration: const Duration(milliseconds: 240),
+          curve: VedroTheme.easeOut,
           padding: EdgeInsets.fromLTRB(
-            compactIcons ? 48 : 20,
+            shrunkByScroll ? 56 : (compactIcons ? 42 : 18),
             0,
-            compactIcons ? 48 : 20,
+            shrunkByScroll ? 56 : (compactIcons ? 42 : 18),
             10,
           ),
           child: GlassSurface(
             key: ValueKey('mobile-nav-$mobileNav'),
             borderRadius: dockR,
-            blur: 36,
+            blur: skin.backdropBlur.clamp(24.0, 44.0),
             color: skin.glass,
             borderColor: skin.borderStrong,
             padding: EdgeInsets.symmetric(
               horizontal: compactIcons ? 8 : 6,
-              vertical: compactIcons ? 4 : 5,
+              vertical: compactIcons ? 4.5 : 5.5,
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -1299,7 +1305,10 @@ class _BottomTabButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    final activeColor = skin.ctaStyle == 'contrast' ? skin.fg : skin.accent;
+    final activeColor = skin.accent;
+    final pillFill = skin.isLight
+        ? Colors.black.withValues(alpha: 0.065)
+        : Colors.white.withValues(alpha: 0.11);
     return Expanded(
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
@@ -1307,14 +1316,11 @@ class _BottomTabButton extends StatelessWidget {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
           curve: VedroTheme.easeOut,
-          padding: EdgeInsets.symmetric(vertical: iconOnly ? 9 : 7),
+          margin: const EdgeInsets.symmetric(horizontal: 2),
+          padding: EdgeInsets.symmetric(vertical: iconOnly ? 8.5 : 6.5),
           decoration: BoxDecoration(
-            color: selected
-                ? (skin.ctaStyle == 'contrast'
-                    ? skin.subtleChipHoverBg
-                    : skin.accent.withValues(alpha: skin.isLight ? 0.14 : 0.20))
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(skin.radiusForPill(44)),
+            color: selected ? pillFill : Colors.transparent,
+            borderRadius: BorderRadius.circular(skin.radiusForPill(46)),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1325,18 +1331,20 @@ class _BottomTabButton extends StatelessWidget {
                 curve: VedroTheme.easeOut,
                 child: Icon(
                   selected ? tab.activeIcon : tab.icon,
-                  size: iconOnly ? 21 : 20,
-                  color: selected ? activeColor : skin.fg3,
+                  size: iconOnly ? 21.5 : 20.5,
+                  color: selected ? activeColor : skin.fg2,
                 ),
               ),
               if (!iconOnly) ...[
                 const SizedBox(height: 2.5),
                 Text(
                   tab.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 10.5,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                    color: selected ? activeColor : skin.fg3,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    color: selected ? activeColor : skin.fg2,
                   ),
                 ),
               ],

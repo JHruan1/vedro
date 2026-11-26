@@ -2250,7 +2250,7 @@ impl VedroRuntime {
                     if is_bilibili_index {
                         "Index-Translate-Client/1.0"
                     } else {
-                        "Vedro-Translate/0.3.1"
+                        concat!("Vedro-Translate/", env!("CARGO_PKG_VERSION"))
                     },
                 );
                 if !api_key.trim().is_empty() {
@@ -2340,7 +2340,10 @@ impl VedroRuntime {
                     for px_opt in attempts {
                         let mut b = reqwest::Client::builder()
                             .timeout(Duration::from_secs(15))
-                            .user_agent("ClashMetaForAndroid/2.11.2 sing-box/1.10.7 Vedro/0.3.1");
+                            .user_agent(concat!(
+                                "ClashMetaForAndroid/2.11.2 sing-box/1.10.7 Vedro/",
+                                env!("CARGO_PKG_VERSION")
+                            ));
                         if let Some(ref p) = px_opt {
                             if let Ok(proxy) = reqwest::Proxy::all(p) {
                                 b = b.proxy(proxy);
@@ -2619,7 +2622,7 @@ impl VedroRuntime {
 
                 let http = reqwest::Client::builder()
                     .timeout(Duration::from_secs(90))
-                    .user_agent("Vedro/0.3.1")
+                    .user_agent(concat!("Vedro/", env!("CARGO_PKG_VERSION")))
                     .build()
                     .map_err(|e| e.to_string())?;
                 let resp = http

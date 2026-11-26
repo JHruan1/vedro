@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -194,22 +195,70 @@ class GlassSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
+    final isLiquid = skin.isLiquidGlass;
+    final specMul = switch (skin.liquidSpecular) {
+      'subtle' => 0.65,
+      'vivid' => 1.35,
+      _ => 1.0,
+    };
     final effectiveColor = color ?? skin.glass;
     final effectiveBorder = borderColor ?? skin.borderStrong;
     final radius = BorderRadius.circular(borderRadius);
     return Container(
-      foregroundDecoration: BoxDecoration(
-        borderRadius: radius,
-        border: Border.all(color: effectiveBorder, width: 0.8),
-      ),
-      child: ClipRRect(
-        borderRadius: radius,
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-          child: Container(
-            padding: padding,
-            color: effectiveColor,
-            child: child,
+      decoration: isLiquid
+          ? BoxDecoration(
+              borderRadius: radius,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: skin.isLight ? 0.08 : 0.30),
+                  blurRadius: 22,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            )
+          : null,
+      foregroundDecoration: isLiquid
+          ? null
+          : BoxDecoration(
+              borderRadius: radius,
+              border: Border.all(color: effectiveBorder, width: 0.8),
+            ),
+      child: CustomPaint(
+        foregroundPainter: isLiquid
+            ? LiquidGlassRimPainter(
+                radius: borderRadius,
+                isLight: skin.isLight,
+                accent: skin.accent,
+                intensity: specMul,
+              )
+            : null,
+        child: ClipRRect(
+          borderRadius: radius,
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: effectiveColor,
+                gradient: isLiquid
+                    ? LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        stops: const [0.0, 0.42, 1.0],
+                        colors: [
+                          Colors.white.withValues(
+                            alpha: ((skin.isLight ? 0.48 : 0.16) * specMul).clamp(0.04, 0.72),
+                          ),
+                          Colors.transparent,
+                          skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.07),
+                        ],
+                      )
+                    : null,
+              ),
+              child: Padding(
+                padding: padding ?? EdgeInsets.zero,
+                child: child,
+              ),
+            ),
           ),
         ),
       ),
@@ -904,4 +953,489 @@ Future<T?> showGlassSheet<T>({
       );
     },
   );
+}
+
+
+/// Option descriptor for `VedroPullDownButton<T>` (iOS-style Floating Glass Pull-Down Menu).
+class VedroDropdownItem<T> {
+  const VedroDropdownItem({
+    required this.value,
+    required this.label,
+    this.subtitle,
+    this.icon,
+    this.itemKey,
+    this.onTapOverride,
+    this.isDestructive = false,
+  });
+
+  final T value;
+  final String label;
+  final String? subtitle;
+  final IconData? icon;
+  final Key? itemKey;
+  final VoidCallback? onTapOverride;
+  final bool isDestructive;
+}
+
+/// iOS 26 / Apple TV+ Style Pull-Down Selector Button (`下拉框`) with Floating Frosted / Liquid Glass Popover Menu.
+/// Automatically clamps inside screen viewport bounds (zero overflow on 360px phones or 4K desktops).
+class VedroPullDownButton<T> extends StatefulWidget {
+  const VedroPullDownButton({
+    super.key,
+    required this.items,
+    required this.value,
+    required this.onChanged,
+    this.prefixIcon,
+    this.prefixLabel,
+    this.displayLabelOverride,
+    this.expanded = false,
+    this.height = 38.0,
+    this.menuMinWidth = 236.0,
+    this.menuMaxWidth = 360.0,
+  });
+
+  final List<VedroDropdownItem<T>> items;
+  final T value;
+  final ValueChanged<T> onChanged;
+  final IconData? prefixIcon;
+  final String? prefixLabel;
+  final String? displayLabelOverride;
+  final bool expanded;
+  final double height;
+  final double menuMinWidth;
+  final double menuMaxWidth;
+
+  @override
+  State<VedroPullDownButton<T>> createState() => _VedroPullDownButtonState<T>();
+}
+
+class _VedroPullDownButtonState<T> extends State<VedroPullDownButton<T>> {
+  bool _isOpen = false;
+
+  VedroDropdownItem<T>? get _activeItem {
+    for (final item in widget.items) {
+      if (item.onTapOverride == null && item.value == widget.value) {
+        return item;
+      }
+    }
+    for (final item in widget.items) {
+      if (item.onTapOverride == null) return item;
+    }
+    return widget.items.isNotEmpty ? widget.items.first : null;
+  }
+
+  Future<void> _openMenu() async {
+    if (widget.items.isEmpty || _isOpen) return;
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return;
+    final overlay = Overlay.maybeOf(context)?.context.findRenderObject() as RenderBox?;
+    final triggerRect = box.localToGlobal(Offset.zero, ancestor: overlay) & box.size;
+    final inheritedTheme = Theme.of(context);
+
+    HapticFeedback.selectionClick();
+    setState(() => _isOpen = true);
+    try {
+      await Navigator.of(context).push(
+        _VedroPullDownRoute<void>(
+          triggerRect: triggerRect,
+          theme: inheritedTheme,
+          minWidth: math.max(widget.menuMinWidth, box.size.width),
+          maxWidth: widget.menuMaxWidth,
+          items: widget.items,
+          selectedValue: widget.value,
+          onSelectItem: (item) {
+            if (item.onTapOverride != null) {
+              item.onTapOverride!();
+            } else {
+              widget.onChanged(item.value);
+            }
+          },
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isOpen = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final current = _activeItem;
+    final mainLabel = widget.displayLabelOverride ?? current?.label ?? '';
+    final r = skin.pillRadius >= 100
+        ? (widget.height * 0.5)
+        : skin.cardRadius.clamp(10.0, 16.0);
+
+    final isGlass = skin.usesGlassPanels;
+    final isLiquid = skin.isLiquidGlass;
+    final bg = isLiquid
+        ? skin.unifiedTileColor(hovered: _isOpen)
+        : (isGlass
+            ? skin.unifiedPanelColor
+            : (skin.isLight
+                ? skin.fg.withValues(alpha: _isOpen ? 0.09 : 0.055)
+                : Colors.white.withValues(alpha: _isOpen ? 0.13 : 0.08)));
+
+    final rowContent = Row(
+      mainAxisSize: widget.expanded ? MainAxisSize.max : MainAxisSize.min,
+      children: [
+        if (widget.prefixIcon != null) ...[
+          Icon(widget.prefixIcon, size: 15.5, color: skin.accent),
+          const SizedBox(width: 7),
+        ],
+        if (widget.prefixLabel != null && widget.prefixLabel!.isNotEmpty) ...[
+          Text(
+            widget.prefixLabel!,
+            style: TextStyle(
+              color: skin.fg3,
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(width: 6),
+        ],
+        Flexible(
+          fit: widget.expanded ? FlexFit.tight : FlexFit.loose,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: widget.expanded ? double.infinity : 260,
+            ),
+            child: Text(
+              mainLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: skin.fg,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -0.1,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        AnimatedRotation(
+          turns: _isOpen ? 0.5 : 0.0,
+          duration: const Duration(milliseconds: 180),
+          curve: VedroTheme.easeOut,
+          child: Icon(
+            Icons.keyboard_arrow_down_rounded,
+            size: 17,
+            color: skin.fg2,
+          ),
+        ),
+      ],
+    );
+
+    Widget pill;
+    if (isLiquid) {
+      pill = CustomPaint(
+        foregroundPainter: LiquidGlassRimPainter(
+          radius: r,
+          isLight: skin.isLight,
+          accent: skin.accent,
+          selected: _isOpen,
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(r),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+            child: Container(
+              height: widget.height,
+              padding: const EdgeInsets.symmetric(horizontal: 13),
+              decoration: BoxDecoration(
+                color: bg,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: skin.isLight ? 0.42 : 0.12),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+              child: rowContent,
+            ),
+          ),
+        ),
+      );
+    } else {
+      pill = AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        height: widget.height,
+        padding: const EdgeInsets.symmetric(horizontal: 13),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(r),
+          border: Border.all(
+            color: _isOpen
+                ? skin.accent.withValues(alpha: 0.65)
+                : (skin.isLight ? skin.border : Colors.white.withValues(alpha: 0.14)),
+            width: _isOpen ? 1.1 : 0.8,
+          ),
+        ),
+        child: rowContent,
+      );
+    }
+
+    final button = PressableScale(
+      onTap: _openMenu,
+      hoverScale: 1.015,
+      pressScale: 0.97,
+      child: pill,
+    );
+
+    return widget.expanded ? SizedBox(width: double.infinity, child: button) : button;
+  }
+}
+
+class _VedroPullDownRoute<T> extends PopupRoute<T> {
+  _VedroPullDownRoute({
+    required this.triggerRect,
+    required this.theme,
+    required this.minWidth,
+    required this.maxWidth,
+    required this.items,
+    required this.selectedValue,
+    required this.onSelectItem,
+  });
+
+  final Rect triggerRect;
+  final ThemeData theme;
+  final double minWidth;
+  final double maxWidth;
+  final List<VedroDropdownItem<dynamic>> items;
+  final dynamic selectedValue;
+  final ValueChanged<VedroDropdownItem<dynamic>> onSelectItem;
+
+  @override
+  Color? get barrierColor => Colors.black.withValues(alpha: 0.08);
+
+  @override
+  bool get barrierDismissible => true;
+
+  @override
+  String? get barrierLabel => 'Dismiss menu';
+
+  @override
+  Duration get transitionDuration => const Duration(milliseconds: 190);
+
+  @override
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 140);
+
+  @override
+  Widget buildPage(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+  ) {
+    final media = MediaQuery.of(context);
+    final screen = media.size;
+    final safeTop = media.padding.top + 52.0;
+    final safeBottom = screen.height - media.padding.bottom - 12.0;
+    final skin = theme.extension<VedroSkin>() ?? VedroSkin.immersiveCinema;
+
+    final availW = (screen.width - 24.0).clamp(180.0, maxWidth);
+    final menuW = minWidth.clamp(180.0, availW);
+    final left = (triggerRect.left.clamp(12.0, math.max(12.0, screen.width - menuW - 12.0))).toDouble();
+
+    final spaceBelow = safeBottom - triggerRect.bottom - 6.0;
+    final spaceAbove = triggerRect.top - safeTop - 6.0;
+    final estHeight = items.length * 52.0 + 16.0;
+    final openUpward = spaceBelow < math.min(estHeight, 220.0) && spaceAbove > spaceBelow;
+    final maxMenuH = (openUpward ? spaceAbove : spaceBelow).clamp(140.0, 360.0);
+
+    final alignX = (((triggerRect.center.dx - left) / menuW) * 2.0 - 1.0).clamp(-0.85, 0.85);
+    final scaleOrigin = Alignment(alignX, openUpward ? 1.0 : -1.0);
+    final curved = CurvedAnimation(
+      parent: animation,
+      curve: VedroTheme.easeOut,
+      reverseCurve: Curves.easeInCubic,
+    );
+
+    final r = skin.cardRadius.clamp(14.0, 22.0);
+    final isLiquid = skin.isLiquidGlass;
+    final menuBg = skin.isLight
+        ? Colors.white.withValues(alpha: isLiquid ? 0.76 : 0.88)
+        : Color.lerp(skin.surface2, Colors.black, 0.15)!.withValues(alpha: isLiquid ? 0.72 : 0.86);
+
+    final menuList = ConstrainedBox(
+      constraints: BoxConstraints(
+        minWidth: menuW,
+        maxWidth: menuW,
+        maxHeight: maxMenuH,
+      ),
+      child: Material(
+        type: MaterialType.transparency,
+        child: ListView.separated(
+          key: const ValueKey('vedro-pulldown-menu-list'),
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          shrinkWrap: true,
+          itemCount: items.length,
+          separatorBuilder: (_, __) => Divider(
+            height: 1,
+            thickness: 0.55,
+            indent: 38,
+            endIndent: 14,
+            color: skin.isLight
+                ? Colors.black.withValues(alpha: 0.07)
+                : Colors.white.withValues(alpha: 0.09),
+          ),
+          itemBuilder: (ctx, idx) {
+            final entry = items[idx];
+            final isSelected = entry.onTapOverride == null && entry.value == selectedValue;
+            final textColor = entry.isDestructive
+                ? VedroTheme.danger
+                : (isSelected ? skin.fg : skin.fg.withValues(alpha: 0.90));
+            return InkWell(
+              key: entry.itemKey,
+              onTap: () {
+                HapticFeedback.selectionClick();
+                Navigator.of(ctx).pop();
+                onSelectItem(entry);
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    SizedBox(
+                      width: 24,
+                      child: isSelected
+                          ? Icon(
+                              Icons.check_rounded,
+                              size: 17.5,
+                              color: skin.ctaStyle == 'contrast' && !skin.isLight
+                                  ? Colors.white
+                                  : skin.accent,
+                            )
+                          : (entry.onTapOverride != null && entry.icon != null
+                              ? Icon(
+                                  entry.icon,
+                                  size: 16,
+                                  color: entry.isDestructive ? VedroTheme.danger : skin.accent,
+                                )
+                              : null),
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            entry.label,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: textColor,
+                              fontSize: 13.5,
+                              fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                              height: 1.28,
+                            ),
+                          ),
+                          if (entry.subtitle != null && entry.subtitle!.trim().isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              entry.subtitle!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: skin.fg3,
+                                fontSize: 11.5,
+                                fontFeatures: const [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    if (entry.onTapOverride == null && entry.icon != null) ...[
+                      const SizedBox(width: 8),
+                      Icon(entry.icon, size: 15.5, color: skin.fg3),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+
+    final menuCard = Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(r),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: skin.isLight ? 0.18 : 0.56),
+            blurRadius: 34,
+            spreadRadius: 1,
+            offset: const Offset(0, 14),
+          ),
+        ],
+      ),
+      foregroundDecoration: isLiquid
+          ? null
+          : BoxDecoration(
+              borderRadius: BorderRadius.circular(r),
+              border: Border.all(
+                color: skin.isLight
+                    ? Colors.white.withValues(alpha: 0.85)
+                    : Colors.white.withValues(alpha: 0.20),
+                width: 0.9,
+              ),
+            ),
+      child: CustomPaint(
+        foregroundPainter: isLiquid
+            ? LiquidGlassRimPainter(
+                radius: r,
+                isLight: skin.isLight,
+                accent: skin.accent,
+              )
+            : null,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(r),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 34, sigmaY: 34),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: menuBg,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: skin.isLight ? 0.45 : 0.10),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+              child: menuList,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    return Theme(
+      data: theme,
+      child: Stack(
+        children: [
+          Positioned(
+            left: left,
+            top: openUpward ? null : (triggerRect.bottom + 6.0),
+            bottom: openUpward ? (screen.height - triggerRect.top + 6.0) : null,
+            child: FadeTransition(
+              opacity: curved,
+              child: ScaleTransition(
+                alignment: scaleOrigin,
+                scale: Tween<double>(begin: 0.92, end: 1.0).animate(curved),
+                child: menuCard,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

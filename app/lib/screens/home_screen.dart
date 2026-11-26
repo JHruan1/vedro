@@ -717,6 +717,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
   @override
   void initState() {
     super.initState();
+    _syncDynamicHeroColor();
     _armTimer();
   }
 
@@ -726,6 +727,20 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     if (_active >= widget.featured.length) {
       _active = 0;
     }
+    if (oldWidget.featured != widget.featured) {
+      _syncDynamicHeroColor();
+    }
+  }
+
+  void _syncDynamicHeroColor() {
+    if (widget.featured.isEmpty) return;
+    final safeIdx = _active.clamp(0, widget.featured.length - 1);
+    final target = widget.featured[safeIdx].item;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        widget.appState.updateDynamicSeedFromItem(target);
+      }
+    });
   }
 
   @override
@@ -740,12 +755,14 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     _autoTimer = Timer(const Duration(seconds: 8), () {
       if (!mounted) return;
       setState(() => _active = (_active + 1) % widget.featured.length);
+      _syncDynamicHeroColor();
       _armTimer();
     });
   }
 
   void _select(int index) {
     setState(() => _active = index);
+    _syncDynamicHeroColor();
     _armTimer();
   }
 

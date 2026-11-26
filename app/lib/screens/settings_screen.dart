@@ -3427,13 +3427,8 @@ class _GroupedCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    return Container(
-      decoration: BoxDecoration(
-        color: skin.surface,
-        borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 18.0)),
-        border: skin.cardBorder(),
-      ),
-      clipBehavior: Clip.antiAlias,
+    return VedroAdaptiveSurface(
+      borderRadius: skin.cardRadius.clamp(12.0, 22.0),
       child: Column(
         children: [
           for (var i = 0; i < children.length; i++) ...[
@@ -3547,73 +3542,20 @@ class _AppleMenuPickerRow<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
     final safeValue = items.containsKey(value) ? value : items.keys.first;
-    final label = items[safeValue] ?? '';
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
       child: Row(
         children: [
           Expanded(child: Text(title, style: TextStyle(color: skin.fg, fontSize: 14))),
           const SizedBox(width: 12),
-          PopupMenuButton<T>(
-            initialValue: safeValue,
-            onSelected: onChanged,
-            color: skin.surface2,
-            elevation: 16,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: BorderSide(color: skin.borderStrong, width: 0.8),
-            ),
-            itemBuilder: (_) => items.entries.map((e) {
-              final selected = e.key == safeValue;
-              return PopupMenuItem<T>(
-                value: e.key,
-                height: 38,
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        e.value,
-                        style: TextStyle(
-                          color: selected ? skin.fg : skin.fg2,
-                          fontSize: 13,
-                          fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                        ),
-                      ),
-                    ),
-                    if (selected) Icon(Icons.check_rounded, size: 16, color: skin.accent),
-                  ],
-                ),
-              );
-            }).toList(),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6.5),
-              decoration: BoxDecoration(
-                color: skin.surface2,
-                borderRadius: BorderRadius.circular(9),
-                border: Border.all(color: skin.border, width: 0.8),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 210),
-                    child: Text(
-                      label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: skin.fg,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 5),
-                  Icon(Icons.unfold_more_rounded, size: 15, color: skin.fg3),
-                ],
-              ),
-            ),
+          VedroPullDownButton<T>(
+            height: 34,
+            value: safeValue,
+            items: items.entries
+                .map((e) => VedroDropdownItem<T>(value: e.key, label: e.value))
+                .toList(),
+            onChanged: onChanged,
           ),
         ],
       ),

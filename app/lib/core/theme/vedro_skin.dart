@@ -300,6 +300,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     this.osdStyle = 'floating_island', // floating_island | cinema_gradient | minimal_glass
     this.mobileNavStyle = 'floating_dock', // floating_dock | full_tab_bar | compact_icon_only
     this.touchFeedbackStyle = 'spring_haptic', // spring_haptic | subtle_scale | clean_static
+    this.themeFamily = 'immersive_cinema', // immersive_cinema | ios_frosted | ios_liquid_glass | material_design
+    this.liquidSpecular = 'standard', // subtle | standard | vivid
     this.showCardRating = false,
     this.preferClearLogo = true,
     this.isCustom = false,
@@ -383,6 +385,13 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
   /// `'spring_haptic'` | `'subtle_scale'` | `'clean_static'`
   final String touchFeedbackStyle;
 
+  /// Cohesive Master Theme Family:
+  /// `'immersive_cinema'` | `'ios_frosted'` | `'ios_liquid_glass'` | `'material_design'`
+  final String themeFamily;
+
+  /// Specular refractive rim intensity on Liquid Glass (`'subtle'` | `'standard'` | `'vivid'`).
+  final String liquidSpecular;
+
   final bool showCardRating;
   final bool preferClearLogo;
   final bool isCustom;
@@ -391,11 +400,15 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
 
   bool get usesBlurredFanart => backdropMode == 'blurred_fanart';
 
-  /// Resolved surface physics so frosted glass NEVER clashes with opaque solid cards:
+  /// Resolved surface physics across all 4 Master Themes:
+  /// `'liquid_glass'` | `'unified_glass'` | `'tinted_acrylic'` | `'matte_solid'` | `'oled_borderless'`
   String get effectiveSurfaceMaterial {
     if (surfaceMaterial != 'auto' && surfaceMaterial.isNotEmpty) {
       return surfaceMaterial;
     }
+    if (themeFamily == 'ios_liquid_glass') return 'liquid_glass';
+    if (themeFamily == 'ios_frosted') return 'unified_glass';
+    if (themeFamily == 'material_design') return 'matte_solid';
     if (id == 'pure_oled') return 'oled_borderless';
     if (usesBlurredFanart || detailLayout == 'jellyfin_glass') {
       return 'unified_glass';
@@ -406,7 +419,14 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     return 'matte_solid';
   }
 
-  bool get usesGlassPanels => effectiveSurfaceMaterial == 'unified_glass';
+  bool get isLiquidGlass => effectiveSurfaceMaterial == 'liquid_glass';
+
+  bool get usesGlassPanels =>
+      effectiveSurfaceMaterial == 'unified_glass' || effectiveSurfaceMaterial == 'liquid_glass';
+
+  /// Only Frosted Glass & Liquid Glass expose translucency & blur radius sub-settings.
+  bool get supportsGlassOptics =>
+      themeFamily == 'ios_frosted' || themeFamily == 'ios_liquid_glass' || usesGlassPanels;
 
   double get mediaAspectRatio {
     switch (posterAspect) {
@@ -423,15 +443,25 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
   /// Harmonized container fill across panels, sections, sidebars, and cards (zero solid-brick clash!).
   Color get unifiedPanelColor {
     switch (effectiveSurfaceMaterial) {
+      case 'liquid_glass':
+        final base = Color.lerp(
+          isLight ? Colors.white : surface,
+          accent,
+          isLight ? 0.05 : 0.11,
+        )!;
+        final alpha = isLight
+            ? surfaceOpacity.clamp(0.42, 0.86)
+            : (surfaceOpacity * 0.78).clamp(0.28, 0.72);
+        return base.withValues(alpha: alpha);
       case 'unified_glass':
         final base = Color.lerp(surface, accent, isLight ? 0.04 : 0.08)!;
         final alpha = isLight
-            ? surfaceOpacity.clamp(0.58, 0.88)
-            : (surfaceOpacity * 0.72).clamp(0.38, 0.76);
+            ? surfaceOpacity.clamp(0.54, 0.90)
+            : (surfaceOpacity * 0.76).clamp(0.36, 0.80);
         return base.withValues(alpha: alpha);
       case 'tinted_acrylic':
         final base = Color.lerp(surface, canvasGlow, isLight ? 0.08 : 0.12)!;
-        return base.withValues(alpha: surfaceOpacity.clamp(0.62, 0.90));
+        return base.withValues(alpha: surfaceOpacity.clamp(0.62, 0.92));
       case 'oled_borderless':
         return isLight
             ? surface.withValues(alpha: 0.72)
@@ -445,6 +475,17 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
   /// Harmonized nested tile/chip/episode-row fill inside or alongside panels.
   Color unifiedTileColor({bool selected = false, bool hovered = false}) {
     switch (effectiveSurfaceMaterial) {
+      case 'liquid_glass':
+        if (isLight) {
+          if (selected) return accent.withValues(alpha: 0.18);
+          if (hovered) return Colors.white.withValues(alpha: 0.74);
+          return Colors.white.withValues(alpha: 0.44);
+        }
+        if (selected) {
+          return Color.lerp(Colors.white, accent, 0.46)!.withValues(alpha: 0.24);
+        }
+        if (hovered) return Colors.white.withValues(alpha: 0.15);
+        return Colors.white.withValues(alpha: 0.085);
       case 'unified_glass':
         if (isLight) {
           if (selected) return accent.withValues(alpha: 0.16);
@@ -586,6 +627,14 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     if (hovered && cardHoverEffect == 'glow_ring') {
       return Border.all(color: accent, width: 2.0);
     }
+    if (effectiveSurfaceMaterial == 'liquid_glass') {
+      return Border.all(
+        color: isLight
+            ? Colors.white.withValues(alpha: hovered ? 0.92 : 0.78)
+            : Colors.white.withValues(alpha: hovered ? 0.34 : 0.22),
+        width: 1.0,
+      );
+    }
     if (effectiveSurfaceMaterial == 'unified_glass') {
       return Border.all(
         color: isLight
@@ -709,6 +758,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       showCardRating: o['show_card_rating'] is bool ? o['show_card_rating'] as bool : null,
       preferClearLogo: o['prefer_clear_logo'] is bool ? o['prefer_clear_logo'] as bool : null,
       editorialSerif: o['editorial_serif'] is bool ? o['editorial_serif'] as bool : null,
+      ambientGlow: o['ambient_glow'] is bool ? o['ambient_glow'] as bool : null,
+      liquidSpecular: o['liquid_specular']?.toString(),
       ctaStyle: o['cta_style']?.toString(),
       frameStyle: o['frame_style']?.toString(),
       cardRadius: (o['card_radius'] as num?)?.toDouble(),
@@ -752,48 +803,228 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       );
 
   // ===========================================================================
-  // 9 Flagship Built-in Skins — Default #1 `obsidian` is Pure Immersive Cinema!
+  // 4 Cohesive Master Themes (iOS-Unified Design Language across ALL Platforms)
+  // + Legacy Preset Aliases for 100% Backward Compatibility
   // ===========================================================================
 
-  /// 1. 曜石影院 — Default Immersive Cinema (Full-Bleed Hero · Blurred Fanart · Unified Glass)
-  static const obsidian = VedroSkin(
-    id: 'obsidian',
-    name: '曜石影院',
-    subtitle: '全屏巨幕 · 剧照漫射 · 沉浸影院',
-    badge: 'IMMERSIVE',
+  /// Master Theme 1: 沉浸影院 — Default Apple TV+ / Infuse Theater Stage
+  static const immersiveCinema = VedroSkin(
+    id: 'immersive_cinema',
+    name: '沉浸影院',
+    subtitle: '剧照漫射 · 暗房沉浸',
+    badge: 'CINEMA',
+    themeFamily: 'immersive_cinema',
     isLight: false,
-    canvas: Color(0xFF09090B),
-    canvasGlow: Color(0xFF181822),
-    surface: Color(0xFF141418),
-    surface2: Color(0xFF1D1D23),
-    surface3: Color(0xFF292931),
-    field: Color(0xFF121216),
-    glass: Color(0xBF141418),
-    glassStrong: Color(0xEE18181D),
+    canvas: Color(0xFF09090D),
+    canvasGlow: Color(0xFF1A1B28),
+    surface: Color(0xFF14151C),
+    surface2: Color(0xFF1D1F28),
+    surface3: Color(0xFF282B37),
+    field: Color(0xFF121319),
+    glass: Color(0xCC14151C),
+    glassStrong: Color(0xF0181922),
     border: Color(0x16FFFFFF),
     borderStrong: Color(0x2AFFFFFF),
     fg: Color(0xFFF5F5F7),
-    fg2: Color(0xFFA8A8B3),
-    fg3: Color(0xFF757582),
-    accent: Color(0xFF5E9EFF),
-    accentSecondary: Color(0xFF0A84FF),
+    fg2: Color(0xFFA8A8B5),
+    fg3: Color(0xFF747482),
+    accent: Color(0xFF0A84FF),
+    accentSecondary: Color(0xFF5E9EFF),
     ctaStyle: 'contrast',
     frameStyle: 'borderless',
-    cardRadius: 13.0,
+    cardRadius: 15.0,
     pillRadius: 999.0,
     ambientGlow: true,
     editorialSerif: false,
-    navLayout: 'top_floating',
+    navLayout: 'centered_capsule',
+    heroStyle: 'full_bleed',
+    detailLayout: 'apple_immersive',
+    backdropMode: 'blurred_fanart',
+    backdropBlur: 42.0,
+    surfaceOpacity: 0.84,
+    surfaceMaterial: 'tinted_acrylic',
+    cardStyle: 'classic_below',
+    cardHoverEffect: 'lift',
+    castStyle: 'circle_medallion',
+    mobileNavStyle: 'floating_dock',
+  );
+
+  /// Alias `obsidian` -> `immersiveCinema` (keeps `id: 'obsidian'` when explicitly queried).
+  static const obsidian = VedroSkin(
+    id: 'obsidian',
+    name: '沉浸影院',
+    subtitle: '剧照漫射 · 暗房沉浸',
+    badge: 'CINEMA',
+    themeFamily: 'immersive_cinema',
+    isLight: false,
+    canvas: Color(0xFF09090D),
+    canvasGlow: Color(0xFF1A1B28),
+    surface: Color(0xFF14151C),
+    surface2: Color(0xFF1D1F28),
+    surface3: Color(0xFF282B37),
+    field: Color(0xFF121319),
+    glass: Color(0xCC14151C),
+    glassStrong: Color(0xF0181922),
+    border: Color(0x16FFFFFF),
+    borderStrong: Color(0x2AFFFFFF),
+    fg: Color(0xFFF5F5F7),
+    fg2: Color(0xFFA8A8B5),
+    fg3: Color(0xFF747482),
+    accent: Color(0xFF0A84FF),
+    accentSecondary: Color(0xFF5E9EFF),
+    ctaStyle: 'contrast',
+    frameStyle: 'borderless',
+    cardRadius: 15.0,
+    pillRadius: 999.0,
+    ambientGlow: true,
+    editorialSerif: false,
+    navLayout: 'centered_capsule',
     heroStyle: 'full_bleed',
     detailLayout: 'apple_immersive',
     backdropMode: 'blurred_fanart',
     backdropBlur: 40.0,
-    surfaceOpacity: 0.76,
+    surfaceOpacity: 0.78,
     surfaceMaterial: 'unified_glass',
     cardStyle: 'classic_below',
     cardHoverEffect: 'lift',
     castStyle: 'circle_medallion',
+    mobileNavStyle: 'floating_dock',
   );
+
+  /// Master Theme 2: iOS 毛玻璃 — Classic iOS / macOS Frosted Vibrancy
+  static const iosFrosted = VedroSkin(
+    id: 'ios_frosted',
+    name: 'iOS 毛玻璃',
+    subtitle: '磨砂漫射 · 柔和半透',
+    badge: 'FROSTED',
+    themeFamily: 'ios_frosted',
+    isLight: false,
+    canvas: Color(0xFF0A0F1A),
+    canvasGlow: Color(0xFF132C4E),
+    surface: Color(0xFF121C2D),
+    surface2: Color(0xFF19263C),
+    surface3: Color(0xFF233450),
+    field: Color(0xFF0E1726),
+    glass: Color(0xBD101A2B),
+    glassStrong: Color(0xEC142034),
+    border: Color(0x22FFFFFF),
+    borderStrong: Color(0x3CFFFFFF),
+    fg: Color(0xFFF5F8FF),
+    fg2: Color(0xFFA6B4CA),
+    fg3: Color(0xFF6E7E97),
+    accent: Color(0xFF32ADE6),
+    accentSecondary: Color(0xFF0A84FF),
+    ctaStyle: 'contrast',
+    frameStyle: 'hairline',
+    cardRadius: 18.0,
+    pillRadius: 999.0,
+    ambientGlow: true,
+    editorialSerif: false,
+    navLayout: 'centered_capsule',
+    heroStyle: 'full_bleed',
+    detailLayout: 'apple_immersive',
+    backdropMode: 'blurred_fanart',
+    backdropBlur: 38.0,
+    surfaceOpacity: 0.72,
+    surfaceMaterial: 'unified_glass',
+    cardStyle: 'classic_below',
+    cardHoverEffect: 'lift',
+    castStyle: 'circle_medallion',
+    mobileNavStyle: 'floating_dock',
+  );
+
+  /// Master Theme 3: iOS 液态玻璃 — iOS 26 Optical Specular Liquid Glass
+  static const iosLiquidGlass = VedroSkin(
+    id: 'ios_liquid_glass',
+    name: 'iOS 液态玻璃',
+    subtitle: '镜面折射 · 灵动通透',
+    badge: 'LIQUID GLASS',
+    themeFamily: 'ios_liquid_glass',
+    liquidSpecular: 'standard',
+    isLight: false,
+    canvas: Color(0xFF070B14),
+    canvasGlow: Color(0xFF142D52),
+    surface: Color(0xFF101828),
+    surface2: Color(0xFF182338),
+    surface3: Color(0xFF22314C),
+    field: Color(0xFF0C1320),
+    glass: Color(0x8C121C2E),
+    glassStrong: Color(0xBA162238),
+    border: Color(0x36FFFFFF),
+    borderStrong: Color(0x5EFFFFFF),
+    fg: Color(0xFFF8FAFF),
+    fg2: Color(0xFFB4C0D6),
+    fg3: Color(0xFF7B8AA4),
+    accent: Color(0xFF47B5FF),
+    accentSecondary: Color(0xFF5E5CE6),
+    ctaStyle: 'contrast',
+    frameStyle: 'hairline',
+    cardRadius: 22.0,
+    pillRadius: 999.0,
+    ambientGlow: true,
+    editorialSerif: false,
+    navLayout: 'centered_capsule',
+    heroStyle: 'full_bleed',
+    detailLayout: 'apple_immersive',
+    backdropMode: 'blurred_fanart',
+    backdropBlur: 30.0,
+    surfaceOpacity: 0.56,
+    surfaceMaterial: 'liquid_glass',
+    cardStyle: 'classic_below',
+    cardHoverEffect: 'lift',
+    castStyle: 'circle_medallion',
+    mobileNavStyle: 'floating_dock',
+  );
+
+  /// Master Theme 4: Material 设计 — Material Design 3 Expressive Tonal Containers
+  static const materialDesign = VedroSkin(
+    id: 'material_design',
+    name: 'Material 设计',
+    subtitle: '色阶容器 · 圆润流体',
+    badge: 'MATERIAL 3',
+    themeFamily: 'material_design',
+    isLight: false,
+    canvas: Color(0xFF0F1117),
+    canvasGlow: Color(0xFF1D2538),
+    surface: Color(0xFF181C26),
+    surface2: Color(0xFF212634),
+    surface3: Color(0xFF2B3244),
+    field: Color(0xFF1D222F),
+    glass: Color(0xE0181C26),
+    glassStrong: Color(0xF51E2330),
+    border: Color(0x1EFFFFFF),
+    borderStrong: Color(0x34FFFFFF),
+    fg: Color(0xFFEFF1F8),
+    fg2: Color(0xFFA7B0C2),
+    fg3: Color(0xFF737C90),
+    accent: Color(0xFF7AA8FF),
+    accentSecondary: Color(0xFF4B7BEC),
+    ctaStyle: 'accent',
+    frameStyle: 'borderless',
+    cardRadius: 20.0,
+    pillRadius: 999.0,
+    ambientGlow: true,
+    editorialSerif: false,
+    navLayout: 'top_floating',
+    heroStyle: 'framed_stage',
+    detailLayout: 'apple_immersive',
+    backdropMode: 'ambient_orb',
+    backdropBlur: 24.0,
+    surfaceOpacity: 0.96,
+    surfaceMaterial: 'matte_solid',
+    cardStyle: 'classic_below',
+    cardHoverEffect: 'lift',
+    castStyle: 'circle_medallion',
+    mobileNavStyle: 'floating_dock',
+  );
+
+  /// Curated 4 Master Themes surfaced in the streamlined Theme Studio.
+  static const List<VedroSkin> masterThemes = [
+    immersiveCinema,
+    iosFrosted,
+    iosLiquidGlass,
+    materialDesign,
+  ];
 
   /// 2. 纯净昼白 — Apple Music / tvOS Daylight Studio (Light Mode · Framed Sunlit Hero · White Shadow Cards)
   static const daylight = VedroSkin(
@@ -1254,17 +1485,88 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     );
   }
 
+  /// Convert any Master Theme cleanly between Dark Mode and iOS-refined Light Mode.
+  VedroSkin withPolarity(bool wantLight) {
+    if (isLight == wantLight) return this;
+    if (!wantLight) {
+      return switch (themeFamily) {
+        'ios_liquid_glass' => iosLiquidGlass,
+        'ios_frosted' => iosFrosted,
+        'material_design' => materialDesign,
+        _ => immersiveCinema,
+      };
+    }
+    final hslAcc = HSLColor.fromColor(accent);
+    final lightAccent = HSLColor.fromAHSL(
+      1.0,
+      hslAcc.hue,
+      hslAcc.saturation.clamp(0.55, 0.92),
+      0.46,
+    ).toColor();
+    final lightAccent2 = HSLColor.fromAHSL(
+      1.0,
+      (hslAcc.hue + 12.0) % 360.0,
+      hslAcc.saturation.clamp(0.50, 0.88),
+      0.40,
+    ).toColor();
+    return copyWith(
+      isLight: true,
+      canvas: themeFamily == 'material_design' ? const Color(0xFFF6F7FB) : const Color(0xFFF2F4F8),
+      canvasGlow: Color.lerp(const Color(0xFFE2ECFF), lightAccent, 0.22)!,
+      surface: const Color(0xFFFFFFFF),
+      surface2: const Color(0xFFE8EDF5),
+      surface3: const Color(0xFFDCE3EE),
+      field: const Color(0xFFEBEEF5),
+      glass: Colors.white.withValues(alpha: isLiquidGlass ? 0.64 : 0.82),
+      glassStrong: Colors.white.withValues(alpha: isLiquidGlass ? 0.80 : 0.94),
+      border: const Color(0x160F172A),
+      borderStrong: const Color(0x280F172A),
+      fg: const Color(0xFF111318),
+      fg2: const Color(0xFF4B5565),
+      fg3: const Color(0xFF7B8698),
+      accent: lightAccent,
+      accentSecondary: lightAccent2,
+    );
+  }
+
+  static String normalizeMasterThemeId(String id) {
+    switch (id) {
+      case 'immersive_cinema':
+      case 'obsidian':
+      case 'criterion_film':
+      case 'grand_velvet':
+      case 'pure_oled':
+        return 'immersive_cinema';
+      case 'ios_frosted':
+      case 'ocean_glass':
+      case 'daylight':
+      case 'editorial_paper':
+        return 'ios_frosted';
+      case 'ios_liquid_glass':
+      case 'cyber_neon':
+        return 'ios_liquid_glass';
+      case 'material_design':
+      case 'nordic_aurora':
+        return 'material_design';
+      default:
+        return 'immersive_cinema';
+    }
+  }
+
   static VedroSkin byId(
     String id, {
     List<CustomSkinSpec> customSkins = const [],
   }) {
+    for (final m in masterThemes) {
+      if (m.id == id) return m;
+    }
     for (final p in presets) {
       if (p.id == id) return p;
     }
     for (final c in customSkins) {
       if (c.id == id) return VedroSkin.fromCustom(c);
     }
-    return obsidian;
+    return immersiveCinema;
   }
 
   @override
@@ -1311,6 +1613,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     String? osdStyle,
     String? mobileNavStyle,
     String? touchFeedbackStyle,
+    String? themeFamily,
+    String? liquidSpecular,
     bool? showCardRating,
     bool? preferClearLogo,
     bool? isCustom,
@@ -1358,6 +1662,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
         osdStyle: osdStyle ?? this.osdStyle,
         mobileNavStyle: mobileNavStyle ?? this.mobileNavStyle,
         touchFeedbackStyle: touchFeedbackStyle ?? this.touchFeedbackStyle,
+        themeFamily: themeFamily ?? this.themeFamily,
+        liquidSpecular: liquidSpecular ?? this.liquidSpecular,
         showCardRating: showCardRating ?? this.showCardRating,
         preferClearLogo: preferClearLogo ?? this.preferClearLogo,
         isCustom: isCustom ?? this.isCustom,
@@ -1409,6 +1715,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       osdStyle: t < 0.5 ? osdStyle : other.osdStyle,
       mobileNavStyle: t < 0.5 ? mobileNavStyle : other.mobileNavStyle,
       touchFeedbackStyle: t < 0.5 ? touchFeedbackStyle : other.touchFeedbackStyle,
+      themeFamily: t < 0.5 ? themeFamily : other.themeFamily,
+      liquidSpecular: t < 0.5 ? liquidSpecular : other.liquidSpecular,
       showCardRating: t < 0.5 ? showCardRating : other.showCardRating,
       preferClearLogo: t < 0.5 ? preferClearLogo : other.preferClearLogo,
       isCustom: t < 0.5 ? isCustom : other.isCustom,
@@ -1542,29 +1850,70 @@ class VedroAdaptiveSurface extends StatelessWidget {
     final fill = hovered ? skin.unifiedTileColor(hovered: true, selected: selected) : skin.unifiedPanelColor;
     final mat = skin.effectiveSurfaceMaterial;
 
-    if (mat == 'unified_glass') {
+    if (mat == 'liquid_glass' || mat == 'unified_glass') {
+      final isLiquid = mat == 'liquid_glass';
+      final specMul = switch (skin.liquidSpecular) {
+        'subtle' => 0.65,
+        'vivid' => 1.35,
+        _ => 1.0,
+      };
+      final effBlur = isLiquid ? (skin.backdropBlur * 0.85).clamp(14.0, 48.0) : blurSigma;
       return Container(
-        foregroundDecoration: BoxDecoration(
-          borderRadius: radius,
-          border: skin.cardBorder(hovered: hovered, selected: selected),
-        ),
-        child: ClipRRect(
-          borderRadius: radius,
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: blurSigma, sigmaY: blurSigma),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: fill,
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: skin.isLight ? 0.34 : 0.065),
-                    Colors.transparent,
-                  ],
-                ),
+        decoration: isLiquid
+            ? BoxDecoration(
+                borderRadius: radius,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: skin.isLight ? 0.08 : 0.28),
+                    blurRadius: 20,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              )
+            : null,
+        foregroundDecoration: isLiquid
+            ? null
+            : BoxDecoration(
+                borderRadius: radius,
+                border: skin.cardBorder(hovered: hovered, selected: selected),
               ),
-              child: padding != null ? Padding(padding: padding!, child: child) : child,
+        child: CustomPaint(
+          foregroundPainter: isLiquid
+              ? LiquidGlassRimPainter(
+                  radius: r,
+                  isLight: skin.isLight,
+                  accent: skin.accent,
+                  intensity: specMul,
+                  selected: selected,
+                )
+              : null,
+          child: ClipRRect(
+            borderRadius: radius,
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: effBlur, sigmaY: effBlur),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: fill,
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    stops: isLiquid ? const [0.0, 0.36, 1.0] : const [0.0, 1.0],
+                    colors: isLiquid
+                        ? [
+                            Colors.white.withValues(
+                              alpha: ((skin.isLight ? 0.52 : 0.14) * specMul).clamp(0.04, 0.75),
+                            ),
+                            Colors.white.withValues(alpha: skin.isLight ? 0.16 : 0.02),
+                            skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.06),
+                          ]
+                        : [
+                            Colors.white.withValues(alpha: skin.isLight ? 0.34 : 0.065),
+                            Colors.transparent,
+                          ],
+                  ),
+                ),
+                child: padding != null ? Padding(padding: padding!, child: child) : child,
+              ),
             ),
           ),
         ),
@@ -1582,4 +1931,61 @@ class VedroAdaptiveSurface extends StatelessWidget {
       child: child,
     );
   }
+}
+
+/// iOS 26 Optical Liquid Glass Refractive Rim Painter:
+/// Paints a continuous diagonal specular highlight at the top-left curved rim,
+/// soft mid-body falloff, and a subtle colored caustic reflection at bottom-right.
+class LiquidGlassRimPainter extends CustomPainter {
+  const LiquidGlassRimPainter({
+    required this.radius,
+    required this.isLight,
+    required this.accent,
+    this.intensity = 1.0,
+    this.selected = false,
+  });
+
+  final double radius;
+  final bool isLight;
+  final Color accent;
+  final double intensity;
+  final bool selected;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.isEmpty) return;
+    final rect = Offset.zero & size;
+    final safeR = math.min(radius, math.min(size.width, size.height) * 0.5);
+    final rrect = RRect.fromRectAndRadius(rect.deflate(0.55), Radius.circular(safeR));
+
+    final topAlpha = ((isLight ? 0.92 : 0.52) * intensity).clamp(0.14, 1.0);
+    final midAlpha = ((isLight ? 0.35 : 0.09) * intensity).clamp(0.03, 0.55);
+    final causticAlpha = ((selected ? 0.62 : (isLight ? 0.36 : 0.30)) * intensity).clamp(0.10, 0.85);
+
+    final rimPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = selected ? 1.45 : 1.08
+      ..isAntiAlias = true
+      ..shader = LinearGradient(
+        begin: const Alignment(-0.95, -0.95),
+        end: const Alignment(0.95, 0.95),
+        stops: const [0.0, 0.38, 0.68, 1.0],
+        colors: [
+          Colors.white.withValues(alpha: topAlpha),
+          Colors.white.withValues(alpha: midAlpha),
+          Colors.white.withValues(alpha: midAlpha * 0.75),
+          Color.lerp(Colors.white, accent, selected ? 0.75 : 0.52)!.withValues(alpha: causticAlpha),
+        ],
+      ).createShader(rect);
+
+    canvas.drawRRect(rrect, rimPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant LiquidGlassRimPainter old) =>
+      old.radius != radius ||
+      old.isLight != isLight ||
+      old.accent != accent ||
+      old.intensity != intensity ||
+      old.selected != selected;
 }

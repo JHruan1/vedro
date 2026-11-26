@@ -43,3 +43,6 @@ app/android/app/src/main/jniLibs/
 *.keystore
 *.p12
 app/android/key.properties
+
+# Local reference & scratch directories
+/example/

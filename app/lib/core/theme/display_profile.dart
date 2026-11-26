@@ -152,80 +152,40 @@ class DisplayMetricsProfile {
     return '$osName · $formName · $physicalWidth×$physicalHeight (${devicePixelRatio.toStringAsFixed(devicePixelRatio == devicePixelRatio.roundToDouble() ? 1 : 2)}x · $estimatedPpi PPI)';
   }
 
-  /// Default `skinId` across ALL platforms: Pure Immersive Cinema (`obsidian`).
-  String get recommendedSkinId => 'obsidian';
+  /// Default `skinId` across ALL platforms: Cohesive Immersive Cinema (`immersive_cinema` / `obsidian`).
+  String get recommendedSkinId => 'immersive_cinema';
 
-  /// Recommended `skinOverrides` tailored to platform ergonomics & pixel density while keeping
-  /// the signature Immersive Cinema look (`full_bleed` Hero + `apple_immersive` Detail + `blurred_fanart` + `unified_glass`).
+  /// Recommended ergonomic overrides calibrated to screen geometry & DPR — never locks
+  /// `surface_material` so switching between the 4 Master Themes stays 100% pure!
   Map<String, dynamic> get recommendedSkinOverrides {
     switch (formFactor) {
       case VedroFormFactor.compactPhone:
         return const {
           'hero_style': 'full_bleed',
-          'detail_layout': 'apple_immersive',
-          'backdrop_mode': 'blurred_fanart',
-          'surface_material': 'unified_glass',
           'mobile_nav_style': 'compact_icon_only',
           'touch_feedback': 'spring_haptic',
-          'card_style': 'classic_below',
-          'card_radius': 12.0,
-          'pill_radius': 999.0,
-          'backdrop_blur': 28.0,
         };
       case VedroFormFactor.standardPhone:
-        return {
+        return const {
           'hero_style': 'full_bleed',
-          'detail_layout': 'apple_immersive',
-          'backdrop_mode': 'blurred_fanart',
-          'surface_material': 'unified_glass',
           'mobile_nav_style': 'floating_dock',
           'touch_feedback': 'spring_haptic',
-          'card_style': 'classic_below',
-          'card_radius': isIOS ? 15.0 : 13.0,
-          'pill_radius': 999.0,
-          'backdrop_blur': devicePixelRatio >= 2.6 ? 38.0 : 28.0,
         };
       case VedroFormFactor.foldableInner:
       case VedroFormFactor.tablet:
         return const {
-          'nav_layout': 'top_floating',
+          'nav_layout': 'centered_capsule',
           'mobile_nav_style': 'floating_dock',
           'touch_feedback': 'spring_haptic',
-          'hero_style': 'full_bleed',
-          'detail_layout': 'apple_immersive',
-          'backdrop_mode': 'blurred_fanart',
-          'surface_material': 'unified_glass',
-          'card_style': 'classic_below',
-          'backdrop_blur': 40.0,
         };
       case VedroFormFactor.desktopStandardDpi:
-        return const {
-          'nav_layout': 'top_floating',
-          'hero_style': 'full_bleed',
-          'detail_layout': 'apple_immersive',
-          'backdrop_mode': 'blurred_fanart',
-          'surface_material': 'unified_glass',
-          'card_style': 'classic_below',
-          'backdrop_blur': 34.0,
-        };
       case VedroFormFactor.desktopHiDpi:
         return const {
-          'nav_layout': 'top_floating',
-          'hero_style': 'full_bleed',
-          'detail_layout': 'apple_immersive',
-          'backdrop_mode': 'blurred_fanart',
-          'surface_material': 'unified_glass',
-          'backdrop_blur': 44.0,
-          'card_style': 'classic_below',
+          'nav_layout': 'centered_capsule',
         };
       case VedroFormFactor.desktopUltraWide:
         return const {
-          'nav_layout': 'top_floating',
-          'hero_style': 'full_bleed',
-          'detail_layout': 'apple_immersive',
-          'backdrop_mode': 'blurred_fanart',
-          'surface_material': 'unified_glass',
-          'backdrop_blur': 48.0,
+          'nav_layout': 'centered_capsule',
           'grid_density': 'spacious',
         };
     }

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/display_profile.dart';
+import '../theme/dynamic_color_engine.dart';
 import '../theme/vedro_skin.dart';
 
 /// Deterministic lightweight hash for local app passcode verification (no plain PIN on disk).
@@ -33,11 +34,15 @@ class AccentPalette {
   final Color fill;
 
   static const List<AccentPalette> all = [
-    AccentPalette(id: 'blue', label: '经典蓝', accent: Color(0xFF5B9BFF), fill: Color(0xFF2F6FE6)),
-    AccentPalette(id: 'silver', label: '曜石白', accent: Color(0xFFE5E7EB), fill: Color(0xFF4B5563)),
-    AccentPalette(id: 'emerald', label: '翡翠绿', accent: Color(0xFF34D399), fill: Color(0xFF10B981)),
-    AccentPalette(id: 'amber', label: '琥珀金', accent: Color(0xFFFBBF24), fill: Color(0xFFD97706)),
-    AccentPalette(id: 'rose', label: '玫瑰红', accent: Color(0xFFFB7185), fill: Color(0xFFE11D48)),
+    AccentPalette(id: 'blue', label: '海湾蓝', accent: Color(0xFF0A84FF), fill: Color(0xFF0066DB)),
+    AccentPalette(id: 'cyan', label: '冰川青', accent: Color(0xFF32ADE6), fill: Color(0xFF0284C7)),
+    AccentPalette(id: 'emerald', label: '翡翠绿', accent: Color(0xFF30D158), fill: Color(0xFF10B981)),
+    AccentPalette(id: 'purple', label: '极光紫', accent: Color(0xFFBF5AF2), fill: Color(0xFF9333EA)),
+    AccentPalette(id: 'amber', label: '流光橙', accent: Color(0xFFFF9F0A), fill: Color(0xFFD97706)),
+    AccentPalette(id: 'pink', label: '樱花粉', accent: Color(0xFFFF375F), fill: Color(0xFFE11D48)),
+    AccentPalette(id: 'rose', label: '绯霞红', accent: Color(0xFFFF453A), fill: Color(0xFFDC2626)),
+    AccentPalette(id: 'indigo', label: '星际靛', accent: Color(0xFF5E5CE6), fill: Color(0xFF4F46E5)),
+    AccentPalette(id: 'silver', label: '曜石银', accent: Color(0xFFE5E7EB), fill: Color(0xFF4B5563)),
   ];
 
   static AccentPalette byId(String id) {
@@ -316,15 +321,21 @@ class DownloadTaskModel {
 
 class VedroPreferences {
   const VedroPreferences({
-    // 应用风格 & 皮肤引擎
-    this.skinId = 'obsidian',
+    // 应用风格 & 主题引擎
+    this.skinId = 'immersive_cinema',
+    this.themeMode = 'dark', // dark | light | system
+    this.dynamicMonet = true,
+    this.customAccentHex = '',
+    this.tonalChroma = 'standard', // soft | standard | vivid
+    this.autoShrinkNavOnScroll = false,
+    this.showNavLabels = true,
     this.useSkinGeometry = true,
     this.customSkins = const [],
     this.skinOverrides = const {},
     this.mobileSkinOverrides = const {},
     this.hardwareProfileInitSig = '',
     this.accentId = 'blue',
-    this.cardRadius = 12.0,
+    this.cardRadius = 15.0,
     this.glassIntensity = 'standard',
     this.reduceMotion = false,
     // 列表配置
@@ -424,6 +435,12 @@ class VedroPreferences {
   });
 
   final String skinId;
+  final String themeMode;
+  final bool dynamicMonet;
+  final String customAccentHex;
+  final String tonalChroma;
+  final bool autoShrinkNavOnScroll;
+  final bool showNavLabels;
   final bool useSkinGeometry;
   final List<CustomSkinSpec> customSkins;
   final Map<String, dynamic> skinOverrides;
@@ -538,12 +555,52 @@ class VedroPreferences {
     return mobile ? mobileSkinOverrides : skinOverrides;
   }
 
-  VedroSkin activeSkinFor({bool? isMobile}) {
+  VedroSkin activeSkinFor({
+    bool? isMobile,
+    Brightness? systemBrightness,
+    Color? dynamicSeedOverride,
+  }) {
     var base = VedroSkin.byId(skinId, customSkins: customSkins);
-    if (skinId == 'obsidian' && accentId != 'blue') {
-      final pal = accentPalette;
-      base = base.copyWith(accent: pal.accent, accentSecondary: pal.fill);
+    final isLegacyExplicitLight = skinId == 'daylight' || skinId == 'editorial_paper';
+    if (!base.isCustom && !isLegacyExplicitLight) {
+      final wantLight = switch (themeMode) {
+        'light' => true,
+        'system' => systemBrightness == Brightness.light,
+        _ => false,
+      };
+      base = base.withPolarity(wantLight);
     }
+
+    if (dynamicMonet && dynamicSeedOverride != null) {
+      base = DynamicColorEngine.applySeedToSkin(
+        base,
+        dynamicSeedOverride,
+        tonalChroma: tonalChroma,
+        tintAtmosphere: true,
+      );
+    } else if (accentId == 'custom' && customAccentHex.trim().isNotEmpty) {
+      final seed = VedroSkin.parseHex(customAccentHex, base.accent);
+      base = DynamicColorEngine.applySeedToSkin(
+        base,
+        seed,
+        tonalChroma: tonalChroma,
+        tintAtmosphere: base.themeFamily == 'material_design',
+      );
+    } else if (!base.isCustom &&
+        (accentId != 'blue' || base.themeFamily == 'material_design' || tonalChroma != 'standard')) {
+      final pal = accentPalette;
+      if (accentId == 'silver') {
+        base = base.copyWith(accent: pal.accent, accentSecondary: pal.fill);
+      } else {
+        base = DynamicColorEngine.applySeedToSkin(
+          base,
+          pal.accent,
+          tonalChroma: tonalChroma,
+          tintAtmosphere: base.themeFamily == 'material_design',
+        );
+      }
+    }
+
     final ov = overridesForPlatform(isMobile: isMobile);
     if (ov.isNotEmpty) {
       base = base.applyOverrides(ov);
@@ -596,6 +653,12 @@ class VedroPreferences {
 
   VedroPreferences copyWith({
     String? skinId,
+    String? themeMode,
+    bool? dynamicMonet,
+    String? customAccentHex,
+    String? tonalChroma,
+    bool? autoShrinkNavOnScroll,
+    bool? showNavLabels,
     bool? useSkinGeometry,
     List<CustomSkinSpec>? customSkins,
     Map<String, dynamic>? skinOverrides,
@@ -691,6 +754,12 @@ class VedroPreferences {
   }) =>
       VedroPreferences(
         skinId: skinId ?? this.skinId,
+        themeMode: themeMode ?? this.themeMode,
+        dynamicMonet: dynamicMonet ?? this.dynamicMonet,
+        customAccentHex: customAccentHex ?? this.customAccentHex,
+        tonalChroma: tonalChroma ?? this.tonalChroma,
+        autoShrinkNavOnScroll: autoShrinkNavOnScroll ?? this.autoShrinkNavOnScroll,
+        showNavLabels: showNavLabels ?? this.showNavLabels,
         useSkinGeometry: useSkinGeometry ?? this.useSkinGeometry,
         customSkins: customSkins ?? this.customSkins,
         skinOverrides: skinOverrides ?? this.skinOverrides,
@@ -787,6 +856,12 @@ class VedroPreferences {
 
   Map<String, dynamic> toJson() => {
         'skin_id': skinId,
+        'theme_mode': themeMode,
+        'dynamic_monet': dynamicMonet,
+        'custom_accent_hex': customAccentHex,
+        'tonal_chroma': tonalChroma,
+        'auto_shrink_nav_on_scroll': autoShrinkNavOnScroll,
+        'show_nav_labels': showNavLabels,
         'use_skin_geometry': useSkinGeometry,
         'custom_skins': customSkins.map((s) => s.toJson()).toList(),
         'skin_overrides': skinOverrides,
@@ -881,7 +956,13 @@ class VedroPreferences {
       };
 
   factory VedroPreferences.fromJson(Map<String, dynamic> j) => VedroPreferences(
-        skinId: (j['skin_id'] ?? 'obsidian').toString(),
+        skinId: (j['skin_id'] ?? 'immersive_cinema').toString(),
+        themeMode: (j['theme_mode'] ?? 'dark').toString(),
+        dynamicMonet: j['dynamic_monet'] != false,
+        customAccentHex: (j['custom_accent_hex'] ?? '').toString(),
+        tonalChroma: (j['tonal_chroma'] ?? 'standard').toString(),
+        autoShrinkNavOnScroll: j['auto_shrink_nav_on_scroll'] == true,
+        showNavLabels: j['show_nav_labels'] != false,
         useSkinGeometry: j['use_skin_geometry'] != false,
         customSkins: ((j['custom_skins'] as List<dynamic>?) ?? const [])
             .map((e) => e is Map<String, dynamic>

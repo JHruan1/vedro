@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'dart:ui' show Color;
+
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -10,6 +12,7 @@ import '../core/models/models.dart';
 import '../core/models/preferences.dart';
 import '../core/platform/native_playback_channel.dart';
 import '../core/theme/display_profile.dart';
+import '../core/theme/dynamic_color_engine.dart';
 import '../widgets/danmaku_engine.dart';
 
 /// Central reactive application state backed directly by the compiled Rust core (`VedroCoreClient`).
@@ -70,6 +73,37 @@ class VedroAppState extends ChangeNotifier {
   // Comprehensive user preferences persisted in SQLite KV (`vedro_prefs`)
   VedroPreferences prefs = const VedroPreferences();
   Map<String, int?> proxyNodeLatencies = {};
+  Color? dynamicPageSeedColor;
+  String? _dynamicSeedSourceKey;
+
+  /// Update the global Monet page-adaptive seed color from the currently featured media item.
+  void updateDynamicSeedFromItem(MediaItemModel? item) {
+    if (item == null) {
+      if (dynamicPageSeedColor != null) {
+        dynamicPageSeedColor = null;
+        _dynamicSeedSourceKey = null;
+        notifyListeners();
+      }
+      return;
+    }
+    final key = '${item.id}:${item.primaryImageTag ?? ''}:${item.backdropImageTag ?? item.parentBackdropImageTag ?? ''}';
+    if (_dynamicSeedSourceKey == key && dynamicPageSeedColor != null) return;
+    _dynamicSeedSourceKey = key;
+
+    final artUrl = backdropArt(item, width: 320)?.url ?? posterArtUrl(item, width: 320);
+    final cached = DynamicColorEngine.cachedForUrl(artUrl);
+    dynamicPageSeedColor = cached ?? DynamicColorEngine.seedForIdentity(item.id, item.name);
+    notifyListeners();
+
+    if (cached == null && artUrl != null && artUrl.isNotEmpty) {
+      DynamicColorEngine.extractFromImageUrl(artUrl).then((extracted) {
+        if (extracted != null && _dynamicSeedSourceKey == key) {
+          dynamicPageSeedColor = extracted;
+          notifyListeners();
+        }
+      });
+    }
+  }
 
   // Local offline downloads queue persisted in SQLite KV (`downloads_queue`)
   List<DownloadTaskModel> downloads = [];

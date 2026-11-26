@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart' show CupertinoIcons;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
+import '../core/theme/dynamic_color_engine.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -66,6 +68,28 @@ class _DetailScreenState extends State<DetailScreen> {
   final Map<String, String> _audioLangByVer = {};
   final Map<String, String> _subLangByVer = {};
   final Map<String, String?> _extSubByVer = {};
+  Color? _detailMonetSeed;
+
+  void _refreshDetailMonetSeed() {
+    if (_item.type == 'Person') return;
+    final artUrl = widget.appState.backdropArt(_item, width: 320)?.url ??
+        widget.appState.posterArtUrl(_item, width: 320);
+    final cached = DynamicColorEngine.cachedForUrl(artUrl);
+    final initial = cached ?? DynamicColorEngine.seedForIdentity(_item.id, _item.name);
+    if (_detailMonetSeed != initial && mounted) {
+      setState(() => _detailMonetSeed = initial);
+    } else {
+      _detailMonetSeed ??= initial;
+    }
+    if (cached == null && artUrl != null && artUrl.isNotEmpty) {
+      final targetId = _item.id;
+      DynamicColorEngine.extractFromImageUrl(artUrl).then((extracted) {
+        if (extracted != null && mounted && _item.id == targetId) {
+          setState(() => _detailMonetSeed = extracted);
+        }
+      });
+    }
+  }
 
   String get _activeVersionStateKey {
     if (_item.isSeries) {
@@ -95,6 +119,7 @@ class _DetailScreenState extends State<DetailScreen> {
   void initState() {
     super.initState();
     _item = widget.item;
+    _refreshDetailMonetSeed();
     widget.appState.addListener(_onAppStateChanged);
     _loadDetails();
     if (widget.appState.capabilities?.isEmbyGo == true) {
@@ -148,6 +173,7 @@ class _DetailScreenState extends State<DetailScreen> {
         if (_selectedSourceIndex >= _item.mediaSources.length) {
           _selectedSourceIndex = 0;
         }
+        _refreshDetailMonetSeed();
         if (_item.isSeries) {
           final sRes = await widget.appState.core.invoke('get_seasons', {'series_id': _item.id})
               as Map<String, dynamic>;
@@ -401,16 +427,64 @@ class _DetailScreenState extends State<DetailScreen> {
           for (var i = 0; i < resolved.length; i++)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
-              child: _VersionOptionTile(
-                version: resolved[i],
-                totalCount: resolved.length,
-                selected: i == activeIdx,
-                accent: skin.accent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 16.0)),
                 onTap: () {
                   Navigator.pop(ctx);
                   setState(() => _selectedSeriesVersionIndex = i);
                   _play(target, sourceId: resolved[i].source.id);
                 },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                  decoration: BoxDecoration(
+                    color: i == activeIdx
+                        ? skin.accent.withValues(alpha: 0.14)
+                        : skin.subtleChipBg,
+                    borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 16.0)),
+                    border: Border.all(
+                      color: i == activeIdx ? skin.accent : skin.border,
+                      width: i == activeIdx ? 1.1 : 0.7,
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 24,
+                        child: i == activeIdx
+                            ? Icon(Icons.check_rounded, size: 17, color: skin.accent)
+                            : null,
+                      ),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              resolved[i].displayTitle,
+                              style: TextStyle(
+                                color: skin.fg,
+                                fontSize: 13.5,
+                                fontWeight: i == activeIdx ? FontWeight.w600 : FontWeight.w500,
+                              ),
+                            ),
+                            if (fmtFileSize(resolved[i].source.size).isNotEmpty ||
+                                (resolved[i].folderBadge?.isNotEmpty ?? false)) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                [
+                                  if (fmtFileSize(resolved[i].source.size).isNotEmpty)
+                                    fmtFileSize(resolved[i].source.size),
+                                  if (resolved[i].folderBadge?.isNotEmpty ?? false)
+                                    resolved[i].folderBadge!,
+                                ].join(' · '),
+                                style: TextStyle(color: skin.fg3, fontSize: 11.5),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
         ],
@@ -949,6 +1023,29 @@ class _DetailScreenState extends State<DetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final prefs = widget.appState.prefs;
+    if (prefs.dynamicMonet && _detailMonetSeed != null) {
+      final sysBrightness = View.of(context).platformDispatcher.platformBrightness;
+      return TweenAnimationBuilder<Color?>(
+        tween: ColorTween(begin: _detailMonetSeed, end: _detailMonetSeed),
+        duration: Duration(milliseconds: prefs.reduceMotion ? 0 : 380),
+        curve: VedroTheme.easeOut,
+        builder: (ctx, seed, _) {
+          final dynSkin = prefs.activeSkinFor(
+            systemBrightness: sysBrightness,
+            dynamicSeedOverride: seed ?? _detailMonetSeed,
+          );
+          return Theme(
+            data: VedroTheme.fromSkin(dynSkin),
+            child: Builder(builder: _buildThemedDetail),
+          );
+        },
+      );
+    }
+    return _buildThemedDetail(context);
+  }
+
+  Widget _buildThemedDetail(BuildContext context) {
     final skin = VedroSkin.of(context);
     final size = MediaQuery.sizeOf(context);
     final wide = size.width >= 820;
@@ -2294,34 +2391,82 @@ class _DetailScreenState extends State<DetailScreen> {
               ],
             ),
 
-            // Floating frosted Back Pill
+            // Subtle Top Chrome Scrim so scrolled content melts cleanly under glass buttons
             Positioned(
-              top: topSafe + 12,
-              left: isMac ? 82 : (padX - 4),
-              child: PressableScale(
-                onTap: () => Navigator.of(context).pop(),
-                hoverScale: 1.04,
-                pressScale: 0.92,
-                child: GlassSurface(
-                  borderRadius: skin.radiusForPill(36),
-                  blur: 24,
-                  color: skin.glass,
-                  borderColor: skin.borderStrong,
-                  padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7.5),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.arrow_back_ios_new_rounded, size: 13.5, color: skin.fg),
-                      const SizedBox(width: 4),
-                      Text(
-                        '返回',
-                        style: TextStyle(color: skin.fg, fontSize: 13, fontWeight: FontWeight.w600),
-                      ),
-                    ],
+              top: 0,
+              left: 0,
+              right: 0,
+              height: topSafe + 58,
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        skin.canvas.withValues(alpha: skin.isLight ? 0.62 : 0.56),
+                        skin.canvas.withValues(alpha: 0.0),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
+
+            // Floating iOS Glass Top Chrome (Back + Mobile Quick More)
+            Positioned(
+              top: topSafe + 10,
+              left: isMac ? 82 : (padX - 4),
+              child: PressableScale(
+                onTap: () => Navigator.of(context).pop(),
+                hoverScale: 1.05,
+                pressScale: 0.92,
+                child: GlassSurface(
+                  borderRadius: 999,
+                  blur: 26,
+                  color: skin.glass,
+                  borderColor: skin.borderStrong,
+                  padding: wide
+                      ? const EdgeInsets.symmetric(horizontal: 13, vertical: 7.5)
+                      : const EdgeInsets.all(9.5),
+                  child: wide
+                      ? Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.arrow_back_ios_new_rounded, size: 13.5, color: skin.fg),
+                            const SizedBox(width: 4),
+                            Text(
+                              '返回',
+                              style: TextStyle(
+                                color: skin.fg,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        )
+                      : Icon(Icons.arrow_back_ios_new_rounded, size: 17, color: skin.fg),
+                ),
+              ),
+            ),
+            if (!wide && _item.type != 'Person')
+              Positioned(
+                top: topSafe + 10,
+                right: padX - 4,
+                child: PressableScale(
+                  onTap: _openMoreSheet,
+                  hoverScale: 1.05,
+                  pressScale: 0.92,
+                  child: GlassSurface(
+                    borderRadius: 999,
+                    blur: 26,
+                    color: skin.glass,
+                    borderColor: skin.borderStrong,
+                    padding: const EdgeInsets.all(9.5),
+                    child: Icon(CupertinoIcons.ellipsis, size: 18, color: skin.fg),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -2379,48 +2524,23 @@ class _DetailScreenState extends State<DetailScreen> {
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     if (_seasons.length > 1)
-                      SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: Container(
-                          padding: const EdgeInsets.all(3),
-                          decoration: BoxDecoration(
-                            color: skin.surface2,
-                            borderRadius: BorderRadius.circular(skin.radiusForPill(38)),
-                            border: skin.frameStyle == 'borderless'
-                                ? null
-                                : Border.all(color: skin.border, width: 0.7),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: _seasons.map((s) {
-                              final active = s.id == (_selectedSeasonId ?? _seasons.first.id);
-                              return GestureDetector(
-                                behavior: HitTestBehavior.opaque,
-                                onTap: () => _loadEpisodes(s.id),
-                                child: MouseRegion(
-                                  cursor: SystemMouseCursors.click,
-                                  child: AnimatedContainer(
-                                    duration: const Duration(milliseconds: 180),
-                                    curve: VedroTheme.easeOut,
-                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6.5),
-                                    decoration: BoxDecoration(
-                                      color: active ? skin.activePillBg : Colors.transparent,
-                                      borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
-                                    ),
-                                    child: Text(
-                                      s.name,
-                                      style: TextStyle(
-                                        color: active ? skin.activePillFg : skin.fg2,
-                                        fontSize: 13.5,
-                                        fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              );
-                            }).toList(),
-                          ),
-                        ),
+                      VedroPullDownButton<String>(
+                        key: const ValueKey('detail-season-dropdown'),
+                        prefixIcon: Icons.video_library_outlined,
+                        value: _selectedSeasonId ?? _seasons.first.id,
+                        items: _seasons
+                            .map(
+                              (s) => VedroDropdownItem<String>(
+                                value: s.id,
+                                label: s.name,
+                                subtitle: s.childCount != null && s.childCount! > 0
+                                    ? '共 ${s.childCount} 集'
+                                    : null,
+                                itemKey: ValueKey('season-option-${s.id}'),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: _loadEpisodes,
                       )
                     else
                       Row(
@@ -3977,134 +4097,10 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
   }
 }
 
-/// Sleek, low-profile Immersive Cinema Version Pill — blends naturally into the dark cinema stage
-/// without giant boxed cards or noisy labels, while enforcing strict single-index selection.
-class _VersionOptionTile extends StatelessWidget {
-  const _VersionOptionTile({
-    super.key,
-    required this.version,
-    required this.totalCount,
-    required this.selected,
-    required this.accent,
-    required this.onTap,
-  });
-
-  final ResolvedMediaVersion version;
-  final int totalCount;
-  final bool selected;
-  final Color accent;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final skin = VedroSkin.of(context);
-    final source = version.source;
-    final video = source.videoStreams.isNotEmpty ? source.videoStreams.first : null;
-    final sizeLabel = fmtFileSize(source.size);
-    final resLabel = video != null && video.height != null
-        ? (video.height! >= 2160 ? '4K' : '${video.height}p')
-        : '';
-    final subMeta = <String>[
-      if (resLabel.isNotEmpty && !version.displayTitle.toUpperCase().contains(resLabel)) resLabel,
-      if (sizeLabel.isNotEmpty) sizeLabel,
-    ].join(' · ');
-
-    final pillRadius = skin.radiusForPill(38);
-    final bg = selected
-        ? (skin.isLight
-            ? skin.accent.withValues(alpha: 0.14)
-            : Colors.white.withValues(alpha: 0.14))
-        : (skin.isLight
-            ? skin.fg.withValues(alpha: 0.045)
-            : Colors.white.withValues(alpha: 0.055));
-    final borderColor = selected
-        ? (skin.isLight ? skin.accent.withValues(alpha: 0.55) : Colors.white.withValues(alpha: 0.36))
-        : (skin.isLight ? skin.border : Colors.white.withValues(alpha: 0.09));
-    final titleColor = selected
-        ? (skin.isLight ? skin.accent : Colors.white)
-        : skin.fg2;
-
-    return PressableScale(
-      onTap: onTap,
-      hoverScale: 1.02,
-      pressScale: 0.97,
-      child: Semantics(
-        selected: selected,
-        label: selected ? '${version.displayTitle} 当前' : version.displayTitle,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 170),
-          curve: VedroTheme.easeOut,
-          height: 36,
-          padding: const EdgeInsets.symmetric(horizontal: 13),
-          decoration: BoxDecoration(
-            color: bg,
-            borderRadius: BorderRadius.circular(pillRadius),
-            border: Border.all(color: borderColor, width: selected ? 0.95 : 0.65),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (selected) ...[
-                Icon(
-                  Icons.check_circle_rounded,
-                  size: 14.5,
-                  color: skin.isLight ? skin.accent : Colors.white,
-                ),
-                const SizedBox(width: 6),
-              ] else if (totalCount > 2) ...[
-                Text(
-                  '${version.index + 1}',
-                  style: TextStyle(
-                    color: skin.fg3,
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w600,
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                  ),
-                ),
-                const SizedBox(width: 6),
-              ],
-              Flexible(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 220),
-                  child: Text(
-                    version.displayTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: titleColor,
-                      fontSize: 12.5,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                      letterSpacing: -0.1,
-                    ),
-                  ),
-                ),
-              ),
-              if (subMeta.isNotEmpty) ...[
-                const SizedBox(width: 7),
-                Text(
-                  subMeta,
-                  style: TextStyle(
-                    color: selected
-                        ? (skin.isLight
-                            ? skin.accent.withValues(alpha: 0.78)
-                            : Colors.white.withValues(alpha: 0.68))
-                        : skin.fg3,
-                    fontSize: 11.5,
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Unified, Always-Available Version + Audio + Subtitle Control Deck for Movies, Episodes, AND Series!
+/// Unified iOS-Caliber Pull-Down Selector Bar (`下拉框`) for Version, Audio, and Subtitle on `DetailScreen`.
 /// - Strictly single-selects version by integer index (never highlights >1 version even when 4+ share Name/Id)
-/// - Always surfaces Audio & Subtitle selection (real probed tracks when available, or language priority + local .srt/.ass mount when unprobed on embygo!)
+/// - Passively reflects version-specific tracks & filename traits with ZERO cloud-drive API probes
+/// - Adapts cleanly to 320px–430px portrait phones (stacked full-width Version + 2-column Audio/Subtitle) and wide desktops.
 class _TracksPanel extends StatelessWidget {
   const _TracksPanel({
     required this.isSeries,
@@ -4146,117 +4142,34 @@ class _TracksPanel extends StatelessWidget {
   final VoidCallback onPickExternalSubtitle;
   final VoidCallback onClearExternalSubtitle;
 
-  /// Passively extract version-specific AV / language / subtitle tags from the selected version's
-  /// filename & folder path (ZERO cloud-drive API calls!), so switching between unplayed versions
-  /// still reflects each version's distinct release traits immediately.
-  List<String> _inferPassiveVersionTraits(
-    MediaSourceModel? src,
-    ResolvedMediaVersion? ver,
-  ) {
-    if (src == null) return const [];
+  String? _inferPassiveAudioTrait(MediaSourceModel? src, ResolvedMediaVersion? ver) {
+    if (src == null) return null;
     final raw = '${ver?.displayTitle ?? ''} ${ver?.folderBadge ?? ''} ${src.name ?? ''} ${src.path ?? ''}'
         .toLowerCase();
-    final out = <String>[];
-    void add(String s) {
-      if (s.isNotEmpty && !out.contains(s)) out.add(s);
+    if (raw.contains('国粤英')) return '国粤英多音轨';
+    if (raw.contains('国粤') || (raw.contains('mandarin') && raw.contains('cantonese'))) {
+      return '国粤双语';
     }
-
-    for (final f in src.factChips) {
-      add(f);
-    }
-    if (raw.contains('国粤英')) {
-      add('国粤英多音轨');
-    } else if (raw.contains('国粤') || (raw.contains('mandarin') && raw.contains('cantonese'))) {
-      add('国粤双语');
-    } else if (raw.contains('国英')) {
-      add('国英双语');
-    } else if (raw.contains('台配') || raw.contains('国配') || raw.contains('国语')) {
-      add('国语配音');
-    } else if (raw.contains('粤语') || raw.contains('粤配') || raw.contains('cantonese')) {
-      add('粤语配音');
-    } else if (raw.contains('日语音轨') || raw.contains('双语') || raw.contains('dual')) {
-      add('多音轨封装');
-    }
-
-    if (raw.contains('特效') || raw.contains('ass')) {
-      add('ASS 特效字幕');
-    } else if (raw.contains('简繁英') || raw.contains('中英')) {
-      add('中英双语字幕');
-    } else if (raw.contains('简繁') || raw.contains('chs') || raw.contains('cht')) {
-      add('内封中文字幕');
-    } else if (raw.contains('sup') || raw.contains('pgs')) {
-      add('原盘图形字幕');
-    }
-    if (src.container != null && src.container!.isNotEmpty) {
-      add(src.container!.toUpperCase());
-    }
-    final sz = fmtFileSize(src.size);
-    if (sz.isNotEmpty) add(sz);
-    return out.take(7).toList();
+    if (raw.contains('国英')) return '国英双语';
+    if (raw.contains('台配') || raw.contains('国配') || raw.contains('国语')) return '国语配音';
+    if (raw.contains('粤语') || raw.contains('粤配') || raw.contains('cantonese')) return '粤语配音';
+    if (raw.contains('日语音轨') || raw.contains('双语') || raw.contains('dual')) return '多音轨封装';
+    return null;
   }
 
-  void _openAllTracksSheet({
-    required BuildContext context,
-    required String title,
-    required List<MediaStreamModel> tracks,
-    required int? selectedIndex,
-    required ValueChanged<int?> onSelect,
-    bool allowOff = false,
-  }) {
-    final skin = VedroSkin.of(context);
-    showGlassSheet<void>(
-      context: context,
-      builder: (ctx) => ListView(
-        shrinkWrap: true,
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            child: Text(
-              '$title (${tracks.length})',
-              style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w600),
-            ),
-          ),
-          ListTile(
-            dense: true,
-            title: Text('默认自动', style: TextStyle(color: skin.fg, fontSize: 13.5)),
-            trailing: selectedIndex == null ? Icon(Icons.check_rounded, size: 18, color: skin.accent) : null,
-            onTap: () {
-              Navigator.pop(ctx);
-              onSelect(null);
-            },
-          ),
-          if (allowOff)
-            ListTile(
-              dense: true,
-              title: Text('关闭字幕', style: TextStyle(color: skin.fg, fontSize: 13.5)),
-              trailing: selectedIndex == -1 ? Icon(Icons.check_rounded, size: 18, color: skin.accent) : null,
-              onTap: () {
-                Navigator.pop(ctx);
-                onSelect(-1);
-              },
-            ),
-          for (final t in tracks)
-            ListTile(
-              dense: true,
-              title: Text(t.label, style: TextStyle(color: skin.fg, fontSize: 13.5)),
-              subtitle: Text(t.detailedSpec, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
-              trailing: selectedIndex == t.index
-                  ? Icon(Icons.check_rounded, size: 18, color: skin.accent)
-                  : null,
-              onTap: () {
-                Navigator.pop(ctx);
-                onSelect(t.index);
-              },
-            ),
-        ],
-      ),
-    );
+  String? _inferPassiveSubtitleTrait(MediaSourceModel? src, ResolvedMediaVersion? ver) {
+    if (src == null) return null;
+    final raw = '${ver?.displayTitle ?? ''} ${ver?.folderBadge ?? ''} ${src.name ?? ''} ${src.path ?? ''}'
+        .toLowerCase();
+    if (raw.contains('特效') || raw.contains('ass')) return 'ASS 特效字幕';
+    if (raw.contains('简繁英') || raw.contains('中英')) return '中英双语字幕';
+    if (raw.contains('简繁') || raw.contains('chs') || raw.contains('cht')) return '内封中文字幕';
+    if (raw.contains('sup') || raw.contains('pgs')) return '原盘图形字幕';
+    return null;
   }
 
   @override
   Widget build(BuildContext context) {
-    final skin = VedroSkin.of(context);
     final safeVerIdx = versions.isEmpty
         ? 0
         : selectedVersionIndex.clamp(0, versions.length - 1);
@@ -4264,276 +4177,211 @@ class _TracksPanel extends StatelessWidget {
     final streamSrc = activeStreamSource ?? activeVer?.source;
     final audios = streamSrc?.audioStreams ?? const <MediaStreamModel>[];
     final subs = streamSrc?.subtitleStreams ?? const <MediaStreamModel>[];
-    final passiveTraits = _inferPassiveVersionTraits(streamSrc, activeVer);
+    final passiveAudio = _inferPassiveAudioTrait(streamSrc, activeVer);
+    final passiveSub = _inferPassiveSubtitleTrait(streamSrc, activeVer);
     final extFileName = localExternalSubPath?.trim().isNotEmpty == true
         ? localExternalSubPath!.replaceAll('\\', '/').split('/').last
         : null;
     final hasAnyRealTracks =
         audios.isNotEmpty || subs.isNotEmpty || hasKnownEmbeddedStreams || extFileName != null;
 
-    // If this is a single-version TV Series with zero cached/external tracks yet,
-    // render nothing here — global Preferred Audio/Subtitle belongs in Settings, not DetailScreen!
     if (versions.length <= 1 && isSeries && !hasAnyRealTracks) {
       return const SizedBox.shrink();
     }
 
-    return Column(
-      key: const ValueKey('detail-version-selector'),
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (versions.length > 1) ...[
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(right: 4),
-                child: Icon(Icons.layers_outlined, size: 15, color: skin.fg3),
-              ),
-              for (var i = 0; i < versions.length; i++)
-                _VersionOptionTile(
-                  key: ValueKey('${isSeries ? 'series' : 'movie'}-version-card-$i'),
-                  version: versions[i],
-                  totalCount: versions.length,
-                  selected: i == safeVerIdx,
-                  accent: skin.accent,
-                  onTap: () => onSelectVersionIndex(i),
-                ),
-            ],
-          ),
-          if (hasAnyRealTracks || !isSeries) const SizedBox(height: 10),
-        ],
+    final showVersionDropdown = versions.length > 1 || (!isSeries && versions.isNotEmpty);
+    final showTrackDropdowns = !isSeries || hasAnyRealTracks;
 
-        // Frameless Immersive Audio & Subtitle Pill Strip (zero heavy card box, zero wordy banners!)
-        if (hasAnyRealTracks)
-          AnimatedSwitcher(
-            key: const ValueKey('detail-audio-subtitle-panel'),
-            duration: const Duration(milliseconds: 180),
-            switchInCurve: Curves.easeOutCubic,
-            child: Column(
-              key: ValueKey(
-                'tracks_ver_${safeVerIdx}_${streamSrc?.id ?? ''}_${audios.length}_${subs.length}_$hasKnownEmbeddedStreams',
-              ),
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (audios.isNotEmpty) ...[
-                  Wrap(
-                    spacing: 7,
-                    runSpacing: 7,
-                    crossAxisAlignment: WrapCrossAlignment.center,
+    // 1. Version Pull-Down Items
+    final versionItems = <VedroDropdownItem<int>>[
+      for (var i = 0; i < versions.length; i++)
+        () {
+          final v = versions[i];
+          final src = v.source;
+          final video = src.videoStreams.isNotEmpty ? src.videoStreams.first : null;
+          final res = video?.height != null
+              ? (video!.height! >= 2160 ? '4K' : '${video.height}p')
+              : '';
+          final sz = fmtFileSize(src.size);
+          final cont = (src.container ?? '').trim().toUpperCase();
+          final sub = <String>[
+            if (res.isNotEmpty && !v.displayTitle.toUpperCase().contains(res)) res,
+            if (sz.isNotEmpty) sz,
+            if (cont.isNotEmpty) cont,
+          ].join(' · ');
+          return VedroDropdownItem<int>(
+            value: i,
+            label: v.displayTitle,
+            subtitle: sub.isEmpty ? null : sub,
+            itemKey: ValueKey('${isSeries ? 'series' : 'movie'}-version-item-$i'),
+          );
+        }(),
+    ];
+
+    // 2. Audio Pull-Down Items & Active Label
+    String audioButtonLabel = passiveAudio ?? '默认音轨';
+    if (selectedAudioIndex != null) {
+      final match = audios.where((a) => a.index == selectedAudioIndex);
+      if (match.isNotEmpty) audioButtonLabel = match.first.label;
+    } else if (audios.isNotEmpty) {
+      audioButtonLabel = audios.first.label;
+    }
+
+    final audioItems = <VedroDropdownItem<int?>>[
+      VedroDropdownItem<int?>(
+        value: null,
+        label: '默认音轨',
+        subtitle: audios.isNotEmpty ? audios.first.detailedSpec : passiveAudio,
+        itemKey: const ValueKey('detail-audio-default-item'),
+      ),
+      for (final a in audios)
+        VedroDropdownItem<int?>(
+          value: a.index,
+          label: a.label,
+          subtitle: a.detailedSpec,
+          itemKey: ValueKey('detail-audio-item-${a.index}'),
+        ),
+    ];
+
+    // 3. Subtitle Pull-Down Items & Active Label
+    String subtitleButtonLabel;
+    if (extFileName != null) {
+      subtitleButtonLabel = extFileName;
+    } else if (selectedSubtitleIndex == -1) {
+      subtitleButtonLabel = '关闭字幕';
+    } else if (selectedSubtitleIndex != null) {
+      final match = subs.where((s) => s.index == selectedSubtitleIndex);
+      subtitleButtonLabel = match.isNotEmpty ? match.first.label : '默认字幕';
+    } else if (subs.isNotEmpty) {
+      subtitleButtonLabel = subs.first.label;
+    } else if (hasKnownEmbeddedStreams) {
+      subtitleButtonLabel = '无内封字幕';
+    } else {
+      subtitleButtonLabel = passiveSub ?? '默认字幕';
+    }
+
+    final subtitleItems = <VedroDropdownItem<int?>>[
+      VedroDropdownItem<int?>(
+        value: null,
+        label: (hasKnownEmbeddedStreams && subs.isEmpty) ? '无内封字幕' : '默认字幕',
+        subtitle: subs.isNotEmpty ? subs.first.detailedSpec : passiveSub,
+        itemKey: const ValueKey('detail-subtitle-default-item'),
+      ),
+      const VedroDropdownItem<int?>(
+        value: -1,
+        label: '关闭字幕',
+        itemKey: ValueKey('detail-subtitle-off-item'),
+      ),
+      for (final s in subs)
+        VedroDropdownItem<int?>(
+          value: s.index,
+          label: s.label,
+          subtitle: s.detailedSpec,
+          itemKey: ValueKey('detail-subtitle-item-${s.index}'),
+        ),
+      if (extFileName != null)
+        VedroDropdownItem<int?>(
+          value: -998,
+          label: '移除外挂字幕',
+          subtitle: extFileName,
+          icon: Icons.close_rounded,
+          isDestructive: true,
+          itemKey: const ValueKey('detail-clear-local-sub-btn'),
+          onTapOverride: onClearExternalSubtitle,
+        ),
+      if (!isSeries)
+        VedroDropdownItem<int?>(
+          value: -999,
+          label: '挂载本地字幕文件…',
+          icon: Icons.upload_file_rounded,
+          itemKey: const ValueKey('detail-mount-local-sub-btn'),
+          onTapOverride: onPickExternalSubtitle,
+        ),
+    ];
+
+    return LayoutBuilder(
+      key: const ValueKey('detail-version-selector'),
+      builder: (context, constraints) {
+        final compactMobile = constraints.maxWidth < 560;
+
+        Widget buildVersionBtn({required bool expanded}) => VedroPullDownButton<int>(
+              key: const ValueKey('detail-version-dropdown'),
+              prefixIcon: Icons.layers_rounded,
+              prefixLabel: versions.length > 1 ? '版本 (${versions.length})' : '版本',
+              value: safeVerIdx,
+              items: versionItems,
+              expanded: expanded,
+              menuMaxWidth: 380,
+              onChanged: onSelectVersionIndex,
+            );
+
+        Widget buildAudioBtn({required bool expanded}) => VedroPullDownButton<int?>(
+              key: const ValueKey('detail-audio-dropdown'),
+              prefixIcon: Icons.graphic_eq_rounded,
+              prefixLabel: compactMobile ? null : '音轨',
+              displayLabelOverride: audioButtonLabel,
+              value: selectedAudioIndex,
+              items: audioItems,
+              expanded: expanded,
+              onChanged: onSelectAudio,
+            );
+
+        Widget buildSubBtn({required bool expanded}) => VedroPullDownButton<int?>(
+              key: const ValueKey('detail-subtitle-dropdown'),
+              prefixIcon: Icons.subtitles_outlined,
+              prefixLabel: compactMobile ? null : '字幕',
+              displayLabelOverride: subtitleButtonLabel,
+              value: extFileName != null ? -997 : selectedSubtitleIndex,
+              items: subtitleItems,
+              expanded: expanded,
+              onChanged: (val) {
+                if (val == -997) return;
+                onSelectSubtitle(val);
+              },
+            );
+
+        if (compactMobile) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (showVersionDropdown) buildVersionBtn(expanded: true),
+              if (showVersionDropdown && showTrackDropdowns) const SizedBox(height: 8),
+              if (showTrackDropdowns)
+                KeyedSubtree(
+                  key: const ValueKey('detail-audio-subtitle-panel'),
+                  child: Row(
                     children: [
-                      Padding(
-                        padding: const EdgeInsets.only(right: 3),
-                        child: Icon(Icons.graphic_eq_rounded, size: 15, color: skin.fg3),
-                      ),
-                      _TrackChoiceChip(
-                        label: '默认',
-                        selected: selectedAudioIndex == null,
-                        onTap: () => onSelectAudio(null),
-                      ),
-                      ...audios.take(6).map((a) {
-                        final on = selectedAudioIndex == a.index;
-                        return _TrackChoiceChip(
-                          label: a.label,
-                          selected: on,
-                          onTap: () => onSelectAudio(on ? null : a.index),
-                        );
-                      }),
-                      if (audios.length > 6)
-                        _TrackChoiceChip(
-                          label: '更多 (${audios.length}) ▾',
-                          selected: selectedAudioIndex != null &&
-                              !audios.take(6).any((a) => a.index == selectedAudioIndex),
-                          onTap: () => _openAllTracksSheet(
-                            context: context,
-                            title: '音轨',
-                            tracks: audios,
-                            selectedIndex: selectedAudioIndex,
-                            onSelect: onSelectAudio,
-                          ),
-                        ),
+                      Expanded(child: buildAudioBtn(expanded: true)),
+                      const SizedBox(width: 8),
+                      Expanded(child: buildSubBtn(expanded: true)),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                ],
-                Wrap(
-                  spacing: 7,
-                  runSpacing: 7,
-                  crossAxisAlignment: WrapCrossAlignment.center,
+                ),
+            ],
+          );
+        }
+
+        return Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            if (showVersionDropdown) buildVersionBtn(expanded: false),
+            if (showTrackDropdowns)
+              KeyedSubtree(
+                key: const ValueKey('detail-audio-subtitle-panel'),
+                child: Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
                   children: [
-                    Padding(
-                      padding: const EdgeInsets.only(right: 3),
-                      child: Icon(Icons.subtitles_outlined, size: 15, color: skin.fg3),
-                    ),
-                    if (subs.isNotEmpty) ...[
-                      _TrackChoiceChip(
-                        label: '默认',
-                        selected: selectedSubtitleIndex == null && extFileName == null,
-                        onTap: () => onSelectSubtitle(null),
-                      ),
-                      _TrackChoiceChip(
-                        label: '关闭',
-                        selected: selectedSubtitleIndex == -1 && extFileName == null,
-                        onTap: () => onSelectSubtitle(-1),
-                      ),
-                      ...subs.take(8).map((s) {
-                        final on = selectedSubtitleIndex == s.index && extFileName == null;
-                        return _TrackChoiceChip(
-                          label: s.label,
-                          selected: on,
-                          onTap: () => onSelectSubtitle(on ? null : s.index),
-                        );
-                      }),
-                      if (subs.length > 8)
-                        _TrackChoiceChip(
-                          label: '更多 (${subs.length}) ▾',
-                          selected: extFileName == null &&
-                              selectedSubtitleIndex != null &&
-                              selectedSubtitleIndex != -1 &&
-                              !subs.take(8).any((s) => s.index == selectedSubtitleIndex),
-                          onTap: () => _openAllTracksSheet(
-                            context: context,
-                            title: '字幕',
-                            tracks: subs,
-                            selectedIndex: selectedSubtitleIndex,
-                            onSelect: onSelectSubtitle,
-                            allowOff: true,
-                          ),
-                        ),
-                    ] else if (hasKnownEmbeddedStreams) ...[
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: skin.subtleChipBg,
-                          borderRadius: BorderRadius.circular(skin.radiusForPill(28)),
-                        ),
-                        child: Text(
-                          '无内封字幕',
-                          style: TextStyle(color: skin.fg3, fontSize: 12),
-                        ),
-                      ),
-                    ],
-                    if (extFileName != null)
-                      _TrackChoiceChip(
-                        label: '$extFileName ×',
-                        selected: true,
-                        onTap: onClearExternalSubtitle,
-                      ),
-                    if (!isSeries)
-                      _TrackChoiceChip(
-                        key: const ValueKey('detail-mount-local-sub-btn'),
-                        label: '+ 字幕',
-                        icon: Icons.upload_file_rounded,
-                        selected: false,
-                        onTap: onPickExternalSubtitle,
-                      ),
+                    buildAudioBtn(expanded: false),
+                    buildSubBtn(expanded: false),
                   ],
                 ),
-              ],
-            ),
-          )
-        else if (!isSeries)
-          Wrap(
-            key: const ValueKey('detail-audio-subtitle-panel'),
-            spacing: 7,
-            runSpacing: 6,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              for (final t in passiveTraits.take(4))
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
-                  decoration: BoxDecoration(
-                    color: skin.isLight
-                        ? skin.fg.withValues(alpha: 0.05)
-                        : Colors.white.withValues(alpha: 0.055),
-                    borderRadius: BorderRadius.circular(skin.radiusForPill(24)),
-                  ),
-                  child: Text(
-                    t,
-                    style: TextStyle(
-                      color: skin.fg2,
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w500,
-                      fontFeatures: const [FontFeature.tabularFigures()],
-                    ),
-                  ),
-                ),
-              _TrackChoiceChip(
-                key: const ValueKey('detail-mount-local-sub-btn'),
-                label: '+ 字幕',
-                icon: Icons.upload_file_rounded,
-                selected: false,
-                onTap: onPickExternalSubtitle,
               ),
-            ],
-          ),
-      ],
-    );
-  }
-}
-
-class _TrackChoiceChip extends StatelessWidget {
-  const _TrackChoiceChip({
-    super.key,
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.icon,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  final IconData? icon;
-
-  @override
-  Widget build(BuildContext context) {
-    final skin = VedroSkin.of(context);
-    return PressableScale(
-      onTap: onTap,
-      hoverScale: 1.02,
-      pressScale: 0.96,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        curve: VedroTheme.easeOut,
-        padding: const EdgeInsets.symmetric(horizontal: 12.5, vertical: 6),
-        decoration: BoxDecoration(
-          color: selected ? skin.activePillBg : skin.unifiedTileColor(),
-          borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
-          border: (!selected && skin.frameStyle != 'borderless')
-              ? Border.all(color: skin.border, width: 0.7)
-              : null,
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (icon != null) ...[
-              Icon(
-                icon,
-                size: 13.5,
-                color: selected ? skin.activePillFg : skin.fg2,
-              ),
-              const SizedBox(width: 4),
-            ],
-            Flexible(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 220),
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: selected ? skin.activePillFg : skin.fg2,
-                    fontSize: 12,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                  ),
-                ),
-              ),
-            ),
           ],
-        ),
-      ),
+        );
+      },
     );
   }
 }

@@ -15,6 +15,7 @@ import 'package:vedro/screens/detail_screen.dart';
 import 'package:vedro/screens/settings_screen.dart';
 import 'package:vedro/screens/shell_screen.dart';
 import 'package:vedro/state/app_state.dart';
+import 'package:vedro/widgets/admin_console_pane.dart';
 import 'package:vedro/widgets/danmaku_engine.dart';
 import 'package:vedro/widgets/server_card_grid.dart';
 import 'package:vedro/widgets/skin_studio_pane.dart';
@@ -616,6 +617,93 @@ class _MockVedroCore implements VedroCoreClient {
           'node_id': n['id'],
           'node_name': n['name'],
         };
+      case 'get_embygo_admin_dashboard':
+        return <String, dynamic>{
+          'status': <String, dynamic>{
+            'version': '0.9.4',
+            'items': 24800,
+            'files': 21200,
+            'subtitle_files': 18600,
+            'postgres_catalog': true,
+            'transcoding_enabled': false,
+            'last_scan_attempt_at': '2026-11-27T01:30:00Z',
+          },
+          'counts': <String, dynamic>{
+            'MovieCount': 1280,
+            'SeriesCount': 460,
+            'EpisodeCount': 23060,
+          },
+          'playing_sessions': <dynamic>[],
+          'sessions': <dynamic>[
+            <String, dynamic>{
+              'Id': 'sess-1',
+              'UserName': 'alice',
+              'Client': 'Vedro iOS',
+              'DeviceName': 'iPhone 16 Pro',
+              'NowPlayingItem': <String, dynamic>{
+                'Name': '沙丘2',
+                'RunTimeTicks': 100000000,
+              },
+              'PlayState': <String, dynamic>{
+                'PositionTicks': 42000000,
+                'PlayMethod': 'DirectPlay',
+                'IsPaused': false,
+              },
+            },
+          ],
+          'libraries': <dynamic>[
+            <String, dynamic>{
+              'Id': 'lib-1',
+              'Name': '4K 电影臻藏',
+              'CollectionType': 'movies',
+              'Locations': <String>['/mnt/cloud/Movies_4K'],
+              'GenerateCovers': true,
+            },
+          ],
+          'users': <dynamic>[
+            <String, dynamic>{
+              'Id': 'u-admin',
+              'Name': 'admin',
+              'Policy': <String, dynamic>{'IsAdministrator': true, 'EnableContentDownloading': true},
+            },
+            <String, dynamic>{
+              'Id': 'u-alice',
+              'Name': 'alice_vip_member',
+              'Policy': <String, dynamic>{'IsAdministrator': false, 'EnableContentDownloading': true},
+            },
+          ],
+          'tasks': <dynamic>[
+            <String, dynamic>{
+              'Key': 'RefreshLibrary',
+              'Name': '扫描媒体库增量更新',
+              'State': 'Idle',
+            },
+          ],
+          'activity': <dynamic>[
+            <String, dynamic>{
+              'Name': 'alice 开始播放 沙丘2',
+              'Date': '2026-11-27T02:10:00Z',
+              'Severity': 'Info',
+            },
+          ],
+        };
+      case 'admin_user_detail':
+        return <String, dynamic>{
+          'Policy': <String, dynamic>{'EnableContentDownloading': true},
+          'DownloadQuota': <String, dynamic>{
+            'Enabled': true,
+            'AdminExempt': false,
+            'MonthlyQuotaBytes': 32212254720,
+            'MonthlyUsedBytes': 0,
+            'MonthlyRemainingBytes': 32212254720,
+            'PackBytes': 536870912000,
+            'TotalRemainingBytes': 569083166720,
+            'ActiveDownloads': 1,
+            'MaxConcurrentDownloads': 2,
+          },
+        };
+      case 'admin_download_quota_events':
+        return <dynamic>[];
       default:
         return <String, dynamic>{};
     }
@@ -1695,6 +1783,105 @@ void main() {
     expect(mock.probeMediaSourceCalls, equals(0));
     expect(find.text('日语原声 AAC 2.0'), findsOneWidget);
     expect(find.text('无内封字幕'), findsOneWidget);
+  });
+
+  testWidgets(
+      'Portrait 360px Series Episode List & AdminConsolePane stay crisp with clean version labels and zero overflow',
+      (tester) async {
+    // 1. Series version resolver strips S01E01 & Preferred clutter cleanly
+    final cleaned = MediaSourceModel.resolveVersions(
+      [
+        MediaSourceModel(id: 's1', name: 'S01E01 · 动漫 · Local · Preferred', container: 'mkv'),
+        MediaSourceModel(id: 's2', name: 'S01E01 · 1080p · 国粤双语 · Preferred', container: 'mkv'),
+      ],
+      stripEpisodePrefix: true,
+    );
+    expect(cleaned.first.displayTitle, equals('动漫 · Local'));
+    expect(cleaned.last.displayTitle, equals('1080p · 国粤双语'));
+
+    // 2. Portrait 360x780 Series Episode list mode: full episode headline + unclipped range pills + expandable search
+    tester.view.physicalSize = const Size(360, 780);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final mock = _MockVedroCore(isAdmin: true, dialect: 'embygo', canDownload: true);
+    final app = VedroAppState(mock)
+      ..userId = 'u-admin'
+      ..isAdmin = true
+      ..connectedUrl = 'https://embygo.example.com'
+      ..capabilities = ServerCapabilitiesModel(
+        dialect: 'embygo',
+        serverId: 'srv-1',
+        serverName: 'EmbyGo Pro',
+        advertisedVersion: '4.8.11.0',
+        supportsTranscoding: false,
+        supportsPopular: true,
+        supportsSuggestions: true,
+        supportsHideFromResume: true,
+        usesStreamTickets: true,
+      );
+
+    await tester.pumpWidget(MaterialApp(
+      theme: VedroTheme.fromSkin(VedroSkin.iosLiquidGlass),
+      home: DetailScreen(
+        item: MediaItemModel(id: 'tv1', name: '三体', type: 'Series', canDownload: true),
+        appState: app,
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    // Switch Episode view mode to 'list' via clean Pull-Down menu
+    final viewDrop = find.byKey(const ValueKey('detail-episode-view-dropdown'));
+    await tester.ensureVisible(viewDrop);
+    await tester.tap(viewDrop);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('列表视图'));
+    await tester.pumpAndSettle();
+
+    // Episode 1 headline is clearly visible ("1. 倒计时") alongside "2 版本" badge without collision!
+    expect(find.text('1. 倒计时'), findsOneWidget);
+    expect(find.text('2 版本'), findsOneWidget);
+    expect(find.text('1-50'), findsOneWidget);
+    expect(find.text('51-100'), findsOneWidget);
+    expect(find.text('101-120'), findsOneWidget);
+
+    // Search toggle opens full-width search bar cleanly
+    await tester.tap(find.byKey(const ValueKey('detail-episode-search-toggle')));
+    await tester.pumpAndSettle();
+    expect(find.text('取消'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    // 3. Portrait 360x780 AdminConsolePane: scrollable tabs, Liquid Glass cards & clean Quota dialog
+    await tester.pumpWidget(MaterialApp(
+      theme: VedroTheme.fromSkin(VedroSkin.iosLiquidGlass),
+      home: Scaffold(
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: ListenableBuilder(
+            listenable: app,
+            builder: (_, __) => AdminConsolePane(appState: app),
+          ),
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('admin-console-pane')), findsOneWidget);
+    expect(find.text('1280'), findsOneWidget);
+    expect(find.text('4K 电影臻藏'), findsOneWidget);
+
+    await tester.tap(find.text('用户'));
+    await tester.pumpAndSettle();
+    expect(find.text('alice_vip_member'), findsOneWidget);
+    expect(find.textContaining('EnableContentDownloading'), findsNothing);
+
+    await tester.tap(find.text('管理').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('下载权限与流量额度'));
+    await tester.pumpAndSettle();
+    expect(find.text('允许离线下载原文件'), findsOneWidget);
+    expect(find.textContaining('User.Policy'), findsNothing);
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {

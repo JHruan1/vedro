@@ -711,9 +711,48 @@ class MediaSourceModel {
   }
 
   /// Resolve a list of `MediaSourceModel`s into strictly unique, human-disambiguated version items.
-  /// Fixes duplicate/empty `Name` or `Id` collisions when 4+ versions exist across folders on Emby/embygo.
-  static List<ResolvedMediaVersion> resolveVersions(List<MediaSourceModel> sources) {
+  /// Fixes duplicate/empty `Name` or `Id` collisions when 4+ versions exist across folders on Emby/embygo,
+  /// and strips noisy `'Preferred'` tokens plus leading `S01E01` prefixes on Series-level version pickers.
+  static List<ResolvedMediaVersion> resolveVersions(
+    List<MediaSourceModel> sources, {
+    bool stripEpisodePrefix = false,
+  }) {
     if (sources.isEmpty) return const [];
+
+    final bareEpRe = RegExp(
+      r'^(s\d{1,2}e\d{1,4}(-\d{1,4})?|ep?\s*\d{1,4}|第\s*\d{1,4}\s*[集话篇])$',
+      caseSensitive: false,
+    );
+
+    String cleanVersionName(String raw, {required bool dropEpToken}) {
+      if (raw.isEmpty) return '';
+      final parts = raw
+          .split(RegExp(r'\s*·\s*'))
+          .map((e) => e.trim())
+          .where((t) =>
+              t.isNotEmpty &&
+              t.toLowerCase() != 'preferred' &&
+              t.toLowerCase() != 'default')
+          .toList();
+      if (dropEpToken) {
+        while (parts.isNotEmpty && bareEpRe.hasMatch(parts.first)) {
+          parts.removeAt(0);
+        }
+      }
+      var joined = parts.join(' · ').trim();
+      if (dropEpToken) {
+        joined = joined
+            .replaceFirst(
+              RegExp(
+                r'^(s\d{1,2}e\d{1,4}(-\d{1,4})?|ep?\s*\d{1,4}|第\s*\d{1,4}\s*[集话篇])\s*[\-·:|/]\s*',
+                caseSensitive: false,
+              ),
+              '',
+            )
+            .trim();
+      }
+      return joined;
+    }
 
     final rawInfos = List.generate(sources.length, (idx) {
       final s = sources[idx];
@@ -739,9 +778,10 @@ class MediaSourceModel {
         }
       }
 
-      final rawName = (s.name ?? '').trim();
-      final bareEpRe = RegExp(r'^(s\d+e\d+|ep?\s*\d+|第\s*\d+\s*[集话])$', caseSensitive: false);
-      final nameIsGeneric = rawName.isEmpty || bareEpRe.hasMatch(rawName);
+      final rawNameRaw = (s.name ?? '').trim();
+      final cleanedDisplayRaw = cleanVersionName(rawNameRaw, dropEpToken: stripEpisodePrefix);
+      final cleanedSeriesRaw = cleanVersionName(rawNameRaw, dropEpToken: true);
+      final nameIsGeneric = cleanedDisplayRaw.isEmpty || bareEpRe.hasMatch(cleanedDisplayRaw);
 
       // Extract quality / release group tokens from path when `name` is missing or generic
       final extractedTags = _extractReleaseSummary(
@@ -751,12 +791,14 @@ class MediaSourceModel {
       );
 
       final primaryCandidate = !nameIsGeneric
-          ? rawName
+          ? cleanedDisplayRaw
           : (extractedTags.isNotEmpty
               ? extractedTags
-              : (fileStem.isNotEmpty
-                  ? fileStem
-                  : (s.container?.toUpperCase() ?? '版本 ${idx + 1}')));
+              : (meaningfulFolder.isNotEmpty && stripEpisodePrefix
+                  ? meaningfulFolder
+                  : (fileStem.isNotEmpty
+                      ? fileStem
+                      : (s.container?.toUpperCase() ?? '版本 ${idx + 1}'))));
 
       // Episode-agnostic signature for matching the SAME version across all episodes of a Series
       final strippedStem = fileStem
@@ -769,7 +811,8 @@ class MediaSourceModel {
           .trim();
       final sigParts = <String>[
         if (parentDirKey.isNotEmpty) 'dir:$parentDirKey',
-        if (!nameIsGeneric) 'name:${rawName.toLowerCase()}',
+        if (cleanedSeriesRaw.isNotEmpty && !bareEpRe.hasMatch(cleanedSeriesRaw))
+          'name:${cleanedSeriesRaw.toLowerCase()}',
         if (strippedStem.isNotEmpty && parentDirKey.isEmpty) 'stem:$strippedStem',
         if (s.videoStreams.isNotEmpty && s.videoStreams.first.height != null)
           'h:${s.videoStreams.first.height}',

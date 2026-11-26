@@ -58,7 +58,9 @@ class _DetailScreenState extends State<DetailScreen> {
   bool _episodeModeUserChosen = false;
   bool _episodeDescending = false;
   int _episodeRangeIndex = 0;
+  bool _episodeSearchOpen = false;
   final TextEditingController _episodeJumpCtrl = TextEditingController();
+  final FocusNode _episodeSearchFocus = FocusNode();
   String _episodeFilterQuery = '';
   String? _translatedOverview;
   bool _translating = false;
@@ -144,6 +146,7 @@ class _DetailScreenState extends State<DetailScreen> {
   void dispose() {
     widget.appState.removeListener(_onAppStateChanged);
     _episodeJumpCtrl.dispose();
+    _episodeSearchFocus.dispose();
     super.dispose();
   }
 
@@ -285,7 +288,7 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   List<ResolvedMediaVersion> get _resolvedSeriesVersions =>
-      MediaSourceModel.resolveVersions(_seriesSampleSources);
+      MediaSourceModel.resolveVersions(_seriesSampleSources, stripEpisodePrefix: true);
 
   MediaSourceModel? _matchingSourceForEpisode(MediaItemModel ep) {
     if (ep.mediaSources.isEmpty) return null;
@@ -2483,7 +2486,12 @@ class _DetailScreenState extends State<DetailScreen> {
   }) {
     final skin = VedroSkin.of(context);
     final activeSeason = _activeSeason;
-    final seasonOverview = activeSeason?.cleanOverview ?? '';
+    final rawSeasonOverview = activeSeason?.cleanOverview ?? '';
+    // Hide season overview when it merely duplicates the series overview right above!
+    final seasonOverview = (rawSeasonOverview.isNotEmpty &&
+            rawSeasonOverview.trim() != _item.cleanOverview.trim())
+        ? rawSeasonOverview
+        : '';
 
     final ordered = _episodeDescending ? _episodes.reversed.toList() : _episodes;
     final query = _episodeFilterQuery.trim().toLowerCase();
@@ -2506,6 +2514,75 @@ class _DetailScreenState extends State<DetailScreen> {
     final rangeEnd = (rangeStart + chunkSize).clamp(0, filtered.length);
     final visibleEps =
         (query.isEmpty && rangeCount > 1) ? filtered.sublist(rangeStart, rangeEnd) : filtered;
+    final searchActive = _episodeSearchOpen || _episodeFilterQuery.isNotEmpty;
+    final canBatchDownload = widget.appState.canDownloadItem(_resolveDownloadTarget());
+
+    final pillBg = skin.isLight
+        ? Colors.black.withValues(alpha: 0.055)
+        : Colors.white.withValues(alpha: 0.09);
+    final pillBorder = skin.isLight
+        ? Border.all(color: skin.border, width: 0.7)
+        : Border.all(color: Colors.white.withValues(alpha: 0.12), width: 0.75);
+
+    Widget buildToolCircle({
+      Key? key,
+      required IconData icon,
+      required String tooltip,
+      required VoidCallback onTap,
+      bool highlighted = false,
+      String? wideLabel,
+    }) {
+      return Tooltip(
+        message: tooltip,
+        child: PressableScale(
+          key: key,
+          onTap: onTap,
+          hoverScale: 1.03,
+          pressScale: 0.94,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            height: 34,
+            width: wideLabel != null ? null : 34,
+            padding: wideLabel != null
+                ? const EdgeInsets.symmetric(horizontal: 11)
+                : EdgeInsets.zero,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: highlighted
+                  ? skin.accent.withValues(alpha: skin.isLight ? 0.14 : 0.22)
+                  : pillBg,
+              borderRadius: BorderRadius.circular(999),
+              border: highlighted
+                  ? Border.all(color: skin.accent.withValues(alpha: 0.55), width: 0.9)
+                  : pillBorder,
+            ),
+            child: wideLabel != null
+                ? Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(icon, size: 14, color: highlighted ? skin.accent : skin.fg2),
+                      const SizedBox(width: 5),
+                      Text(
+                        wideLabel,
+                        style: TextStyle(
+                          color: highlighted ? skin.accent : skin.fg,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  )
+                : Icon(icon, size: 15.5, color: highlighted ? skin.accent : skin.fg2),
+          ),
+        ),
+      );
+    }
+
+    final viewModeLabel = switch (_episodeViewMode) {
+      'grid' => '宫格',
+      'cards' => '剧照',
+      _ => '列表',
+    };
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2515,191 +2592,223 @@ class _DetailScreenState extends State<DetailScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SizedBox(
-                width: double.infinity,
-                child: Wrap(
-                  spacing: 12,
-                  runSpacing: 10,
-                  alignment: WrapAlignment.spaceBetween,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    if (_seasons.length > 1)
-                      VedroPullDownButton<String>(
-                        key: const ValueKey('detail-season-dropdown'),
-                        prefixIcon: Icons.video_library_outlined,
-                        value: _selectedSeasonId ?? _seasons.first.id,
-                        items: _seasons
-                            .map(
-                              (s) => VedroDropdownItem<String>(
-                                value: s.id,
-                                label: s.name,
-                                subtitle: s.childCount != null && s.childCount! > 0
-                                    ? '共 ${s.childCount} 集'
-                                    : null,
-                                itemKey: ValueKey('season-option-${s.id}'),
-                              ),
-                            )
-                            .toList(),
-                        onChanged: _loadEpisodes,
-                      )
-                    else
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.baseline,
-                        textBaseline: TextBaseline.alphabetic,
-                        children: [
-                          Text(
-                            _seasons.first.name,
-                            style: skin.applyHeadlineMood(
-                              TextStyle(
-                                color: skin.fg,
-                                fontSize: 20,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: -0.4,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Text(
-                            '共 ${_episodes.length} 集',
-                            style: TextStyle(
-                              color: skin.fg3,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                              fontFeatures: const [FontFeature.tabularFigures()],
-                            ),
-                          ),
-                        ],
-                      ),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 6,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        if (_seasons.length > 1)
-                          Text(
-                            '共 ${_episodes.length} 集',
-                            style: TextStyle(
-                              color: skin.fg3,
-                              fontSize: 12.5,
-                              fontFeatures: const [FontFeature.tabularFigures()],
-                            ),
-                          ),
-                        if (widget.appState.canDownloadItem(_resolveDownloadTarget()))
-                          PressableScale(
-                            key: const ValueKey('detail-batch-download-btn'),
-                            onTap: _openBatchDownloadDialog,
-                            child: Container(
-                              height: 32,
-                              padding: const EdgeInsets.symmetric(horizontal: 12),
-                              decoration: BoxDecoration(
-                                color: skin.surface2,
-                                borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
-                                border: skin.frameStyle == 'borderless'
-                                    ? null
-                                    : Border.all(color: skin.border, width: 0.7),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.arrow_downward_rounded, size: 14, color: skin.fg),
-                                  const SizedBox(width: 5),
-                                  Text(
-                                    '批量下载',
-                                    style: TextStyle(
+              // Unified Single-Row iOS Header: Season Picker (Left) + Uniform 34px Controls (Right)
+              Row(
+                children: [
+                  Flexible(
+                    child: _seasons.length > 1
+                        ? VedroPullDownButton<String>(
+                            key: const ValueKey('detail-season-dropdown'),
+                            height: 34,
+                            displayLabelOverride:
+                                '${activeSeason?.name ?? _seasons.first.name} · ${_episodes.length} 集',
+                            value: _selectedSeasonId ?? _seasons.first.id,
+                            items: _seasons
+                                .map(
+                                  (s) => VedroDropdownItem<String>(
+                                    value: s.id,
+                                    label: s.name,
+                                    subtitle: s.childCount != null && s.childCount! > 0
+                                        ? '共 ${s.childCount} 集'
+                                        : null,
+                                    itemKey: ValueKey('season-option-${s.id}'),
+                                  ),
+                                )
+                                .toList(),
+                            onChanged: _loadEpisodes,
+                          )
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.baseline,
+                            textBaseline: TextBaseline.alphabetic,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  _seasons.first.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: skin.applyHeadlineMood(
+                                    TextStyle(
                                       color: skin.fg,
-                                      fontSize: 12.5,
-                                      fontWeight: FontWeight.w600,
+                                      fontSize: 19,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: -0.4,
                                     ),
                                   ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        PressableScale(
-                          onTap: () => setState(() {
-                            _episodeDescending = !_episodeDescending;
-                            _episodeRangeIndex = 0;
-                          }),
-                          child: Container(
-                            height: 32,
-                            padding: const EdgeInsets.symmetric(horizontal: 11),
-                            decoration: BoxDecoration(
-                              color: skin.surface2,
-                              borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
-                              border: skin.frameStyle == 'borderless'
-                                  ? null
-                                  : Border.all(color: skin.border, width: 0.7),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  _episodeDescending
-                                      ? Icons.arrow_upward_rounded
-                                      : Icons.arrow_downward_rounded,
-                                  size: 13.5,
-                                  color: skin.fg2,
                                 ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  _episodeDescending ? '倒序' : '正序',
-                                  style: TextStyle(
-                                    color: skin.fg2,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w500,
-                                  ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '共 ${_episodes.length} 集',
+                                style: TextStyle(
+                                  color: skin.fg3,
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w500,
+                                  fontFeatures: const [FontFeature.tabularFigures()],
                                 ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.all(3),
-                          decoration: BoxDecoration(
-                            color: skin.surface2,
-                            borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
-                            border: skin.frameStyle == 'borderless'
-                                ? null
-                                : Border.all(color: skin.border, width: 0.7),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              _EpModeBtn(
-                                icon: Icons.grid_view_rounded,
-                                tooltip: '数字网格选集（适合多集/番剧）',
-                                active: _episodeViewMode == 'grid',
-                                onTap: () => setState(() {
-                                  _episodeViewMode = 'grid';
-                                  _episodeModeUserChosen = true;
-                                }),
-                              ),
-                              _EpModeBtn(
-                                icon: Icons.view_carousel_outlined,
-                                tooltip: '横向剧照卡片',
-                                active: _episodeViewMode == 'cards',
-                                onTap: () => setState(() {
-                                  _episodeViewMode = 'cards';
-                                  _episodeModeUserChosen = true;
-                                }),
-                              ),
-                              _EpModeBtn(
-                                icon: Icons.view_agenda_outlined,
-                                tooltip: '纵向图文列表',
-                                active: _episodeViewMode == 'list',
-                                onTap: () => setState(() {
-                                  _episodeViewMode = 'list';
-                                  _episodeModeUserChosen = true;
-                                }),
                               ),
                             ],
                           ),
+                  ),
+                  const SizedBox(width: 8),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_episodes.length > 12) ...[
+                        buildToolCircle(
+                          key: const ValueKey('detail-episode-search-toggle'),
+                          icon: CupertinoIcons.search,
+                          tooltip: '搜集名 / 跳集',
+                          highlighted: searchActive,
+                          onTap: () {
+                            setState(() {
+                              if (searchActive) {
+                                _episodeSearchOpen = false;
+                                _episodeJumpCtrl.clear();
+                                _episodeFilterQuery = '';
+                              } else {
+                                _episodeSearchOpen = true;
+                              }
+                            });
+                            if (_episodeSearchOpen) {
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                if (mounted) _episodeSearchFocus.requestFocus();
+                              });
+                            }
+                          },
+                        ),
+                        const SizedBox(width: 6),
+                      ],
+                      buildToolCircle(
+                        key: const ValueKey('detail-episode-sort-btn'),
+                        icon: CupertinoIcons.arrow_up_arrow_down,
+                        tooltip: _episodeDescending ? '当前倒序（点击切正序）' : '当前正序（点击切倒序）',
+                        highlighted: _episodeDescending,
+                        wideLabel: wide ? (_episodeDescending ? '倒序' : '正序') : null,
+                        onTap: () => setState(() {
+                          _episodeDescending = !_episodeDescending;
+                          _episodeRangeIndex = 0;
+                        }),
+                      ),
+                      if (canBatchDownload) ...[
+                        const SizedBox(width: 6),
+                        buildToolCircle(
+                          key: const ValueKey('detail-batch-download-btn'),
+                          icon: CupertinoIcons.arrow_down_to_line,
+                          tooltip: '批量下载选集',
+                          wideLabel: wide ? '批量下载' : null,
+                          onTap: _openBatchDownloadDialog,
                         ),
                       ],
-                    ),
-                  ],
-                ),
+                      const SizedBox(width: 6),
+                      VedroPullDownButton<String>(
+                        key: const ValueKey('detail-episode-view-dropdown'),
+                        height: 34,
+                        displayLabelOverride: viewModeLabel,
+                        value: _episodeViewMode,
+                        items: const [
+                          VedroDropdownItem(value: 'list', label: '列表视图'),
+                          VedroDropdownItem(value: 'cards', label: '横向剧照'),
+                          VedroDropdownItem(value: 'grid', label: '选集宫格'),
+                        ],
+                        onChanged: (mode) => setState(() {
+                          _episodeViewMode = mode;
+                          _episodeModeUserChosen = true;
+                        }),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+
+              // Expandable Full-Width iOS Search Bar (Never truncates range pills!)
+              AnimatedSize(
+                duration: const Duration(milliseconds: 190),
+                curve: VedroTheme.easeOut,
+                child: searchActive
+                    ? Padding(
+                        padding: const EdgeInsets.only(top: 10),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: SizedBox(
+                                height: 36,
+                                child: TextField(
+                                  controller: _episodeJumpCtrl,
+                                  focusNode: _episodeSearchFocus,
+                                  onChanged: (v) => setState(() {
+                                    _episodeFilterQuery = v;
+                                    _episodeRangeIndex = 0;
+                                  }),
+                                  style: TextStyle(color: skin.fg, fontSize: 13.5),
+                                  decoration: InputDecoration(
+                                    hintText: '输入集数或分集标题定位…',
+                                    hintStyle: TextStyle(color: skin.fg3, fontSize: 13),
+                                    prefixIcon:
+                                        Icon(CupertinoIcons.search, size: 16, color: skin.fg3),
+                                    prefixIconConstraints: const BoxConstraints(minWidth: 36),
+                                    suffixIcon: _episodeFilterQuery.isNotEmpty
+                                        ? IconButton(
+                                            padding: EdgeInsets.zero,
+                                            icon: Icon(
+                                              CupertinoIcons.clear_circled_solid,
+                                              size: 16,
+                                              color: skin.fg3,
+                                            ),
+                                            onPressed: () {
+                                              _episodeJumpCtrl.clear();
+                                              setState(() => _episodeFilterQuery = '');
+                                            },
+                                          )
+                                        : null,
+                                    contentPadding:
+                                        const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                                    filled: true,
+                                    fillColor: pillBg,
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(999),
+                                      borderSide: BorderSide.none,
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(999),
+                                      borderSide: BorderSide(
+                                        color: skin.isLight
+                                            ? skin.border
+                                            : Colors.white.withValues(alpha: 0.12),
+                                        width: 0.75,
+                                      ),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(999),
+                                      borderSide: BorderSide(color: skin.accent, width: 1.1),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            GestureDetector(
+                              onTap: () {
+                                _episodeJumpCtrl.clear();
+                                _episodeSearchFocus.unfocus();
+                                setState(() {
+                                  _episodeFilterQuery = '';
+                                  _episodeSearchOpen = false;
+                                });
+                              },
+                              child: Text(
+                                '取消',
+                                style: TextStyle(
+                                  color: skin.accent,
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : const SizedBox.shrink(),
               ),
 
               if (seasonOverview.isNotEmpty) ...[
@@ -2718,111 +2827,58 @@ class _DetailScreenState extends State<DetailScreen> {
                   ),
                 ),
               ],
+            ],
+          ),
+        ),
 
-              if (_episodes.length > 24) ...[
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    if (rangeCount > 1 && query.isEmpty)
-                      Expanded(
-                        child: SizedBox(
-                          height: 32,
-                          child: ScrollConfiguration(
-                            behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-                            child: ListView.separated(
-                              scrollDirection: Axis.horizontal,
-                              itemCount: rangeCount,
-                              separatorBuilder: (_, __) => const SizedBox(width: 7),
-                              itemBuilder: (_, rIdx) {
-                                final rStart = rIdx * chunkSize;
-                                final rEnd = (rStart + chunkSize).clamp(0, filtered.length);
-                                final firstNum = filtered[rStart].indexNumber ?? (rStart + 1);
-                                final lastNum = filtered[rEnd - 1].indexNumber ?? rEnd;
-                                final active = rIdx == safeRangeIdx;
-                                return GestureDetector(
-                                  onTap: () => setState(() => _episodeRangeIndex = rIdx),
-                                  child: MouseRegion(
-                                    cursor: SystemMouseCursors.click,
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 5),
-                                      decoration: BoxDecoration(
-                                        color: active ? skin.activePillBg : skin.surface2,
-                                        borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
-                                        border: (!active && skin.frameStyle != 'borderless')
-                                            ? Border.all(color: skin.border, width: 0.7)
-                                            : null,
-                                      ),
-                                      alignment: Alignment.center,
-                                      child: Text(
-                                        '$firstNum-$lastNum',
-                                        style: TextStyle(
-                                          color: active ? skin.activePillFg : skin.fg2,
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w600,
-                                          fontFeatures: const [FontFeature.tabularFigures()],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
+        // Full-Width Edge-to-Edge Episode Range Strip (Zero Clipping!)
+        if (rangeCount > 1 && query.isEmpty) ...[
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 32,
+            child: ScrollConfiguration(
+              behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+              child: ListView.separated(
+                padding: EdgeInsets.symmetric(horizontal: padX),
+                scrollDirection: Axis.horizontal,
+                itemCount: rangeCount,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (_, rIdx) {
+                  final rStart = rIdx * chunkSize;
+                  final rEnd = (rStart + chunkSize).clamp(0, filtered.length);
+                  final firstNum = filtered[rStart].indexNumber ?? (rStart + 1);
+                  final lastNum = filtered[rEnd - 1].indexNumber ?? rEnd;
+                  final active = rIdx == safeRangeIdx;
+                  return GestureDetector(
+                    onTap: () => setState(() => _episodeRangeIndex = rIdx),
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 160),
+                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                        decoration: BoxDecoration(
+                          color: active ? skin.activePillBg : pillBg,
+                          borderRadius: BorderRadius.circular(999),
+                          border: active ? null : pillBorder,
                         ),
-                      )
-                    else
-                      const Spacer(),
-                    const SizedBox(width: 10),
-                    SizedBox(
-                      width: wide ? 176 : 132,
-                      height: 32,
-                      child: TextField(
-                        controller: _episodeJumpCtrl,
-                        onChanged: (v) => setState(() {
-                          _episodeFilterQuery = v;
-                          _episodeRangeIndex = 0;
-                        }),
-                        style: TextStyle(color: skin.fg, fontSize: 12.5),
-                        decoration: InputDecoration(
-                          hintText: '跳集 / 搜集名',
-                          hintStyle: TextStyle(color: skin.fg3, fontSize: 12),
-                          prefixIcon: Icon(Icons.search_rounded, size: 15, color: skin.fg3),
-                          prefixIconConstraints: const BoxConstraints(minWidth: 30),
-                          suffixIcon: _episodeFilterQuery.isNotEmpty
-                              ? IconButton(
-                                  padding: EdgeInsets.zero,
-                                  icon: Icon(Icons.cancel_rounded, size: 14, color: skin.fg3),
-                                  onPressed: () {
-                                    _episodeJumpCtrl.clear();
-                                    setState(() => _episodeFilterQuery = '');
-                                  },
-                                )
-                              : null,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
-                          fillColor: skin.surface2,
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
-                            borderSide: BorderSide(color: skin.border, width: 0.7),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
-                            borderSide: skin.frameStyle == 'borderless'
-                                ? BorderSide.none
-                                : BorderSide(color: skin.border, width: 0.7),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
-                            borderSide: BorderSide(color: skin.accent, width: 1),
+                        alignment: Alignment.center,
+                        child: Text(
+                          '$firstNum-$lastNum',
+                          style: TextStyle(
+                            color: active ? skin.activePillFg : skin.fg2,
+                            fontSize: 12,
+                            fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                            fontFeatures: const [FontFeature.tabularFigures()],
                           ),
                         ),
                       ),
                     ),
-                  ],
-                ),
-              ],
-            ],
+                  );
+                },
+              ),
+            ),
           ),
-        ),
+        ],
 
         const SizedBox(height: 14),
 
@@ -3059,47 +3115,6 @@ class _AppleCircleActionButtonState extends State<_AppleCircleActionButton> {
               : Border.all(color: _hovered ? skin.borderStrong : skin.border, width: 0.8),
         ),
         child: Icon(widget.icon, size: 20, color: widget.color),
-      ),
-    );
-  }
-}
-
-class _EpModeBtn extends StatelessWidget {
-  const _EpModeBtn({
-    required this.icon,
-    required this.tooltip,
-    required this.active,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String tooltip;
-  final bool active;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final skin = VedroSkin.of(context);
-    return Tooltip(
-      message: tooltip,
-      child: GestureDetector(
-        onTap: onTap,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: Container(
-            width: 30,
-            height: 26,
-            decoration: BoxDecoration(
-              color: active ? skin.activePillBg : Colors.transparent,
-              borderRadius: BorderRadius.circular(skin.radiusForPill(26)),
-            ),
-            child: Icon(
-              icon,
-              size: 14.5,
-              color: active ? skin.activePillFg : skin.fg3,
-            ),
-          ),
-        ),
       ),
     );
   }
@@ -4306,8 +4321,7 @@ class _TracksPanel extends StatelessWidget {
 
         Widget buildVersionBtn({required bool expanded}) => VedroPullDownButton<int>(
               key: const ValueKey('detail-version-dropdown'),
-              prefixIcon: Icons.layers_rounded,
-              prefixLabel: versions.length > 1 ? '版本 (${versions.length})' : '版本',
+              prefixLabel: versions.length > 1 ? '版本 · ${versions.length}' : '版本',
               value: safeVerIdx,
               items: versionItems,
               expanded: expanded,
@@ -4317,8 +4331,7 @@ class _TracksPanel extends StatelessWidget {
 
         Widget buildAudioBtn({required bool expanded}) => VedroPullDownButton<int?>(
               key: const ValueKey('detail-audio-dropdown'),
-              prefixIcon: Icons.graphic_eq_rounded,
-              prefixLabel: compactMobile ? null : '音轨',
+              prefixLabel: '音轨',
               displayLabelOverride: audioButtonLabel,
               value: selectedAudioIndex,
               items: audioItems,
@@ -4328,8 +4341,7 @@ class _TracksPanel extends StatelessWidget {
 
         Widget buildSubBtn({required bool expanded}) => VedroPullDownButton<int?>(
               key: const ValueKey('detail-subtitle-dropdown'),
-              prefixIcon: Icons.subtitles_outlined,
-              prefixLabel: compactMobile ? null : '字幕',
+              prefixLabel: '字幕',
               displayLabelOverride: subtitleButtonLabel,
               value: extFileName != null ? -997 : selectedSubtitleIndex,
               items: subtitleItems,
@@ -4417,6 +4429,27 @@ class _EpisodeRowState extends State<_EpisodeRow> {
     final dur = fmtDurationTicks(ep.runTimeTicks);
     final airDate = fmtIsoDate(ep.premiereDate);
     final epOverview = ep.cleanOverview;
+    final screenW = MediaQuery.sizeOf(context).width;
+    final isMobile = screenW < 580;
+    final thumbW = isMobile ? 116.0 : 162.0;
+
+    final rawTitle = ep.displayName.trim();
+    final alreadyHasNum = ep.indexNumber != null &&
+        RegExp('^第\\s*${ep.indexNumber}\\s*[集话]|^${ep.indexNumber}[.、\\s]')
+            .hasMatch(rawTitle);
+    final headlineText = (ep.indexNumber != null && !alreadyHasNum)
+        ? '${ep.indexNumber}. $rawTitle'
+        : (rawTitle.isNotEmpty
+            ? rawTitle
+            : (ep.indexNumber != null ? '第 ${ep.indexNumber} 集' : '未命名分集'));
+
+    final metaParts = <String>[
+      if (dur.isNotEmpty) dur,
+      if (airDate.isNotEmpty) airDate,
+      if (ep.communityRating != null && ep.communityRating! > 0)
+        '★ ${ep.communityRating!.toStringAsFixed(1)}',
+    ];
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: PressableScale(
@@ -4426,22 +4459,22 @@ class _EpisodeRowState extends State<_EpisodeRow> {
         pressScale: 0.985,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.all(12),
+          padding: EdgeInsets.all(isMobile ? 10 : 12),
           decoration: BoxDecoration(
             color: skin.unifiedTileColor(hovered: _hovered),
-            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 18.0)),
+            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 18.0)),
             border: skin.cardBorder(hovered: _hovered),
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               SizedBox(
-                width: 164,
+                width: thumbW,
                 child: AspectRatio(
                   aspectRatio: 16 / 9,
                   child: Container(
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 12.0)),
+                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 11.0)),
                     ),
                     clipBehavior: Clip.antiAlias,
                     child: Stack(
@@ -4454,11 +4487,48 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                           landscape: true,
                           width: 420,
                         ),
+                        if (ep.indexNumber != null)
+                          Positioned(
+                            left: 5,
+                            bottom: ep.resumeProgress > 0.01 ? 8 : 5,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5.5, vertical: 1.5),
+                              decoration: BoxDecoration(
+                                color: const Color(0xB8090B10),
+                                borderRadius: BorderRadius.circular(4.5),
+                              ),
+                              child: Text(
+                                'EP ${ep.indexNumber!.toString().padLeft(2, '0')}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.2,
+                                  fontFeatures: [FontFeature.tabularFigures()],
+                                ),
+                              ),
+                            ),
+                          ),
+                        if (ep.played)
+                          Positioned(
+                            top: 5,
+                            right: 5,
+                            child: Container(
+                              width: 17,
+                              height: 17,
+                              decoration: const BoxDecoration(
+                                color: Color(0xB8090B10),
+                                shape: BoxShape.circle,
+                              ),
+                              alignment: Alignment.center,
+                              child: const Icon(Icons.check_rounded, size: 11, color: Colors.white),
+                            ),
+                          ),
                         if (ep.resumeProgress > 0.01)
                           Positioned(
-                            left: 6,
-                            right: 6,
-                            bottom: 6,
+                            left: 5,
+                            right: 5,
+                            bottom: 4,
                             child: ClipRRect(
                               borderRadius: BorderRadius.circular(2),
                               child: LinearProgressIndicator(
@@ -4474,89 +4544,98 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                   ),
                 ),
               ),
-              const SizedBox(width: 16),
+              SizedBox(width: isMobile ? 12 : 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Line 1: 100% Dedicated to Episode Number + Title (NEVER covered by version pills!)
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Expanded(
                           child: Text(
-                            [
-                              if (ep.indexNumber != null) '${ep.indexNumber}.',
-                              ep.displayName,
-                            ].join(' '),
-                            maxLines: 1,
+                            headlineText,
+                            maxLines: isMobile ? 2 : 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              color: skin.fg,
-                              fontSize: 15,
+                              color: ep.played ? skin.fg2 : skin.fg,
+                              fontSize: isMobile ? 14.5 : 15,
                               fontWeight: FontWeight.w600,
+                              height: 1.28,
+                              letterSpacing: -0.15,
                             ),
                           ),
                         ),
-                        if (widget.onPickVersion != null)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 6),
-                            child: GestureDetector(
-                              onTap: widget.onPickVersion,
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: skin.surface2,
-                                  borderRadius: BorderRadius.circular(skin.radiusForPill(20)),
-                                ),
-                                child: Text(
-                                  '${ep.versionCount} 版本',
-                                  style: TextStyle(
-                                    color: skin.fg,
-                                    fontSize: 11.5,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        if (ep.played)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 6),
-                            child: Icon(Icons.check_circle_rounded, size: 16, color: skin.fg3),
-                          ),
-                        Tooltip(
-                          message: '查看本集详情与媒体规格',
-                          child: IconButton(
-                            visualDensity: VisualDensity.compact,
-                            icon: Icon(Icons.more_horiz_rounded, size: 18, color: skin.fg3),
-                            onPressed: widget.onOpenDetail,
+                        const SizedBox(width: 6),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: widget.onOpenDetail,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(4, 1, 2, 4),
+                            child: Icon(CupertinoIcons.ellipsis, size: 16, color: skin.fg3),
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      [
-                        if (dur.isNotEmpty) dur,
-                        if (airDate.isNotEmpty) airDate,
-                        if (ep.communityRating != null && ep.communityRating! > 0)
-                          '★ ${ep.communityRating!.toStringAsFixed(1)}',
-                      ].join(' · '),
-                      style: TextStyle(
-                        color: skin.fg3,
-                        fontSize: 12,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
+                    const SizedBox(height: 4),
+                    // Line 2: Metadata + Clean Clickable Version Pill (When Multi-Version)
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        if (metaParts.isNotEmpty)
+                          Text(
+                            metaParts.join(' · '),
+                            style: TextStyle(
+                              color: skin.fg3,
+                              fontSize: 11.5,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                        if (widget.onPickVersion != null)
+                          GestureDetector(
+                            onTap: widget.onPickVersion,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
+                              decoration: BoxDecoration(
+                                color: skin.accent.withValues(alpha: skin.isLight ? 0.12 : 0.18),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    '${ep.versionCount} 版本',
+                                    style: TextStyle(
+                                      color: skin.isLight ? skin.accent : Colors.white,
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 2),
+                                  Icon(
+                                    Icons.keyboard_arrow_down_rounded,
+                                    size: 12,
+                                    color: skin.isLight ? skin.accent : Colors.white70,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                     if (epOverview.isNotEmpty) ...[
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 5),
                       Text(
                         epOverview,
-                        maxLines: 3,
+                        maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           color: skin.fg2,
-                          fontSize: 13,
-                          height: 1.5,
+                          fontSize: 12.5,
+                          height: 1.44,
                         ),
                       ),
                     ],
@@ -4622,7 +4701,7 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
         best = ep.mediaSources;
       }
     }
-    return MediaSourceModel.resolveVersions(best);
+    return MediaSourceModel.resolveVersions(best, stripEpisodePrefix: true);
   }
 
   void _ensureDefaultVersion() {

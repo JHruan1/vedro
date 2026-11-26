@@ -7,7 +7,11 @@ import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'vedro_ui.dart';
 
-/// Linear / Apple Server Console caliber Administrator Dashboard.
+/// Unified iOS-Caliber Administrator Console (`服务器管理台`).
+///
+/// Adapts seamlessly to both 360px–430px portrait mobile screens and wide desktops,
+/// inheriting all 4 Master Themes (`沉浸影院` / `iOS 毛玻璃` / `iOS 液态玻璃` / `Material 设计`)
+/// via `VedroAdaptiveSurface` and `VedroPullDownButton`.
 /// Strictly mounted ONLY when `appState.isSignedIn && appState.isAdmin`.
 class AdminConsolePane extends StatefulWidget {
   const AdminConsolePane({super.key, required this.appState});
@@ -21,11 +25,19 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
   String _tab = 'overview'; // overview | sessions | users | tasks | activity
   bool _refreshing = false;
   bool _scanning = false;
+  String _userFilter = '';
+  final TextEditingController _userSearchCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _reload();
+  }
+
+  @override
+  void dispose() {
+    _userSearchCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _reload() async {
@@ -53,35 +65,65 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
   }
 
   Future<void> _openCreateUserDialog() async {
+    final skin = VedroSkin.of(context);
     final nameCtrl = TextEditingController();
     final passCtrl = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('新建服务器用户'),
-        content: SizedBox(
-          width: 340,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                autofocus: true,
-                decoration: const InputDecoration(labelText: '用户名'),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: passCtrl,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: '初始密码'),
-              ),
-            ],
+      builder: (ctx) => Dialog(
+        backgroundColor: skin.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(skin.cardRadius.clamp(16.0, 22.0)),
+          side: BorderSide(color: skin.borderStrong, width: 0.9),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 380),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  '新建服务器用户',
+                  style: TextStyle(color: skin.fg, fontSize: 16.5, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 14),
+                _IosDialogField(
+                  controller: nameCtrl,
+                  hintText: '输入用户名',
+                  autofocus: true,
+                ),
+                const SizedBox(height: 10),
+                _IosDialogField(
+                  controller: passCtrl,
+                  hintText: '初始密码（可留空）',
+                  obscureText: true,
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: Text('取消', style: TextStyle(color: skin.fg2)),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: skin.primaryCtaBg,
+                        foregroundColor: skin.primaryCtaFg,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+                      ),
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('创建', style: TextStyle(fontWeight: FontWeight.w600)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('创建')),
-        ],
       ),
     );
     if (ok == true && nameCtrl.text.trim().isNotEmpty) {
@@ -124,123 +166,156 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final sessions = _extractList(data?['sessions']);
     final users = _extractList(data?['users']);
     final tasks = _extractList(data?['tasks']);
-    final accent = Theme.of(context).colorScheme.secondary;
+    final cardR = skin.cardRadius.clamp(14.0, 22.0);
+
+    final metaChips = <String>[
+      'v${status?['version'] ?? widget.appState.capabilities?.advertisedVersion ?? '-'}',
+      if (status != null) (status['postgres_catalog'] == true ? 'PostgreSQL' : 'SQLite'),
+      if (status != null) (status['transcoding_enabled'] == true ? '硬件转码' : 'DirectPlay 直连'),
+    ];
 
     return Column(
+      key: const ValueKey('admin-console-pane'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Hero Server Identity & Quick Controls Banner
-        Container(
-          padding: const EdgeInsets.all(18),
-          decoration: BoxDecoration(
-            color: skin.surface,
-            borderRadius: BorderRadius.circular(18),
-            border: skin.cardBorder(),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: const Color(0x20F59E0B),
-                  borderRadius: BorderRadius.circular(13),
-                  border: Border.all(color: const Color(0x45F59E0B), width: 0.8),
-                ),
-                child: const Icon(Icons.admin_panel_settings_rounded, size: 22, color: Color(0xFFD97706)),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+        // 1. Responsive Hero Server Identity Card (Portrait-safe 2-tier on narrow screens)
+        VedroAdaptiveSurface(
+          borderRadius: cardR,
+          padding: const EdgeInsets.all(16),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final compact = constraints.maxWidth < 520;
+
+              final serverTitleBlock = Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: skin.accent.withValues(alpha: skin.isLight ? 0.14 : 0.20),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(CupertinoIcons.shield_lefthalf_fill, size: 20, color: skin.accent),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                widget.appState.activeServerDisplayName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: skin.fg,
+                                  fontSize: 16.5,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: -0.3,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const _StatusDotBadge(label: '在线', color: Color(0xFF34D399)),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          metaChips.join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: skin.fg3, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+
+              if (compact) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    serverTitleBlock,
+                    const SizedBox(height: 12),
                     Row(
                       children: [
-                        Flexible(
-                          child: Text(
-                            widget.appState.activeServerDisplayName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: skin.fg,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: -0.3,
-                            ),
+                        Expanded(
+                          child: _CompactActionBtn(
+                            icon: CupertinoIcons.arrow_2_circlepath,
+                            label: _scanning ? '正在全库扫描…' : '全库扫描',
+                            primary: true,
+                            accent: skin.accent,
+                            loading: _scanning,
+                            expanded: true,
+                            onTap: _triggerScan,
                           ),
                         ),
                         const SizedBox(width: 8),
-                        const _StatusDotBadge(label: '在线运行', color: Color(0xFF34D399)),
-                      ],
-                    ),
-                    const SizedBox(height: 5),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 4,
-                      children: [
-                        _MetaBadge(
-                          '版本 ${status?['version'] ?? widget.appState.capabilities?.advertisedVersion ?? '-'}',
+                        Expanded(
+                          child: _CompactActionBtn(
+                            icon: CupertinoIcons.refresh,
+                            label: '刷新状态',
+                            loading: _refreshing,
+                            expanded: true,
+                            onTap: _reload,
+                          ),
                         ),
-                        if (status != null)
-                          _MetaBadge(
-                            status['postgres_catalog'] == true ? 'PostgreSQL' : 'SQLite 存储',
-                          ),
-                        if (status != null)
-                          _MetaBadge(
-                            status['transcoding_enabled'] == true ? '已启转码' : 'DirectPlay 直连',
-                          ),
                       ],
                     ),
                   ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
+                );
+              }
+
+              return Row(
                 children: [
+                  Expanded(child: serverTitleBlock),
+                  const SizedBox(width: 12),
                   _CompactActionBtn(
-                    icon: Icons.sync_rounded,
+                    icon: CupertinoIcons.arrow_2_circlepath,
                     label: _scanning ? '扫描中…' : '全库扫描',
                     primary: true,
-                    accent: accent,
+                    accent: skin.accent,
                     loading: _scanning,
                     onTap: _triggerScan,
                   ),
+                  const SizedBox(width: 8),
                   _CompactActionBtn(
-                    icon: Icons.refresh_rounded,
+                    icon: CupertinoIcons.refresh,
                     label: '刷新',
                     loading: _refreshing,
                     onTap: _reload,
                   ),
                 ],
-              ),
-            ],
+              );
+            },
           ),
         ),
 
-        const SizedBox(height: 16),
+        const SizedBox(height: 14),
 
-        // Clean Segmented Navigation with live counts
-        VedroSegmentedControl<String>(
-          items: [
-            const ('overview', '概览与媒体库'),
-            ('sessions', '会话 (${sessions.length})'),
-            ('users', '用户 (${users.length})'),
-            ('tasks', '任务 (${tasks.length})'),
-            const ('activity', '活动日志'),
-          ],
+        // 2. Scrollable iOS Capsule Tab Strip (Zero crushing on 360px portrait phones!)
+        _AdminTabStrip(
           selected: _tab,
+          tabs: [
+            const ('overview', '概览', null),
+            ('sessions', '会话', sessions.length),
+            ('users', '用户', users.length),
+            ('tasks', '任务', tasks.length),
+            const ('activity', '日志', null),
+          ],
           onSelected: (v) => setState(() => _tab = v),
         ),
 
-        const SizedBox(height: 18),
+        const SizedBox(height: 16),
 
         if (data == null)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 48),
             child: Center(
-              child: CircularProgressIndicator(strokeWidth: 2, color: VedroSkin.of(context).fg2),
+              child: CircularProgressIndicator(strokeWidth: 2, color: skin.fg2),
             ),
           )
         else
@@ -264,11 +339,11 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Full-width Responsive 4-Column Bento Metrics
+        // 2x2 on Portrait Phone, 4-up on Wide Desktop
         LayoutBuilder(
           builder: (context, constraints) {
             final cols = constraints.maxWidth >= 560 ? 4 : 2;
-            const gap = 12.0;
+            const gap = 10.0;
             final w = (constraints.maxWidth - gap * (cols - 1)) / cols;
             return Wrap(
               spacing: gap,
@@ -278,28 +353,28 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                   width: w,
                   label: '电影',
                   value: '${counts?['MovieCount'] ?? 0}',
-                  icon: Icons.movie_outlined,
-                  tint: const Color(0xFF60A5FA),
+                  icon: CupertinoIcons.film,
+                  tint: const Color(0xFF38BDF8),
                 ),
                 _BentoMetricCard(
                   width: w,
                   label: '剧集',
                   value: '${counts?['SeriesCount'] ?? 0}',
-                  icon: Icons.live_tv_rounded,
+                  icon: CupertinoIcons.tv,
                   tint: const Color(0xFFA78BFA),
                 ),
                 _BentoMetricCard(
                   width: w,
                   label: '分集总数',
                   value: '${counts?['EpisodeCount'] ?? 0}',
-                  icon: Icons.video_library_outlined,
-                  tint: const Color(0xFF38BDF8),
+                  icon: CupertinoIcons.rectangle_stack,
+                  tint: const Color(0xFF60A5FA),
                 ),
                 _BentoMetricCard(
                   width: w,
-                  label: '正在播放 / 在线',
+                  label: '播放 / 在线',
                   value: '${playing.length} / ${allSessions.length}',
-                  icon: Icons.play_circle_outline_rounded,
+                  icon: CupertinoIcons.play_circle,
                   tint: const Color(0xFF34D399),
                 ),
               ],
@@ -308,10 +383,10 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
         ),
 
         if (status != null) ...[
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           _ConsolePanel(
-            title: '索引与引擎状态',
-            icon: Icons.analytics_outlined,
+            title: '索引与引擎',
+            icon: CupertinoIcons.chart_bar_square,
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final cols = constraints.maxWidth >= 500 ? 3 : 2;
@@ -322,9 +397,16 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                   ('媒体文件', '${status['files'] ?? 0}'),
                   ('外挂字幕', '${status['subtitle_files'] ?? 0}'),
                   if (status['last_scan_attempt_at'] != null)
-                    ('最近扫描', status['last_scan_attempt_at'].toString().replaceFirst('T', ' ').split('.').first),
+                    (
+                      '最近扫描',
+                      status['last_scan_attempt_at']
+                          .toString()
+                          .replaceFirst('T', ' ')
+                          .split('.')
+                          .first,
+                    ),
                   if (status['built_at'] != null)
-                    ('构建时间', status['built_at'].toString().split('T').first),
+                    ('构建日期', status['built_at'].toString().split('T').first),
                 ];
                 final skin = VedroSkin.of(context);
                 return Wrap(
@@ -340,10 +422,12 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                           const SizedBox(height: 3),
                           Text(
                             f.$2,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               color: skin.fg,
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
                               fontFeatures: const [FontFeature.tabularFigures()],
                             ),
                           ),
@@ -358,14 +442,14 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
         ],
 
         if (libs.isNotEmpty) ...[
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           _ConsolePanel(
-            title: '媒体库管理 (${libs.length})',
-            icon: Icons.folder_copy_outlined,
+            title: '媒体库 (${libs.length})',
+            icon: CupertinoIcons.folder,
             child: Column(
               children: [
                 for (var i = 0; i < libs.length; i++) ...[
-                  if (i > 0) const Divider(height: 20),
+                  if (i > 0) Divider(height: 20, color: VedroSkin.of(context).border),
                   _buildLibraryRow(libs[i]),
                 ],
               ],
@@ -384,10 +468,10 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final locations = ((lib['Locations'] as List?) ?? const []).map((e) => e.toString()).toList();
     final genCovers = lib['GenerateCovers'] == true;
     final icon = switch (ctype.toLowerCase()) {
-      'movies' => Icons.movie_outlined,
-      'tvshows' => Icons.live_tv_rounded,
-      'music' => Icons.music_note_rounded,
-      _ => Icons.folder_outlined,
+      'movies' => CupertinoIcons.film,
+      'tvshows' => CupertinoIcons.tv,
+      'music' => CupertinoIcons.music_note_2,
+      _ => CupertinoIcons.folder,
     };
 
     return Row(
@@ -396,10 +480,10 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
           width: 36,
           height: 36,
           decoration: BoxDecoration(
-            color: const Color(0x165B9BFF),
+            color: skin.accent.withValues(alpha: skin.isLight ? 0.12 : 0.18),
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Icon(icon, size: 18, color: const Color(0xFF5B9BFF)),
+          child: Icon(icon, size: 17, color: skin.accent),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -417,7 +501,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                     ),
                   ),
                   if (ctype.isNotEmpty) ...[
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 7),
                     _MetaBadge(ctype),
                   ],
                 ],
@@ -439,13 +523,14 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
           ),
         ),
         if (id.isNotEmpty && widget.appState.capabilities?.isEmbyGo == true) ...[
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
           Text('自动封面', style: TextStyle(color: skin.fg3, fontSize: 12)),
-          const SizedBox(width: 6),
+          const SizedBox(width: 4),
           Transform.scale(
-            scale: 0.78,
+            scale: 0.80,
             child: CupertinoSwitch(
               value: genCovers,
+              activeTrackColor: skin.accent,
               onChanged: (v) => widget.appState.adminSetLibraryCovers(id, v),
             ),
           ),
@@ -457,17 +542,17 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
   Widget _buildSessions(List<Map<String, dynamic>> sessions) {
     if (sessions.isEmpty) {
       return const _EmptyConsoleState(
-        icon: Icons.devices_other_rounded,
-        message: '当前没有活跃的客户端会话',
+        icon: CupertinoIcons.device_laptop,
+        message: '当前没有活跃会话',
       );
     }
     return _ConsolePanel(
       title: '活跃会话 (${sessions.length})',
-      icon: Icons.cast_connected_rounded,
+      icon: CupertinoIcons.dot_radiowaves_left_right,
       child: Column(
         children: [
           for (var i = 0; i < sessions.length; i++) ...[
-            if (i > 0) const Divider(height: 22),
+            if (i > 0) Divider(height: 22, color: VedroSkin.of(context).border),
             _buildSessionRow(sessions[i]),
           ],
         ],
@@ -490,6 +575,8 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final playMethod = playState?['PlayMethod']?.toString() ?? '';
 
     final skin = VedroSkin.of(context);
+    final deviceLabel = [client, device].where((e) => e.isNotEmpty).join(' · ');
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -517,24 +604,23 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       Text(
                         user,
                         style: TextStyle(color: skin.fg, fontSize: 14, fontWeight: FontWeight.w600),
                       ),
-                      const SizedBox(width: 8),
-                      _MetaBadge([client, device].where((e) => e.isNotEmpty).join(' · ')),
-                      if (playMethod.isNotEmpty) ...[
-                        const SizedBox(width: 6),
-                        _MetaBadge(playMethod),
-                      ],
+                      if (deviceLabel.isNotEmpty) _MetaBadge(deviceLabel),
+                      if (playMethod.isNotEmpty) _MetaBadge(playMethod),
                     ],
                   ),
                   const SizedBox(height: 3),
                   Text(
                     itemTitle != null
-                        ? '${isPaused ? '已暂停' : '正在播放'}：$itemTitle'
+                        ? '${isPaused ? '已暂停' : '正在播放'} · $itemTitle'
                         : '空闲在线',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -547,13 +633,11 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
               ),
             ),
             if (id.isNotEmpty)
-              TextButton(
-                style: TextButton.styleFrom(
-                  foregroundColor: VedroTheme.danger,
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                ),
-                onPressed: () => widget.appState.adminEndSession(id),
-                child: const Text('断开', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500)),
+              _CompactActionBtn(
+                icon: CupertinoIcons.xmark_circle,
+                label: '断开',
+                danger: true,
+                onTap: () => widget.appState.adminEndSession(id),
               ),
           ],
         ),
@@ -563,7 +647,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
             children: [
               Expanded(
                 child: ClipRRect(
-                  borderRadius: BorderRadius.circular(2),
+                  borderRadius: BorderRadius.circular(999),
                   child: LinearProgressIndicator(
                     value: progress,
                     minHeight: 3.5,
@@ -589,31 +673,101 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
   }
 
   Widget _buildUsers(List<Map<String, dynamic>> users) {
-    final accent = Theme.of(context).colorScheme.secondary;
+    final skin = VedroSkin.of(context);
+    final q = _userFilter.trim().toLowerCase();
+    final filtered = q.isEmpty
+        ? users
+        : users.where((u) => (u['Name'] ?? '').toString().toLowerCase().contains(q)).toList();
+
     return _ConsolePanel(
       title: '用户账户 (${users.length})',
-      icon: Icons.people_outline_rounded,
+      icon: CupertinoIcons.person_2,
       trailing: _CompactActionBtn(
-        icon: Icons.person_add_outlined,
+        icon: CupertinoIcons.person_add,
         label: '新建用户',
         primary: true,
-        accent: accent,
+        accent: skin.accent,
         onTap: _openCreateUserDialog,
       ),
-      child: users.isEmpty
-          ? Padding(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              child: Text('未获取到用户列表', style: TextStyle(color: VedroSkin.of(context).fg3, fontSize: 13)),
-            )
-          : Column(
-              children: [
-                for (var i = 0; i < users.length; i++) ...[
-                  if (i > 0) const Divider(height: 20),
-                  _buildUserRow(users[i]),
-                ],
-              ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (users.length > 4) ...[
+            SizedBox(
+              height: 36,
+              child: TextField(
+                controller: _userSearchCtrl,
+                onChanged: (v) => setState(() => _userFilter = v),
+                style: TextStyle(color: skin.fg, fontSize: 13.5),
+                decoration: InputDecoration(
+                  hintText: '搜索用户名…',
+                  hintStyle: TextStyle(color: skin.fg3, fontSize: 13),
+                  prefixIcon: Icon(CupertinoIcons.search, size: 15.5, color: skin.fg3),
+                  prefixIconConstraints: const BoxConstraints(minWidth: 34),
+                  suffixIcon: _userFilter.isNotEmpty
+                      ? IconButton(
+                          padding: EdgeInsets.zero,
+                          icon: Icon(CupertinoIcons.clear_circled_solid, size: 15.5, color: skin.fg3),
+                          onPressed: () {
+                            _userSearchCtrl.clear();
+                            setState(() => _userFilter = '');
+                          },
+                        )
+                      : null,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                  filled: true,
+                  fillColor: skin.isLight
+                      ? Colors.black.withValues(alpha: 0.04)
+                      : Colors.white.withValues(alpha: 0.07),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(999),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
             ),
+            const SizedBox(height: 14),
+          ],
+          if (filtered.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Text(
+                users.isEmpty ? '未获取到用户列表' : '无匹配用户',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: skin.fg3, fontSize: 13),
+              ),
+            )
+          else
+            for (var i = 0; i < filtered.length; i++) ...[
+              if (i > 0) Divider(height: 18, color: skin.border),
+              _buildUserRow(filtered[i]),
+            ],
+        ],
+      ),
     );
+  }
+
+  Future<void> _confirmDeleteUser(String uid, String name) async {
+    final skin = VedroSkin.of(context);
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: skin.surface,
+        title: Text('删除用户 $name？', style: TextStyle(color: skin.fg, fontSize: 16)),
+        content: Text('此操作不可撤销。', style: TextStyle(color: skin.fg2, fontSize: 13.5)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: VedroTheme.danger),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      await widget.appState.adminDeleteUser(uid);
+    }
   }
 
   Widget _buildUserRow(Map<String, dynamic> u) {
@@ -625,33 +779,64 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final canDl = policy['EnableContentDownloading'] == true;
     final isSelf = uid == widget.appState.userId;
     final isEmbyGo = widget.appState.capabilities?.isEmbyGo == true;
-
     final skin = VedroSkin.of(context);
-    return Row(
-      children: [
-        Container(
-          width: 36,
-          height: 36,
-          decoration: BoxDecoration(
-            color: isAdm ? const Color(0x225B9BFF) : skin.subtleChipBg,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            artworkInitials(name),
-            style: TextStyle(
-              color: isAdm ? const Color(0xFF5B9BFF) : skin.fg2,
-              fontSize: 12.5,
-              fontWeight: FontWeight.w700,
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 500;
+
+        final actionMenuItems = <VedroDropdownItem<String>>[
+          if (isEmbyGo && uid.isNotEmpty)
+            VedroDropdownItem(
+              value: 'quota',
+              label: '下载权限与流量额度',
+              icon: CupertinoIcons.chart_pie,
+              onTapOverride: () => _openUserQuotaDialog(uid, name, policy),
             ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Wrap(
+          if (!isSelf && uid.isNotEmpty)
+            VedroDropdownItem(
+              value: 'toggle_disable',
+              label: isDisabled ? '启用该账号' : '禁用该账号',
+              icon: isDisabled ? CupertinoIcons.checkmark_circle : CupertinoIcons.nosign,
+              onTapOverride: () async {
+                policy['IsDisabled'] = !isDisabled;
+                await widget.appState.adminSetUserPolicy(uid, policy);
+              },
+            ),
+          if (!isSelf && uid.isNotEmpty)
+            VedroDropdownItem(
+              value: 'delete',
+              label: '删除用户',
+              icon: CupertinoIcons.trash,
+              isDestructive: true,
+              onTapOverride: () => _confirmDeleteUser(uid, name),
+            ),
+        ];
+
+        return Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: isAdm
+                    ? skin.accent.withValues(alpha: skin.isLight ? 0.14 : 0.22)
+                    : skin.subtleChipBg,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                artworkInitials(name),
+                style: TextStyle(
+                  color: isAdm ? skin.accent : skin.fg2,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Wrap(
                 spacing: 6,
                 runSpacing: 4,
                 crossAxisAlignment: WrapCrossAlignment.center,
@@ -664,61 +849,55 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  if (isSelf) const _MetaBadge('当前账号'),
-                  if (isAdm) const _StatusDotBadge(label: '管理员', color: Color(0xFF5B9BFF)),
+                  if (isSelf) const _MetaBadge('当前'),
+                  if (isAdm) _StatusDotBadge(label: '管理员', color: skin.accent),
                   if (!isAdm && canDl)
                     const _StatusDotBadge(label: '可下载', color: Color(0xFF34D399)),
                   if (isDisabled) const _StatusDotBadge(label: '已禁用', color: VedroTheme.danger),
                 ],
               ),
-            ],
-          ),
-        ),
-        if (isEmbyGo && uid.isNotEmpty) ...[
-          _CompactActionBtn(
-            icon: Icons.data_usage_rounded,
-            label: '下载额度',
-            onTap: () => _openUserQuotaDialog(uid, name, policy),
-          ),
-          const SizedBox(width: 6),
-        ],
-        if (!isSelf && uid.isNotEmpty) ...[
-          _CompactActionBtn(
-            icon: isDisabled ? Icons.check_circle_outline_rounded : Icons.block_rounded,
-            label: isDisabled ? '启用' : '禁用',
-            onTap: () async {
-              policy['IsDisabled'] = !isDisabled;
-              await widget.appState.adminSetUserPolicy(uid, policy);
-            },
-          ),
-          const SizedBox(width: 6),
-          IconButton(
-            tooltip: '删除用户',
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.delete_outline_rounded, size: 18, color: VedroTheme.danger),
-            onPressed: () async {
-              final confirm = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: Text('删除用户 $name？'),
-                  content: const Text('此操作不可撤销。'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-                    FilledButton(
-                      style: FilledButton.styleFrom(backgroundColor: VedroTheme.danger),
-                      onPressed: () => Navigator.pop(ctx, true),
-                      child: const Text('删除'),
-                    ),
-                  ],
+            ),
+            const SizedBox(width: 8),
+            // On compact portrait screens, collapse multi-button clutter into ONE sleek iOS Pull-Down!
+            if (compact) ...[
+              if (actionMenuItems.isNotEmpty)
+                VedroPullDownButton<String>(
+                  height: 32,
+                  displayLabelOverride: '管理',
+                  value: '__none__',
+                  items: actionMenuItems,
+                  onChanged: (_) {},
                 ),
-              );
-              if (confirm == true) {
-                await widget.appState.adminDeleteUser(uid);
-              }
-            },
-          ),
-        ],
-      ],
+            ] else ...[
+              if (isEmbyGo && uid.isNotEmpty) ...[
+                _CompactActionBtn(
+                  icon: CupertinoIcons.chart_pie,
+                  label: '下载额度',
+                  onTap: () => _openUserQuotaDialog(uid, name, policy),
+                ),
+                const SizedBox(width: 6),
+              ],
+              if (!isSelf && uid.isNotEmpty) ...[
+                _CompactActionBtn(
+                  icon: isDisabled ? CupertinoIcons.checkmark_circle : CupertinoIcons.nosign,
+                  label: isDisabled ? '启用' : '禁用',
+                  onTap: () async {
+                    policy['IsDisabled'] = !isDisabled;
+                    await widget.appState.adminSetUserPolicy(uid, policy);
+                  },
+                ),
+                const SizedBox(width: 6),
+                _CircleIconBtn(
+                  icon: CupertinoIcons.trash,
+                  danger: true,
+                  tooltip: '删除用户',
+                  onTap: () => _confirmDeleteUser(uid, name),
+                ),
+              ],
+            ],
+          ],
+        );
+      },
     );
   }
 
@@ -742,17 +921,17 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
   Widget _buildTasks(List<Map<String, dynamic>> tasks) {
     if (tasks.isEmpty) {
       return const _EmptyConsoleState(
-        icon: Icons.schedule_rounded,
+        icon: CupertinoIcons.clock,
         message: '暂无定时任务',
       );
     }
     return _ConsolePanel(
       title: '定时任务 (${tasks.length})',
-      icon: Icons.schedule_rounded,
+      icon: CupertinoIcons.clock,
       child: Column(
         children: [
           for (var i = 0; i < tasks.length; i++) ...[
-            if (i > 0) const Divider(height: 20),
+            if (i > 0) Divider(height: 18, color: VedroSkin.of(context).border),
             _buildTaskRow(tasks[i]),
           ],
         ],
@@ -785,11 +964,13 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
             children: [
               Text(
                 name,
-                style: TextStyle(color: skin.fg, fontSize: 14, fontWeight: FontWeight.w500),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: skin.fg, fontSize: 14, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 2),
               Text(
-                running ? '运行中…' : (desc.isNotEmpty ? desc : '空闲 ($state)'),
+                running ? '运行中…' : (desc.isNotEmpty ? desc : '空闲'),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(color: skin.fg3, fontSize: 12),
@@ -799,8 +980,9 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
         ),
         const SizedBox(width: 10),
         _CompactActionBtn(
-          icon: Icons.play_arrow_rounded,
-          label: running ? '运行中' : '运行',
+          icon: CupertinoIcons.play_fill,
+          label: running ? '运行中' : '执行',
+          loading: running,
           onTap: running || key.isEmpty
               ? null
               : () async {
@@ -819,17 +1001,17 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
   Widget _buildActivity(List<Map<String, dynamic>> items) {
     if (items.isEmpty) {
       return const _EmptyConsoleState(
-        icon: Icons.receipt_long_rounded,
-        message: '暂无服务器活动日志',
+        icon: CupertinoIcons.doc_text,
+        message: '暂无活动日志',
       );
     }
     return _ConsolePanel(
-      title: '最近活动日志 (${items.length})',
-      icon: Icons.receipt_long_rounded,
+      title: '活动日志 (${items.length})',
+      icon: CupertinoIcons.doc_text,
       child: Column(
         children: [
           for (var i = 0; i < items.length; i++) ...[
-            if (i > 0) const Divider(height: 16),
+            if (i > 0) Divider(height: 16, color: VedroSkin.of(context).border),
             _buildActivityRow(items[i]),
           ],
         ],
@@ -843,26 +1025,26 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final sev = (e['Severity'] ?? 'Info').toString();
     final sevColor = sev.toLowerCase().contains('err')
         ? VedroTheme.danger
-        : (sev.toLowerCase().contains('warn') ? const Color(0xFFFBBF24) : const Color(0xFF60A5FA));
+        : (sev.toLowerCase().contains('warn') ? const Color(0xFFFBBF24) : const Color(0xFF38BDF8));
 
     final skin = VedroSkin.of(context);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.only(top: 5),
+          padding: const EdgeInsets.only(top: 5.5),
           child: Container(
             width: 7,
             height: 7,
             decoration: BoxDecoration(color: sevColor, shape: BoxShape.circle),
           ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 11),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(name, style: TextStyle(color: skin.fg, fontSize: 13.5)),
+              Text(name, style: TextStyle(color: skin.fg, fontSize: 13.5, height: 1.35)),
               if (date.isNotEmpty) ...[
                 const SizedBox(height: 2),
                 Text(
@@ -877,8 +1059,99 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
             ],
           ),
         ),
+        const SizedBox(width: 8),
         _StatusDotBadge(label: sev, color: sevColor),
       ],
+    );
+  }
+}
+
+class _AdminTabStrip extends StatelessWidget {
+  const _AdminTabStrip({
+    required this.selected,
+    required this.tabs,
+    required this.onSelected,
+  });
+
+  final String selected;
+  final List<(String id, String label, int? count)> tabs;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    return VedroAdaptiveSurface(
+      borderRadius: 999,
+      padding: const EdgeInsets.all(4),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final wide = constraints.maxWidth >= 480;
+          Widget buildPill((String id, String label, int? count) tab, {required bool expand}) {
+            final active = tab.$1 == selected;
+            final pill = GestureDetector(
+              onTap: () => onSelected(tab.$1),
+              child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 170),
+                  height: 32,
+                  padding: EdgeInsets.symmetric(horizontal: expand ? 6 : 14),
+                  decoration: BoxDecoration(
+                    color: active ? skin.activePillBg : Colors.transparent,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  alignment: Alignment.center,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        tab.$2,
+                        style: TextStyle(
+                          color: active ? skin.activePillFg : skin.fg2,
+                          fontSize: 12.5,
+                          fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                        ),
+                      ),
+                      if (tab.$3 != null) ...[
+                        const SizedBox(width: 4),
+                        Text(
+                          '${tab.$3}',
+                          style: TextStyle(
+                            color: active
+                                ? skin.activePillFg.withValues(alpha: 0.85)
+                                : skin.fg3,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            );
+            return expand ? Expanded(child: pill) : pill;
+          }
+
+          if (wide) {
+            return Row(
+              children: [for (final t in tabs) buildPill(t, expand: true)],
+            );
+          }
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (var i = 0; i < tabs.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 4),
+                  buildPill(tabs[i], expand: false),
+                ],
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 }
@@ -901,40 +1174,45 @@ class _BentoMetricCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    return Container(
+    return SizedBox(
       width: width,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: skin.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: skin.cardBorder(),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              color: tint.withValues(alpha: 0.16),
-              borderRadius: BorderRadius.circular(9),
+      child: VedroAdaptiveSurface(
+        borderRadius: skin.cardRadius.clamp(14.0, 20.0),
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    color: tint.withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(icon, size: 15, color: tint),
+                ),
+                const Spacer(),
+              ],
             ),
-            child: Icon(icon, size: 16, color: tint),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            value,
-            style: TextStyle(
-              color: skin.fg,
-              fontSize: 24,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.5,
-              fontFeatures: const [FontFeature.tabularFigures()],
+            const SizedBox(height: 10),
+            Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: skin.fg,
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.5,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
             ),
-          ),
-          const SizedBox(height: 2),
-          Text(label, style: TextStyle(color: skin.fg3, fontSize: 12)),
-        ],
+            const SizedBox(height: 2),
+            Text(label, style: TextStyle(color: skin.fg3, fontSize: 12)),
+          ],
+        ),
       ),
     );
   }
@@ -956,34 +1234,33 @@ class _ConsolePanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: skin.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: skin.cardBorder(),
-      ),
+    return VedroAdaptiveSurface(
+      borderRadius: skin.cardRadius.clamp(14.0, 22.0),
+      padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(icon, size: 17, color: skin.fg2),
+              Icon(icon, size: 16.5, color: skin.accent),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: skin.fg,
                     fontSize: 15,
-                    fontWeight: FontWeight.w600,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.2,
                   ),
                 ),
               ),
               if (trailing != null) trailing!,
             ],
           ),
-          Divider(height: 24, color: skin.border),
+          Divider(height: 22, color: skin.border),
           child,
         ],
       ),
@@ -999,13 +1276,9 @@ class _EmptyConsoleState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    return Container(
+    return VedroAdaptiveSurface(
+      borderRadius: skin.cardRadius.clamp(14.0, 22.0),
       padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 24),
-      decoration: BoxDecoration(
-        color: skin.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: skin.cardBorder(),
-      ),
       child: Column(
         children: [
           Icon(icon, size: 28, color: skin.fg3),
@@ -1025,10 +1298,10 @@ class _StatusDotBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 7.5, vertical: 2),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
         label,
@@ -1046,10 +1319,10 @@ class _MetaBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 7.5, vertical: 2),
       decoration: BoxDecoration(
         color: skin.subtleChipBg,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
         text,
@@ -1059,39 +1332,100 @@ class _MetaBadge extends StatelessWidget {
   }
 }
 
+class _CircleIconBtn extends StatelessWidget {
+  const _CircleIconBtn({
+    required this.icon,
+    required this.onTap,
+    this.tooltip,
+    this.danger = false,
+  });
+
+  final IconData icon;
+  final VoidCallback onTap;
+  final String? tooltip;
+  final bool danger;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final fg = danger ? VedroTheme.danger : skin.fg2;
+    final btn = PressableScale(
+      onTap: onTap,
+      hoverScale: 1.05,
+      pressScale: 0.93,
+      child: Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          color: danger
+              ? VedroTheme.danger.withValues(alpha: 0.12)
+              : (skin.isLight
+                  ? Colors.black.withValues(alpha: 0.05)
+                  : Colors.white.withValues(alpha: 0.08)),
+          shape: BoxShape.circle,
+        ),
+        alignment: Alignment.center,
+        child: Icon(icon, size: 15, color: fg),
+      ),
+    );
+    return tooltip != null ? Tooltip(message: tooltip!, child: btn) : btn;
+  }
+}
+
 class _CompactActionBtn extends StatelessWidget {
   const _CompactActionBtn({
     required this.icon,
     required this.label,
     this.onTap,
     this.primary = false,
+    this.danger = false,
     this.accent,
     this.loading = false,
+    this.expanded = false,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback? onTap;
   final bool primary;
+  final bool danger;
   final Color? accent;
   final bool loading;
+  final bool expanded;
 
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    final bg = primary ? (accent ?? skin.accent) : skin.surface2;
-    final fg = primary ? VedroTheme.highContrastOn(bg) : skin.fg;
-    return PressableScale(
+    final bg = danger
+        ? VedroTheme.danger.withValues(alpha: 0.14)
+        : (primary
+            ? (skin.ctaStyle == 'contrast' && !skin.isLight
+                ? Colors.white
+                : (accent ?? skin.accent))
+            : (skin.isLight
+                ? Colors.black.withValues(alpha: 0.05)
+                : Colors.white.withValues(alpha: 0.09)));
+    final fg = danger
+        ? VedroTheme.danger
+        : (primary ? VedroTheme.highContrastOn(bg) : skin.fg);
+
+    final pill = PressableScale(
       onTap: loading ? null : onTap,
-      hoverScale: 1.03,
+      hoverScale: 1.02,
       pressScale: 0.96,
       child: Container(
         height: 32,
-        padding: const EdgeInsets.symmetric(horizontal: 11),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        alignment: Alignment.center,
         decoration: BoxDecoration(
           color: onTap == null ? skin.subtleChipBg : bg,
-          borderRadius: BorderRadius.circular(9),
-          border: primary ? null : Border.all(color: skin.border, width: 0.7),
+          borderRadius: BorderRadius.circular(999),
+          border: (primary || danger)
+              ? null
+              : Border.all(
+                  color: skin.isLight ? skin.border : Colors.white.withValues(alpha: 0.12),
+                  width: 0.7,
+                ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1103,17 +1437,71 @@ class _CompactActionBtn extends StatelessWidget {
                 child: CircularProgressIndicator(strokeWidth: 1.7, color: fg),
               )
             else
-              Icon(icon, size: 15, color: onTap == null ? skin.fg3 : fg),
+              Icon(icon, size: 14, color: onTap == null ? skin.fg3 : fg),
             const SizedBox(width: 5),
-            Text(
-              label,
-              style: TextStyle(
-                color: onTap == null ? skin.fg3 : fg,
-                fontSize: 12.5,
-                fontWeight: FontWeight.w500,
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: onTap == null ? skin.fg3 : fg,
+                  fontSize: 12.5,
+                  fontWeight: primary ? FontWeight.w600 : FontWeight.w500,
+                ),
               ),
             ),
           ],
+        ),
+      ),
+    );
+
+    return expanded ? SizedBox(width: double.infinity, child: pill) : pill;
+  }
+}
+
+class _IosDialogField extends StatelessWidget {
+  const _IosDialogField({
+    required this.controller,
+    required this.hintText,
+    this.autofocus = false,
+    this.obscureText = false,
+    this.keyboardType,
+  });
+
+  final TextEditingController controller;
+  final String hintText;
+  final bool autofocus;
+  final bool obscureText;
+  final TextInputType? keyboardType;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    return SizedBox(
+      height: 40,
+      child: TextField(
+        controller: controller,
+        autofocus: autofocus,
+        obscureText: obscureText,
+        keyboardType: keyboardType,
+        style: TextStyle(color: skin.fg, fontSize: 13.5),
+        decoration: InputDecoration(
+          hintText: hintText,
+          hintStyle: TextStyle(color: skin.fg3, fontSize: 13),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
+          filled: true,
+          fillColor: skin.isLight
+              ? Colors.black.withValues(alpha: 0.045)
+              : Colors.white.withValues(alpha: 0.08),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(11),
+            borderSide: BorderSide.none,
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(11),
+            borderSide: BorderSide(color: skin.accent, width: 1.1),
+          ),
         ),
       ),
     );
@@ -1191,7 +1579,8 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
       _events = events;
       if (_quota != null && _quota!.monthlyQuotaBytes > 0) {
         final gib = _quota!.monthlyQuotaBytes / _bytesPerGiB;
-        _monthlyGiBCtrl.text = gib == gib.roundToDouble() ? '${gib.round()}' : gib.toStringAsFixed(1);
+        _monthlyGiBCtrl.text =
+            gib == gib.roundToDouble() ? '${gib.round()}' : gib.toStringAsFixed(1);
       }
     } catch (e) {
       if (mounted) _error = e.toString().replaceFirst('VedroCoreException: ', '');
@@ -1213,7 +1602,7 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _error = '更新下载权限失败：$e');
+        setState(() => _error = '更新权限失败：$e');
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -1262,38 +1651,39 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
     final skin = VedroSkin.of(context);
     final dq = _quota;
     return Dialog(
-      backgroundColor: skin.surface2,
+      backgroundColor: skin.surface,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(skin.cardRadius.clamp(16.0, 22.0)),
         side: BorderSide(color: skin.borderStrong, width: 0.9),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 520, maxHeight: 680),
+        constraints: const BoxConstraints(maxWidth: 500, maxHeight: 680),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 12, 12),
+              padding: const EdgeInsets.fromLTRB(18, 14, 10, 10),
               child: Row(
                 children: [
-                  const Icon(Icons.data_usage_rounded, size: 19, color: Color(0xFF34D399)),
-                  const SizedBox(width: 9),
+                  Icon(CupertinoIcons.chart_pie_fill, size: 18, color: skin.accent),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '下载权限与流量包 · ${widget.userName}',
+                      '下载额度 · ${widget.userName}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: skin.fg, fontSize: 15.5, fontWeight: FontWeight.w600),
+                      style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w700),
                     ),
                   ),
                   IconButton(
-                    icon: Icon(Icons.close_rounded, color: skin.fg2),
+                    icon: Icon(CupertinoIcons.xmark_circle_fill, size: 20, color: skin.fg3),
                     onPressed: () => Navigator.pop(context),
                   ),
                 ],
               ),
             ),
-            const Divider(height: 1),
+            Divider(height: 1, color: skin.border),
             Flexible(
               child: _loading
                   ? Padding(
@@ -1301,7 +1691,7 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                       child: CircularProgressIndicator(strokeWidth: 2, color: skin.fg2),
                     )
                   : SingleChildScrollView(
-                      padding: const EdgeInsets.all(20),
+                      padding: const EdgeInsets.all(18),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
@@ -1310,142 +1700,209 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                               padding: const EdgeInsets.all(10),
                               margin: const EdgeInsets.only(bottom: 12),
                               decoration: BoxDecoration(
-                                color: const Color(0x28EF4444),
+                                color: VedroTheme.danger.withValues(alpha: 0.14),
                                 borderRadius: BorderRadius.circular(10),
                               ),
-                              child: Text(_error!, style: const TextStyle(color: Color(0xFFEF4444), fontSize: 12.5)),
+                              child: Text(
+                                _error!,
+                                style: const TextStyle(color: VedroTheme.danger, fontSize: 12.5),
+                              ),
                             ),
                           ],
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text('允许原文件下载', style: TextStyle(color: skin.fg, fontSize: 14, fontWeight: FontWeight.w500)),
-                                    const SizedBox(height: 2),
-                                    Text('User.Policy.EnableContentDownloading', style: TextStyle(color: skin.fg3, fontSize: 11.5)),
-                                  ],
-                                ),
-                              ),
-                              Transform.scale(
-                                scale: 0.82,
-                                child: CupertinoSwitch(
-                                  value: _enableDownload,
-                                  onChanged: _saving ? null : _toggleDownloadPermission,
-                                ),
-                              ),
-                            ],
-                          ),
-                          if (dq != null) ...[
-                            const Divider(height: 24),
-                            Wrap(
-                              spacing: 12,
-                              runSpacing: 10,
+
+                          // Clean iOS Switch Row (Zero internal variable names!)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: skin.surface2,
+                              borderRadius: BorderRadius.circular(13),
+                            ),
+                            child: Row(
                               children: [
-                                _MetaBadge('总可用：${dq.adminExempt ? '管理员不限' : fmtQuotaBytes(dq.totalRemainingBytes)}'),
-                                _MetaBadge('30天免费剩：${fmtQuotaBytes(dq.monthlyRemainingBytes)} / ${fmtQuotaBytes(dq.monthlyQuotaBytes)}'),
-                                _MetaBadge('永久流量包：${fmtQuotaBytes(dq.packBytes)}'),
-                                _MetaBadge('并发：${dq.activeDownloads}/${dq.maxConcurrentDownloads > 0 ? dq.maxConcurrentDownloads : '∞'}'),
-                                if (dq.inFlightBytes > 0) _MetaBadge('在途预占：${fmtQuotaBytes(dq.inFlightBytes)}'),
-                                if (_traffic != null) _MetaBadge('累计下载：${fmtQuotaBytes(_traffic!.downloadBytes)}'),
+                                Expanded(
+                                  child: Text(
+                                    '允许离线下载原文件',
+                                    style: TextStyle(
+                                      color: skin.fg,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                Transform.scale(
+                                  scale: 0.85,
+                                  child: CupertinoSwitch(
+                                    value: _enableDownload,
+                                    activeTrackColor: skin.accent,
+                                    onChanged: _saving ? null : _toggleDownloadPermission,
+                                  ),
+                                ),
                               ],
                             ),
-                            const SizedBox(height: 16),
+                          ),
+
+                          if (dq != null) ...[
+                            const SizedBox(height: 14),
+                            // Visual 3-Column Summary Cards
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _MiniQuotaStat(
+                                    label: '总可用',
+                                    value: dq.adminExempt
+                                        ? '不限'
+                                        : fmtQuotaBytes(dq.totalRemainingBytes),
+                                    accent: const Color(0xFF34D399),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: _MiniQuotaStat(
+                                    label: '周期剩余',
+                                    value: fmtQuotaBytes(dq.monthlyRemainingBytes),
+                                    accent: skin.accent,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: _MiniQuotaStat(
+                                    label: '永久流量包',
+                                    value: fmtQuotaBytes(dq.packBytes),
+                                    accent: const Color(0xFFA78BFA),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            if (_traffic != null || dq.activeDownloads > 0) ...[
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 6,
+                                children: [
+                                  _MetaBadge(
+                                    '并发 ${dq.activeDownloads}/${dq.maxConcurrentDownloads > 0 ? dq.maxConcurrentDownloads : '∞'}',
+                                  ),
+                                  if (_traffic != null)
+                                    _MetaBadge('累计已下载 ${fmtQuotaBytes(_traffic!.downloadBytes)}'),
+                                ],
+                              ),
+                            ],
+
+                            const SizedBox(height: 18),
                             Text(
-                              '一次性永久下载流量包（永不过期 · 用完即止）',
-                              style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600),
+                              '发放永久流量包',
+                              style: TextStyle(
+                                color: skin.fg2,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                             const SizedBox(height: 8),
                             Wrap(
                               spacing: 8,
                               runSpacing: 8,
                               children: [
-                                _CompactActionBtn(
-                                  icon: Icons.add_rounded,
-                                  label: '+500 GiB',
-                                  primary: true,
-                                  loading: _saving,
-                                  onTap: () => _adjustPackGiB(500),
-                                ),
-                                _CompactActionBtn(
-                                  icon: Icons.add_rounded,
-                                  label: '+100 GiB',
-                                  loading: _saving,
-                                  onTap: () => _adjustPackGiB(100),
-                                ),
+                                for (final preset in const [50.0, 100.0, 500.0, 1024.0])
+                                  _CompactActionBtn(
+                                    icon: CupertinoIcons.plus,
+                                    label: preset >= 1024 ? '1 TB' : '${preset.round()} GB',
+                                    primary: preset == 500.0,
+                                    accent: skin.accent,
+                                    loading: _saving,
+                                    onTap: () => _adjustPackGiB(preset),
+                                  ),
                               ],
                             ),
                             const SizedBox(height: 10),
                             Row(
                               children: [
                                 SizedBox(
-                                  width: 110,
-                                  child: TextField(
+                                  width: 96,
+                                  child: _IosDialogField(
                                     controller: _packGiBCtrl,
-                                    keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
-                                    decoration: const InputDecoration(labelText: 'GiB (±)', isDense: true),
+                                    hintText: 'GiB (±)',
+                                    keyboardType: const TextInputType.numberWithOptions(
+                                      signed: true,
+                                      decimal: true,
+                                    ),
                                   ),
                                 ),
                                 const SizedBox(width: 8),
                                 Expanded(
-                                  child: TextField(
+                                  child: _IosDialogField(
                                     controller: _packNoteCtrl,
-                                    decoration: const InputDecoration(labelText: '备注（可选）', isDense: true),
+                                    hintText: '备注（选填）',
                                   ),
                                 ),
                                 const SizedBox(width: 8),
-                                FilledButton(
-                                  onPressed: _saving
-                                      ? null
-                                      : () {
-                                          final v = double.tryParse(_packGiBCtrl.text.trim());
-                                          if (v != null && v != 0) _adjustPackGiB(v);
-                                        },
-                                  child: const Text('调整'),
+                                _CompactActionBtn(
+                                  icon: CupertinoIcons.checkmark_alt,
+                                  label: '调整',
+                                  primary: true,
+                                  accent: skin.accent,
+                                  loading: _saving,
+                                  onTap: () {
+                                    final v = double.tryParse(_packGiBCtrl.text.trim());
+                                    if (v != null && v != 0) _adjustPackGiB(v);
+                                  },
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 16),
+
+                            const SizedBox(height: 18),
                             Text(
-                              '30 天周期免费下载额度覆写',
-                              style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600),
+                              '每 30 天免费额度 (GiB)',
+                              style: TextStyle(
+                                color: skin.fg2,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                             const SizedBox(height: 8),
                             Row(
                               children: [
                                 Expanded(
-                                  child: TextField(
+                                  child: _IosDialogField(
                                     controller: _monthlyGiBCtrl,
-                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                    decoration: const InputDecoration(labelText: '每 30 天免费 GiB', isDense: true),
+                                    hintText: '留空跟随全局默认',
+                                    keyboardType:
+                                        const TextInputType.numberWithOptions(decimal: true),
                                   ),
                                 ),
                                 const SizedBox(width: 8),
-                                FilledButton(
-                                  onPressed: _saving
-                                      ? null
-                                      : () {
-                                          final v = double.tryParse(_monthlyGiBCtrl.text.trim());
-                                          if (v != null && v >= 0) {
-                                            _saveMonthlyOverride((v * _bytesPerGiB).round());
-                                          }
-                                        },
-                                  child: const Text('保存'),
+                                _CompactActionBtn(
+                                  icon: CupertinoIcons.checkmark_alt,
+                                  label: '保存',
+                                  primary: true,
+                                  accent: skin.accent,
+                                  loading: _saving,
+                                  onTap: () {
+                                    final v = double.tryParse(_monthlyGiBCtrl.text.trim());
+                                    if (v != null && v >= 0) {
+                                      _saveMonthlyOverride((v * _bytesPerGiB).round());
+                                    }
+                                  },
                                 ),
                                 const SizedBox(width: 6),
-                                TextButton(
-                                  onPressed: _saving ? null : () => _saveMonthlyOverride(null),
-                                  child: const Text('恢复默认'),
+                                _CompactActionBtn(
+                                  icon: CupertinoIcons.arrow_counterclockwise,
+                                  label: '默认',
+                                  loading: _saving,
+                                  onTap: () => _saveMonthlyOverride(null),
                                 ),
                               ],
                             ),
                           ],
+
                           if (_events.isNotEmpty) ...[
-                            const Divider(height: 24),
+                            Divider(height: 28, color: skin.border),
                             Text(
-                              '最近下载额度流水',
-                              style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600),
+                              '变更记录',
+                              style: TextStyle(
+                                color: skin.fg2,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                             const SizedBox(height: 8),
                             ..._events.map((ev) {
@@ -1477,9 +1934,11 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                                     Text(
                                       '$sign${fmtQuotaBytes(ev.bytesDelta.abs())}',
                                       style: TextStyle(
-                                        color: positive ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                                        color: positive
+                                            ? const Color(0xFF34D399)
+                                            : VedroTheme.danger,
                                         fontSize: 12.5,
-                                        fontWeight: FontWeight.w600,
+                                        fontWeight: FontWeight.w700,
                                         fontFeatures: const [FontFeature.tabularFigures()],
                                       ),
                                     ),
@@ -1494,6 +1953,48 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _MiniQuotaStat extends StatelessWidget {
+  const _MiniQuotaStat({
+    required this.label,
+    required this.value,
+    required this.accent,
+  });
+
+  final String label;
+  final String value;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      decoration: BoxDecoration(
+        color: skin.surface2,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: TextStyle(color: skin.fg3, fontSize: 11)),
+          const SizedBox(height: 3),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: accent,
+              fontSize: 13.5,
+              fontWeight: FontWeight.w700,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
       ),
     );
   }

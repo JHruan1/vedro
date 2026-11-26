@@ -41,15 +41,17 @@ jobs:
           java-version: '17'
       - run: cargo install cargo-ndk --locked
       - name: Decode Android release keystore
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "${{ runner.temp }}/vedro-release.jks"
-          chmod 600 "${{ runner.temp }}/vedro-release.jks"
+          if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            KEYSTORE_FILE="${RUNNER_TEMP}/vedro-release.jks"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+            chmod 600 "$KEYSTORE_FILE"
+            echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          fi
       - name: Build Android release APKs
         env:
-          ANDROID_KEYSTORE_PATH: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && format('{0}/vedro-release.jks', runner.temp) || '' }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}

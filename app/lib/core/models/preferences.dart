@@ -340,6 +340,8 @@ class VedroPreferences {
     this.reduceMotion = false,
     // 列表配置
     this.listDensity = 'comfortable', // compact | comfortable | spacious
+    this.sectionSpacing = 'compact', // compact | standard | spacious
+    this.posterScale = 1.0, // 0.75 .. 1.25
     this.showRatings = true,
     this.showYear = true,
     this.showWatchedBadge = true,
@@ -453,6 +455,8 @@ class VedroPreferences {
   final bool reduceMotion;
 
   final String listDensity;
+  final String sectionSpacing;
+  final double posterScale;
   final bool showRatings;
   final bool showYear;
   final bool showWatchedBadge;
@@ -640,17 +644,61 @@ class VedroPreferences {
   double posterCardWidth(bool wide, [DisplayMetricsProfile? metrics]) {
     final ov = overridesForPlatform(isMobile: !wide && _currentIsMobileOs);
     final effDensity = ov['grid_density']?.toString() ?? listDensity;
+    final scale = posterScale.clamp(0.75, 1.25);
     if (metrics != null) {
-      return metrics.posterWidthFor(effDensity);
+      return metrics.posterWidthFor(effDensity, scale: scale);
     }
-    switch (effDensity) {
-      case 'compact':
-        return wide ? 136.0 : 112.0;
-      case 'spacious':
-        return wide ? 182.0 : 150.0;
-      default:
-        return wide ? 158.0 : 132.0;
+    final base = switch (effDensity) {
+      'compact' => wide ? 132.0 : 94.0,
+      'spacious' => wide ? 176.0 : 122.0,
+      _ => wide ? 152.0 : 106.0,
+    };
+    return base * scale;
+  }
+
+  double horizontalMargin(bool wide) {
+    if (wide) {
+      return switch (sectionSpacing) {
+        'compact' => 24.0,
+        'spacious' => 36.0,
+        _ => 30.0,
+      };
     }
+    return switch (sectionSpacing) {
+      'compact' => 12.0,
+      'spacious' => 18.0,
+      _ => 14.0,
+    };
+  }
+
+  double cardGap(bool wide) {
+    if (wide) {
+      return switch (sectionSpacing) {
+        'compact' => 13.0,
+        'spacious' => 20.0,
+        _ => 16.0,
+      };
+    }
+    return switch (sectionSpacing) {
+      'compact' => 8.5,
+      'spacious' => 13.0,
+      _ => 10.0,
+    };
+  }
+
+  double sectionTopGap(bool wide) {
+    if (wide) {
+      return switch (sectionSpacing) {
+        'compact' => 18.0,
+        'spacious' => 30.0,
+        _ => 24.0,
+      };
+    }
+    return switch (sectionSpacing) {
+      'compact' => 11.0,
+      'spacious' => 20.0,
+      _ => 15.0,
+    };
   }
 
   VedroPreferences copyWith({
@@ -671,6 +719,8 @@ class VedroPreferences {
     String? glassIntensity,
     bool? reduceMotion,
     String? listDensity,
+    String? sectionSpacing,
+    double? posterScale,
     bool? showRatings,
     bool? showYear,
     bool? showWatchedBadge,
@@ -773,6 +823,8 @@ class VedroPreferences {
         glassIntensity: glassIntensity ?? this.glassIntensity,
         reduceMotion: reduceMotion ?? this.reduceMotion,
         listDensity: listDensity ?? this.listDensity,
+        sectionSpacing: sectionSpacing ?? this.sectionSpacing,
+        posterScale: posterScale ?? this.posterScale,
         showRatings: showRatings ?? this.showRatings,
         showYear: showYear ?? this.showYear,
         showWatchedBadge: showWatchedBadge ?? this.showWatchedBadge,
@@ -876,6 +928,8 @@ class VedroPreferences {
         'glass_intensity': glassIntensity,
         'reduce_motion': reduceMotion,
         'list_density': listDensity,
+        'section_spacing': sectionSpacing,
+        'poster_scale': posterScale,
         'show_ratings': showRatings,
         'show_year': showYear,
         'show_watched_badge': showWatchedBadge,
@@ -987,6 +1041,8 @@ class VedroPreferences {
         glassIntensity: (j['glass_intensity'] ?? 'standard').toString(),
         reduceMotion: j['reduce_motion'] == true,
         listDensity: (j['list_density'] ?? 'comfortable').toString(),
+        sectionSpacing: (j['section_spacing'] ?? 'compact').toString(),
+        posterScale: ((j['poster_scale'] as num?)?.toDouble() ?? 1.0).clamp(0.75, 1.25),
         showRatings: j['show_ratings'] != false,
         showYear: j['show_year'] != false,
         showWatchedBadge: j['show_watched_badge'] != false,

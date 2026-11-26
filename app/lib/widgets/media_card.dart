@@ -393,7 +393,7 @@ class _MediaCardState extends State<MediaCard> {
               ),
             ),
             if (showBelowCaption) ...[
-              const SizedBox(height: 9),
+              SizedBox(height: widget.width < 128 ? 5.5 : 8),
               Text(
                 item.cardTitle,
                 maxLines: 1,
@@ -401,18 +401,18 @@ class _MediaCardState extends State<MediaCard> {
                 style: TextStyle(
                   color: skin.fg,
                   fontWeight: FontWeight.w500,
-                  fontSize: 13.5,
+                  fontSize: widget.width < 128 ? 12.5 : 13.5,
                   letterSpacing: -0.1,
                 ),
               ),
-              const SizedBox(height: 2),
+              const SizedBox(height: 1.5),
               Text(
                 item.cardSubtitle.isNotEmpty ? item.cardSubtitle : ' ',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: skin.fg3,
-                  fontSize: 12,
+                  fontSize: widget.width < 128 ? 11.0 : 12.0,
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
@@ -574,7 +574,7 @@ class _ResumeCardState extends State<ResumeCard> {
                 ),
               ),
             ),
-            const SizedBox(height: 9),
+            SizedBox(height: widget.width < 235 ? 6 : 8),
             Text(
               item.cardTitle,
               maxLines: 1,
@@ -582,11 +582,11 @@ class _ResumeCardState extends State<ResumeCard> {
               style: TextStyle(
                 color: skin.fg,
                 fontWeight: FontWeight.w500,
-                fontSize: 13.5,
+                fontSize: widget.width < 235 ? 12.5 : 13.5,
                 letterSpacing: -0.1,
               ),
             ),
-            const SizedBox(height: 2),
+            const SizedBox(height: 1.5),
             Text(
               left.isNotEmpty
                   ? (item.type == 'Episode' && item.episodeCode != null
@@ -597,7 +597,7 @@ class _ResumeCardState extends State<ResumeCard> {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: skin.fg3,
-                fontSize: 12,
+                fontSize: widget.width < 235 ? 11.0 : 12.0,
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
@@ -706,9 +706,9 @@ class _LibraryCardState extends State<LibraryCard> {
                       ),
                     if (!hasServerCover)
                       Positioned(
-                        left: 14,
-                        right: 14,
-                        bottom: 12,
+                        left: 11,
+                        right: 11,
+                        bottom: 9,
                         child: Text(
                           widget.library.name,
                           maxLines: 1,
@@ -718,7 +718,7 @@ class _LibraryCardState extends State<LibraryCard> {
                               color: skin.isLight && widget.coverItem == null
                                   ? skin.fg
                                   : Colors.white,
-                              fontSize: 17,
+                              fontSize: widget.width < 195 ? 14.5 : 17,
                               fontWeight: FontWeight.w600,
                               letterSpacing: -0.3,
                             ),
@@ -729,7 +729,7 @@ class _LibraryCardState extends State<LibraryCard> {
                 ),
               ),
             ),
-            const SizedBox(height: 8),
+            SizedBox(height: widget.width < 195 ? 5 : 8),
             Row(
               children: [
                 Expanded(
@@ -739,7 +739,7 @@ class _LibraryCardState extends State<LibraryCard> {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: skin.fg,
-                      fontSize: 13.5,
+                      fontSize: widget.width < 195 ? 12.5 : 13.5,
                       fontWeight: FontWeight.w500,
                       letterSpacing: -0.1,
                     ),

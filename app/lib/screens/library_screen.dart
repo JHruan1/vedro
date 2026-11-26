@@ -182,15 +182,22 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
 
     final metrics = DisplayMetricsProfile.of(context);
+    final prefs = widget.appState.prefs;
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 820;
-    final padX = wide ? 32.0 : 20.0;
+    final padX = prefs.horizontalMargin(wide);
+    final gridGap = prefs.cardGap(wide);
     final isMac = !kIsWeb && Platform.isMacOS;
-    final effDensity = widget.appState.prefs
+    final effDensity = prefs
             .overridesForPlatform(isMobile: metrics.isMobileOs)['grid_density']
             ?.toString() ??
-        widget.appState.prefs.listDensity;
-    final cols = metrics.optimalGridColumns(width - padX * 2, effDensity);
+        prefs.listDensity;
+    final cols = metrics.optimalGridColumns(
+      width - padX * 2,
+      effDensity,
+      scale: prefs.posterScale,
+      gapOverride: gridGap,
+    );
     final pageTitle = widget.customTitle ??
         (_selectedGenreName != null
             ? '类型 · $_selectedGenreName'
@@ -443,8 +450,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                   padding: EdgeInsets.fromLTRB(padX, 6, padX, wide ? 44 : 108),
                                   gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                                     crossAxisCount: gridCols,
-                                    mainAxisSpacing: 20,
-                                    crossAxisSpacing: 16,
+                                    mainAxisSpacing: wide ? gridGap + 4 : gridGap + 2,
+                                    crossAxisSpacing: gridGap,
                                     childAspectRatio: gridAspect,
                                   ),
                                   itemCount: _items.length + (_loading ? 1 : 0),

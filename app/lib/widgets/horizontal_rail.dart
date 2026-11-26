@@ -53,26 +53,32 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
   Widget build(BuildContext context) {
     if (widget.items.isEmpty) return const SizedBox.shrink();
     final skin = VedroSkin.of(context);
+    final prefs = widget.appState.prefs;
     final wide = MediaQuery.sizeOf(context).width >= 820;
-    final padX = wide ? 32.0 : 20.0;
+    final padX = prefs.horizontalMargin(wide);
+    final gap = prefs.cardGap(wide);
+    final topGap = prefs.sectionTopGap(wide);
+    final scale = prefs.posterScale.clamp(0.75, 1.25);
     final isLandscapePoster = widget.landscape || skin.posterAspect == 'landscape_16_9';
     final cardWidth = widget.isResume
-        ? (wide ? 306.0 : 268.0)
+        ? ((wide ? 292.0 : 216.0) * scale)
         : (isLandscapePoster
-            ? (wide ? 286.0 : 244.0)
-            : widget.appState.prefs.posterCardWidth(wide));
+            ? ((wide ? 272.0 : 204.0) * scale)
+            : prefs.posterCardWidth(wide));
     final artHeight = widget.isResume
         ? (cardWidth / (16 / 9))
         : (isLandscapePoster
             ? (cardWidth / (16 / 9))
             : (cardWidth / skin.mediaAspectRatio));
     final textBelow = widget.isResume || skin.cardStyle == 'classic_below';
-    final railHeight = artHeight + (textBelow ? 76 : 24);
+    final vPad = wide ? 18.0 : 4.0;
+    final captionClearance = textBelow ? (cardWidth < 128 ? 46.0 : 52.0) : 2.0;
+    final railHeight = artHeight + captionClearance + vPad;
 
     final titleStyle = skin.applyHeadlineMood(
       TextStyle(
         color: skin.fg,
-        fontSize: wide ? 20 : 18,
+        fontSize: wide ? 20 : 16.5,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.3,
       ),
@@ -82,7 +88,7 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: EdgeInsets.fromLTRB(padX, 28, padX, 10),
+          padding: EdgeInsets.fromLTRB(padX, topGap, padX, wide ? 10 : 7),
           child: widget.onSeeAll != null
               ? MouseRegion(
                   cursor: SystemMouseCursors.click,
@@ -100,8 +106,8 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
                             style: titleStyle,
                           ),
                         ),
-                        const SizedBox(width: 4),
-                        Icon(Icons.chevron_right_rounded, size: 20, color: skin.fg3),
+                        const SizedBox(width: 3),
+                        Icon(Icons.chevron_right_rounded, size: wide ? 20 : 18, color: skin.fg3),
                       ],
                     ),
                   ),
@@ -116,9 +122,9 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
         SmoothHorizontalStrip(
           controller: _scrollCtrl,
           height: railHeight,
-          paddleCenterY: 10 + (artHeight / 2),
+          paddleCenterY: 6 + (artHeight / 2),
           padX: padX,
-          spacing: wide ? 18 : 13,
+          spacing: gap,
           itemCount: widget.items.length,
           itemBuilder: (context, idx) {
             final item = widget.items[idx];
@@ -163,12 +169,18 @@ class CustomHorizontalRail extends StatefulWidget {
     required this.height,
     required this.itemCount,
     required this.itemBuilder,
+    this.padXOverride,
+    this.spacingOverride,
+    this.topGapOverride,
   });
 
   final String title;
   final double height;
   final int itemCount;
   final IndexedWidgetBuilder itemBuilder;
+  final double? padXOverride;
+  final double? spacingOverride;
+  final double? topGapOverride;
 
   @override
   State<CustomHorizontalRail> createState() => _CustomHorizontalRailState();
@@ -188,19 +200,21 @@ class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
     if (widget.itemCount == 0) return const SizedBox.shrink();
     final skin = VedroSkin.of(context);
     final wide = MediaQuery.sizeOf(context).width >= 820;
-    final padX = wide ? 32.0 : 20.0;
+    final padX = widget.padXOverride ?? (wide ? 30.0 : 12.0);
+    final gap = widget.spacingOverride ?? (wide ? 16.0 : 9.0);
+    final topGap = widget.topGapOverride ?? (wide ? 20.0 : 10.0);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: EdgeInsets.fromLTRB(padX, 28, padX, 10),
+          padding: EdgeInsets.fromLTRB(padX, topGap, padX, wide ? 10 : 7),
           child: Text(
             widget.title,
             style: skin.applyHeadlineMood(
               TextStyle(
                 color: skin.fg,
-                fontSize: wide ? 20 : 18,
+                fontSize: wide ? 20 : 16.5,
                 fontWeight: FontWeight.w600,
                 letterSpacing: -0.3,
               ),
@@ -209,10 +223,10 @@ class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
         ),
         SmoothHorizontalStrip(
           controller: _scrollCtrl,
-          height: widget.height + 12,
-          paddleCenterY: 10 + ((widget.height - 40) / 2),
+          height: widget.height,
+          paddleCenterY: 6 + ((widget.height - 28) / 2),
           padX: padX,
-          spacing: wide ? 18 : 13,
+          spacing: gap,
           itemCount: widget.itemCount,
           itemBuilder: widget.itemBuilder,
         ),
@@ -304,6 +318,8 @@ class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 820;
+    final padTop = wide ? 8.0 : 2.0;
+    final padBottom = wide ? 10.0 : 2.0;
     final paddleTop = ((widget.paddleCenterY ?? (widget.height * 0.44)) - 20)
         .clamp(8.0, (widget.height - 48).clamp(8.0, widget.height));
 
@@ -324,7 +340,7 @@ class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
                   behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
                   child: ListView.separated(
                     controller: _ctrl,
-                    padding: EdgeInsets.fromLTRB(widget.padX, 10, widget.padX, 12),
+                    padding: EdgeInsets.fromLTRB(widget.padX, padTop, widget.padX, padBottom),
                     scrollDirection: Axis.horizontal,
                     physics: const BouncingScrollPhysics(
                       parent: AlwaysScrollableScrollPhysics(),

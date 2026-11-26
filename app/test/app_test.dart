@@ -12,6 +12,7 @@ import 'package:vedro/core/theme/vedro_skin.dart';
 import 'package:vedro/core/theme/vedro_theme.dart';
 import 'package:vedro/main.dart';
 import 'package:vedro/screens/detail_screen.dart';
+import 'package:vedro/screens/home_screen.dart';
 import 'package:vedro/screens/settings_screen.dart';
 import 'package:vedro/screens/shell_screen.dart';
 import 'package:vedro/state/app_state.dart';
@@ -1928,6 +1929,123 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('允许离线下载原文件'), findsOneWidget);
     expect(find.textContaining('User.Policy'), findsNothing);
+  });
+
+  testWidgets(
+      'Mobile Home Hero supports horizontal swipe, ShaderMask zero-seam fade, compact category rails & live Settings card scale',
+      (tester) async {
+    tester.view.physicalSize = const Size(1170, 2532); // 390x844 @ 3x iPhone portrait
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.reset);
+
+    final mock = _MockVedroCore();
+    final app = VedroAppState(mock)
+      ..userId = 'u1'
+      ..connectedUrl = 'https://embygo.example.com'
+      ..popular = [
+        MediaItemModel(
+          id: 'hero-s1',
+          name: '人生切割术',
+          type: 'Series',
+          backdropImageTag: 'bg1',
+          overview: '宏观数据精检部门的记忆切割故事。',
+        ),
+        MediaItemModel(
+          id: 'hero-s2',
+          name: '幕府将军',
+          type: 'Series',
+          backdropImageTag: 'bg2',
+          overview: '战国风云史诗剧集。',
+        ),
+      ]
+      ..views = [
+        MediaItemModel(id: 'lib-cn', name: '华语电影', type: 'CollectionFolder'),
+        MediaItemModel(id: 'lib-en', name: '外语电影', type: 'CollectionFolder'),
+      ]
+      ..latestByLibrary = [
+        <String, dynamic>{
+          'library': <String, dynamic>{'Id': 'lib-cn', 'Name': '华语电影', 'Type': 'CollectionFolder'},
+          'items': <Map<String, dynamic>>[
+            <String, dynamic>{'Id': 'cn1', 'Name': '流浪地球2', 'Type': 'Movie', 'ProductionYear': 2023},
+            <String, dynamic>{'Id': 'cn2', 'Name': '让子弹飞', 'Type': 'Movie', 'ProductionYear': 2010},
+          ],
+        },
+        <String, dynamic>{
+          'library': <String, dynamic>{'Id': 'lib-en', 'Name': '外语电影', 'Type': 'CollectionFolder'},
+          'items': <Map<String, dynamic>>[
+            <String, dynamic>{'Id': 'en1', 'Name': '星际穿越', 'Type': 'Movie', 'ProductionYear': 2014},
+            <String, dynamic>{'Id': 'en2', 'Name': '盗梦空间', 'Type': 'Movie', 'ProductionYear': 2010},
+          ],
+        },
+      ];
+
+    await tester.pumpWidget(
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) => MaterialApp(
+          theme: VedroTheme.fromSkin(app.prefs.activeSkinFor(isMobile: true)),
+          home: Scaffold(
+            body: VedroSkinCanvas(
+              backdropImageUrl: 'https://embygo.example.com/Items/hero-s1/Images/Backdrop',
+              child: HomeScreen(
+                appState: app,
+                onItemTap: (_, {heroPrefix}) {},
+                onQuickPlay: (_) {},
+                onLibraryTap: (_) {},
+                onOpenServerHub: () {},
+                onOpenAddServer: ([_]) {},
+                onOpenSettings: () {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    // 1. Hero uses ShaderMask(BlendMode.dstIn) alpha fade (no bottom seam!) & renders Slide 0
+    expect(find.byKey(const ValueKey('hero-page-view')), findsOneWidget);
+    final mask = tester.widget<ShaderMask>(find.byKey(const ValueKey('hero-alpha-mask-0')));
+    expect(mask.blendMode, equals(BlendMode.dstIn));
+    expect(find.text('人生切割术'), findsOneWidget);
+
+    // 2. Horizontal swipe switches Hero slide from '人生切割术' -> '幕府将军'!
+    await tester.fling(find.byKey(const ValueKey('hero-page-view')), const Offset(-280, 0), 1200);
+    await tester.pumpAndSettle();
+    expect(find.text('幕府将军'), findsOneWidget);
+
+    // 3. Compact mobile vertical & horizontal spacing: both 华语电影 and 外语电影 fit comfortably
+    expect(app.prefs.horizontalMargin(false), equals(12.0));
+    expect(app.prefs.posterCardWidth(false), closeTo(106.0, 0.1));
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -240));
+    await tester.pumpAndSettle();
+    expect(find.text('最新加入 · 华语电影'), findsOneWidget);
+    expect(find.text('最新加入 · 外语电影'), findsOneWidget);
+
+    // 4. Settings -> 列表配置 adjusts posterScale (80%) & sectionSpacing live!
+    await tester.pumpWidget(
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) => MaterialApp(
+          theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+          home: SettingsScreen(
+            appState: app,
+            onOpenServerHub: () {},
+            onOpenAddServer: ([_]) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    // Switch to mobile sub-page or desktop pane: on 390px mobile SettingsScreen, tap '列表配置'
+    await tester.tap(find.text('列表配置'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('poster-scale-slider')), findsOneWidget);
+    await tester.tap(find.text('80%'));
+    await tester.pumpAndSettle();
+    expect(app.prefs.posterScale, closeTo(0.80, 0.01));
+    expect(app.prefs.posterCardWidth(false), closeTo(84.8, 0.5));
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {

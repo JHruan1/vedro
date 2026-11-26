@@ -2663,6 +2663,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
 
   // 6. 列表配置
   Widget _buildLists(VedroPreferences p) {
+    final pct = (p.posterScale * 100).round();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2671,9 +2672,38 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           children: [
             _InlineSegmentedRow<String>(
               title: '海报墙密度',
+              keyPrefix: 'list-density',
               value: p.listDensity,
               items: const [('compact', '紧凑'), ('comfortable', '标准'), ('spacious', '宽松')],
               onChanged: (v) => _updatePrefs(p.copyWith(listDensity: v)),
+            ),
+            _InlineSegmentedRow<String>(
+              title: '分类与边距间距',
+              keyPrefix: 'list-section-spacing',
+              value: p.sectionSpacing,
+              items: const [('compact', '紧凑'), ('standard', '标准'), ('spacious', '宽松')],
+              onChanged: (v) => _updatePrefs(p.copyWith(sectionSpacing: v)),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+              child: VedroPrecisionSlider(
+                key: const ValueKey('poster-scale-slider'),
+                label: '卡片与图标尺寸',
+                valueText: '$pct%',
+                value: p.posterScale,
+                min: 0.75,
+                max: 1.25,
+                step: 0.05,
+                defaultValue: 1.0,
+                ticks: const [
+                  (0.80, '80%'),
+                  (0.90, '90%'),
+                  (1.00, '100%'),
+                  (1.10, '110%'),
+                  (1.20, '120%'),
+                ],
+                onChanged: (v) => _updatePrefs(p.copyWith(posterScale: v)),
+              ),
             ),
             _AppleMenuPickerRow<String>(
               title: '媒体库默认排序',

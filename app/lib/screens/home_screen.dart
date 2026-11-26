@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
@@ -49,7 +50,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _scrollCtrl = ScrollController();
-  double _scrollOffset = 0;
+  final ValueNotifier<double> _scrollOffsetNotifier = ValueNotifier<double>(0.0);
 
   @override
   void initState() {
@@ -60,14 +61,15 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _scrollCtrl.dispose();
+    _scrollOffsetNotifier.dispose();
     super.dispose();
   }
 
   void _onScroll() {
     final offset = _scrollCtrl.offset;
     widget.onScrollChanged?.call(offset > 24);
-    if ((offset - _scrollOffset).abs() >= 1.5 && offset < 720) {
-      setState(() => _scrollOffset = offset);
+    if (offset < 760) {
+      _scrollOffsetNotifier.value = offset;
     }
   }
 
@@ -195,8 +197,13 @@ class _HomeScreenState extends State<HomeScreen> {
       latestMap[lib.id] = items;
     }
 
-    final libCardW = wide ? 276.0 : 228.0;
-    final libRailH = (libCardW / (16 / 9)) + 48;
+    final prefs = app.prefs;
+    final padX = prefs.horizontalMargin(wide);
+    final gap = prefs.cardGap(wide);
+    final topGap = prefs.sectionTopGap(wide);
+    final libCardW = (wide ? 248.0 : 164.0) * prefs.posterScale.clamp(0.75, 1.25);
+    final libStripVPad = wide ? 18.0 : 4.0;
+    final libRailH = (libCardW / (16 / 9)) + (wide ? 32.0 : 27.0) + libStripVPad;
 
     final dynamicSectionSlivers = <Widget>[];
     for (final sec in app.homeSections) {
@@ -209,6 +216,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: CustomHorizontalRail(
                   title: '媒体库',
                   height: libRailH,
+                  padXOverride: padX,
+                  spacingOverride: gap,
+                  topGapOverride: wide ? topGap : (topGap - 3).clamp(6.0, 24.0),
                   itemCount: app.views.length,
                   itemBuilder: (_, idx) {
                     final view = app.views[idx];
@@ -339,7 +349,7 @@ class _HomeScreenState extends State<HomeScreen> {
               child: _CinemaHeroBanner(
                 featured: featured,
                 appState: app,
-                scrollOffset: _scrollOffset,
+                scrollOffsetListenable: _scrollOffsetNotifier,
                 topNavClearance: widget.topNavClearance,
                 showMobileHeader: !wide,
                 onPlay: widget.onQuickPlay,
@@ -353,14 +363,14 @@ class _HomeScreenState extends State<HomeScreen> {
           else
             SliverToBoxAdapter(
               child: SizedBox(
-                height: wide ? widget.topNavClearance : MediaQuery.paddingOf(context).top + 16,
+                height: wide ? widget.topNavClearance : MediaQuery.paddingOf(context).top + 12,
               ),
             ),
 
           if (app.remoteBannerMessage != null)
             SliverToBoxAdapter(
               child: Padding(
-                padding: EdgeInsets.fromLTRB(wide ? 32 : 20, 16, wide ? 32 : 20, 0),
+                padding: EdgeInsets.fromLTRB(padX, 12, padX, 0),
                 child: GlassSurface(
                   borderRadius: 12,
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -384,7 +394,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
           SliverToBoxAdapter(
             child: Padding(
-              padding: EdgeInsets.fromLTRB(wide ? 32 : 20, 32, wide ? 32 : 20, wide ? 48 : 112),
+              padding: EdgeInsets.fromLTRB(padX, wide ? 28 : 18, padX, wide ? 48 : 104),
               child: Center(
                 child: PressableScale(
                   onTap: () => showHomeLayoutSheet(context: context, appState: app),
@@ -681,7 +691,7 @@ class _CinemaHeroBanner extends StatefulWidget {
   const _CinemaHeroBanner({
     required this.featured,
     required this.appState,
-    required this.scrollOffset,
+    required this.scrollOffsetListenable,
     required this.topNavClearance,
     required this.showMobileHeader,
     required this.onPlay,
@@ -694,7 +704,7 @@ class _CinemaHeroBanner extends StatefulWidget {
 
   final List<({MediaItemModel item, String eyebrow})> featured;
   final VedroAppState appState;
-  final double scrollOffset;
+  final ValueListenable<double> scrollOffsetListenable;
   final double topNavClearance;
   final bool showMobileHeader;
   final void Function(MediaItemModel) onPlay;
@@ -709,8 +719,10 @@ class _CinemaHeroBanner extends StatefulWidget {
 }
 
 class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
+  late final PageController _pageCtrl = PageController();
   int _active = 0;
   bool _paused = false;
+  bool _userDragging = false;
   bool _hovered = false;
   Timer? _autoTimer;
 
@@ -726,6 +738,9 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     super.didUpdateWidget(oldWidget);
     if (_active >= widget.featured.length) {
       _active = 0;
+      if (_pageCtrl.hasClients) {
+        _pageCtrl.jumpToPage(0);
+      }
     }
     if (oldWidget.featured != widget.featured) {
       _syncDynamicHeroColor();
@@ -746,21 +761,38 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
   @override
   void dispose() {
     _autoTimer?.cancel();
+    _pageCtrl.dispose();
     super.dispose();
   }
 
   void _armTimer() {
     _autoTimer?.cancel();
-    if (widget.featured.length < 2 || _paused) return;
+    if (widget.featured.length < 2 || _paused || _userDragging) return;
     _autoTimer = Timer(const Duration(seconds: 8), () {
-      if (!mounted) return;
-      setState(() => _active = (_active + 1) % widget.featured.length);
-      _syncDynamicHeroColor();
-      _armTimer();
+      if (!mounted || _userDragging) return;
+      final next = (_active + 1) % widget.featured.length;
+      _select(next);
     });
   }
 
   void _select(int index) {
+    if (widget.featured.isEmpty) return;
+    final target = index.clamp(0, widget.featured.length - 1);
+    if (_pageCtrl.hasClients && widget.featured.length > 1) {
+      _pageCtrl.animateToPage(
+        target,
+        duration: const Duration(milliseconds: 380),
+        curve: Curves.easeOutCubic,
+      );
+    } else {
+      setState(() => _active = target);
+      _syncDynamicHeroColor();
+    }
+    _armTimer();
+  }
+
+  void _onPageChanged(int index) {
+    if (_active == index) return;
     setState(() => _active = index);
     _syncDynamicHeroColor();
     _armTimer();
@@ -1081,7 +1113,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
             ),
           ],
           if (item.cleanOverview.isNotEmpty) ...[
-            const SizedBox(height: 10),
+            SizedBox(height: wide ? 10 : 6),
             ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 540),
               child: Text(
@@ -1090,13 +1122,13 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: textSecondary,
-                  fontSize: 14,
-                  height: 1.55,
+                  fontSize: wide ? 14 : 12.5,
+                  height: wide ? 1.55 : 1.42,
                 ),
               ),
             ),
           ],
-          const SizedBox(height: 22),
+          SizedBox(height: wide ? 22 : 14),
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1105,8 +1137,8 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 hoverScale: 1.03,
                 pressScale: 0.96,
                 child: Container(
-                  height: 44,
-                  padding: const EdgeInsets.symmetric(horizontal: 26),
+                  height: wide ? 44 : 38,
+                  padding: EdgeInsets.symmetric(horizontal: wide ? 26 : 20),
                   decoration: BoxDecoration(
                     color: onPhoto && skin.isLight ? Colors.white : skin.primaryCtaBg,
                     gradient: onPhoto && skin.isLight ? null : skin.primaryCtaGradient,
@@ -1158,19 +1190,22 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                         blur: 24,
                         color: const Color(0x40FFFFFF),
                         borderColor: Colors.transparent,
-                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 11),
-                        child: const Text(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: wide ? 22 : 18,
+                          vertical: wide ? 11 : 8.5,
+                        ),
+                        child: Text(
                           '详情',
                           style: TextStyle(
                             color: Colors.white,
-                            fontSize: 14.5,
+                            fontSize: wide ? 14.5 : 13.5,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                       )
                     : Container(
-                        height: 44,
-                        padding: const EdgeInsets.symmetric(horizontal: 22),
+                        height: wide ? 44 : 38,
+                        padding: EdgeInsets.symmetric(horizontal: wide ? 22 : 18),
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
                           color: skin.surface2,
@@ -1181,7 +1216,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                           '详情',
                           style: TextStyle(
                             color: skin.fg,
-                            fontSize: 14.5,
+                            fontSize: wide ? 14.5 : 13.5,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -1199,7 +1234,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     final skin = VedroSkin.of(context);
     final size = MediaQuery.sizeOf(context);
     final wide = size.width >= 820;
-    final padX = wide ? 32.0 : 20.0;
+    final padX = widget.appState.prefs.horizontalMargin(wide);
     final current = widget.featured[_active];
     final item = current.item;
     final logoUrl = widget.appState.logoArtUrl(item);
@@ -1303,7 +1338,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     // -------------------------------------------------------------------------
     if (skin.heroStyle == 'framed_stage') {
       final stageR = skin.cardRadius.clamp(10.0, 26.0);
-      final stageH = (size.height * (wide ? 0.58 : 0.48)).clamp(360.0, 580.0);
+      final stageH = (size.height * (wide ? 0.56 : 0.44)).clamp(310.0, 560.0);
       return MouseRegion(
         onEnter: (_) {
           setState(() => _hovered = true);
@@ -1323,9 +1358,9 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               key: const ValueKey('hero-framed-stage'),
               padding: EdgeInsets.fromLTRB(
                 padX,
-                wide ? widget.topNavClearance + 8 : 6,
+                wide ? widget.topNavClearance + 8 : 4,
                 padX,
-                8,
+                4,
               ),
               child: Container(
                 height: stageH,
@@ -1341,78 +1376,104 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    for (var i = 0; i < widget.featured.length; i++)
-                      AnimatedOpacity(
-                        opacity: i == _active ? 1.0 : 0.0,
-                        duration: const Duration(milliseconds: 520),
-                        curve: Curves.easeOutCubic,
-                        child: VedroArtwork(
-                          item: widget.featured[i].item,
-                          appState: widget.appState,
-                          isHero: true,
-                          alignment: const Alignment(0, -0.45),
-                          showInitials: false,
-                        ),
-                      ),
-                    DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                          stops: const [0.0, 0.55, 1.0],
-                          colors: skin.isLight
-                              ? [
-                                  skin.surface.withValues(alpha: 0.94),
-                                  skin.surface.withValues(alpha: 0.58),
-                                  skin.surface.withValues(alpha: 0.06),
-                                ]
-                              : const [
-                                  Color(0xD808090E),
-                                  Color(0x6E08090E),
-                                  Color(0x1808090E),
-                                ],
-                        ),
-                      ),
-                    ),
-                    DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          stops: const [0.0, 0.45, 1.0],
-                          colors: skin.isLight
-                              ? [
-                                  skin.surface.withValues(alpha: 0.08),
-                                  skin.surface.withValues(alpha: 0.24),
-                                  skin.surface.withValues(alpha: 0.90),
-                                ]
-                              : const [
-                                  Color(0x2808090E),
-                                  Color(0x3808090E),
-                                  Color(0xDE08090E),
-                                ],
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      left: wide ? 34 : 20,
-                      right: wide ? size.width * 0.34 : 20,
-                      bottom: wide ? 32 : 34,
-                      child: _buildHeroInfoColumn(
-                        context: context,
-                        skin: skin,
-                        item: item,
-                        eyebrow: current.eyebrow,
-                        logoUrl: logoUrl,
-                        wide: wide,
-                        onPhoto: !skin.isLight,
+                    NotificationListener<ScrollNotification>(
+                      onNotification: (n) {
+                        if (n is ScrollStartNotification && n.dragDetails != null) {
+                          _userDragging = true;
+                          _autoTimer?.cancel();
+                        } else if (n is ScrollEndNotification && _userDragging) {
+                          _userDragging = false;
+                          _armTimer();
+                        }
+                        return false;
+                      },
+                      child: PageView.builder(
+                        key: const ValueKey('hero-page-view'),
+                        controller: _pageCtrl,
+                        itemCount: widget.featured.length,
+                        physics: const BouncingScrollPhysics(),
+                        onPageChanged: _onPageChanged,
+                        itemBuilder: (ctx, idx) {
+                          final slide = widget.featured[idx];
+                          final slideLogo = widget.appState.logoArtUrl(slide.item);
+                          return GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => widget.onDetail(slide.item),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                VedroArtwork(
+                                  item: slide.item,
+                                  appState: widget.appState,
+                                  isHero: true,
+                                  alignment: const Alignment(0, -0.45),
+                                  showInitials: false,
+                                ),
+                                DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.centerLeft,
+                                      end: Alignment.centerRight,
+                                      stops: const [0.0, 0.55, 1.0],
+                                      colors: skin.isLight
+                                          ? [
+                                              skin.surface.withValues(alpha: 0.94),
+                                              skin.surface.withValues(alpha: 0.58),
+                                              skin.surface.withValues(alpha: 0.06),
+                                            ]
+                                          : const [
+                                              Color(0xD808090E),
+                                              Color(0x6E08090E),
+                                              Color(0x1808090E),
+                                            ],
+                                    ),
+                                  ),
+                                ),
+                                DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topCenter,
+                                      end: Alignment.bottomCenter,
+                                      stops: const [0.0, 0.45, 1.0],
+                                      colors: skin.isLight
+                                          ? [
+                                              skin.surface.withValues(alpha: 0.08),
+                                              skin.surface.withValues(alpha: 0.24),
+                                              skin.surface.withValues(alpha: 0.90),
+                                            ]
+                                          : const [
+                                              Color(0x2808090E),
+                                              Color(0x3808090E),
+                                              Color(0xDE08090E),
+                                            ],
+                                    ),
+                                  ),
+                                ),
+                                Positioned(
+                                  left: wide ? 34 : 16,
+                                  right: wide ? size.width * 0.34 : 16,
+                                  bottom: wide ? 32 : 28,
+                                  child: _buildHeroInfoColumn(
+                                    context: context,
+                                    skin: skin,
+                                    item: slide.item,
+                                    eyebrow: slide.eyebrow,
+                                    logoUrl: slideLogo,
+                                    wide: wide,
+                                    onPhoto: !skin.isLight,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
                       ),
                     ),
                     if (widget.featured.length > 1)
                       Positioned(
-                        right: wide ? 28 : 20,
-                        left: wide ? null : 20,
-                        bottom: wide ? 26 : 12,
+                        right: wide ? 28 : 16,
+                        left: wide ? null : 16,
+                        bottom: wide ? 26 : 10,
                         child: wide
                             ? _buildBorderlessPreviewStrip(skin, onLightSurface: skin.isLight)
                             : _buildCapsuleDots(skin: skin, onLightSurface: skin.isLight),
@@ -1428,13 +1489,15 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
 
     // -------------------------------------------------------------------------
     // Layout Mode A (Default): Apple TV+ Full-Bleed Cinema Hero
-    // - Overscanned parallax (`top: -96, bottom: -48`) so scrolling NEVER exposes top edge!
-    // - Subpixel bottom canvas seal (`stop: 0.95 -> 1.0` + `bottom: -2` seal) so ZERO 1px line leaks!
-    // - Pure borderless floating preview thumbnails (ZERO white frames!)
+    // - Horizontal `PageView.builder` swipeable left/right with 1:1 finger physics!
+    // - `ShaderMask(blendMode: BlendMode.dstIn)` dissolves Hero photo + scrim alpha to
+    //   exact `0.0` BEFORE `y = heroH` (`stop: 0.965 -> 1.0`), making a bottom 1px seam
+    //   mathematically impossible on ANY theme (`solid`, `blurred_fanart`, `aurora_mesh`)!
     // -------------------------------------------------------------------------
-    final heroH = (size.height * (wide ? 0.72 : 0.60)).clamp(430.0, 740.0);
+    final heroH = wide
+        ? (size.height * 0.70).clamp(460.0, 740.0)
+        : (size.height * 0.49).clamp(328.0, 420.0);
     final canvasColor = skin.canvas;
-    final parallaxDy = (widget.scrollOffset * 0.22).clamp(-40.0, 84.0);
 
     return MouseRegion(
       onEnter: (_) {
@@ -1451,104 +1514,148 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
         key: const ValueKey('hero-full-bleed'),
         height: heroH,
         child: Stack(
-          clipBehavior: Clip.none,
           fit: StackFit.expand,
           children: [
-            ClipRect(
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Positioned(
-                    top: -96,
-                    left: 0,
-                    right: 0,
-                    bottom: -48,
-                    child: Transform.translate(
-                      offset: Offset(0, parallaxDy),
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          for (var i = 0; i < widget.featured.length; i++)
-                            AnimatedOpacity(
-                              opacity: i == _active ? 1.0 : 0.0,
-                              duration: const Duration(milliseconds: 520),
-                              curve: Curves.easeOutCubic,
-                              child: VedroArtwork(
-                                item: widget.featured[i].item,
-                                appState: widget.appState,
-                                isHero: true,
-                                alignment: const Alignment(0, -0.50),
-                                showInitials: false,
+            NotificationListener<ScrollNotification>(
+              onNotification: (n) {
+                if (n is ScrollStartNotification && n.dragDetails != null) {
+                  _userDragging = true;
+                  _autoTimer?.cancel();
+                } else if (n is ScrollEndNotification && _userDragging) {
+                  _userDragging = false;
+                  _armTimer();
+                }
+                return false;
+              },
+              child: PageView.builder(
+                key: const ValueKey('hero-page-view'),
+                controller: _pageCtrl,
+                itemCount: widget.featured.length,
+                physics: const BouncingScrollPhysics(),
+                onPageChanged: _onPageChanged,
+                itemBuilder: (ctx, idx) {
+                  final slide = widget.featured[idx];
+                  final slideLogo = widget.appState.logoArtUrl(slide.item);
+                  return GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => widget.onDetail(slide.item),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        // Dissolve Hero artwork + legibility scrim smoothly to 0.0 alpha BEFORE bottom edge!
+                        RepaintBoundary(
+                          child: ShaderMask(
+                            key: ValueKey('hero-alpha-mask-$idx'),
+                            blendMode: BlendMode.dstIn,
+                            shaderCallback: (rect) => const LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              stops: [0.0, 0.50, 0.80, 0.965, 1.0],
+                              colors: [
+                                Color(0xFFFFFFFF),
+                                Color(0xFFFFFFFF),
+                                Color(0xAAFFFFFF),
+                                Color(0x00FFFFFF),
+                                Color(0x00FFFFFF),
+                              ],
+                            ).createShader(rect),
+                            child: ClipRect(
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  Positioned(
+                                    top: -72,
+                                    left: 0,
+                                    right: 0,
+                                    bottom: -36,
+                                    child: ValueListenableBuilder<double>(
+                                      valueListenable: widget.scrollOffsetListenable,
+                                      builder: (_, scrollOff, child) => Transform.translate(
+                                        offset: Offset(
+                                          0,
+                                          (scrollOff * 0.18).clamp(-32.0, 64.0),
+                                        ),
+                                        child: child,
+                                      ),
+                                      child: VedroArtwork(
+                                        item: slide.item,
+                                        appState: widget.appState,
+                                        isHero: true,
+                                        alignment: const Alignment(0, -0.46),
+                                        showInitials: false,
+                                      ),
+                                    ),
+                                  ),
+                                  if (wide)
+                                    DecoratedBox(
+                                      decoration: BoxDecoration(
+                                        gradient: LinearGradient(
+                                          begin: Alignment.centerLeft,
+                                          end: Alignment.centerRight,
+                                          stops: const [0.0, 0.48, 0.82, 1.0],
+                                          colors: skin.isLight
+                                              ? [
+                                                  canvasColor.withValues(alpha: 0.88),
+                                                  canvasColor.withValues(alpha: 0.52),
+                                                  canvasColor.withValues(alpha: 0.12),
+                                                  Colors.transparent,
+                                                ]
+                                              : const [
+                                                  Color(0xD408090D),
+                                                  Color(0x7008090D),
+                                                  Color(0x1408090D),
+                                                  Colors.transparent,
+                                                ],
+                                        ),
+                                      ),
+                                    ),
+                                  DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        begin: Alignment.topCenter,
+                                        end: Alignment.bottomCenter,
+                                        stops: const [0.0, 0.28, 0.62, 1.0],
+                                        colors: skin.isLight
+                                            ? [
+                                                canvasColor.withValues(alpha: 0.36),
+                                                Colors.transparent,
+                                                canvasColor.withValues(alpha: 0.38),
+                                                canvasColor.withValues(alpha: 0.82),
+                                              ]
+                                            : const [
+                                                Color(0x5808090D),
+                                                Colors.transparent,
+                                                Color(0x5208090D),
+                                                Color(0xCC08090D),
+                                              ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                        ],
-                      ),
+                          ),
+                        ),
+                        Positioned(
+                          left: padX,
+                          right: wide ? size.width * 0.36 : padX,
+                          bottom: wide ? 44 : 28,
+                          child: _buildHeroInfoColumn(
+                            context: context,
+                            skin: skin,
+                            item: slide.item,
+                            eyebrow: slide.eyebrow,
+                            logoUrl: slideLogo,
+                            wide: wide,
+                            onPhoto: !skin.isLight,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
+                  );
+                },
               ),
             ),
-
-            if (wide)
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.centerLeft,
-                    end: Alignment.centerRight,
-                    stops: const [0.0, 0.48, 0.82, 1.0],
-                    colors: skin.isLight
-                        ? [
-                            canvasColor.withValues(alpha: 0.92),
-                            canvasColor.withValues(alpha: 0.62),
-                            canvasColor.withValues(alpha: 0.14),
-                            Colors.transparent,
-                          ]
-                        : const [
-                            Color(0xDC0B0B0D),
-                            Color(0x780B0B0D),
-                            Color(0x140B0B0D),
-                            Colors.transparent,
-                          ],
-                  ),
-                ),
-              ),
-
-            DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  stops: const [0.0, 0.24, 0.56, 0.84, 0.95, 1.0],
-                  colors: skin.isLight
-                      ? [
-                          canvasColor.withValues(alpha: 0.42),
-                          Colors.transparent,
-                          canvasColor.withValues(alpha: 0.46),
-                          canvasColor.withValues(alpha: 0.88),
-                          canvasColor,
-                          canvasColor,
-                        ]
-                      : [
-                          const Color(0x660B0B0D),
-                          Colors.transparent,
-                          const Color(0x5E0B0B0D),
-                          Color.lerp(const Color(0xD80B0B0D), canvasColor, 0.55)!,
-                          canvasColor,
-                          canvasColor,
-                        ],
-                ),
-              ),
-            ),
-
-            // Subpixel anti-bleed bottom seal eliminating 1px rasterization seam on scroll!
-            if (skin.backdropMode == 'solid')
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: -2,
-                height: 5,
-                child: ColoredBox(color: canvasColor),
-              ),
 
             if (widget.showMobileHeader)
               Positioned(
@@ -1557,21 +1664,6 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 right: 0,
                 child: _buildMobileTopBar(),
               ),
-
-            Positioned(
-              left: padX,
-              right: wide ? size.width * 0.36 : padX,
-              bottom: wide ? 44 : 42,
-              child: _buildHeroInfoColumn(
-                context: context,
-                skin: skin,
-                item: item,
-                eyebrow: current.eyebrow,
-                logoUrl: logoUrl,
-                wide: wide,
-                onPhoto: !skin.isLight,
-              ),
-            ),
 
             if (wide && widget.featured.length > 1) ...[
               Positioned(
@@ -1633,7 +1725,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               Positioned(
                 right: padX,
                 left: wide ? null : padX,
-                bottom: wide ? 40 : 16,
+                bottom: wide ? 40 : 10,
                 child: wide
                     ? _buildBorderlessPreviewStrip(skin, onLightSurface: skin.isLight)
                     : _buildCapsuleDots(skin: skin),
@@ -1665,9 +1757,9 @@ class _HeroTitleText extends StatelessWidget {
       style: skin.applyHeadlineMood(
         TextStyle(
           color: color,
-          fontSize: wide ? 42 : 28,
+          fontSize: wide ? 42 : 24,
           fontWeight: FontWeight.w700,
-          letterSpacing: -0.9,
+          letterSpacing: -0.8,
           height: 1.08,
         ),
       ),

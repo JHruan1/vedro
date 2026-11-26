@@ -222,35 +222,43 @@ class DisplayMetricsProfile {
       devicePixelRatio < 1.5 ? 2.8 : (devicePixelRatio >= 2.75 ? 2.2 : 2.4);
 
   /// Resolution- and PPI-aware poster card width so grids never look cramped on small phones or tiny on 4K.
-  double posterWidthFor(String density) {
+  double posterWidthFor(String density, {double scale = 1.0}) {
     final wide = !usesMobileChrome;
+    final clampedScale = scale.clamp(0.75, 1.25);
     if (!wide) {
       final base = shortestSide < 375
-          ? 102.0
-          : (shortestSide >= 420 ? 124.0 : 114.0);
-      return switch (density) {
-        'compact' => base * 0.86,
-        'spacious' => base * 1.16,
+          ? 96.0
+          : (shortestSide >= 420 ? 112.0 : 104.0);
+      final raw = switch (density) {
+        'compact' => base * 0.88,
+        'spacious' => base * 1.15,
         _ => base,
       };
+      return raw * clampedScale;
     }
     final desktopBase = logicalSize.width >= 2040
-        ? 186.0
-        : (logicalSize.width >= 1500 ? 168.0 : 154.0);
-    return switch (density) {
-      'compact' => desktopBase * 0.85,
+        ? 182.0
+        : (logicalSize.width >= 1500 ? 164.0 : 150.0);
+    final raw = switch (density) {
+      'compact' => desktopBase * 0.86,
       'spacious' => desktopBase * 1.15,
       _ => desktopBase,
     };
+    return raw * clampedScale;
   }
 
-  /// Optimal grid column count accounting for logical width, padding, and form factor.
-  int optimalGridColumns(double availableWidth, String density) {
-    final targetW = posterWidthFor(density);
-    final gap = usesMobileChrome ? 12.0 : 16.0;
+  /// Optimal grid column count accounting for logical width, padding, poster scale, and form factor.
+  int optimalGridColumns(
+    double availableWidth,
+    String density, {
+    double scale = 1.0,
+    double? gapOverride,
+  }) {
+    final targetW = posterWidthFor(density, scale: scale);
+    final gap = gapOverride ?? (usesMobileChrome ? 9.0 : 16.0);
     final raw = ((availableWidth + gap) / (targetW + gap)).floor();
     final minCols = usesMobileChrome ? 3 : 4;
-    final maxCols = logicalSize.width >= 2040 ? 11 : 9;
+    final maxCols = logicalSize.width >= 2040 ? 12 : (usesMobileChrome ? 6 : 10);
     return raw.clamp(minCols, maxCols);
   }
 

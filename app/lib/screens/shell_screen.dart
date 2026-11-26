@@ -38,6 +38,7 @@ class _ShellScreenState extends State<ShellScreen> {
   int _index = 0;
   bool _homeScrolled = false;
   bool _topHovering = false;
+  DateTime? _lastBackPressedAt;
   final GlobalKey _pageStageKey = GlobalKey(debugLabel: 'vedro-shell-page-stage');
 
   @override
@@ -451,28 +452,71 @@ class _ShellScreenState extends State<ShellScreen> {
     }
 
     final dockR = skin.pillRadius >= 100 ? 28.0 : skin.pillRadius.clamp(10.0, 24.0);
-    return Scaffold(
-      backgroundColor: skin.canvas,
-      extendBody: true,
-      body: VedroSkinCanvas(
-        backdropImageUrl: fanartUrl,
-        child: keyedStage,
-      ),
-      bottomNavigationBar: SafeArea(
+    final mobileNav = skin.mobileNavStyle;
+    final compactIcons = mobileNav == 'compact_icon_only';
+    final fullTabBar = mobileNav == 'full_tab_bar';
+
+    void triggerMobileTabTap(int i) {
+      if (skin.touchFeedbackStyle == 'spring_haptic') {
+        HapticFeedback.lightImpact();
+      } else if (skin.touchFeedbackStyle == 'subtle_scale') {
+        HapticFeedback.selectionClick();
+      }
+      setState(() => _index = i);
+    }
+
+    Widget bottomBar;
+    if (fullTabBar) {
+      bottomBar = ClipRect(
+        key: const ValueKey('mobile-nav-full-tab-bar'),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: skin.glass,
+              border: Border(top: BorderSide(color: skin.border, width: 0.7)),
+            ),
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    for (var i = 0; i < _mobileTabs.length; i++)
+                      _BottomTabButton(
+                        tab: _mobileTabs[i],
+                        selected: i == _index,
+                        iconOnly: false,
+                        onTap: () => triggerMobileTabTap(i),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    } else {
+      bottomBar = SafeArea(
         top: false,
         child: Padding(
           padding: EdgeInsets.fromLTRB(
-            skin.navLayout == 'centered_capsule' ? 34 : 20,
+            compactIcons ? 48 : 20,
             0,
-            skin.navLayout == 'centered_capsule' ? 34 : 20,
+            compactIcons ? 48 : 20,
             10,
           ),
           child: GlassSurface(
+            key: ValueKey('mobile-nav-$mobileNav'),
             borderRadius: dockR,
             blur: 36,
             color: skin.glass,
             borderColor: skin.borderStrong,
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+            padding: EdgeInsets.symmetric(
+              horizontal: compactIcons ? 8 : 6,
+              vertical: compactIcons ? 4 : 5,
+            ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
@@ -480,15 +524,56 @@ class _ShellScreenState extends State<ShellScreen> {
                   _BottomTabButton(
                     tab: _mobileTabs[i],
                     selected: i == _index,
-                    onTap: () {
-                      HapticFeedback.selectionClick();
-                      setState(() => _index = i);
-                    },
+                    iconOnly: compactIcons,
+                    onTap: () => triggerMobileTabTap(i),
                   ),
               ],
             ),
           ),
         ),
+      );
+    }
+
+    return PopScope(
+      canPop: !widget.appState.prefs.confirmExitApp && _index == 0,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (_index != 0) {
+          setState(() => _index = 0);
+          return;
+        }
+        if (!widget.appState.prefs.confirmExitApp) {
+          SystemNavigator.pop();
+          return;
+        }
+        final now = DateTime.now();
+        if (_lastBackPressedAt != null &&
+            now.difference(_lastBackPressedAt!) < const Duration(milliseconds: 2200)) {
+          SystemNavigator.pop();
+          return;
+        }
+        _lastBackPressedAt = now;
+        HapticFeedback.lightImpact();
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(
+            const SnackBar(
+              key: ValueKey('double-back-exit-toast'),
+              behavior: SnackBarBehavior.floating,
+              width: 172,
+              duration: Duration(milliseconds: 2000),
+              content: Text('再按一次退出', textAlign: TextAlign.center),
+            ),
+          );
+      },
+      child: Scaffold(
+        backgroundColor: skin.canvas,
+        extendBody: !fullTabBar,
+        body: VedroSkinCanvas(
+          backdropImageUrl: fanartUrl,
+          child: keyedStage,
+        ),
+        bottomNavigationBar: bottomBar,
       ),
     );
   }
@@ -1200,10 +1285,16 @@ class _NavTab {
 }
 
 class _BottomTabButton extends StatelessWidget {
-  const _BottomTabButton({required this.tab, required this.selected, required this.onTap});
+  const _BottomTabButton({
+    required this.tab,
+    required this.selected,
+    required this.onTap,
+    this.iconOnly = false,
+  });
   final _NavTab tab;
   final bool selected;
   final VoidCallback onTap;
+  final bool iconOnly;
 
   @override
   Widget build(BuildContext context) {
@@ -1216,7 +1307,7 @@ class _BottomTabButton extends StatelessWidget {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
           curve: VedroTheme.easeOut,
-          padding: const EdgeInsets.symmetric(vertical: 7),
+          padding: EdgeInsets.symmetric(vertical: iconOnly ? 9 : 7),
           decoration: BoxDecoration(
             color: selected
                 ? (skin.ctaStyle == 'contrast'
@@ -1234,19 +1325,21 @@ class _BottomTabButton extends StatelessWidget {
                 curve: VedroTheme.easeOut,
                 child: Icon(
                   selected ? tab.activeIcon : tab.icon,
-                  size: 20,
+                  size: iconOnly ? 21 : 20,
                   color: selected ? activeColor : skin.fg3,
                 ),
               ),
-              const SizedBox(height: 2.5),
-              Text(
-                tab.label,
-                style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                  color: selected ? activeColor : skin.fg3,
+              if (!iconOnly) ...[
+                const SizedBox(height: 2.5),
+                Text(
+                  tab.label,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                    color: selected ? activeColor : skin.fg3,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ),

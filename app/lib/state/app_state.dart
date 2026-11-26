@@ -9,6 +9,7 @@ import '../core/ffi/vedro_bridge.dart';
 import '../core/models/models.dart';
 import '../core/models/preferences.dart';
 import '../core/platform/native_playback_channel.dart';
+import '../core/theme/display_profile.dart';
 import '../widgets/danmaku_engine.dart';
 
 /// Central reactive application state backed directly by the compiled Rust core (`VedroCoreClient`).
@@ -68,6 +69,7 @@ class VedroAppState extends ChangeNotifier {
 
   // Comprehensive user preferences persisted in SQLite KV (`vedro_prefs`)
   VedroPreferences prefs = const VedroPreferences();
+  Map<String, int?> proxyNodeLatencies = {};
 
   // Local offline downloads queue persisted in SQLite KV (`downloads_queue`)
   List<DownloadTaskModel> downloads = [];
@@ -161,8 +163,23 @@ class VedroAppState extends ChangeNotifier {
         final kv = await core.invoke('get_kv', {'key': 'vedro_prefs'});
         if (kv is Map<String, dynamic> && kv['value'] is Map<String, dynamic>) {
           prefs = VedroPreferences.fromJson(kv['value'] as Map<String, dynamic>);
+        } else {
+          final hwProfile = DisplayMetricsProfile.fromPlatformDispatcher();
+          prefs = const VedroPreferences().applyHardwareDefaults(hwProfile);
+          unawaited(
+            core.invoke('set_kv', {'key': 'vedro_prefs', 'value': prefs.toJson()}),
+          );
         }
       } catch (_) {}
+      // Re-activate selected subscription node on launch if sing-box node mode was active
+      if (prefs.inAppProxyMode == 'sub' && prefs.selectedProxyNodeId.isNotEmpty) {
+        final chosen = prefs.proxyNodes
+            .where((n) => n['id']?.toString() == prefs.selectedProxyNodeId)
+            .firstOrNull;
+        if (chosen != null) {
+          unawaited(activateProxyNode(chosen).catchError((_) => <String, dynamic>{}));
+        }
+      }
       try {
         final kv = await core.invoke('get_kv', {'key': 'downloads_queue'});
         if (kv is Map<String, dynamic> && kv['value'] is List) {
@@ -1430,22 +1447,113 @@ class VedroAppState extends ChangeNotifier {
   }
 
   /// Translate text (movie overview / subtitle line) through client-side Rust engine.
-  /// Never touches the user's EmbyGo server; defaults to direct client IP (`no_proxy`) for Bilibili!
+  /// Respects `prefs.aiDirectClientIp`: when false, routes through active in-app proxy IP!
   Future<String> translateText(String text, {String? targetLang}) async {
     if (!prefs.isAiReady) {
-      throw Exception('请先在「设置 → AI 服务（翻译）」中启用并配置接口');
+      throw Exception('请先开启 AI 翻译');
     }
     final baseUrl = prefs.aiBaseUrl.trim();
-    final isBili = baseUrl.toLowerCase().contains('index-translate.bilibili.com');
     final res = await core.invoke('ai_translate', {
       'base_url': baseUrl,
       'api_key': prefs.aiApiKey.trim(),
       'model': prefs.aiModel.trim(),
       'text': text,
       'target_lang': targetLang ?? prefs.aiTargetLang,
-      'direct_ip': prefs.aiDirectClientIp || isBili,
+      'direct_ip': prefs.aiDirectClientIp,
     }) as Map<String, dynamic>;
     return (res['translated'] ?? '').toString();
+  }
+
+  /// Fetch available model IDs from `{base_url}/models` respecting direct vs proxy IP.
+  Future<List<String>> fetchAiModels({
+    String? baseUrl,
+    String? apiKey,
+    bool? directIp,
+  }) async {
+    final url = (baseUrl ?? prefs.aiBaseUrl).trim();
+    if (url.isEmpty) throw Exception('请先填写接口地址');
+    final res = await core.invoke('ai_list_models', {
+      'base_url': url,
+      'api_key': (apiKey ?? prefs.aiApiKey).trim(),
+      'direct_ip': directIp ?? prefs.aiDirectClientIp,
+    }) as Map<String, dynamic>;
+    final models = ((res['models'] as List<dynamic>?) ?? const [])
+        .map((e) => e.toString())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (models.isNotEmpty) {
+      await updatePrefs(prefs.copyWith(
+        aiCachedModels: models,
+        aiModel: models.contains(prefs.aiModel) ? prefs.aiModel : models.first,
+      ));
+    }
+    return models;
+  }
+
+  /// Fetch & parse proxy subscription URL (or pasted Clash/Sing-box/Base64 URI links).
+  Future<Map<String, dynamic>> fetchProxySubscription(String urlOrRaw) async {
+    final trimmed = urlOrRaw.trim();
+    if (trimmed.isEmpty) throw Exception('请输入订阅链接或节点内容');
+    final isHttpUrl = trimmed.startsWith('http://') || trimmed.startsWith('https://');
+    final res = await core.invoke('fetch_proxy_subscription', {
+      if (isHttpUrl && !trimmed.contains('\n')) 'url': trimmed else 'raw_content': trimmed,
+    }) as Map<String, dynamic>;
+    final nodes = ((res['nodes'] as List<dynamic>?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    final userinfo = res['userinfo'] is Map
+        ? Map<String, dynamic>.from(res['userinfo'] as Map)
+        : null;
+    await updatePrefs(prefs.copyWith(
+      inAppProxyMode: 'sub',
+      proxySubscriptionUrl: isHttpUrl && !trimmed.contains('\n') ? trimmed : prefs.proxySubscriptionUrl,
+      proxyNodes: nodes,
+      proxySubUserinfo: userinfo,
+      clearProxySubUserinfo: userinfo == null,
+    ));
+    unawaited(pingProxyNodes());
+    return res;
+  }
+
+  Future<Map<String, int?>> pingProxyNodes() async {
+    if (prefs.proxyNodes.isEmpty) return const {};
+    final res = await core.invoke('ping_proxy_nodes', {
+      'nodes': prefs.proxyNodes,
+    }) as Map<String, dynamic>;
+    final rawMap = res['latencies'] as Map<String, dynamic>? ?? const {};
+    final parsed = <String, int?>{};
+    for (final e in rawMap.entries) {
+      parsed[e.key] = (e.value as num?)?.toInt();
+    }
+    proxyNodeLatencies = parsed;
+    notifyListeners();
+    return parsed;
+  }
+
+  Future<Map<String, dynamic>> activateProxyNode(Map<String, dynamic> node) async {
+    final res = await core.invoke('activate_proxy_node', {
+      'node': node,
+      if (prefs.inAppProxyCorePath.trim().isNotEmpty)
+        'binary_path': prefs.inAppProxyCorePath.trim(),
+    }) as Map<String, dynamic>;
+    await updatePrefs(prefs.copyWith(
+      inAppProxyMode: 'sub',
+      selectedProxyNodeId: (node['id'] ?? '').toString(),
+    ));
+    return res;
+  }
+
+  Future<String> installSingboxCore() async {
+    final res = await core.invoke('install_singbox_core', const {}) as Map<String, dynamic>;
+    final binPath = (res['binary_path'] ?? '').toString();
+    if (binPath.isNotEmpty) {
+      await updatePrefs(prefs.copyWith(inAppProxyCorePath: binPath));
+    }
+    return binPath;
+  }
+
+  Future<void> resetToHardwareRecommendedDefaults(DisplayMetricsProfile profile) async {
+    await updatePrefs(prefs.applyHardwareDefaults(profile));
   }
 
   /// Configure Vedro's zero-VPN app-internal proxy (`off` | `custom` | `singbox` | `mihomo`).

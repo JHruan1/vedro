@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vedro/core/ffi/vedro_bridge.dart';
 import 'package:vedro/core/models/models.dart';
 import 'package:vedro/core/models/preferences.dart';
+import 'package:vedro/core/theme/display_profile.dart';
 import 'package:vedro/core/theme/vedro_skin.dart';
 import 'package:vedro/core/theme/vedro_theme.dart';
 import 'package:vedro/main.dart';
@@ -15,6 +16,7 @@ import 'package:vedro/screens/shell_screen.dart';
 import 'package:vedro/state/app_state.dart';
 import 'package:vedro/widgets/danmaku_engine.dart';
 import 'package:vedro/widgets/server_card_grid.dart';
+import 'package:vedro/widgets/skin_studio_pane.dart';
 import 'package:vedro/widgets/vedro_ui.dart';
 
 class _MockVedroCore implements VedroCoreClient {
@@ -32,7 +34,9 @@ class _MockVedroCore implements VedroCoreClient {
   final Map<String, dynamic>? meQuotaJson;
   int probeMediaSourceCalls = 0;
   Map<String, dynamic>? lastAiTranslateParams;
+  Map<String, dynamic>? lastAiModelsParams;
   Map<String, dynamic>? lastProxyConfigParams;
+  Map<String, dynamic>? lastActivatedNode;
 
   @override
   String get coreVersion => '0.2.2-test';
@@ -126,7 +130,16 @@ class _MockVedroCore implements VedroCoreClient {
                   'Container': 'mkv',
                 }
               ],
-            }
+            },
+            <String, dynamic>{
+              'Id': 's-hot-1',
+              'Name': '人生切割术',
+              'Type': 'Series',
+              'ProductionYear': 2025,
+              'CommunityRating': 9.1,
+              'Overview': '近期全服最热剧集轮播置顶测试。',
+              'BackdropImageTags': <dynamic>['bd-sev-1'],
+            },
           ],
           'resume': <dynamic>[],
           'next_up': <dynamic>[],
@@ -550,8 +563,57 @@ class _MockVedroCore implements VedroCoreClient {
       case 'ai_translate':
         lastAiTranslateParams = Map<String, dynamic>.from(params);
         return <String, dynamic>{
-          'translated': '【B站客户端直连翻译】${params['text']}',
+          'translated': '【客户端翻译】${params['text']}',
           'direct_ip': params['direct_ip'] == true,
+        };
+      case 'ai_list_models':
+        lastAiModelsParams = Map<String, dynamic>.from(params);
+        return <String, dynamic>{
+          'models': <String>['gpt-4o-mini', 'deepseek-chat', 'qwen-plus'],
+          'direct_ip': params['direct_ip'] == true,
+        };
+      case 'fetch_proxy_subscription':
+        return <String, dynamic>{
+          'count': 2,
+          'userinfo': <String, dynamic>{
+            'used': 10737418240,
+            'total': 107374182400,
+          },
+          'nodes': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'id': 'node_hk_01',
+              'name': '🇭🇰 香港 IEPL 01',
+              'protocol': 'vless',
+              'server': 'hk1.example.com',
+              'port': 443,
+            },
+            <String, dynamic>{
+              'id': 'node_sg_02',
+              'name': '🇸🇬 新加坡网关',
+              'protocol': 'socks5',
+              'server': '127.0.0.1',
+              'port': 7890,
+              'direct_proxy_url': 'socks5h://127.0.0.1:7890',
+            },
+          ],
+        };
+      case 'ping_proxy_nodes':
+        return <String, dynamic>{
+          'latencies': <String, dynamic>{
+            'node_hk_01': 26,
+            'node_sg_02': 48,
+          },
+        };
+      case 'activate_proxy_node':
+        final n = Map<String, dynamic>.from(params['node'] as Map);
+        lastActivatedNode = n;
+        return <String, dynamic>{
+          'ok': true,
+          'mode': 'node',
+          'active': true,
+          'proxy_url': 'socks5h://127.0.0.1:20801',
+          'node_id': n['id'],
+          'node_name': n['name'],
         };
       default:
         return <String, dynamic>{};
@@ -748,7 +810,8 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
 
-    expect(find.text('Dune: Part Two'), findsOneWidget);
+    expect(find.text('人生切割术'), findsOneWidget);
+    expect(find.text('近期热播'), findsOneWidget);
     expect(find.text('媒体库'), findsWidgets);
     expect(find.text('猜你喜欢'), findsNothing);
 
@@ -763,7 +826,7 @@ void main() {
     await tester.drag(find.byType(ListView).first, const Offset(0, -320));
     await tester.pumpAndSettle();
     expect(find.text('弹幕设置'), findsOneWidget);
-    expect(find.text('AI 服务（翻译）'), findsOneWidget);
+    expect(find.text('AI 翻译'), findsOneWidget);
     expect(find.text('隐私保护'), findsOneWidget);
     expect(find.text('服务器管理台'), findsNothing);
 
@@ -787,9 +850,8 @@ void main() {
     // Dedicated Poster Cover & Backdrop Banner MUST both be rendered
     expect(find.byKey(const ValueKey('detail-backdrop-banner')), findsOneWidget);
     expect(find.byKey(const ValueKey('detail-poster-cover')), findsOneWidget);
-    // Series multi-version selector MUST be clearly visible and switchable
+    // Series multi-version selector MUST be sleek frameless pills and switchable
     expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
-    expect(find.text('选择剧集片源版本 (2)'), findsOneWidget);
     expect(find.text('4K · Dolby Vision · Atmos'), findsOneWidget);
     expect(find.text('1080p · BluRay · x265'), findsOneWidget);
 
@@ -870,7 +932,7 @@ void main() {
     expect(find.byKey(const ValueKey('detail-backdrop-banner')), findsOneWidget);
     expect(find.byKey(const ValueKey('detail-poster-cover')), findsOneWidget);
     expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
-    expect(find.text('选择片源版本 (2)'), findsOneWidget);
+    expect(find.textContaining('选择片源版本'), findsNothing);
     expect(find.text('4K · Dolby Vision · TrueHD Atmos · REMUX'), findsOneWidget);
     expect(find.text('1080p · BluRay · x264'), findsOneWidget);
     expect(find.text('English TrueHD Atmos'), findsOneWidget);
@@ -878,7 +940,8 @@ void main() {
 
     await tester.tap(find.text('1080p · BluRay · x264'));
     await tester.pumpAndSettle();
-    expect(find.text('当前'), findsOneWidget);
+    expect(find.byIcon(Icons.check_circle_rounded), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp(r'1080p · BluRay · x264 当前')), findsOneWidget);
   });
 
   testWidgets(
@@ -1205,26 +1268,37 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
-    expect(find.text('选择片源版本 (5)'), findsOneWidget);
-    // Strictly ONE active version badge initially!
-    expect(find.text('当前'), findsOneWidget);
+    // Strictly ONE active checkmark icon among the 5 version pills initially!
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('detail-version-selector')),
+        matching: find.byIcon(Icons.check_circle_rounded),
+      ),
+      findsOneWidget,
+    );
 
-    // DetailScreen NEVER shows global preferred audio/subtitle rows ("首选配音" / "首选字幕" live in Settings!)
+    // DetailScreen NEVER shows global preferred audio/subtitle rows OR wordy banners!
     expect(find.text('首选配音'), findsNothing);
     expect(find.text('首选字幕'), findsNothing);
+    expect(find.textContaining('网盘尚未缓存'), findsNothing);
 
-    // Unplayed Movie shows compact passive notice + "+ 本地字幕" button without cloud probing
+    // Unplayed Movie shows sleek frameless passive tags + "+ 字幕" pill without cloud probing
     expect(find.byKey(const ValueKey('detail-audio-subtitle-panel')), findsOneWidget);
     expect(find.byKey(const ValueKey('detail-mount-local-sub-btn')), findsOneWidget);
-    expect(find.textContaining('网盘尚未缓存该版本内封轨道'), findsOneWidget);
 
-    // Tap through versions #2, #3, #4, #5 — strictly ONE '当前' badge at every single step!
+    // Tap through versions #2, #3, #4, #5 — strictly ONE active checkmark at every single step!
     for (final idx in [1, 2, 3, 4, 0]) {
       final card = find.byKey(ValueKey('movie-version-card-$idx'));
       await tester.ensureVisible(card);
       await tester.tap(card);
       await tester.pumpAndSettle();
-      expect(find.text('当前'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('detail-version-selector')),
+          matching: find.byIcon(Icons.check_circle_rounded),
+        ),
+        findsOneWidget,
+      );
     }
 
     // 2. 5-version Series with colliding Name="S01E01" & empty Id="" & empty MediaStreams=[]
@@ -1239,9 +1313,13 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
-    expect(find.text('选择剧集片源版本 (5)'), findsOneWidget);
-    expect(find.text('当前'), findsOneWidget);
-    // Unplayed Series hides empty Audio/Subtitle box completely and never shows preferred language clutter!
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('detail-version-selector')),
+        matching: find.byIcon(Icons.check_circle_rounded),
+      ),
+      findsOneWidget,
+    );
     expect(find.byKey(const ValueKey('detail-audio-subtitle-panel')), findsNothing);
     expect(find.text('首选配音'), findsNothing);
     expect(find.text('首选字幕'), findsNothing);
@@ -1251,7 +1329,13 @@ void main() {
       await tester.ensureVisible(card);
       await tester.tap(card);
       await tester.pumpAndSettle();
-      expect(find.text('当前'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('detail-version-selector')),
+          matching: find.byIcon(Icons.check_circle_rounded),
+        ),
+        findsOneWidget,
+      );
     }
   });
 
@@ -1403,7 +1487,7 @@ void main() {
   });
 
   testWidgets(
-      'Settings hosts Global Audio/Subtitle preferences, Font live preview, Bilibili client-direct AI translation & Zero-VPN In-App Proxy',
+      'Settings hosts Global Audio/Subtitle, Font preview, AI Model Fetch + Proxy IP routing & Subscription Node Picker',
       (tester) async {
     tester.view.physicalSize = const Size(1280, 960);
     tester.view.devicePixelRatio = 1.0;
@@ -1412,18 +1496,17 @@ void main() {
     final mock = _MockVedroCore();
     final app = VedroAppState(mock);
 
-    // 1. Default AI translation uses Bilibili Index-Translate keyless with direct client IP!
-    expect(app.prefs.aiBaseUrl, equals('https://index-translate.bilibili.com/v1'));
-    expect(app.prefs.aiModel, equals('Index-Translate-35B-A3B'));
-    expect(app.prefs.aiDirectClientIp, isTrue);
-    expect(app.prefs.aiApiKey, isEmpty);
+    // 1. Default theme is Pure Immersive Cinema (`obsidian` + `full_bleed` + `blurred_fanart` + `unified_glass`)!
+    expect(app.prefs.activeSkin.id, equals('obsidian'));
+    expect(app.prefs.activeSkin.heroStyle, equals('full_bleed'));
+    expect(app.prefs.activeSkin.backdropMode, equals('blurred_fanart'));
+    expect(app.prefs.activeSkin.effectiveSurfaceMaterial, equals('unified_glass'));
 
-    await app.updatePrefs(app.prefs.copyWith(aiEnabled: true));
-    expect(app.prefs.isAiReady, isTrue);
+    // 2. AI translation supports both direct IP AND proxy IP (`direct_ip: false`) + model list fetching!
+    await app.updatePrefs(app.prefs.copyWith(aiEnabled: true, aiDirectClientIp: false));
     final translated = await app.translateText('Do not go gentle into that good night.');
-    expect(translated, contains('B站客户端直连翻译'));
-    expect(mock.lastAiTranslateParams?['direct_ip'], isTrue);
-    expect(mock.lastAiTranslateParams?['base_url'], equals('https://index-translate.bilibili.com/v1'));
+    expect(translated, contains('客户端翻译'));
+    expect(mock.lastAiTranslateParams?['direct_ip'], isFalse);
 
     await tester.pumpWidget(
       AnimatedBuilder(
@@ -1440,37 +1523,126 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // 2. Settings -> 播放设置 prominently hosts Global Preferred Audio & Subtitle Languages
+    // 3. Settings -> 播放设置 prominently hosts Global Preferred Audio & Subtitle Languages
     await tester.tap(find.text('播放设置'));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('settings-global-audio-sub-card')), findsOneWidget);
     expect(find.text('首选音轨语言'), findsOneWidget);
     expect(find.text('首选字幕语言'), findsOneWidget);
 
-    // 3. Settings -> 字体管理 shows live Font & Cinema Subtitle preview card
+    // 4. Settings -> 字体管理 shows live Font & Cinema Subtitle preview card
     await tester.tap(find.text('字体管理'));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('font-live-preview-card')), findsOneWidget);
     expect(find.text('不要温顺地走进那个良夜'), findsOneWidget);
 
-    // 4. Settings -> 应用内代理 configures Zero-VPN local proxy without occupying OS VPN
+    // 5. Settings -> 网络代理 supports Subscription URL -> Node Grid -> Click to activate node (zero essay!)
+    await tester.tap(find.text('网络代理'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('原理说明'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('proxy-mode-sub')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.inAppProxyMode, equals('sub'));
+    await tester.enterText(
+      find.byKey(const ValueKey('proxy-sub-url-field')),
+      'https://sub.example.com/api/v1/client/subscribe?token=abc',
+    );
+    await tester.tap(find.byKey(const ValueKey('proxy-sub-fetch-btn')));
+    await tester.pumpAndSettle();
+    expect(find.text('🇭🇰 香港 IEPL 01'), findsOneWidget);
+    expect(find.text('26 ms'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('proxy-node-node_hk_01')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.selectedProxyNodeId, equals('node_hk_01'));
+    expect(mock.lastActivatedNode?['name'], equals('🇭🇰 香港 IEPL 01'));
+
+    // 6. Settings -> AI 翻译 fetches model list (`/models`) via Proxy IP & zero "100% 不经过" essay!
     await tester.drag(find.byType(ListView).first, const Offset(0, -340));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('应用内代理'));
+    await tester.tap(find.text('AI 翻译'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('零系统 VPN 占用'), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey('proxy-mode-singbox')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.inAppProxyMode, equals('singbox'));
-    await tester.tap(find.byKey(const ValueKey('proxy-mode-custom')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.inAppProxyMode, equals('custom'));
-
-    // 5. Settings -> AI 服务（翻译） provides 1-click Bilibili Index-Translate preset
-    await tester.tap(find.text('AI 服务（翻译）'));
-    await tester.pumpAndSettle();
+    expect(find.textContaining('100% 不经过'), findsNothing);
     expect(find.byKey(const ValueKey('ai-preset-bilibili')), findsOneWidget);
-    expect(find.textContaining('本机 IP 直连'), findsWidgets);
+    await tester.tap(find.byKey(const ValueKey('ai-egress-false')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.aiDirectClientIp, isFalse);
+    await tester.tap(find.byKey(const ValueKey('ai-fetch-models-btn')));
+    await tester.pumpAndSettle();
+    expect(mock.lastAiModelsParams?['direct_ip'], isFalse);
+    expect(find.byKey(const ValueKey('ai-model-chip-deepseek-chat')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('ai-model-chip-deepseek-chat')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.aiModel, equals('deepseek-chat'));
+  });
+
+  testWidgets('Android Double-Back Exit Confirmation & Mobile vs Desktop Differentiated SkinStudioPane',
+      (tester) async {
+    // 1. Verify DisplayMetricsProfile resolution & PPI adaptation across form factors
+    const compactAndroid = DisplayMetricsProfile(
+      platform: 'android',
+      logicalSize: Size(360, 780),
+      devicePixelRatio: 2.75,
+    );
+    const ultraWideMac = DisplayMetricsProfile(
+      platform: 'macos',
+      logicalSize: Size(2560, 1440),
+      devicePixelRatio: 2.0,
+    );
+    expect(compactAndroid.formFactor, equals(VedroFormFactor.compactPhone));
+    expect(compactAndroid.estimatedPpi, equals(440));
+    expect(compactAndroid.recommendedSkinOverrides['mobile_nav_style'], equals('compact_icon_only'));
+    expect(compactAndroid.recommendedSkinOverrides['hero_style'], equals('full_bleed'));
+    expect(compactAndroid.recommendedBufferSizeMb, equals(96));
+    expect(ultraWideMac.formFactor, equals(VedroFormFactor.desktopUltraWide));
+    expect(ultraWideMac.recommendedBufferSizeMb, equals(384));
+
+    // 2. Android Mobile viewport (390x844 @ 3x): Back on Settings returns to Home; first Back on Home shows toast!
+    tester.view.physicalSize = const Size(1170, 2532);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.reset);
+
+    final app = VedroAppState(_MockVedroCore());
+    await tester.pumpWidget(
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) => MaterialApp(
+          theme: VedroTheme.fromSkin(app.prefs.activeSkinFor(isMobile: true)),
+          home: ShellScreen(appState: app),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Switch to 设置 tab, then press system Back -> returns to 首页 instead of exiting!
+    await tester.tap(find.text('设置'));
+    await tester.pumpAndSettle();
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('添加媒体服务器'), findsOneWidget);
+
+    // Press system Back on 首页 once -> shows concise '再按一次退出' toast!
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    expect(find.byKey(const ValueKey('double-back-exit-toast')), findsOneWidget);
+    expect(find.text('再按一次退出'), findsOneWidget);
+
+    // 3. Mobile SkinStudioPane (`platformOverride: 'android'`) hides desktop left_rail & exposes mobile dock!
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(app.prefs.activeSkinFor(isMobile: true)),
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: SkinStudioPane(appState: app, platformOverride: 'android'),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('移动端界面定制'), findsOneWidget);
+    expect(find.text('底部导航栏'), findsOneWidget);
+    expect(find.text('触控反馈'), findsOneWidget);
+    expect(find.text('导航栏架构'), findsNothing);
+    expect(find.text('悬停动效'), findsNothing);
   });
 
   testWidgets('Audio & Subtitle tracks follow selected video version passively with ZERO cloud-drive API probes',
@@ -1495,24 +1667,21 @@ void main() {
     expect(mock.probeMediaSourceCalls, equals(0));
     expect(find.text('English TrueHD Atmos 7.1'), findsOneWidget);
     expect(find.text('简英双语特效 ASS'), findsOneWidget);
-    expect(find.textContaining('跟随版本 1'), findsOneWidget);
 
     // Switch to Version 1 (unplayed on cloud drive) -> 0 cloud probes, shows Version 1 passive traits!
     await tester.tap(find.byKey(const ValueKey('movie-version-card-1')));
     await tester.pumpAndSettle();
     expect(mock.probeMediaSourceCalls, equals(0));
     expect(find.text('English TrueHD Atmos 7.1'), findsNothing);
-    expect(find.textContaining('网盘尚未缓存该版本内封轨道'), findsOneWidget);
+    expect(find.textContaining('网盘尚未缓存'), findsNothing);
     expect(find.text('国粤双语'), findsOneWidget);
-    expect(find.textContaining('跟随版本 2'), findsOneWidget);
 
-    // Switch to Version 2 (played raw version) -> Shows Japanese AAC audio + "该版本无内封或服务端外挂字幕"
+    // Switch to Version 2 (played raw version) -> Shows Japanese AAC audio + concise "无内封字幕"
     await tester.tap(find.byKey(const ValueKey('movie-version-card-2')));
     await tester.pumpAndSettle();
     expect(mock.probeMediaSourceCalls, equals(0));
     expect(find.text('日语原声 AAC 2.0'), findsOneWidget);
-    expect(find.text('该版本无内封或服务端外挂字幕'), findsOneWidget);
-    expect(find.textContaining('跟随版本 3'), findsOneWidget);
+    expect(find.text('无内封字幕'), findsOneWidget);
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {
@@ -1546,6 +1715,10 @@ void main() {
       }) as Map<String, dynamic>;
       expect(setCustomProxy['ok'], isTrue);
       expect(setCustomProxy['active'], isTrue);
+      final subRes = await bridge.invoke('fetch_proxy_subscription', {
+        'raw_content': 'socks5://127.0.0.1:1080#LocalNode\nvless://11111111-2222-3333-4444-555555555555@hk.example.com:443?security=tls#HK-VLESS',
+      }) as Map<String, dynamic>;
+      expect(subRes['count'], equals(2));
       final resetProxy = await bridge.invoke('configure_in_app_proxy', {
         'mode': 'off',
       }) as Map<String, dynamic>;

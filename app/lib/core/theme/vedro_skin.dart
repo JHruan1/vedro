@@ -47,6 +47,8 @@ class CustomSkinSpec {
     this.progressStyle = 'floating_bar', // floating_bar | edge_flush | glow_accent
     this.castStyle = 'circle_medallion', // circle_medallion | portrait_card | compact_pill
     this.osdStyle = 'floating_island', // floating_island | cinema_gradient | minimal_glass
+    this.mobileNavStyle = 'floating_dock', // floating_dock | full_tab_bar | compact_icon_only
+    this.touchFeedbackStyle = 'spring_haptic', // spring_haptic | subtle_scale | clean_static
     this.showCardRating = false,
     this.preferClearLogo = true,
   });
@@ -78,6 +80,8 @@ class CustomSkinSpec {
   final String progressStyle;
   final String castStyle;
   final String osdStyle;
+  final String mobileNavStyle;
+  final String touchFeedbackStyle;
   final bool showCardRating;
   final bool preferClearLogo;
 
@@ -109,6 +113,8 @@ class CustomSkinSpec {
     String? progressStyle,
     String? castStyle,
     String? osdStyle,
+    String? mobileNavStyle,
+    String? touchFeedbackStyle,
     bool? showCardRating,
     bool? preferClearLogo,
   }) =>
@@ -140,6 +146,8 @@ class CustomSkinSpec {
         progressStyle: progressStyle ?? this.progressStyle,
         castStyle: castStyle ?? this.castStyle,
         osdStyle: osdStyle ?? this.osdStyle,
+        mobileNavStyle: mobileNavStyle ?? this.mobileNavStyle,
+        touchFeedbackStyle: touchFeedbackStyle ?? this.touchFeedbackStyle,
         showCardRating: showCardRating ?? this.showCardRating,
         preferClearLogo: preferClearLogo ?? this.preferClearLogo,
       );
@@ -172,6 +180,8 @@ class CustomSkinSpec {
         'progress_style': progressStyle,
         'cast_style': castStyle,
         'osd_style': osdStyle,
+        'mobile_nav_style': mobileNavStyle,
+        'touch_feedback': touchFeedbackStyle,
         'show_card_rating': showCardRating,
         'prefer_clear_logo': preferClearLogo,
       };
@@ -195,9 +205,9 @@ class CustomSkinSpec {
       navLayout: (j['nav_layout'] ?? 'top_floating').toString(),
       heroStyle: (j['hero_style'] ?? 'full_bleed').toString(),
       detailLayout: (j['detail_layout'] ?? 'apple_immersive').toString(),
-      backdropMode: (j['backdrop_mode'] ?? (glow ? 'ambient_orb' : 'solid_clean')).toString(),
+      backdropMode: (j['backdrop_mode'] ?? (glow ? 'blurred_fanart' : 'solid_clean')).toString(),
       backdropBlur: ((j['backdrop_blur'] as num?)?.toDouble() ?? 38.0).clamp(10.0, 64.0),
-      surfaceOpacity: ((j['surface_opacity'] as num?)?.toDouble() ?? 0.86).clamp(0.40, 1.0),
+      surfaceOpacity: ((j['surface_opacity'] as num?)?.toDouble() ?? 0.80).clamp(0.40, 1.0),
       surfaceMaterial: (j['surface_material'] ?? 'auto').toString(),
       posterAspect: (j['poster_aspect'] ?? 'poster_2_3').toString(),
       cardStyle: (j['card_style'] ?? 'classic_below').toString(),
@@ -206,6 +216,8 @@ class CustomSkinSpec {
       progressStyle: (j['progress_style'] ?? 'floating_bar').toString(),
       castStyle: (j['cast_style'] ?? 'circle_medallion').toString(),
       osdStyle: (j['osd_style'] ?? 'floating_island').toString(),
+      mobileNavStyle: (j['mobile_nav_style'] ?? 'floating_dock').toString(),
+      touchFeedbackStyle: (j['touch_feedback'] ?? 'spring_haptic').toString(),
       showCardRating: j['show_card_rating'] == true,
       preferClearLogo: j['prefer_clear_logo'] != false,
     );
@@ -286,6 +298,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     this.progressStyle = 'floating_bar', // floating_bar | edge_flush | glow_accent
     this.castStyle = 'circle_medallion', // circle_medallion | portrait_card | compact_pill
     this.osdStyle = 'floating_island', // floating_island | cinema_gradient | minimal_glass
+    this.mobileNavStyle = 'floating_dock', // floating_dock | full_tab_bar | compact_icon_only
+    this.touchFeedbackStyle = 'spring_haptic', // spring_haptic | subtle_scale | clean_static
     this.showCardRating = false,
     this.preferClearLogo = true,
     this.isCustom = false,
@@ -362,6 +376,12 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
 
   /// `'floating_island'` | `'cinema_gradient'` | `'minimal_glass'`
   final String osdStyle;
+
+  /// `'floating_dock'` | `'full_tab_bar'` | `'compact_icon_only'`
+  final String mobileNavStyle;
+
+  /// `'spring_haptic'` | `'subtle_scale'` | `'clean_static'`
+  final String touchFeedbackStyle;
 
   final bool showCardRating;
   final bool preferClearLogo;
@@ -684,6 +704,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       progressStyle: o['progress_style']?.toString(),
       castStyle: o['cast_style']?.toString(),
       osdStyle: o['osd_style']?.toString(),
+      mobileNavStyle: o['mobile_nav_style']?.toString(),
+      touchFeedbackStyle: o['touch_feedback']?.toString(),
       showCardRating: o['show_card_rating'] is bool ? o['show_card_rating'] as bool : null,
       preferClearLogo: o['prefer_clear_logo'] is bool ? o['prefer_clear_logo'] as bool : null,
       editorialSerif: o['editorial_serif'] is bool ? o['editorial_serif'] as bool : null,
@@ -723,46 +745,51 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
         progressStyle: progressStyle,
         castStyle: castStyle,
         osdStyle: osdStyle,
+        mobileNavStyle: mobileNavStyle,
+        touchFeedbackStyle: touchFeedbackStyle,
         showCardRating: showCardRating,
         preferClearLogo: preferClearLogo,
       );
 
   // ===========================================================================
-  // 9 Bold Flagship Built-in Skins — Each with Distinct Layout, Nav, Hero, Cards & Mood!
+  // 9 Flagship Built-in Skins — Default #1 `obsidian` is Pure Immersive Cinema!
   // ===========================================================================
 
-  /// 1. 曜石影院 — Apple TV+ Dark Cinema (Top Floating Nav · Full-Bleed Hero · Immersive Detail)
+  /// 1. 曜石影院 — Default Immersive Cinema (Full-Bleed Hero · Blurred Fanart · Unified Glass)
   static const obsidian = VedroSkin(
     id: 'obsidian',
     name: '曜石影院',
-    subtitle: 'Apple TV+ 悬浮顶栏 · 全屏巨幕 · 纯白无框质感',
-    badge: 'TV+ · IMMERSIVE',
+    subtitle: '全屏巨幕 · 剧照漫射 · 沉浸影院',
+    badge: 'IMMERSIVE',
     isLight: false,
     canvas: Color(0xFF09090B),
-    canvasGlow: Color(0xFF18181F),
-    surface: Color(0xFF141417),
-    surface2: Color(0xFF1D1D21),
-    surface3: Color(0xFF29292F),
-    field: Color(0xFF121215),
-    glass: Color(0xCC151518),
-    glassStrong: Color(0xF019191D),
-    border: Color(0x14FFFFFF),
-    borderStrong: Color(0x28FFFFFF),
+    canvasGlow: Color(0xFF181822),
+    surface: Color(0xFF141418),
+    surface2: Color(0xFF1D1D23),
+    surface3: Color(0xFF292931),
+    field: Color(0xFF121216),
+    glass: Color(0xBF141418),
+    glassStrong: Color(0xEE18181D),
+    border: Color(0x16FFFFFF),
+    borderStrong: Color(0x2AFFFFFF),
     fg: Color(0xFFF5F5F7),
-    fg2: Color(0xFFA1A1AA),
-    fg3: Color(0xFF71717A),
+    fg2: Color(0xFFA8A8B3),
+    fg3: Color(0xFF757582),
     accent: Color(0xFF5E9EFF),
     accentSecondary: Color(0xFF0A84FF),
     ctaStyle: 'contrast',
     frameStyle: 'borderless',
-    cardRadius: 12.0,
+    cardRadius: 13.0,
     pillRadius: 999.0,
-    ambientGlow: false,
+    ambientGlow: true,
     editorialSerif: false,
     navLayout: 'top_floating',
     heroStyle: 'full_bleed',
     detailLayout: 'apple_immersive',
-    backdropMode: 'solid_clean',
+    backdropMode: 'blurred_fanart',
+    backdropBlur: 40.0,
+    surfaceOpacity: 0.76,
+    surfaceMaterial: 'unified_glass',
     cardStyle: 'classic_below',
     cardHoverEffect: 'lift',
     castStyle: 'circle_medallion',
@@ -1219,6 +1246,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       progressStyle: spec.progressStyle,
       castStyle: spec.castStyle,
       osdStyle: spec.osdStyle,
+      mobileNavStyle: spec.mobileNavStyle,
+      touchFeedbackStyle: spec.touchFeedbackStyle,
       showCardRating: spec.showCardRating,
       preferClearLogo: spec.preferClearLogo,
       isCustom: true,
@@ -1280,6 +1309,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     String? progressStyle,
     String? castStyle,
     String? osdStyle,
+    String? mobileNavStyle,
+    String? touchFeedbackStyle,
     bool? showCardRating,
     bool? preferClearLogo,
     bool? isCustom,
@@ -1325,6 +1356,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
         progressStyle: progressStyle ?? this.progressStyle,
         castStyle: castStyle ?? this.castStyle,
         osdStyle: osdStyle ?? this.osdStyle,
+        mobileNavStyle: mobileNavStyle ?? this.mobileNavStyle,
+        touchFeedbackStyle: touchFeedbackStyle ?? this.touchFeedbackStyle,
         showCardRating: showCardRating ?? this.showCardRating,
         preferClearLogo: preferClearLogo ?? this.preferClearLogo,
         isCustom: isCustom ?? this.isCustom,
@@ -1374,6 +1407,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       progressStyle: t < 0.5 ? progressStyle : other.progressStyle,
       castStyle: t < 0.5 ? castStyle : other.castStyle,
       osdStyle: t < 0.5 ? osdStyle : other.osdStyle,
+      mobileNavStyle: t < 0.5 ? mobileNavStyle : other.mobileNavStyle,
+      touchFeedbackStyle: t < 0.5 ? touchFeedbackStyle : other.touchFeedbackStyle,
       showCardRating: t < 0.5 ? showCardRating : other.showCardRating,
       preferClearLogo: t < 0.5 ? preferClearLogo : other.preferClearLogo,
       isCustom: t < 0.5 ? isCustom : other.isCustom,

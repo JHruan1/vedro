@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -180,12 +181,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
       );
     }
 
+    final metrics = DisplayMetricsProfile.of(context);
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 820;
     final padX = wide ? 32.0 : 20.0;
     final isMac = !kIsWeb && Platform.isMacOS;
-    final cardW = widget.appState.prefs.posterCardWidth(wide);
-    final cols = ((width - padX * 2) / (cardW + 16)).floor().clamp(3, 9);
+    final effDensity = widget.appState.prefs
+            .overridesForPlatform(isMobile: metrics.isMobileOs)['grid_density']
+            ?.toString() ??
+        widget.appState.prefs.listDensity;
+    final cols = metrics.optimalGridColumns(width - padX * 2, effDensity);
     final pageTitle = widget.customTitle ??
         (_selectedGenreName != null
             ? '类型 · $_selectedGenreName'

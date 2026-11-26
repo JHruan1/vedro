@@ -1,7 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../theme/display_profile.dart';
 import '../theme/vedro_skin.dart';
 
 /// Deterministic lightweight hash for local app passcode verification (no plain PIN on disk).
@@ -318,6 +321,8 @@ class VedroPreferences {
     this.useSkinGeometry = true,
     this.customSkins = const [],
     this.skinOverrides = const {},
+    this.mobileSkinOverrides = const {},
+    this.hardwareProfileInitSig = '',
     this.accentId = 'blue',
     this.cardRadius = 12.0,
     this.glassIntensity = 'standard',
@@ -333,6 +338,7 @@ class VedroPreferences {
     this.showSpecBadges = true,
     this.showRemainingTime = false,
     this.confirmExitPlayer = false,
+    this.confirmExitApp = true,
     this.incognitoMode = false,
     // 播放设置
     this.bufferSizeMb = 128,
@@ -391,11 +397,16 @@ class VedroPreferences {
     this.aiTargetLang = '简体中文',
     this.aiBilingualSubtitle = true,
     this.aiDirectClientIp = true,
-    // 应用内专属代理（免系统 VPN 通道：仅对 Vedro 生效）
-    this.inAppProxyMode = 'off', // off | custom | singbox | mihomo
+    this.aiCachedModels = const [],
+    // 应用内代理与节点订阅
+    this.inAppProxyMode = 'off', // off | sub | custom | singbox | mihomo
     this.inAppProxyUrl = '',
     this.inAppProxyCorePath = '',
     this.inAppProxyConfigText = '',
+    this.proxySubscriptionUrl = '',
+    this.proxyNodes = const [],
+    this.selectedProxyNodeId = '',
+    this.proxySubUserinfo,
     // 隐私保护
     this.passcodeEnabled = false,
     this.passcodeHash = '',
@@ -416,6 +427,8 @@ class VedroPreferences {
   final bool useSkinGeometry;
   final List<CustomSkinSpec> customSkins;
   final Map<String, dynamic> skinOverrides;
+  final Map<String, dynamic> mobileSkinOverrides;
+  final String hardwareProfileInitSig;
   final String accentId;
   final double cardRadius;
   final String glassIntensity;
@@ -431,6 +444,7 @@ class VedroPreferences {
   final bool showSpecBadges;
   final bool showRemainingTime;
   final bool confirmExitPlayer;
+  final bool confirmExitApp;
   final bool incognitoMode;
 
   final int bufferSizeMb;
@@ -489,11 +503,16 @@ class VedroPreferences {
   final String aiTargetLang;
   final bool aiBilingualSubtitle;
   final bool aiDirectClientIp;
+  final List<String> aiCachedModels;
 
   final String inAppProxyMode;
   final String inAppProxyUrl;
   final String inAppProxyCorePath;
   final String inAppProxyConfigText;
+  final String proxySubscriptionUrl;
+  final List<Map<String, dynamic>> proxyNodes;
+  final String selectedProxyNodeId;
+  final Map<String, dynamic>? proxySubUserinfo;
 
   final bool passcodeEnabled;
   final String passcodeHash;
@@ -511,19 +530,46 @@ class VedroPreferences {
 
   AccentPalette get accentPalette => AccentPalette.byId(accentId);
 
-  VedroSkin get activeSkin {
+  static bool get _currentIsMobileOs =>
+      !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+
+  Map<String, dynamic> overridesForPlatform({bool? isMobile}) {
+    final mobile = isMobile ?? _currentIsMobileOs;
+    return mobile ? mobileSkinOverrides : skinOverrides;
+  }
+
+  VedroSkin activeSkinFor({bool? isMobile}) {
     var base = VedroSkin.byId(skinId, customSkins: customSkins);
     if (skinId == 'obsidian' && accentId != 'blue') {
       final pal = accentPalette;
       base = base.copyWith(accent: pal.accent, accentSecondary: pal.fill);
     }
-    if (skinOverrides.isNotEmpty) {
-      base = base.applyOverrides(skinOverrides);
+    final ov = overridesForPlatform(isMobile: isMobile);
+    if (ov.isNotEmpty) {
+      base = base.applyOverrides(ov);
     }
     if (!useSkinGeometry) {
       base = base.copyWith(cardRadius: cardRadius);
     }
     return base;
+  }
+
+  VedroSkin get activeSkin => activeSkinFor();
+
+  /// Build initial or reset defaults calibrated to a `DisplayMetricsProfile`.
+  VedroPreferences applyHardwareDefaults(DisplayMetricsProfile profile) {
+    final rec = profile.recommendedSkinOverrides;
+    return copyWith(
+      skinId: profile.recommendedSkinId,
+      useSkinGeometry: true,
+      skinOverrides: profile.isMobileOs ? skinOverrides : rec,
+      mobileSkinOverrides: profile.isMobileOs ? rec : mobileSkinOverrides,
+      hardwareProfileInitSig: profile.profileSignature,
+      listDensity: profile.recommendedListDensity,
+      bufferSizeMb: profile.recommendedBufferSizeMb,
+      subtitleFontScale: profile.recommendedSubtitleScale,
+      subtitleOutlineWidth: profile.recommendedSubtitleOutline,
+    );
   }
 
   double effectiveCardRadius(VedroSkin skin) =>
@@ -532,8 +578,12 @@ class VedroPreferences {
   bool get isAiReady =>
       aiEnabled && aiBaseUrl.trim().isNotEmpty && aiModel.trim().isNotEmpty;
 
-  double posterCardWidth(bool wide) {
-    final effDensity = skinOverrides['grid_density']?.toString() ?? listDensity;
+  double posterCardWidth(bool wide, [DisplayMetricsProfile? metrics]) {
+    final ov = overridesForPlatform(isMobile: !wide && _currentIsMobileOs);
+    final effDensity = ov['grid_density']?.toString() ?? listDensity;
+    if (metrics != null) {
+      return metrics.posterWidthFor(effDensity);
+    }
     switch (effDensity) {
       case 'compact':
         return wide ? 136.0 : 112.0;
@@ -549,6 +599,8 @@ class VedroPreferences {
     bool? useSkinGeometry,
     List<CustomSkinSpec>? customSkins,
     Map<String, dynamic>? skinOverrides,
+    Map<String, dynamic>? mobileSkinOverrides,
+    String? hardwareProfileInitSig,
     String? accentId,
     double? cardRadius,
     String? glassIntensity,
@@ -562,6 +614,7 @@ class VedroPreferences {
     bool? showSpecBadges,
     bool? showRemainingTime,
     bool? confirmExitPlayer,
+    bool? confirmExitApp,
     bool? incognitoMode,
     int? bufferSizeMb,
     bool? autoPlayNext,
@@ -614,10 +667,16 @@ class VedroPreferences {
     String? aiTargetLang,
     bool? aiBilingualSubtitle,
     bool? aiDirectClientIp,
+    List<String>? aiCachedModels,
     String? inAppProxyMode,
     String? inAppProxyUrl,
     String? inAppProxyCorePath,
     String? inAppProxyConfigText,
+    String? proxySubscriptionUrl,
+    List<Map<String, dynamic>>? proxyNodes,
+    String? selectedProxyNodeId,
+    Map<String, dynamic>? proxySubUserinfo,
+    bool clearProxySubUserinfo = false,
     bool? passcodeEnabled,
     String? passcodeHash,
     int? lockTimeoutSecs,
@@ -635,6 +694,8 @@ class VedroPreferences {
         useSkinGeometry: useSkinGeometry ?? this.useSkinGeometry,
         customSkins: customSkins ?? this.customSkins,
         skinOverrides: skinOverrides ?? this.skinOverrides,
+        mobileSkinOverrides: mobileSkinOverrides ?? this.mobileSkinOverrides,
+        hardwareProfileInitSig: hardwareProfileInitSig ?? this.hardwareProfileInitSig,
         accentId: accentId ?? this.accentId,
         cardRadius: cardRadius ?? this.cardRadius,
         glassIntensity: glassIntensity ?? this.glassIntensity,
@@ -648,6 +709,7 @@ class VedroPreferences {
         showSpecBadges: showSpecBadges ?? this.showSpecBadges,
         showRemainingTime: showRemainingTime ?? this.showRemainingTime,
         confirmExitPlayer: confirmExitPlayer ?? this.confirmExitPlayer,
+        confirmExitApp: confirmExitApp ?? this.confirmExitApp,
         incognitoMode: incognitoMode ?? this.incognitoMode,
         bufferSizeMb: bufferSizeMb ?? this.bufferSizeMb,
         autoPlayNext: autoPlayNext ?? this.autoPlayNext,
@@ -700,10 +762,16 @@ class VedroPreferences {
         aiTargetLang: aiTargetLang ?? this.aiTargetLang,
         aiBilingualSubtitle: aiBilingualSubtitle ?? this.aiBilingualSubtitle,
         aiDirectClientIp: aiDirectClientIp ?? this.aiDirectClientIp,
+        aiCachedModels: aiCachedModels ?? this.aiCachedModels,
         inAppProxyMode: inAppProxyMode ?? this.inAppProxyMode,
         inAppProxyUrl: inAppProxyUrl ?? this.inAppProxyUrl,
         inAppProxyCorePath: inAppProxyCorePath ?? this.inAppProxyCorePath,
         inAppProxyConfigText: inAppProxyConfigText ?? this.inAppProxyConfigText,
+        proxySubscriptionUrl: proxySubscriptionUrl ?? this.proxySubscriptionUrl,
+        proxyNodes: proxyNodes ?? this.proxyNodes,
+        selectedProxyNodeId: selectedProxyNodeId ?? this.selectedProxyNodeId,
+        proxySubUserinfo:
+            clearProxySubUserinfo ? null : (proxySubUserinfo ?? this.proxySubUserinfo),
         passcodeEnabled: passcodeEnabled ?? this.passcodeEnabled,
         passcodeHash: passcodeHash ?? this.passcodeHash,
         lockTimeoutSecs: lockTimeoutSecs ?? this.lockTimeoutSecs,
@@ -722,6 +790,8 @@ class VedroPreferences {
         'use_skin_geometry': useSkinGeometry,
         'custom_skins': customSkins.map((s) => s.toJson()).toList(),
         'skin_overrides': skinOverrides,
+        'mobile_skin_overrides': mobileSkinOverrides,
+        'hardware_profile_init_sig': hardwareProfileInitSig,
         'accent_id': accentId,
         'card_radius': cardRadius,
         'glass_intensity': glassIntensity,
@@ -735,6 +805,7 @@ class VedroPreferences {
         'show_spec_badges': showSpecBadges,
         'show_remaining_time': showRemainingTime,
         'confirm_exit_player': confirmExitPlayer,
+        'confirm_exit_app': confirmExitApp,
         'incognito_mode': incognitoMode,
         'buffer_size_mb': bufferSizeMb,
         'auto_play_next': autoPlayNext,
@@ -787,10 +858,15 @@ class VedroPreferences {
         'ai_target_lang': aiTargetLang,
         'ai_bilingual_subtitle': aiBilingualSubtitle,
         'ai_direct_client_ip': aiDirectClientIp,
+        'ai_cached_models': aiCachedModels,
         'in_app_proxy_mode': inAppProxyMode,
         'in_app_proxy_url': inAppProxyUrl,
         'in_app_proxy_core_path': inAppProxyCorePath,
         'in_app_proxy_config_text': inAppProxyConfigText,
+        'proxy_subscription_url': proxySubscriptionUrl,
+        'proxy_nodes': proxyNodes,
+        'selected_proxy_node_id': selectedProxyNodeId,
+        if (proxySubUserinfo != null) 'proxy_sub_userinfo': proxySubUserinfo,
         'passcode_enabled': passcodeEnabled,
         'passcode_hash': passcodeHash,
         'lock_timeout_secs': lockTimeoutSecs,
@@ -816,6 +892,10 @@ class VedroPreferences {
         skinOverrides: j['skin_overrides'] is Map
             ? Map<String, dynamic>.from(j['skin_overrides'] as Map)
             : const {},
+        mobileSkinOverrides: j['mobile_skin_overrides'] is Map
+            ? Map<String, dynamic>.from(j['mobile_skin_overrides'] as Map)
+            : const {},
+        hardwareProfileInitSig: (j['hardware_profile_init_sig'] ?? '').toString(),
         accentId: (j['accent_id'] ?? 'blue').toString(),
         cardRadius: (j['card_radius'] as num?)?.toDouble() ?? 12.0,
         glassIntensity: (j['glass_intensity'] ?? 'standard').toString(),
@@ -829,6 +909,7 @@ class VedroPreferences {
         showSpecBadges: j['show_spec_badges'] != false,
         showRemainingTime: j['show_remaining_time'] == true,
         confirmExitPlayer: j['confirm_exit_player'] == true,
+        confirmExitApp: j['confirm_exit_app'] != false,
         incognitoMode: j['incognito_mode'] == true,
         bufferSizeMb: (j['buffer_size_mb'] as num?)?.toInt() ?? 128,
         autoPlayNext: j['auto_play_next'] != false,
@@ -881,10 +962,25 @@ class VedroPreferences {
         aiTargetLang: (j['ai_target_lang'] ?? '简体中文').toString(),
         aiBilingualSubtitle: j['ai_bilingual_subtitle'] != false,
         aiDirectClientIp: j['ai_direct_client_ip'] != false,
+        aiCachedModels: ((j['ai_cached_models'] as List<dynamic>?) ?? const [])
+            .map((e) => e.toString())
+            .where((s) => s.isNotEmpty)
+            .toList(),
         inAppProxyMode: (j['in_app_proxy_mode'] ?? 'off').toString(),
         inAppProxyUrl: (j['in_app_proxy_url'] ?? '').toString(),
         inAppProxyCorePath: (j['in_app_proxy_core_path'] ?? '').toString(),
         inAppProxyConfigText: (j['in_app_proxy_config_text'] ?? '').toString(),
+        proxySubscriptionUrl: (j['proxy_subscription_url'] ?? '').toString(),
+        proxyNodes: ((j['proxy_nodes'] as List<dynamic>?) ?? const [])
+            .map((e) => e is Map<String, dynamic>
+                ? e
+                : (e is Map ? Map<String, dynamic>.from(e) : null))
+            .whereType<Map<String, dynamic>>()
+            .toList(),
+        selectedProxyNodeId: (j['selected_proxy_node_id'] ?? '').toString(),
+        proxySubUserinfo: j['proxy_sub_userinfo'] is Map
+            ? Map<String, dynamic>.from(j['proxy_sub_userinfo'] as Map)
+            : null,
         passcodeEnabled: j['passcode_enabled'] == true,
         passcodeHash: (j['passcode_hash'] ?? '').toString(),
         lockTimeoutSecs: (j['lock_timeout_secs'] as num?)?.toInt() ?? 60,

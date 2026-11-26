@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -68,11 +69,17 @@ class _MediaCardState extends State<MediaCard> {
       );
     }
 
-    final isOverlayCard = skin.cardStyle == 'overlay_poster';
-    final isHoverReveal = skin.cardStyle == 'hover_reveal';
-    final isMinimalClean = skin.cardStyle == 'minimal_clean';
+    final touchPrimary = DisplayMetricsProfile.of(context).isTouchPrimary;
+    final effectiveStyle =
+        (skin.cardStyle == 'hover_reveal' && touchPrimary) ? 'overlay_poster' : skin.cardStyle;
+    final isOverlayCard = effectiveStyle == 'overlay_poster';
+    final isHoverReveal = effectiveStyle == 'hover_reveal';
+    final isMinimalClean = effectiveStyle == 'minimal_clean';
     final showBelowCaption = !isOverlayCard && !isHoverReveal && !isMinimalClean;
     final hideBadges = skin.badgeStyle == 'hidden';
+    final pressScale = skin.touchFeedbackStyle == 'clean_static'
+        ? 1.0
+        : (skin.touchFeedbackStyle == 'subtle_scale' ? 0.988 : 0.965);
 
     return SizedBox(
       width: widget.width,
@@ -81,8 +88,8 @@ class _MediaCardState extends State<MediaCard> {
         onLongPress: widget.onLongPress,
         onSecondaryTap: widget.onLongPress,
         onHoverChanged: (v) => setState(() => _hovered = v),
-        hoverScale: skin.cardHoverEffect == 'zoom_art' ? 1.0 : 1.02,
-        pressScale: 0.975,
+        hoverScale: touchPrimary || skin.cardHoverEffect == 'zoom_art' ? 1.0 : 1.02,
+        pressScale: pressScale,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

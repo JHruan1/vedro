@@ -4,28 +4,26 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'vedro_artwork.dart';
 import 'vedro_ui.dart';
 
-/// Jellyfin Skin Manager (`Ultrachromic` / `ElegantFin` / `Scyfin` / `MediaBar`) Studio:
-/// - Real-time Interactive Cinema Preview Stage right inside Settings (`首页舞台` / `详情与多版本` / `播放器 HUD`)
-/// - 14 customizable architectural, material, card, badge, progress, typography & OSD dimensions
-/// - Unified Frosted Glass / Tinted Acrylic / Matte Solid / OLED Borderless material engine (zero solid-card clash!)
-/// - Full DIY Custom Skin Editor & `VEDRO-SKIN:...` portable share codes
 class SkinStudioPane extends StatefulWidget {
   const SkinStudioPane({
     super.key,
     required this.appState,
     this.hideHeading = false,
     this.stickyDesktop = false,
+    this.platformOverride,
   });
 
   final VedroAppState appState;
   final bool hideHeading;
   final bool stickyDesktop;
+  final String? platformOverride;
 
   @override
   State<SkinStudioPane> createState() => _SkinStudioPaneState();
@@ -40,29 +38,6 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
   void dispose() {
     _scrollCtrl.dispose();
     super.dispose();
-  }
-
-  String _describeSkinTraits(VedroSkin s) {
-    final tone = s.isLight ? '浅色明快画布' : '深色影院画布';
-    final nav = switch (s.navLayout) {
-      'left_rail' => '左侧垂直边栏',
-      'centered_capsule' => '居中胶囊顶栏',
-      'minimal_auto_hide' => '自动半隐顶栏',
-      _ => '悬浮顶栏',
-    };
-    final hero = switch (s.heroStyle) {
-      'framed_stage' => '圆角画框巨幕',
-      'split_showcase' => '双栏杂志巨幕',
-      'compact_minimal' => '纯海报墙',
-      _ => '全屏沉浸巨幕',
-    };
-    final detail = switch (s.detailLayout) {
-      'jellyfin_glass' => '毛玻璃详情仓',
-      'centered_editorial' => '居中对称详情页',
-      _ => '影院沉浸详情页',
-    };
-    final font = s.editorialSerif ? '衬线电影大标题' : '现代无衬线排版';
-    return '$tone · $nav · $hero · $detail · $font';
   }
 
   VedroAppState get appState => widget.appState;
@@ -154,7 +129,7 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '粘贴好友分享或跨设备导出的 VEDRO-SKIN:... 皮肤码（包含完整导航骨架、表面材质、海报结构与配色）：',
+                  '粘贴 VEDRO-SKIN:... 口令',
                   style: TextStyle(color: skin.fg2, fontSize: 13),
                 ),
                 const SizedBox(height: 12),
@@ -212,6 +187,7 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
   void _setOverride(
     String key,
     dynamic value, {
+    required bool isMobile,
     String? focusScene,
     String? notice,
   }) {
@@ -222,26 +198,34 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
       });
     }
     final p = appState.prefs;
-    final next = Map<String, dynamic>.from(p.skinOverrides);
-    next[key] = value;
-    appState.updatePrefs(p.copyWith(skinOverrides: next));
+    if (isMobile) {
+      final next = Map<String, dynamic>.from(p.mobileSkinOverrides);
+      next[key] = value;
+      appState.updatePrefs(p.copyWith(mobileSkinOverrides: next));
+    } else {
+      final next = Map<String, dynamic>.from(p.skinOverrides);
+      next[key] = value;
+      appState.updatePrefs(p.copyWith(skinOverrides: next));
+    }
   }
 
-  void _applyCornerPreset(double radius, double pill, String label) {
+  void _applyCornerPreset(double radius, double pill, String label, {required bool isMobile}) {
     setState(() {
       _previewScene = 'home';
-      _lastChangeNotice = '已调整（影响主页卡片）：全局圆角 → $label';
+      _lastChangeNotice = '圆角 → $label';
     });
     final p = appState.prefs;
-    final next = Map<String, dynamic>.from(p.skinOverrides);
-    next['card_radius'] = radius;
-    next['pill_radius'] = pill;
-    appState.updatePrefs(
-      p.copyWith(
-        useSkinGeometry: true,
-        skinOverrides: next,
-      ),
-    );
+    if (isMobile) {
+      final next = Map<String, dynamic>.from(p.mobileSkinOverrides);
+      next['card_radius'] = radius;
+      next['pill_radius'] = pill;
+      appState.updatePrefs(p.copyWith(useSkinGeometry: true, mobileSkinOverrides: next));
+    } else {
+      final next = Map<String, dynamic>.from(p.skinOverrides);
+      next['card_radius'] = radius;
+      next['pill_radius'] = pill;
+      appState.updatePrefs(p.copyWith(useSkinGeometry: true, skinOverrides: next));
+    }
   }
 
   String _activeCornerBucket(VedroSkin s) {
@@ -254,10 +238,92 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
 
   @override
   Widget build(BuildContext context) {
+    final metrics = DisplayMetricsProfile.of(
+      context,
+      platformOverride: widget.platformOverride,
+    );
+    final isMobile = metrics.isMobileOs;
     final p = appState.prefs;
-    final activeSkin = p.activeSkin;
+    final currentOverrides = p.overridesForPlatform(isMobile: isMobile);
+    final activeSkin = p.activeSkinFor(isMobile: isMobile);
     final skin = VedroSkin.of(context);
-    final hasOverrides = p.skinOverrides.isNotEmpty;
+    final hasOverrides = currentOverrides.isNotEmpty;
+
+    final hardwareToolbar = Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      alignment: WrapAlignment.spaceBetween,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Container(
+          key: const ValueKey('skin-display-profile-badge'),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: skin.unifiedTileColor(),
+            borderRadius: BorderRadius.circular(skin.radiusForPill(28)),
+            border: Border.all(color: skin.border, width: 0.7),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isMobile ? Icons.smartphone_rounded : Icons.desktop_mac_rounded,
+                size: 13.5,
+                color: skin.accent,
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  metrics.summaryLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: skin.fg2,
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          children: [
+            OutlinedButton.icon(
+              key: const ValueKey('reset-hw-defaults-btn'),
+              onPressed: () {
+                setState(() {
+                  _previewScene = 'overview';
+                  _lastChangeNotice = null;
+                });
+                appState.resetToHardwareRecommendedDefaults(metrics);
+              },
+              icon: const Icon(Icons.auto_fix_high_rounded, size: 15),
+              label: const Text('恢复屏幕推荐', style: TextStyle(fontSize: 12.5)),
+            ),
+            OutlinedButton.icon(
+              key: const ValueKey('import-skin-code-btn'),
+              onPressed: () => _openImportDialog(context),
+              icon: const Icon(Icons.download_rounded, size: 15),
+              label: const Text('导入皮肤码', style: TextStyle(fontSize: 12.5)),
+            ),
+            FilledButton.icon(
+              key: const ValueKey('open-diy-skin-editor-btn'),
+              style: FilledButton.styleFrom(
+                backgroundColor: skin.primaryCtaBg,
+                foregroundColor: skin.primaryCtaFg,
+              ),
+              onPressed: () => _openEditor(context, forkFrom: activeSkin),
+              icon: const Icon(Icons.add_rounded, size: 17),
+              label: const Text('新建皮肤', style: TextStyle(fontSize: 12.5)),
+            ),
+          ],
+        ),
+      ],
+    );
 
     final headerAndStage = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -265,85 +331,23 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
       children: [
         if (!widget.hideHeading)
           Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Wrap(
-              spacing: 16,
-              runSpacing: 8,
-              alignment: WrapAlignment.spaceBetween,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '皮肤管理与智能联动预览工坊',
-                      style: skin.applyHeadlineMood(
-                        TextStyle(
-                          color: skin.fg,
-                          fontSize: 21,
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: -0.5,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      '点主页项看主页、点详情项看详情、点字体项看字体、切整套主题看全景对比（预览窗置顶常驻）',
-                      style: TextStyle(color: skin.fg3, fontSize: 12, height: 1.4),
-                    ),
-                  ],
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(
+              '应用风格',
+              style: skin.applyHeadlineMood(
+                TextStyle(
+                  color: skin.fg,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.5,
                 ),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 8,
-                  children: [
-                    OutlinedButton.icon(
-                      key: const ValueKey('import-skin-code-btn'),
-                      onPressed: () => _openImportDialog(context),
-                      icon: const Icon(Icons.download_rounded, size: 16),
-                      label: const Text('导入皮肤码'),
-                    ),
-                    FilledButton.icon(
-                      key: const ValueKey('open-diy-skin-editor-btn'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: skin.primaryCtaBg,
-                        foregroundColor: skin.primaryCtaFg,
-                      ),
-                      onPressed: () => _openEditor(context, forkFrom: activeSkin),
-                      icon: const Icon(Icons.add_rounded, size: 18),
-                      label: const Text('新建自定义皮肤'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          )
-        else
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Wrap(
-              spacing: 10,
-              runSpacing: 8,
-              children: [
-                OutlinedButton.icon(
-                  key: const ValueKey('import-skin-code-btn'),
-                  onPressed: () => _openImportDialog(context),
-                  icon: const Icon(Icons.download_rounded, size: 16),
-                  label: const Text('导入皮肤码'),
-                ),
-                FilledButton.icon(
-                  key: const ValueKey('open-diy-skin-editor-btn'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: skin.primaryCtaBg,
-                    foregroundColor: skin.primaryCtaFg,
-                  ),
-                  onPressed: () => _openEditor(context, forkFrom: activeSkin),
-                  icon: const Icon(Icons.add_rounded, size: 18),
-                  label: const Text('新建自定义皮肤'),
-                ),
-              ],
+              ),
             ),
           ),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: hardwareToolbar,
+        ),
 
         // 1. PINNED SMART CONTEXT-AWARE LIVE PREVIEW MONITOR
         _LiveSkinInteractiveStage(
@@ -351,6 +355,7 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
           skin: activeSkin,
           appState: appState,
           scene: _previewScene,
+          isMobilePreview: isMobile,
           changeNotice: _lastChangeNotice,
           hasOverrides: hasOverrides,
           compactHeight: widget.stickyDesktop,
@@ -358,9 +363,13 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
           onResetOverrides: () {
             setState(() {
               _previewScene = 'overview';
-              _lastChangeNotice = '已重置混搭参数，恢复「${VedroSkin.byId(p.skinId, customSkins: p.customSkins).name}」默认结构';
+              _lastChangeNotice = null;
             });
-            appState.updatePrefs(p.copyWith(skinOverrides: const {}));
+            appState.updatePrefs(
+              isMobile
+                  ? p.copyWith(mobileSkinOverrides: const {})
+                  : p.copyWith(skinOverrides: const {}),
+            );
           },
           onSaveAsSkin: () => _openEditor(context, forkFrom: activeSkin),
         ),
@@ -399,11 +408,15 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                       onSelect: () {
                         setState(() {
                           _previewScene = 'overview';
-                          _lastChangeNotice =
-                              '已切换至「${customSkin.name}」：${_describeSkinTraits(customSkin)}';
+                          _lastChangeNotice = null;
                         });
                         appState.updatePrefs(
-                          p.copyWith(skinId: spec.id, skinOverrides: const {}, useSkinGeometry: true),
+                          p.copyWith(
+                            skinId: spec.id,
+                            skinOverrides: isMobile ? p.skinOverrides : const {},
+                            mobileSkinOverrides: isMobile ? const {} : p.mobileSkinOverrides,
+                            useSkinGeometry: true,
+                          ),
                         );
                       },
                       onEdit: () => _openEditor(context, existing: spec),
@@ -435,12 +448,12 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
         Row(
           children: [
             Text(
-              '官方多架构皮肤预设 (${VedroSkin.presets.length})',
+              '预设主题 (${VedroSkin.presets.length})',
               style: TextStyle(color: skin.fg2, fontSize: 13, fontWeight: FontWeight.w600),
             ),
             const Spacer(),
             Text(
-              '当前：${activeSkin.name}${hasOverrides ? "（已自定义混搭）" : ""}',
+              activeSkin.name,
               style: TextStyle(color: skin.accent, fontSize: 12, fontWeight: FontWeight.w600),
             ),
           ],
@@ -465,11 +478,15 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                     onSelect: () {
                       setState(() {
                         _previewScene = 'overview';
-                        _lastChangeNotice =
-                            '已切换至「${preset.name}」：${_describeSkinTraits(preset)}';
+                        _lastChangeNotice = null;
                       });
                       appState.updatePrefs(
-                        p.copyWith(skinId: preset.id, skinOverrides: const {}, useSkinGeometry: true),
+                        p.copyWith(
+                          skinId: preset.id,
+                          skinOverrides: isMobile ? p.skinOverrides : const {},
+                          mobileSkinOverrides: isMobile ? const {} : p.mobileSkinOverrides,
+                          useSkinGeometry: true,
+                        ),
                       );
                     },
                     onFork: () => _openEditor(context, forkFrom: preset),
@@ -480,9 +497,9 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
           },
         ),
 
-        const SizedBox(height: 26),
+        const SizedBox(height: 22),
 
-        // 4. Complete 14-Dimension Jellyfin Skin Manager Customizer
+        // 4. Platform-Aware Structural & Material Customizer (Mobile vs Desktop tailored!)
         VedroAdaptiveSurface(
           key: const ValueKey('skin-modular-addons-panel'),
           padding: const EdgeInsets.all(20),
@@ -490,117 +507,128 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Wrap(
-                spacing: 12,
-                runSpacing: 8,
-                alignment: WrapAlignment.spaceBetween,
-                crossAxisAlignment: WrapCrossAlignment.center,
+              Row(
                 children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.widgets_outlined, size: 17, color: skin.accent),
-                          const SizedBox(width: 7),
-                          Text(
-                            'Jellyfin 全维度组件与材质混搭台（上方预览窗同步联动）',
-                            style: TextStyle(
-                              color: skin.fg,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ],
+                  Icon(Icons.widgets_outlined, size: 17, color: skin.accent),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      isMobile ? '移动端界面定制' : '桌面端界面定制',
+                      style: TextStyle(
+                        color: skin.fg,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
                       ),
-                      const SizedBox(height: 3),
-                      Text(
-                        '切换任一参数均保持在当前页面原地生效，不会跳出或重置滚动位置',
-                        style: TextStyle(color: skin.fg3, fontSize: 12),
-                      ),
-                    ],
+                    ),
                   ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (hasOverrides)
-                        TextButton.icon(
-                          onPressed: () =>
-                              appState.updatePrefs(p.copyWith(skinOverrides: const {})),
-                          icon: const Icon(Icons.restart_alt_rounded, size: 15),
-                          label: const Text('重置混搭'),
-                        ),
-                      OutlinedButton.icon(
-                        onPressed: () => _openEditor(context, forkFrom: activeSkin),
-                        icon: const Icon(Icons.save_outlined, size: 15),
-                        label: const Text('另存为新皮肤'),
+                  if (hasOverrides)
+                    TextButton.icon(
+                      onPressed: () => appState.updatePrefs(
+                        isMobile
+                            ? p.copyWith(mobileSkinOverrides: const {})
+                            : p.copyWith(skinOverrides: const {}),
                       ),
-                    ],
+                      icon: const Icon(Icons.restart_alt_rounded, size: 15),
+                      label: const Text('重置'),
+                    ),
+                  OutlinedButton.icon(
+                    onPressed: () => _openEditor(context, forkFrom: activeSkin),
+                    icon: const Icon(Icons.save_outlined, size: 15),
+                    label: const Text('另存皮肤'),
                   ),
                 ],
               ),
 
-              const SizedBox(height: 18),
+              const SizedBox(height: 16),
               _CategoryBanner(
                 icon: Icons.layers_outlined,
-                label: '一、导航骨架与表面毛玻璃材质（消除纯色割裂感）',
+                label: '导航与材质',
                 skin: skin,
               ),
               const SizedBox(height: 12),
 
-              _ModuleOptionRow(
-                title: '导航栏架构',
-                subtitle: '自动展示「首页舞台」：切换悬浮顶栏、Scyfin 左侧垂直栏、居中胶囊岛或半隐顶栏',
-                value: activeSkin.navLayout,
-                options: const [
-                  ('top_floating', '顶部悬浮栏', Icons.web_asset_rounded),
-                  ('left_rail', '左侧垂直边栏', Icons.view_sidebar_rounded),
-                  ('centered_capsule', '居中灵动胶囊岛', Icons.smart_button_rounded),
-                  ('minimal_auto_hide', '沉浸自动半隐顶栏', Icons.visibility_off_outlined),
-                ],
-                onChanged: (v) => _setOverride(
-                  'nav_layout',
-                  v,
-                  focusScene: 'home',
-                  notice: '已调整（影响主页与全局顶栏）：导航栏架构',
+              if (isMobile) ...[
+                _ModuleOptionRow(
+                  title: '底部导航栏',
+                  value: activeSkin.mobileNavStyle,
+                  options: const [
+                    ('floating_dock', '悬浮灵动岛', Icons.smart_button_rounded),
+                    ('full_tab_bar', '贴底通栏', Icons.dock_rounded),
+                    ('compact_icon_only', '精简纯图标', Icons.more_horiz_rounded),
+                  ],
+                  onChanged: (v) => _setOverride(
+                    'mobile_nav_style',
+                    v,
+                    isMobile: true,
+                    focusScene: 'home',
+                  ),
                 ),
-              ),
+                const Divider(height: 22),
+                _ModuleOptionRow(
+                  title: '触控反馈',
+                  value: activeSkin.touchFeedbackStyle,
+                  options: const [
+                    ('spring_haptic', '弹性震感', Icons.vibration_rounded),
+                    ('subtle_scale', '轻柔微缩', Icons.touch_app_rounded),
+                    ('clean_static', '纯净静态', Icons.do_not_touch_outlined),
+                  ],
+                  onChanged: (v) => _setOverride(
+                    'touch_feedback',
+                    v,
+                    isMobile: true,
+                    focusScene: 'home',
+                  ),
+                ),
+              ] else
+                _ModuleOptionRow(
+                  title: '导航栏架构',
+                  value: activeSkin.navLayout,
+                  options: const [
+                    ('top_floating', '顶部悬浮', Icons.web_asset_rounded),
+                    ('left_rail', '左侧边栏', Icons.view_sidebar_rounded),
+                    ('centered_capsule', '居中胶囊', Icons.smart_button_rounded),
+                    ('minimal_auto_hide', '自动半隐', Icons.visibility_off_outlined),
+                  ],
+                  onChanged: (v) => _setOverride(
+                    'nav_layout',
+                    v,
+                    isMobile: false,
+                    focusScene: 'home',
+                  ),
+                ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
-                title: '全局表面材质引擎（解决毛玻璃与纯色卡片混搭割裂）',
-                subtitle: '自动展示「详情构图」：控制详情面板、版本卡、剧集行与背景的磨砂融合质感',
+                title: '表面材质',
                 value: activeSkin.effectiveSurfaceMaterial,
                 options: const [
-                  ('unified_glass', '全站统一磨砂琉璃', Icons.blur_circular_rounded),
-                  ('tinted_acrylic', '微透亚克力混色', Icons.filter_b_and_w_rounded),
-                  ('matte_solid', '温润哑光实色', Icons.rectangle_rounded),
-                  ('oled_borderless', '无界暗场隐形框', Icons.border_clear_rounded),
+                  ('unified_glass', '磨砂琉璃', Icons.blur_circular_rounded),
+                  ('tinted_acrylic', '微透亚克力', Icons.filter_b_and_w_rounded),
+                  ('matte_solid', '温润实色', Icons.rectangle_rounded),
+                  ('oled_borderless', '无界隐框', Icons.border_clear_rounded),
                 ],
                 onChanged: (v) => _setOverride(
                   'surface_material',
                   v,
+                  isMobile: isMobile,
                   focusScene: 'detail',
-                  notice: '已调整（影响详情页与面板）：表面材质引擎',
                 ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
-                title: '全局背景氛围引擎',
-                subtitle: '自动展示「详情构图」：纯净画布、双色极光漫反射或全页高斯模糊电影剧照背景',
+                title: '背景氛围',
                 value: activeSkin.backdropMode,
                 options: const [
-                  ('solid_clean', '纯净实色画布', Icons.crop_square_rounded),
-                  ('ambient_orb', '双色流光漫反射', Icons.gradient_rounded),
-                  ('blurred_fanart', '全页剧照毛玻璃', Icons.deblur_rounded),
+                  ('blurred_fanart', '剧照漫射', Icons.deblur_rounded),
+                  ('ambient_orb', '极光漫射', Icons.gradient_rounded),
+                  ('solid_clean', '纯净纯色', Icons.crop_square_rounded),
                 ],
                 onChanged: (v) => _setOverride(
                   'backdrop_mode',
                   v,
+                  isMobile: isMobile,
                   focusScene: 'detail',
-                  notice: '已调整（影响背景氛围）：全局背景模式',
                 ),
               ),
 
@@ -615,7 +643,7 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          '背景模糊半径：${activeSkin.backdropBlur.round()} px',
+                          '模糊半径 ${activeSkin.backdropBlur.round()} px',
                           style: TextStyle(color: skin.fg2, fontSize: 12),
                         ),
                         Slider(
@@ -625,8 +653,8 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                           onChanged: (v) => _setOverride(
                             'backdrop_blur',
                             v,
+                            isMobile: isMobile,
                             focusScene: 'detail',
-                            notice: '已调整（影响背景毛玻璃）：模糊半径 ${v.round()} px',
                           ),
                         ),
                       ],
@@ -635,7 +663,7 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          '卡片透光浓度：${(activeSkin.surfaceOpacity * 100).round()}%',
+                          '面板透光 ${(activeSkin.surfaceOpacity * 100).round()}%',
                           style: TextStyle(color: skin.fg2, fontSize: 12),
                         ),
                         Slider(
@@ -645,8 +673,8 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                           onChanged: (v) => _setOverride(
                             'surface_opacity',
                             v,
+                            isMobile: isMobile,
                             focusScene: 'detail',
-                            notice: '已调整（影响详情面板）：透光浓度 ${(v * 100).round()}%',
                           ),
                         ),
                       ],
@@ -668,151 +696,146 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
               const SizedBox(height: 16),
               _CategoryBanner(
                 icon: Icons.movie_filter_outlined,
-                label: '二、首页巨幕舞台与详情页构图（MediaBar / ElegantFin）',
+                label: '巨幕与详情',
                 skin: skin,
               ),
               const SizedBox(height: 12),
 
               _ModuleOptionRow(
-                title: '首页轮播舞台形态',
-                subtitle: '自动展示「首页舞台」：全屏沉浸巨幕、ElegantFin 圆角画框、双栏杂志画报或纯海报墙',
+                title: '首页巨幕',
                 value: activeSkin.heroStyle,
-                options: const [
-                  ('full_bleed', '全屏沉浸巨幕', Icons.panorama_wide_angle_select_rounded),
-                  ('framed_stage', '圆角悬浮画框', Icons.crop_16_9_rounded),
-                  ('split_showcase', '双栏画报橱窗', Icons.vertical_split_rounded),
-                  ('compact_minimal', '极简纯海报墙', Icons.apps_rounded),
+                options: [
+                  const ('full_bleed', '全屏沉浸', Icons.panorama_wide_angle_select_rounded),
+                  const ('framed_stage', '圆角画框', Icons.crop_16_9_rounded),
+                  if (!isMobile) const ('split_showcase', '双栏画报', Icons.vertical_split_rounded),
+                  const ('compact_minimal', '纯海报墙', Icons.apps_rounded),
                 ],
                 onChanged: (v) => _setOverride(
                   'hero_style',
                   v,
+                  isMobile: isMobile,
                   focusScene: 'home',
-                  notice: '已调整（影响主页轮播）：巨幕舞台形态',
                 ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
-                title: '详情页构图模式',
-                subtitle: '自动展示「详情构图」：影院沉浸式、毛玻璃悬浮仓或居中对称画报',
+                title: '详情构图',
                 value: activeSkin.detailLayout,
                 options: const [
-                  ('apple_immersive', '影院沉浸式', Icons.movie_creation_outlined),
-                  ('jellyfin_glass', '毛玻璃悬浮仓', Icons.blur_on_rounded),
-                  ('centered_editorial', '居中对称画报', Icons.format_align_center_rounded),
+                  ('apple_immersive', '影院沉浸', Icons.movie_creation_outlined),
+                  ('jellyfin_glass', '琉璃悬浮仓', Icons.blur_on_rounded),
+                  ('centered_editorial', '居中画报', Icons.format_align_center_rounded),
                 ],
                 onChanged: (v) => _setOverride(
                   'detail_layout',
                   v,
+                  isMobile: isMobile,
                   focusScene: 'detail',
-                  notice: '已调整（影响详情页）：详情构图模式',
                 ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
-                title: '演职人员卡片样式',
-                subtitle: '自动展示「详情构图」：切换圆形肖像勋章、Jellyfin 2:3 竖版写真卡或紧凑胶囊名牌',
+                title: '演职员卡',
                 value: activeSkin.castStyle,
                 options: const [
-                  ('circle_medallion', '圆形头像勋章', Icons.account_circle_outlined),
-                  ('portrait_card', '2:3 竖版写真卡', Icons.portrait_rounded),
-                  ('compact_pill', '紧凑胶囊名牌', Icons.badge_outlined),
+                  ('circle_medallion', '圆形头像', Icons.account_circle_outlined),
+                  ('portrait_card', '2:3 写真卡', Icons.portrait_rounded),
+                  ('compact_pill', '紧凑胶囊', Icons.badge_outlined),
                 ],
                 onChanged: (v) => _setOverride(
                   'cast_style',
                   v,
+                  isMobile: isMobile,
                   focusScene: 'detail',
-                  notice: '已调整（影响详情页）：演职员卡片样式',
                 ),
               ),
 
               const SizedBox(height: 18),
               _CategoryBanner(
                 icon: Icons.style_outlined,
-                label: '三、海报画幅、圆角、角标与进度条（Ultrachromic 全套定制）',
+                label: '卡片与角标',
                 skin: skin,
               ),
               const SizedBox(height: 12),
 
               _ModuleOptionRow(
-                title: '海报墙画幅比例',
-                subtitle: '自动展示「首页舞台」：2:3 竖版海报、16:9 横版宽幅剧照墙或 4:5 艺术画册比例',
+                title: '海报画幅',
                 value: activeSkin.posterAspect,
                 options: const [
-                  ('poster_2_3', '2:3 竖版海报', Icons.crop_portrait_rounded),
-                  ('landscape_16_9', '16:9 横版剧照墙', Icons.crop_16_9_rounded),
-                  ('cinema_4_5', '4:5 画册比例', Icons.crop_din_rounded),
+                  ('poster_2_3', '2:3 竖版', Icons.crop_portrait_rounded),
+                  ('landscape_16_9', '16:9 横版', Icons.crop_16_9_rounded),
+                  ('cinema_4_5', '4:5 画册', Icons.crop_din_rounded),
                 ],
                 onChanged: (v) => _setOverride(
                   'poster_aspect',
                   v,
+                  isMobile: isMobile,
                   focusScene: 'home',
-                  notice: '已调整（影响主页与媒体库）：海报画幅比例',
                 ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
-                title: '海报卡片标题结构',
-                subtitle: '自动展示「首页舞台」：经典图下双行字、海报内嵌渐变字、悬停显字或纯净无字画廊',
-                value: activeSkin.cardStyle,
-                options: const [
-                  ('classic_below', '经典图下文字', Icons.subtitles_outlined),
-                  ('overlay_poster', '海报内嵌渐变字', Icons.branding_watermark_outlined),
-                  ('hover_reveal', '悬停浮现文字', Icons.visibility_outlined),
-                  ('minimal_clean', '纯净无字画廊', Icons.image_outlined),
+                title: '卡片标题',
+                value: isMobile && activeSkin.cardStyle == 'hover_reveal'
+                    ? 'overlay_poster'
+                    : activeSkin.cardStyle,
+                options: [
+                  const ('classic_below', '图下文字', Icons.subtitles_outlined),
+                  const ('overlay_poster', '内嵌渐变', Icons.branding_watermark_outlined),
+                  if (!isMobile) const ('hover_reveal', '悬停显字', Icons.visibility_outlined),
+                  const ('minimal_clean', '纯净无字', Icons.image_outlined),
                 ],
                 onChanged: (v) => _setOverride(
                   'card_style',
                   v,
+                  isMobile: isMobile,
                   focusScene: 'home',
-                  notice: '已调整（影响主页卡片）：海报标题结构',
                 ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
-                title: '海报墙排版密度',
-                subtitle: '自动展示「首页舞台」：调节单行容纳的海报数量与间距呼吸感',
-                value: p.skinOverrides['grid_density']?.toString() ?? p.listDensity,
+                title: '排列密度',
+                value: currentOverrides['grid_density']?.toString() ?? p.listDensity,
                 options: const [
-                  ('spacious', '画廊宽松大卡', Icons.view_comfortable_rounded),
-                  ('comfortable', '标准均衡比例', Icons.grid_view_rounded),
-                  ('compact', '发烧友紧凑墙', Icons.view_compact_alt_rounded),
+                  ('spacious', '宽松', Icons.view_comfortable_rounded),
+                  ('comfortable', '标准', Icons.grid_view_rounded),
+                  ('compact', '紧凑', Icons.view_compact_alt_rounded),
                 ],
                 onChanged: (v) => _setOverride(
                   'grid_density',
                   v,
+                  isMobile: isMobile,
                   focusScene: 'home',
-                  notice: '已调整（影响主页与媒体库）：海报墙排版密度',
                 ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
-                title: '全局圆角体系预设（Ultrachromic Rounding）',
-                subtitle: '自动展示「首页舞台」：一键切换胶片锐角、现代圆角或鹅卵石大圆角',
+                title: '圆角尺寸',
                 value: _activeCornerBucket(activeSkin),
                 options: const [
-                  ('sharp', '锐利直角 (3px)', Icons.crop_sharp),
-                  ('cinema', '影院微圆 (8px)', Icons.rounded_corner_rounded),
-                  ('modern', '现代均衡 (14px)', Icons.check_box_outline_blank_rounded),
-                  ('pebble', '鹅卵石超圆 (22px)', Icons.circle_outlined),
+                  ('sharp', '直角 3px', Icons.crop_sharp),
+                  ('cinema', '微圆 8px', Icons.rounded_corner_rounded),
+                  ('modern', '标准 14px', Icons.check_box_outline_blank_rounded),
+                  ('pebble', '大圆 22px', Icons.circle_outlined),
                 ],
                 onChanged: (v) {
                   switch (v) {
                     case 'sharp':
-                      _applyCornerPreset(3.0, 6.0, '锐利直角 (3px)');
+                      _applyCornerPreset(3.0, 6.0, '3px', isMobile: isMobile);
                       break;
                     case 'cinema':
-                      _applyCornerPreset(8.0, 10.0, '影院微圆 (8px)');
+                      _applyCornerPreset(8.0, 10.0, '8px', isMobile: isMobile);
                       break;
                     case 'modern':
-                      _applyCornerPreset(14.0, 999.0, '现代均衡 (14px)');
+                      _applyCornerPreset(14.0, 999.0, '14px', isMobile: isMobile);
                       break;
                     case 'pebble':
-                      _applyCornerPreset(22.0, 999.0, '鹅卵石超圆 (22px)');
+                      _applyCornerPreset(22.0, 999.0, '22px', isMobile: isMobile);
                       break;
                   }
                 },
@@ -820,81 +843,79 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
               const Divider(height: 22),
 
               _ModuleOptionRow(
-                title: '未看集数与已看角标样式',
-                subtitle: '自动展示「首页舞台」：自定义海报右上角状态指示器风格',
+                title: '右上角标',
                 value: activeSkin.badgeStyle,
                 options: const [
                   ('glass_pill', '毛玻璃胶囊', Icons.lens_blur_rounded),
-                  ('accent_ribbon', '强调色丝带角标', Icons.bookmark_rounded),
-                  ('minimal_dot', '极简发光圆点', Icons.fiber_manual_record_rounded),
-                  ('hidden', '纯净隐藏角标', Icons.visibility_off_rounded),
+                  ('accent_ribbon', '主题丝带', Icons.bookmark_rounded),
+                  ('minimal_dot', '极简圆点', Icons.fiber_manual_record_rounded),
+                  ('hidden', '隐藏', Icons.visibility_off_rounded),
                 ],
                 onChanged: (v) => _setOverride(
                   'badge_style',
                   v,
+                  isMobile: isMobile,
                   focusScene: 'home',
-                  notice: '已调整（影响主页海报角标）：右上角标样式',
                 ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
-                title: '播放进度条样式',
-                subtitle: '自动展示「首页舞台」：控制「继续观看」与海报底部的观看进度条外观',
+                title: '观看进度条',
                 value: activeSkin.progressStyle,
                 options: const [
-                  ('floating_bar', '底部悬浮圆角条', Icons.linear_scale_rounded),
-                  ('edge_flush', '贴底满宽极细线', Icons.horizontal_rule_rounded),
-                  ('glow_accent', '电光辉光进度条', Icons.bolt_rounded),
+                  ('floating_bar', '悬浮圆角', Icons.linear_scale_rounded),
+                  ('edge_flush', '贴底细线', Icons.horizontal_rule_rounded),
+                  ('glow_accent', '电光辉光', Icons.bolt_rounded),
                 ],
                 onChanged: (v) => _setOverride(
                   'progress_style',
                   v,
+                  isMobile: isMobile,
                   focusScene: 'home',
-                  notice: '已调整（影响主页继续观看）：播放进度条样式',
                 ),
               ),
-              const Divider(height: 22),
 
-              _ModuleOptionRow(
-                title: '卡片悬停反馈动效',
-                subtitle: '自动展示「首页舞台」：把鼠标移入预览窗海报卡即可实时体验',
-                value: activeSkin.cardHoverEffect,
-                options: const [
-                  ('lift', '弹簧悬浮抬升', Icons.open_in_new_rounded),
-                  ('glow_ring', '主题电光环描边', Icons.flare_rounded),
-                  ('zoom_art', '内景微距缩放', Icons.zoom_in_rounded),
-                ],
-                onChanged: (v) => _setOverride(
-                  'card_hover_effect',
-                  v,
-                  focusScene: 'home',
-                  notice: '已调整（影响主页交互）：卡片悬停反馈动效',
+              if (!isMobile) ...[
+                const Divider(height: 22),
+                _ModuleOptionRow(
+                  title: '悬停动效',
+                  value: activeSkin.cardHoverEffect,
+                  options: const [
+                    ('lift', '弹簧抬升', Icons.open_in_new_rounded),
+                    ('glow_ring', '电光描边', Icons.flare_rounded),
+                    ('zoom_art', '微距缩放', Icons.zoom_in_rounded),
+                  ],
+                  onChanged: (v) => _setOverride(
+                    'card_hover_effect',
+                    v,
+                    isMobile: false,
+                    focusScene: 'home',
+                  ),
                 ),
-              ),
+              ],
 
               const SizedBox(height: 18),
               _CategoryBanner(
                 icon: Icons.play_circle_outline_rounded,
-                label: '四、播放器控制栏（OSD）与字体排版开关',
+                label: '播放控制与排版',
                 skin: skin,
               ),
               const SizedBox(height: 12),
 
               _ModuleOptionRow(
-                title: '播放器 HUD 控制栏风格',
-                subtitle: '自动展示「播放器 HUD」场景',
+                title: '播放器控制栏',
                 value: activeSkin.osdStyle,
                 options: const [
-                  ('floating_island', '灵动悬浮控制台', Icons.space_bar_rounded),
-                  ('cinema_gradient', '影院全宽底栏', Icons.video_label_rounded),
-                  ('minimal_glass', 'Ultrachromic 琉璃舱', Icons.blur_linear_rounded),
+                  ('floating_island', '悬浮岛', Icons.space_bar_rounded),
+                  ('cinema_gradient', '全宽底栏', Icons.video_label_rounded),
+                  ('minimal_glass', '琉璃舱', Icons.blur_linear_rounded),
                 ],
                 onChanged: (v) => _setOverride(
                   'osd_style',
                   v,
+                  isMobile: isMobile,
                   focusScene: 'player',
-                  notice: '已调整（影响播放器）：HUD 控制栏形态',
                 ),
               ),
             ],
@@ -903,7 +924,7 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
 
         const SizedBox(height: 16),
 
-        // 5. Typography, Rating Badge & Motion Switches
+        // 5. Concise Switches (zero redundant subtitles!)
         VedroAdaptiveSurface(
           borderRadius: skin.cardRadius.clamp(10.0, 18.0),
           child: Material(
@@ -915,16 +936,12 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                   onChanged: (v) => _setOverride(
                     'show_card_rating',
                     v,
+                    isMobile: isMobile,
                     focusScene: 'home',
-                    notice: '已${v ? '开启' : '隐藏'}（影响主页海报）：左上角 TMDB 评分角标',
                   ),
                   title: Text(
-                    '在海报左上角展示 TMDB 评分角标',
+                    '海报左上角显示评分',
                     style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
-                  ),
-                  subtitle: Text(
-                    '开启后浏览海报墙即可直观看到影片评分',
-                    style: TextStyle(color: skin.fg3, fontSize: 12),
                   ),
                 ),
                 Divider(height: 1, color: skin.border),
@@ -933,16 +950,12 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                   onChanged: (v) => _setOverride(
                     'prefer_clear_logo',
                     v,
+                    isMobile: isMobile,
                     focusScene: 'detail',
-                    notice: '已${v ? '开启' : '关闭'}（影响主页与详情页）：优先透明艺术片名 ClearLogo',
                   ),
                   title: Text(
-                    '优先展示电影/剧集透明艺术片名 (ClearLogo)',
+                    '优先展示艺术片名 (ClearLogo)',
                     style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
-                  ),
-                  subtitle: Text(
-                    '关闭后统一使用当前皮肤字体排印大标题',
-                    style: TextStyle(color: skin.fg3, fontSize: 12),
                   ),
                 ),
                 Divider(height: 1, color: skin.border),
@@ -952,16 +965,12 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                   onChanged: (v) => _setOverride(
                     'editorial_serif',
                     v,
+                    isMobile: isMobile,
                     focusScene: 'typography',
-                    notice: '已${v ? '开启' : '关闭'}（影响字体排印）：电影画报衬线标题字体',
                   ),
                   title: Text(
-                    '启用电影画报衬线标题字体 (Editorial Serif)',
+                    '衬线电影标题字体 (Editorial Serif)',
                     style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
-                  ),
-                  subtitle: Text(
-                    '切换时上方预览窗自动展示「字体排版」实时对比样张',
-                    style: TextStyle(color: skin.fg3, fontSize: 12),
                   ),
                 ),
                 Divider(height: 1, color: skin.border),
@@ -969,12 +978,8 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                   value: p.reduceMotion,
                   onChanged: (v) => appState.updatePrefs(p.copyWith(reduceMotion: v)),
                   title: Text(
-                    '减弱界面动态过渡效果',
+                    '减弱动态过渡',
                     style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
-                  ),
-                  subtitle: Text(
-                    '降低页面切换动效幅度以获得更干脆的响应',
-                    style: TextStyle(color: skin.fg3, fontSize: 12),
                   ),
                 ),
               ],
@@ -1061,6 +1066,7 @@ class _LiveSkinInteractiveStage extends StatefulWidget {
     required this.skin,
     required this.appState,
     required this.scene,
+    this.isMobilePreview = false,
     this.changeNotice,
     required this.hasOverrides,
     this.compactHeight = false,
@@ -1072,6 +1078,7 @@ class _LiveSkinInteractiveStage extends StatefulWidget {
   final VedroSkin skin;
   final VedroAppState appState;
   final String scene;
+  final bool isMobilePreview;
   final String? changeNotice;
   final bool hasOverrides;
   final bool compactHeight;
@@ -1275,8 +1282,9 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
     String heroTitle,
     String? fanartUrl,
   ) {
-    final isLeftRail = s.navLayout == 'left_rail';
-    final isCapsule = s.navLayout == 'centered_capsule';
+    final isMobile = widget.isMobilePreview;
+    final isLeftRail = !isMobile && s.navLayout == 'left_rail';
+    final isCapsule = !isMobile && s.navLayout == 'centered_capsule';
 
     return DecoratedBox(
       decoration: BoxDecoration(color: s.canvas),
@@ -1371,9 +1379,9 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
                         child: Padding(
                           padding: EdgeInsets.fromLTRB(
                             16,
-                            isLeftRail ? 14 : 46,
+                            (isLeftRail || isMobile) ? 14 : 46,
                             16,
-                            12,
+                            isMobile ? 42 : 12,
                           ),
                           child: switch (widget.scene) {
                             'overview' => _buildOverviewPreview(s, heroTitle),
@@ -1383,7 +1391,61 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
                           },
                         ),
                       ),
-                      if (!isLeftRail)
+                      if (isMobile)
+                        Positioned(
+                          left: s.mobileNavStyle == 'full_tab_bar'
+                              ? 0
+                              : (s.mobileNavStyle == 'compact_icon_only' ? 56 : 24),
+                          right: s.mobileNavStyle == 'full_tab_bar'
+                              ? 0
+                              : (s.mobileNavStyle == 'compact_icon_only' ? 56 : 24),
+                          bottom: s.mobileNavStyle == 'full_tab_bar' ? 0 : 6,
+                          child: Container(
+                            key: ValueKey('preview-mobile-nav-${s.mobileNavStyle}'),
+                            height: s.mobileNavStyle == 'compact_icon_only' ? 28 : 32,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            decoration: BoxDecoration(
+                              color: s.unifiedPanelColor,
+                              borderRadius: s.mobileNavStyle == 'full_tab_bar'
+                                  ? BorderRadius.zero
+                                  : BorderRadius.circular(s.radiusForPill(32)),
+                              border: s.cardBorder(),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceAround,
+                              children: [
+                                for (final t in const [
+                                  (Icons.home_rounded, '首页', true),
+                                  (Icons.grid_view_rounded, '媒体库', false),
+                                  (Icons.search_rounded, '搜索', false),
+                                  (Icons.tune_rounded, '设置', false),
+                                ])
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        t.$1,
+                                        size: 13.5,
+                                        color: t.$3 ? s.accent : s.fg3,
+                                      ),
+                                      if (s.mobileNavStyle != 'compact_icon_only') ...[
+                                        const SizedBox(width: 3),
+                                        Text(
+                                          t.$2,
+                                          style: TextStyle(
+                                            color: t.$3 ? s.fg : s.fg3,
+                                            fontSize: 9.5,
+                                            fontWeight: t.$3 ? FontWeight.w700 : FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                              ],
+                            ),
+                          ),
+                        )
+                      else if (!isLeftRail)
                         Positioned(
                           top: 8,
                           left: isCapsule ? 48 : 14,
@@ -2371,14 +2433,12 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
 class _ModuleOptionRow extends StatelessWidget {
   const _ModuleOptionRow({
     required this.title,
-    required this.subtitle,
     required this.value,
     required this.options,
     required this.onChanged,
   });
 
   final String title;
-  final String subtitle;
   final String value;
   final List<(String id, String label, IconData icon)> options;
   final ValueChanged<String> onChanged;
@@ -2393,9 +2453,7 @@ class _ModuleOptionRow extends StatelessWidget {
           title,
           style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600),
         ),
-        const SizedBox(height: 2),
-        Text(subtitle, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
-        const SizedBox(height: 9),
+        const SizedBox(height: 8),
         Wrap(
           spacing: 8,
           runSpacing: 8,

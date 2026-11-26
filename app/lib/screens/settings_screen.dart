@@ -113,12 +113,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ),
     _NavItemMeta(
       section: _SettingsSection.proxy,
-      title: '应用内代理',
+      title: '网络代理',
       icon: Icons.vpn_lock_rounded,
       tintTop: Color(0xFF38BDF8),
       tintBottom: Color(0xFF0284C7),
       group: '媒体源与管理',
-      keywords: 'proxy singbox sing-box mihomo clash socks5 免vpn 代理',
+      keywords: 'proxy singbox sing-box mihomo clash socks5 订阅 节点 代理',
     ),
     _NavItemMeta(
       section: _SettingsSection.downloads,
@@ -224,12 +224,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // 智能与安全
     _NavItemMeta(
       section: _SettingsSection.ai,
-      title: 'AI 服务（翻译）',
+      title: 'AI 翻译',
       icon: Icons.auto_awesome_rounded,
       tintTop: Color(0xFFC084FC),
       tintBottom: Color(0xFF9333EA),
       group: '智能与安全',
-      keywords: 'openai deepseek translate 翻译',
+      keywords: 'openai deepseek bilibili translate 翻译 模型',
     ),
     _NavItemMeta(
       section: _SettingsSection.privacy,
@@ -281,7 +281,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return app.isSignedIn ? app.activeServerDisplayName : '${app.savedServers.length} 个';
       case _SettingsSection.proxy:
         return switch (p.inAppProxyMode) {
-          'custom' => '独立端口',
+          'sub' => p.proxyNodes.isEmpty ? '节点订阅' : '${p.proxyNodes.length} 节点',
+          'custom' => '本地端口',
           'singbox' => 'sing-box',
           'mihomo' => 'mihomo',
           _ => '关闭',
@@ -805,10 +806,16 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
   final _proxyUrlCtrl = TextEditingController();
   final _proxyBinCtrl = TextEditingController();
   final _proxyCfgCtrl = TextEditingController();
+  final _subUrlCtrl = TextEditingController();
   bool _testingAi = false;
+  bool _fetchingAiModels = false;
   String? _aiTestResult;
   bool _applyingProxy = false;
   bool _testingProxy = false;
+  bool _fetchingSub = false;
+  bool _pingingNodes = false;
+  bool _installingCore = false;
+  bool _needsSingboxCore = false;
   String? _proxyStatusMsg;
 
   @override
@@ -834,6 +841,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     _proxyUrlCtrl.text = p.inAppProxyUrl.isEmpty ? 'socks5h://127.0.0.1:7890' : p.inAppProxyUrl;
     _proxyBinCtrl.text = p.inAppProxyCorePath;
     _proxyCfgCtrl.text = p.inAppProxyConfigText;
+    _subUrlCtrl.text = p.proxySubscriptionUrl;
   }
 
   @override
@@ -848,6 +856,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     _proxyUrlCtrl.dispose();
     _proxyBinCtrl.dispose();
     _proxyCfgCtrl.dispose();
+    _subUrlCtrl.dispose();
     super.dispose();
   }
 
@@ -890,13 +899,13 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     );
   }
 
-  Widget _heading(String title, String subtitle, {Widget? trailing}) {
+  Widget _heading(String title, [String? subtitle, Widget? trailing]) {
     if (widget.hideHeading) return const SizedBox.shrink();
     final skin = VedroSkin.of(context);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.only(bottom: 18),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(
             child: Column(
@@ -907,14 +916,16 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                   style: skin.applyHeadlineMood(
                     TextStyle(
                       color: skin.fg,
-                      fontSize: 24,
+                      fontSize: 23,
                       fontWeight: FontWeight.w700,
                       letterSpacing: -0.5,
                     ),
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(subtitle, style: TextStyle(color: skin.fg3, fontSize: 13)),
+                if (subtitle != null && subtitle.isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Text(subtitle, style: TextStyle(color: skin.fg3, fontSize: 12.5)),
+                ],
               ],
             ),
           ),
@@ -924,18 +935,18 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     );
   }
 
-  // 1. 服务器与线路 — Full Multi-Server Card Grid & Per-Server Card Settings right here!
+  // 1. 服务器与线路
   Widget _buildServers(VedroAppState app) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _heading(
           '服务器与线路',
-          '自定义每个服务器的卡片配色、图标、别名与多线路延迟测速（点击卡片右上角 ⚙ 进入卡片设置）',
-          trailing: app.isSignedIn
+          null,
+          app.isSignedIn
               ? TextButton(
                   onPressed: app.logout,
-                  child: const Text('断开当前连接', style: TextStyle(color: VedroTheme.danger, fontSize: 13)),
+                  child: const Text('断开连接', style: TextStyle(color: VedroTheme.danger, fontSize: 13)),
                 )
               : null,
         ),
@@ -948,92 +959,232 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     );
   }
 
-  // 1b. 应用内专属代理（免系统 VPN 通道 · 仅对播放器内部生效）
+  // 1b. 网络代理（订阅节点选择 + 本地端口 + 自定义内核，零废话纯 UI）
   Widget _buildInAppProxy(VedroAppState app, VedroPreferences p) {
     final skin = VedroSkin.of(context);
     final mode = p.inAppProxyMode;
     final isCoreMode = mode == 'singbox' || mode == 'mihomo';
+    final isSubMode = mode == 'sub' || mode == 'node';
+    final uiMode = isCoreMode ? 'core' : (isSubMode ? 'sub' : mode);
+    final userinfo = p.proxySubUserinfo;
+    final usedBytes = ((userinfo?['used'] ?? userinfo?['used_bytes']) as num?)?.toInt() ?? 0;
+    final totalBytes = ((userinfo?['total'] ?? userinfo?['total_bytes']) as num?)?.toInt() ?? 0;
+
+    Future<void> selectProxyNode(Map<String, dynamic> node) async {
+      setState(() {
+        _applyingProxy = true;
+        _needsSingboxCore = false;
+        _proxyStatusMsg = null;
+      });
+      try {
+        await app.activateProxyNode(node);
+        if (mounted) {
+          setState(() => _proxyStatusMsg = '已连接：${node['name']}');
+        }
+      } catch (e) {
+        final msg = e.toString().replaceFirst('VedroCoreException: ', '');
+        if (mounted) {
+          setState(() {
+            _needsSingboxCore = msg.contains('NEEDS_CORE:');
+            _proxyStatusMsg = msg.replaceFirst('NEEDS_CORE:', '');
+          });
+        }
+      } finally {
+        if (mounted) setState(() => _applyingProxy = false);
+      }
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading(
-          '应用内专属代理（免 VPN 通道）',
-          '以纯用户态回环（关闭 TUN 虚拟网卡）运行，不抢占系统 VPN 槽位，仅对 Vedro 内部流媒体与 API 生效',
-        ),
-        VedroAdaptiveSurface(
-          padding: const EdgeInsets.all(15),
-          borderRadius: skin.cardRadius.clamp(10.0, 16.0),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(Icons.shield_outlined, size: 19, color: skin.accent),
-              const SizedBox(width: 11),
-              Expanded(
-                child: Text(
-                  '原理说明：手机/桌面的 VPN 冲突源于开启 TUN 全局虚拟网卡。Vedro 采用「无 TUN 应用层代理」：所有 Emby API 与 4K 视频分块均经内置 Rust 流代理在应用内部转发，零系统 VPN 占用、不影响其它 App；同时哔哩哔哩翻译等国内接口自动走本机纯净 IP 直连。',
-                  style: TextStyle(color: skin.fg2, fontSize: 12.5, height: 1.5),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
+        _heading('网络代理'),
         _GroupedCard(
           children: [
             _InlineSegmentedRow<String>(
-              title: '代理工作模式',
+              title: '模式',
               keyPrefix: 'proxy-mode',
-              value: mode,
+              value: uiMode,
               items: const [
                 ('off', '关闭'),
-                ('custom', 'SOCKS5 / HTTP'),
-                ('singbox', 'sing-box 内核'),
-                ('mihomo', 'mihomo 内核'),
+                ('sub', '节点订阅'),
+                ('custom', '本地端口'),
+                ('core', '高级内核'),
               ],
-              onChanged: (nextMode) async {
-                if (nextMode == 'off') {
+              onChanged: (nextUi) async {
+                if (nextUi == 'off') {
                   setState(() {
                     _applyingProxy = true;
                     _proxyStatusMsg = null;
                   });
                   try {
                     await app.configureInAppProxy(mode: 'off');
-                    if (mounted) {
-                      setState(() => _proxyStatusMsg = '已关闭应用内专属代理，恢复默认直连/系统网络');
-                    }
+                    if (mounted) setState(() => _proxyStatusMsg = null);
                   } catch (e) {
                     if (mounted) setState(() => _proxyStatusMsg = '关闭失败：$e');
                   } finally {
                     if (mounted) setState(() => _applyingProxy = false);
                   }
+                } else if (nextUi == 'core') {
+                  await _updatePrefs(
+                    p.copyWith(inAppProxyMode: isCoreMode ? mode : 'singbox'),
+                  );
                 } else {
-                  await _updatePrefs(p.copyWith(inAppProxyMode: nextMode));
+                  await _updatePrefs(p.copyWith(inAppProxyMode: nextUi));
                 }
               },
             ),
-            if (mode == 'custom')
+            if (isSubMode)
               Padding(
                 padding: const EdgeInsets.all(16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    TextField(
-                      controller: _proxyUrlCtrl,
-                      style: TextStyle(color: skin.fg, fontSize: 13.5, fontFamily: 'monospace'),
-                      decoration: const InputDecoration(
-                        labelText: '代理节点或本地端口地址',
-                        hintText: 'socks5h://127.0.0.1:7890 或 http://127.0.0.1:7890',
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            key: const ValueKey('proxy-sub-url-field'),
+                            controller: _subUrlCtrl,
+                            style: TextStyle(color: skin.fg, fontSize: 13),
+                            decoration: const InputDecoration(
+                              hintText: '订阅链接 https://... 或直接粘贴节点 URI / Clash 配置',
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.icon(
+                          key: const ValueKey('proxy-sub-fetch-btn'),
+                          onPressed: _fetchingSub
+                              ? null
+                              : () async {
+                                  setState(() {
+                                    _fetchingSub = true;
+                                    _proxyStatusMsg = null;
+                                  });
+                                  try {
+                                    final res = await app.fetchProxySubscription(_subUrlCtrl.text);
+                                    if (mounted) {
+                                      setState(() => _proxyStatusMsg = '已更新 ${res['count']} 个节点');
+                                    }
+                                  } catch (e) {
+                                    if (mounted) {
+                                      setState(() => _proxyStatusMsg = e
+                                          .toString()
+                                          .replaceFirst('VedroCoreException: ', '')
+                                          .replaceFirst('Exception: ', ''));
+                                    }
+                                  } finally {
+                                    if (mounted) setState(() => _fetchingSub = false);
+                                  }
+                                },
+                          icon: const Icon(Icons.sync_rounded, size: 15),
+                          label: Text(_fetchingSub ? '更新中' : '更新订阅'),
+                        ),
+                        if (p.proxyNodes.isNotEmpty) ...[
+                          const SizedBox(width: 8),
+                          OutlinedButton.icon(
+                            key: const ValueKey('proxy-sub-ping-btn'),
+                            onPressed: _pingingNodes
+                                ? null
+                                : () async {
+                                    setState(() => _pingingNodes = true);
+                                    try {
+                                      await app.pingProxyNodes();
+                                    } finally {
+                                      if (mounted) setState(() => _pingingNodes = false);
+                                    }
+                                  },
+                            icon: const Icon(Icons.bolt_rounded, size: 15),
+                            label: Text(_pingingNodes ? '测速中' : '测速'),
+                          ),
+                        ],
+                      ],
+                    ),
+                    if (totalBytes > 0) ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(3),
+                              child: LinearProgressIndicator(
+                                value: (usedBytes / totalBytes).clamp(0.0, 1.0),
+                                minHeight: 4,
+                                backgroundColor: skin.surface3,
+                                color: skin.accent,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            '${fmtFileSize(usedBytes)} / ${fmtFileSize(totalBytes)}',
+                            style: TextStyle(
+                              color: skin.fg3,
+                              fontSize: 11.5,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      '可填写本机或局域网运行的 Clash / mihomo / sing-box / Surge 端口，也可直接填写带认证的远程 socks5h://user:pass@host:port。',
-                      style: TextStyle(color: skin.fg3, fontSize: 11.5, height: 1.45),
-                    ),
+                    ],
+                    if (_needsSingboxCore) ...[
+                      const SizedBox(height: 12),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: FilledButton.tonalIcon(
+                          key: const ValueKey('install-singbox-core-btn'),
+                          onPressed: _installingCore
+                              ? null
+                              : () async {
+                                  setState(() => _installingCore = true);
+                                  try {
+                                    await app.installSingboxCore();
+                                    if (mounted) {
+                                      setState(() {
+                                        _needsSingboxCore = false;
+                                        _proxyStatusMsg = '核心安装完成，请再次点击节点启用';
+                                      });
+                                    }
+                                  } catch (e) {
+                                    if (mounted) {
+                                      setState(() => _proxyStatusMsg =
+                                          e.toString().replaceFirst('VedroCoreException: ', ''));
+                                    }
+                                  } finally {
+                                    if (mounted) setState(() => _installingCore = false);
+                                  }
+                                },
+                          icon: const Icon(Icons.download_for_offline_rounded, size: 16),
+                          label: Text(_installingCore ? '正在下载核心…' : '一键下载内置核心'),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
-            if (isCoreMode)
+            if (mode == 'custom')
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: TextField(
+                  controller: _proxyUrlCtrl,
+                  style: TextStyle(color: skin.fg, fontSize: 13.5, fontFamily: 'monospace'),
+                  decoration: const InputDecoration(
+                    labelText: '代理端口',
+                    hintText: 'socks5h://127.0.0.1:7890',
+                  ),
+                ),
+              ),
+            if (isCoreMode) ...[
+              _InlineSegmentedRow<String>(
+                title: '内核类型',
+                keyPrefix: 'proxy-core-kind',
+                value: mode,
+                items: const [
+                  ('singbox', 'sing-box'),
+                  ('mihomo', 'mihomo'),
+                ],
+                onChanged: (k) => _updatePrefs(p.copyWith(inAppProxyMode: k)),
+              ),
               Padding(
                 padding: const EdgeInsets.all(16),
                 child: Column(
@@ -1046,7 +1197,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                             controller: _proxyBinCtrl,
                             style: TextStyle(color: skin.fg, fontSize: 13, fontFamily: 'monospace'),
                             decoration: InputDecoration(
-                              labelText: '${mode == 'singbox' ? 'sing-box' : 'mihomo'} 可执行文件路径（留空自动从系统 PATH 查找）',
+                              labelText: '内核路径（可留空）',
                               hintText: mode == 'singbox' ? '/usr/local/bin/sing-box' : '/usr/local/bin/mihomo',
                             ),
                           ),
@@ -1055,7 +1206,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                         OutlinedButton.icon(
                           onPressed: () async {
                             final picked = await NativePlaybackChannel.pickFiles(
-                              title: '选择内核可执行文件',
+                              title: '选择内核文件',
                             );
                             if (picked.isNotEmpty) {
                               setState(() => _proxyBinCtrl.text = picked.first);
@@ -1069,111 +1220,202 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                     const SizedBox(height: 12),
                     TextField(
                       controller: _proxyCfgCtrl,
-                      minLines: 5,
-                      maxLines: 10,
+                      minLines: 4,
+                      maxLines: 8,
                       style: TextStyle(color: skin.fg, fontSize: 12, fontFamily: 'monospace'),
                       decoration: InputDecoration(
-                        labelText: mode == 'singbox'
-                            ? 'sing-box JSON 配置（Vedro 会自动剔除 tun 并绑定 127.0.0.1 随机回环端口）'
-                            : 'mihomo / Clash YAML 配置（Vedro 会自动关闭 tun 并绑定 127.0.0.1 随机回环端口）',
-                        hintText: mode == 'singbox'
-                            ? '{\n  "outbounds": [ ... ]\n}'
-                            : 'proxies:\n  - name: "Node-1"\n    type: ss\n    ...',
+                        labelText: mode == 'singbox' ? 'JSON 配置' : 'YAML 配置',
                       ),
                     ),
                   ],
                 ),
               ),
-            if (mode != 'off')
+            ],
+            if (mode == 'custom' || isCoreMode)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    Wrap(
-                      spacing: 10,
-                      runSpacing: 8,
-                      children: [
-                        FilledButton.icon(
-                          key: const ValueKey('apply-in-app-proxy-btn'),
-                          onPressed: _applyingProxy
-                              ? null
-                              : () async {
-                                  setState(() {
-                                    _applyingProxy = true;
-                                    _proxyStatusMsg = null;
-                                  });
-                                  try {
-                                    final res = await app.configureInAppProxy(
-                                      mode: mode,
-                                      proxyUrl: _proxyUrlCtrl.text.trim(),
-                                      binaryPath: _proxyBinCtrl.text.trim(),
-                                      configText: _proxyCfgCtrl.text,
-                                    );
-                                    if (mounted) {
-                                      setState(() => _proxyStatusMsg =
-                                          '已启用应用内代理（${res['proxy_url']} · 零系统 VPN 占用）');
-                                    }
-                                  } catch (e) {
-                                    if (mounted) {
-                                      setState(() => _proxyStatusMsg =
-                                          '启动失败：${e.toString().replaceFirst('VedroCoreException: ', '')}');
-                                    }
-                                  } finally {
-                                    if (mounted) setState(() => _applyingProxy = false);
-                                  }
-                                },
-                          icon: const Icon(Icons.bolt_rounded, size: 16),
-                          label: Text(_applyingProxy ? '正在启动…' : '保存并启用代理'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: _testingProxy
-                              ? null
-                              : () async {
-                                  setState(() {
-                                    _testingProxy = true;
-                                    _proxyStatusMsg = null;
-                                  });
-                                  try {
-                                    final res = await app.testInAppProxy(
-                                      proxyUrl: mode == 'custom' ? _proxyUrlCtrl.text.trim() : null,
-                                    );
-                                    if (mounted) {
-                                      setState(() => _proxyStatusMsg =
-                                          '连通成功：HTTP ${res['status']} · 延迟 ${res['latency_ms']} ms');
-                                    }
-                                  } catch (e) {
-                                    if (mounted) {
-                                      setState(() => _proxyStatusMsg =
-                                          '连通测试失败：${e.toString().replaceFirst('VedroCoreException: ', '')}');
-                                    }
-                                  } finally {
-                                    if (mounted) setState(() => _testingProxy = false);
-                                  }
-                                },
-                          icon: const Icon(Icons.speed_rounded, size: 15),
-                          label: Text(_testingProxy ? '测速中…' : '测试代理延迟'),
-                        ),
-                      ],
+                    FilledButton.icon(
+                      key: const ValueKey('apply-in-app-proxy-btn'),
+                      onPressed: _applyingProxy
+                          ? null
+                          : () async {
+                              setState(() {
+                                _applyingProxy = true;
+                                _proxyStatusMsg = null;
+                              });
+                              try {
+                                final res = await app.configureInAppProxy(
+                                  mode: mode,
+                                  proxyUrl: _proxyUrlCtrl.text.trim(),
+                                  binaryPath: _proxyBinCtrl.text.trim(),
+                                  configText: _proxyCfgCtrl.text,
+                                );
+                                if (mounted) {
+                                  setState(() => _proxyStatusMsg = '已启用 · ${res['proxy_url']}');
+                                }
+                              } catch (e) {
+                                if (mounted) {
+                                  setState(() => _proxyStatusMsg =
+                                      e.toString().replaceFirst('VedroCoreException: ', ''));
+                                }
+                              } finally {
+                                if (mounted) setState(() => _applyingProxy = false);
+                              }
+                            },
+                      icon: const Icon(Icons.check_rounded, size: 16),
+                      label: Text(_applyingProxy ? '启动中' : '启用'),
                     ),
-                    if (_proxyStatusMsg != null) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        _proxyStatusMsg!,
-                        style: TextStyle(
-                          color: _proxyStatusMsg!.contains('失败')
-                              ? VedroTheme.danger
-                              : const Color(0xFF10B981),
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
+                    OutlinedButton.icon(
+                      onPressed: _testingProxy
+                          ? null
+                          : () async {
+                              setState(() {
+                                _testingProxy = true;
+                                _proxyStatusMsg = null;
+                              });
+                              try {
+                                final res = await app.testInAppProxy(
+                                  proxyUrl: mode == 'custom' ? _proxyUrlCtrl.text.trim() : null,
+                                );
+                                if (mounted) {
+                                  setState(() => _proxyStatusMsg = '${res['latency_ms']} ms');
+                                }
+                              } catch (e) {
+                                if (mounted) {
+                                  setState(() => _proxyStatusMsg =
+                                      e.toString().replaceFirst('VedroCoreException: ', ''));
+                                }
+                              } finally {
+                                if (mounted) setState(() => _testingProxy = false);
+                              }
+                            },
+                      icon: const Icon(Icons.speed_rounded, size: 15),
+                      label: Text(_testingProxy ? '测速中' : '测速'),
+                    ),
                   ],
                 ),
               ),
           ],
         ),
+        if (_proxyStatusMsg != null) ...[
+          const SizedBox(height: 10),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Text(
+              _proxyStatusMsg!,
+              style: TextStyle(
+                color: (_proxyStatusMsg!.contains('失败') || _proxyStatusMsg!.contains('未检测到'))
+                    ? VedroTheme.danger
+                    : const Color(0xFF10B981),
+                fontSize: 12.5,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+        if (mode == 'sub' && p.proxyNodes.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          _GroupHeader('节点列表 (${p.proxyNodes.length})'),
+          LayoutBuilder(
+            builder: (ctx, c) {
+              final cols = c.maxWidth >= 560 ? 2 : 1;
+              const gap = 10.0;
+              final cardW = (c.maxWidth - gap * (cols - 1)) / cols;
+              return Wrap(
+                spacing: gap,
+                runSpacing: gap,
+                children: p.proxyNodes.map((node) {
+                  final id = (node['id'] ?? '').toString();
+                  final name = (node['name'] ?? '').toString();
+                  final proto = (node['protocol'] ?? '').toString().toUpperCase();
+                  final selected = p.selectedProxyNodeId == id;
+                  final hasPing = app.proxyNodeLatencies.containsKey(id);
+                  final ms = app.proxyNodeLatencies[id];
+                  final msColor = ms == null
+                      ? skin.fg3
+                      : (ms < 160
+                          ? const Color(0xFF10B981)
+                          : (ms < 360 ? const Color(0xFFF59E0B) : VedroTheme.danger));
+                  return SizedBox(
+                    width: cardW,
+                    child: PressableScale(
+                      key: ValueKey('proxy-node-$id'),
+                      onTap: _applyingProxy ? null : () => selectProxyNode(node),
+                      hoverScale: 1.01,
+                      pressScale: 0.98,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 160),
+                        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+                        decoration: BoxDecoration(
+                          color: skin.unifiedTileColor(selected: selected),
+                          borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
+                          border: Border.all(
+                            color: selected ? skin.accent : skin.border,
+                            width: selected ? 1.2 : 0.75,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: selected ? skin.accent : skin.fg3.withValues(alpha: 0.35),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: selected ? skin.fg : skin.fg2,
+                                      fontSize: 13.5,
+                                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    proto,
+                                    style: TextStyle(
+                                      color: skin.fg3,
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (hasPing)
+                              Text(
+                                ms != null ? '$ms ms' : '超时',
+                                style: TextStyle(
+                                  color: msColor,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  fontFeatures: const [FontFeature.tabularFigures()],
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              );
+            },
+          ),
+        ],
       ],
     );
   }
@@ -1187,7 +1429,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('下载管理', '离线缓存影片与本地文件管理'),
+        _heading('下载管理'),
         if (dq != null && dq.enabled) ...[
           _buildDownloadQuotaCard(app, dq, traffic),
           const SizedBox(height: 18),
@@ -1452,14 +1694,6 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               );
             }).toList(),
           ),
-        const SizedBox(height: 12),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Text(
-            '支持 HTTP Range 断点续传与断流自动重连（保留 .part 临时进度）；若代理节点长连接易中断，建议切换直连线路或适当降低同时下载任务数。',
-            style: TextStyle(color: skin.fg3, fontSize: 11.5, height: 1.5),
-          ),
-        ),
       ],
     );
   }
@@ -1738,7 +1972,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('字体管理', '管理外挂/内封 ASS & SRT 字幕渲染字体，并在下方实时预览排印效果'),
+        _heading('字体管理'),
         // Live Font Specimen & Cinema Subtitle Preview Card
         VedroAdaptiveSurface(
           key: const ValueKey('font-live-preview-card'),
@@ -1752,7 +1986,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                   Icon(Icons.font_download_outlined, size: 16, color: skin.accent),
                   const SizedBox(width: 7),
                   Text(
-                    '实时字体渲染预览 · 当前：${p.subtitleFontFamily.isEmpty ? '系统默认字体' : p.subtitleFontFamily}',
+                    p.subtitleFontFamily.isEmpty ? '系统默认' : p.subtitleFontFamily,
                     style: TextStyle(color: skin.fg, fontSize: 13, fontWeight: FontWeight.w700),
                   ),
                 ],
@@ -1937,12 +2171,11 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('模块配置', '拖拽调整首页各模块的上下顺序，并自由控制显示或隐藏'),
+        _heading('模块配置'),
         _GroupedCard(
           children: [
             _SwitchRow(
-              title: '顶部横幅轮播',
-              subtitle: '仅自动筛选带横版背景图的影片，拒绝竖图拉伸',
+              title: '顶部巨幕轮播',
               value: app.showHomeHero,
               onChanged: (v) => app.saveHomeLayout(sections, showHero: v),
             ),
@@ -1951,7 +2184,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
         const SizedBox(height: 16),
         Row(
           children: [
-            const Expanded(child: _GroupHeader('首页板块顺序（拖拽手柄排序）')),
+            const Expanded(child: _GroupHeader('板块排序')),
             TextButton(
               onPressed: app.resetHomeLayout,
               child: Text('恢复默认', style: TextStyle(color: VedroSkin.of(context).fg2, fontSize: 12.5)),
@@ -2049,7 +2282,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('列表配置', '调整海报墙排版密度、角标信息与默认排序'),
+        _heading('列表配置'),
         _GroupedCard(
           children: [
             _InlineSegmentedRow<String>(
@@ -2100,30 +2333,32 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('界面偏好', '控制详情页与播放器内的信息呈现与交互提示'),
+        _heading('界面偏好'),
         _GroupedCard(
           children: [
             _SwitchRow(
+              key: const ValueKey('pref-confirm-exit-app'),
+              title: '按返回键二次确认退出',
+              value: p.confirmExitApp,
+              onChanged: (v) => _updatePrefs(p.copyWith(confirmExitApp: v)),
+            ),
+            _SwitchRow(
               title: '显示画质与音频规格标识',
-              subtitle: '在详情页与播放器顶部展示 4K / Dolby Vision / Atmos 细线标签',
               value: p.showSpecBadges,
               onChanged: (v) => _updatePrefs(p.copyWith(showSpecBadges: v)),
             ),
             _SwitchRow(
-              title: '进度条右侧默认显示剩余时长',
-              subtitle: '例如显示 -01:12:08，播放时也可点击时间切换',
+              title: '进度条右侧显示剩余时长',
               value: p.showRemainingTime,
               onChanged: (v) => _updatePrefs(p.copyWith(showRemainingTime: v)),
             ),
             _SwitchRow(
               title: '退出播放前二次确认',
-              subtitle: '防止误触 Esc 或返回键中断观影',
               value: p.confirmExitPlayer,
               onChanged: (v) => _updatePrefs(p.copyWith(confirmExitPlayer: v)),
             ),
             _SwitchRow(
               title: '无痕观影模式',
-              subtitle: '开启后不向服务器回传播放进度与观看历史',
               value: p.incognitoMode,
               onChanged: (v) => _updatePrefs(p.copyWith(incognitoMode: v)),
             ),
@@ -2133,13 +2368,13 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     );
   }
 
-  // 8. 播放设置（统一收拢全局默认首选音轨与首选字幕语言！）
+  // 8. 播放设置
   Widget _buildPlayback(VedroPreferences p) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('播放设置', '全局首选音轨与字幕语言、默认引擎、内存缓存、倍速、手势与片头片尾跳过'),
-        const _GroupHeader('默认音轨与字幕匹配偏好'),
+        _heading('播放设置'),
+        const _GroupHeader('默认音轨与字幕'),
         KeyedSubtree(
           key: const ValueKey('settings-global-audio-sub-card'),
           child: _GroupedCard(
@@ -2328,7 +2563,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('视频设置', '硬件解码、杜比视界直出、HDR 色调映射、Anime4K 与自定义 mpv.conf'),
+        _heading('视频设置'),
         _GroupedCard(
           children: [
             _AppleMenuPickerRow<String>(
@@ -2475,7 +2710,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('音频设置', '杜比全景声直通、空间音频、夜间模式与音量增益上限'),
+        _heading('音频设置'),
         _GroupedCard(
           children: [
             _AppleMenuPickerRow<String>(
@@ -2536,7 +2771,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('字幕设置', '默认字幕语言、字号缩放、垂直位置、颜色与外挂加载'),
+        _heading('字幕设置'),
         _GroupedCard(
           children: [
             _InlineSegmentedRow<String>(
@@ -2647,7 +2882,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('弹幕设置', '控制播放器内 60fps 弹幕渲染开关、透明度、显示区域与自定义弹幕源'),
+        _heading('弹幕设置'),
         _GroupedCard(
           children: [
             _SwitchRow(
@@ -2703,7 +2938,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('自定义弹幕源接口（留空默认启用内置多源匹配：弹弹play 镜像 + 哔哩哔哩番剧/影视）',
+                  Text('自定义弹幕源',
                       style: TextStyle(color: VedroSkin.of(context).fg2, fontSize: 12.5)),
                   const SizedBox(height: 8),
                   Row(
@@ -2712,7 +2947,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                         child: TextField(
                           controller: _danmakuApiCtrl,
                           decoration: const InputDecoration(
-                            hintText: '留空自动多源匹配，或填写弹弹play 兼容 API / XML 链接',
+                            hintText: '留空使用内置多源匹配',
                           ),
                         ),
                       ),
@@ -2734,15 +2969,14 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     );
   }
 
-  // 13. AI 服务（翻译）— 内置哔哩哔哩免费 Index-Translate（客户端本机 IP 直连）
+  // 13. AI 翻译（极简零废话 UI + 模型列表一键拉取 + 直连/代理出口切换）
   Widget _buildAi(VedroAppState app, VedroPreferences p) {
-    final skin = VedroSkin.of(context);
     final isBili = p.aiBaseUrl.toLowerCase().contains('index-translate.bilibili.com');
 
     Future<void> applyPreset({
       required String baseUrl,
       required String model,
-      bool directIp = false,
+      required bool directIp,
       bool clearKey = false,
     }) async {
       _aiUrlCtrl.text = baseUrl;
@@ -2754,93 +2988,65 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
         aiModel: model,
         aiApiKey: clearKey ? '' : _aiKeyCtrl.text.trim(),
         aiDirectClientIp: directIp,
+        aiCachedModels: const [],
       ));
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading(
-          'AI 服务（翻译）',
-          '一键启用哔哩哔哩免费 Index-Translate 大模型（本机 IP 直连，绝不经过媒体服务器），也支持 DeepSeek / OpenAI / Ollama',
-        ),
-        VedroAdaptiveSurface(
-          padding: const EdgeInsets.all(15),
-          borderRadius: skin.cardRadius.clamp(10.0, 16.0),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(Icons.verified_user_outlined, size: 18, color: skin.accent),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  '隐私与 IP 保护：所有翻译请求均由用户客户端设备直接向翻译接口发起，100% 不经过你的 EmbyGo 服务器；使用哔哩哔哩免费接口时自动强制走用户本机 IP 直连（绕过代理）。',
-                  style: TextStyle(color: skin.fg2, fontSize: 12.5, height: 1.48),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
+        _heading('AI 翻译'),
         _GroupedCard(
           children: [
             _SwitchRow(
-              title: '启用 AI 翻译服务',
-              subtitle: '开启后详情页简介支持一键自然翻译',
+              title: '启用翻译',
               value: p.aiEnabled,
               onChanged: (v) => _updatePrefs(p.copyWith(aiEnabled: v)),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
                 children: [
-                  Text('快速选用翻译服务预设', style: TextStyle(color: skin.fg2, fontSize: 12.5, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      ChoiceChip(
-                        key: const ValueKey('ai-preset-bilibili'),
-                        selected: isBili,
-                        label: const Text('哔哩哔哩 Index-Translate（免费免 Key · 本机 IP）'),
-                        onSelected: (_) => applyPreset(
-                          baseUrl: 'https://index-translate.bilibili.com/v1',
-                          model: 'Index-Translate-35B-A3B',
-                          directIp: true,
-                          clearKey: true,
-                        ),
-                      ),
-                      ChoiceChip(
-                        selected: p.aiBaseUrl.contains('deepseek.com'),
-                        label: const Text('DeepSeek'),
-                        onSelected: (_) => applyPreset(
-                          baseUrl: 'https://api.deepseek.com/v1',
-                          model: 'deepseek-chat',
-                          directIp: true,
-                        ),
-                      ),
-                      ChoiceChip(
-                        selected: p.aiBaseUrl.contains('openai.com'),
-                        label: const Text('OpenAI'),
-                        onSelected: (_) => applyPreset(
-                          baseUrl: 'https://api.openai.com/v1',
-                          model: 'gpt-4o-mini',
-                          directIp: false,
-                        ),
-                      ),
-                      ChoiceChip(
-                        selected: p.aiBaseUrl.contains('11434'),
-                        label: const Text('本地 Ollama'),
-                        onSelected: (_) => applyPreset(
-                          baseUrl: 'http://127.0.0.1:11434/v1',
-                          model: 'qwen2.5:7b',
-                          directIp: true,
-                          clearKey: true,
-                        ),
-                      ),
-                    ],
+                  ChoiceChip(
+                    key: const ValueKey('ai-preset-bilibili'),
+                    selected: isBili,
+                    label: const Text('Bilibili'),
+                    onSelected: (_) => applyPreset(
+                      baseUrl: 'https://index-translate.bilibili.com/v1',
+                      model: 'Index-Translate-35B-A3B',
+                      directIp: true,
+                      clearKey: true,
+                    ),
+                  ),
+                  ChoiceChip(
+                    selected: p.aiBaseUrl.contains('deepseek.com'),
+                    label: const Text('DeepSeek'),
+                    onSelected: (_) => applyPreset(
+                      baseUrl: 'https://api.deepseek.com/v1',
+                      model: 'deepseek-chat',
+                      directIp: true,
+                    ),
+                  ),
+                  ChoiceChip(
+                    selected: p.aiBaseUrl.contains('openai.com'),
+                    label: const Text('OpenAI'),
+                    onSelected: (_) => applyPreset(
+                      baseUrl: 'https://api.openai.com/v1',
+                      model: 'gpt-4o-mini',
+                      directIp: false,
+                    ),
+                  ),
+                  ChoiceChip(
+                    selected: p.aiBaseUrl.contains('11434'),
+                    label: const Text('Ollama'),
+                    onSelected: (_) => applyPreset(
+                      baseUrl: 'http://127.0.0.1:11434/v1',
+                      model: 'qwen2.5:7b',
+                      directIp: true,
+                      clearKey: true,
+                    ),
                   ),
                 ],
               ),
@@ -2856,14 +3062,18 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               ],
               onChanged: (v) => _updatePrefs(p.copyWith(aiTargetLang: v)),
             ),
-            _SwitchRow(
-              title: '强制客户端本机 IP 直连（不走代理）',
-              subtitle: '针对哔哩哔哩免费翻译等校验国内住宅 IP 的接口保持开启',
-              value: p.aiDirectClientIp || isBili,
+            _InlineSegmentedRow<bool>(
+              title: '网络出口',
+              keyPrefix: 'ai-egress',
+              value: p.aiDirectClientIp,
+              items: const [
+                (true, '本机直连'),
+                (false, '走代理'),
+              ],
               onChanged: (v) => _updatePrefs(p.copyWith(aiDirectClientIp: v)),
             ),
             _SwitchRow(
-              title: '双语对照模式',
+              title: '双语对照',
               value: p.aiBilingualSubtitle,
               onChanged: (v) => _updatePrefs(p.copyWith(aiBilingualSubtitle: v)),
             ),
@@ -2876,7 +3086,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                     controller: _aiUrlCtrl,
                     decoration: const InputDecoration(
                       labelText: 'API Base URL',
-                      hintText: 'https://index-translate.bilibili.com/v1',
+                      hintText: 'https://api.openai.com/v1',
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -2884,18 +3094,88 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                     controller: _aiKeyCtrl,
                     obscureText: true,
                     decoration: InputDecoration(
-                      labelText: isBili ? 'API Key（哔哩哔哩免费接口留空即可）' : 'API Key',
-                      hintText: isBili ? '无需填写 API Key' : 'sk-...',
+                      labelText: 'API Key',
+                      hintText: isBili ? '免 Key' : 'sk-...',
                     ),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
-                    controller: _aiModelCtrl,
-                    decoration: const InputDecoration(
-                      labelText: '模型名称',
-                      hintText: 'Index-Translate-35B-A3B',
-                    ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _aiModelCtrl,
+                          decoration: const InputDecoration(
+                            labelText: '模型',
+                            hintText: 'gpt-4o-mini',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        key: const ValueKey('ai-fetch-models-btn'),
+                        onPressed: _fetchingAiModels
+                            ? null
+                            : () async {
+                                setState(() {
+                                  _fetchingAiModels = true;
+                                  _aiTestResult = null;
+                                });
+                                try {
+                                  final models = await app.fetchAiModels(
+                                    baseUrl: _aiUrlCtrl.text.trim(),
+                                    apiKey: _aiKeyCtrl.text.trim(),
+                                    directIp: p.aiDirectClientIp,
+                                  );
+                                  if (models.isNotEmpty) {
+                                    _aiModelCtrl.text = app.prefs.aiModel;
+                                  }
+                                  if (mounted) {
+                                    setState(() => _aiTestResult = '已获取 ${models.length} 个模型');
+                                  }
+                                } catch (e) {
+                                  if (mounted) {
+                                    setState(() => _aiTestResult = e
+                                        .toString()
+                                        .replaceFirst('VedroCoreException: ', '')
+                                        .replaceFirst('Exception: ', ''));
+                                  }
+                                } finally {
+                                  if (mounted) setState(() => _fetchingAiModels = false);
+                                }
+                              },
+                        icon: const Icon(Icons.list_alt_rounded, size: 15),
+                        label: Text(_fetchingAiModels ? '获取中' : '获取模型'),
+                      ),
+                    ],
                   ),
+                  if (p.aiCachedModels.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 132),
+                      child: SingleChildScrollView(
+                        child: Wrap(
+                          spacing: 7,
+                          runSpacing: 7,
+                          children: p.aiCachedModels.map((m) {
+                            final selected = p.aiModel == m;
+                            return ChoiceChip(
+                              key: ValueKey('ai-model-chip-$m'),
+                              selected: selected,
+                              label: Text(m, style: const TextStyle(fontSize: 12)),
+                              onSelected: (_) {
+                                _aiModelCtrl.text = m;
+                                _updatePrefs(p.copyWith(
+                                  aiBaseUrl: _aiUrlCtrl.text.trim(),
+                                  aiApiKey: _aiKeyCtrl.text.trim(),
+                                  aiModel: m,
+                                ));
+                              },
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 14),
                   Row(
                     children: [
@@ -2908,11 +3188,11 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                           ));
                           if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('翻译配置已保存')),
+                              const SnackBar(content: Text('已保存')),
                             );
                           }
                         },
-                        child: const Text('保存配置', style: TextStyle(fontSize: 13)),
+                        child: const Text('保存', style: TextStyle(fontSize: 13)),
                       ),
                       const SizedBox(width: 10),
                       OutlinedButton(
@@ -2932,15 +3212,18 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                                 try {
                                   final res = await app.translateText('Hello Cinema World');
                                   if (mounted) {
-                                    setState(() => _aiTestResult = '连接成功（客户端本机 IP 直连）：$res');
+                                    setState(() => _aiTestResult = res);
                                   }
                                 } catch (e) {
-                                  if (mounted) setState(() => _aiTestResult = '测试失败：$e');
+                                  if (mounted) {
+                                    setState(() => _aiTestResult =
+                                        e.toString().replaceFirst('VedroCoreException: ', ''));
+                                  }
                                 } finally {
                                   if (mounted) setState(() => _testingAi = false);
                                 }
                               },
-                        child: Text(_testingAi ? '测试中…' : '测试连通性', style: const TextStyle(fontSize: 13)),
+                        child: Text(_testingAi ? '测试中' : '测试', style: const TextStyle(fontSize: 13)),
                       ),
                     ],
                   ),
@@ -2949,9 +3232,9 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                     Text(
                       _aiTestResult!,
                       style: TextStyle(
-                        color: _aiTestResult!.startsWith('连接成功')
-                            ? const Color(0xFF10B981)
-                            : VedroTheme.danger,
+                        color: (_aiTestResult!.contains('失败') || _aiTestResult!.contains('HTTP'))
+                            ? VedroTheme.danger
+                            : const Color(0xFF10B981),
                         fontSize: 12.5,
                       ),
                     ),
@@ -2970,7 +3253,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('隐私保护', '设置应用进入密码锁与后台切换模糊遮罩'),
+        _heading('隐私保护'),
         _GroupedCard(
           children: [
             _SwitchRow(
@@ -3429,6 +3712,7 @@ class _InlineSegmentedRow<T> extends StatelessWidget {
 
 class _SwitchRow extends StatelessWidget {
   const _SwitchRow({
+    super.key,
     required this.title,
     required this.value,
     required this.onChanged,

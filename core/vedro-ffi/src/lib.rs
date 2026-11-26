@@ -5,6 +5,8 @@ use std::os::raw::c_char;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod proxy_sub;
+
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -89,6 +91,7 @@ impl Drop for ManagedProxyProcess {
 pub struct VedroRuntime {
     rt: Runtime,
     store: VedroStore,
+    db_dir: Option<std::path::PathBuf>,
     proxy: Arc<StreamProxy>,
     client: Mutex<Option<EmbyClient>>,
     ws: Mutex<Option<WebSocketSession>>,
@@ -116,6 +119,10 @@ impl VedroRuntime {
             .thread_name("vedro-core")
             .build()
             .map_err(|e| format!("failed to build tokio runtime: {e}"))?;
+
+        let db_dir = db_path
+            .filter(|p| !p.is_empty() && *p != ":memory:")
+            .and_then(|p| std::path::Path::new(p).parent().map(|d| d.to_path_buf()));
 
         let store = match db_path {
             None | Some("") | Some(":memory:") => VedroStore::open_in_memory(),
@@ -150,7 +157,7 @@ impl VedroRuntime {
             .flatten()
             .and_then(|v| {
                 let mode = v.get("mode").and_then(Value::as_str).unwrap_or("off");
-                if mode == "custom" {
+                if mode == "custom" || mode == "node_direct" {
                     v.get("proxy_url")
                         .and_then(Value::as_str)
                         .map(str::trim)
@@ -171,6 +178,7 @@ impl VedroRuntime {
         Ok(Self {
             rt,
             store,
+            db_dir,
             proxy,
             client: Mutex::new(None),
             ws: Mutex::new(None),
@@ -2213,6 +2221,472 @@ impl VedroRuntime {
                     "translated": translated,
                     "direct_ip": direct_ip,
                     "provider": if is_bilibili_index { "bilibili_index" } else { "openai_compat" }
+                }))
+            }
+
+            "ai_list_models" => {
+                let base_url = str_param(&params, "base_url")?;
+                let api_key = params.get("api_key").and_then(Value::as_str).unwrap_or("");
+                let is_bilibili_index = base_url
+                    .to_ascii_lowercase()
+                    .contains("index-translate.bilibili.com");
+                let direct_ip = params
+                    .get("direct_ip")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+
+                let endpoint = format!("{}/models", base_url.trim_end_matches('/'));
+                let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(12));
+                if direct_ip {
+                    builder = builder.no_proxy();
+                } else if let Some(ref p_url) = *self.in_app_proxy_url.lock() {
+                    if let Ok(proxy) = reqwest::Proxy::all(p_url) {
+                        builder = builder.proxy(proxy);
+                    }
+                }
+                let http = builder.build().map_err(|e| e.to_string())?;
+                let mut req = http.get(&endpoint).header(
+                    reqwest::header::USER_AGENT,
+                    if is_bilibili_index {
+                        "Index-Translate-Client/1.0"
+                    } else {
+                        "Vedro-Translate/0.3.1"
+                    },
+                );
+                if !api_key.trim().is_empty() {
+                    req = req.bearer_auth(api_key.trim());
+                }
+
+                let mut models: Vec<String> = Vec::new();
+                match req.send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        if let Ok(body) = resp.json::<Value>().await {
+                            let arr_opt = body
+                                .get("data")
+                                .and_then(Value::as_array)
+                                .or_else(|| body.get("models").and_then(Value::as_array))
+                                .or_else(|| body.as_array());
+                            if let Some(arr) = arr_opt {
+                                for item in arr {
+                                    let id = item
+                                        .get("id")
+                                        .and_then(Value::as_str)
+                                        .or_else(|| item.get("name").and_then(Value::as_str))
+                                        .or_else(|| item.as_str())
+                                        .map(str::trim)
+                                        .filter(|s| !s.is_empty());
+                                    if let Some(m) = id {
+                                        let clean =
+                                            m.strip_prefix("models/").unwrap_or(m).to_string();
+                                        if !models.contains(&clean) {
+                                            models.push(clean);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(resp) => {
+                        if !is_bilibili_index {
+                            let status = resp.status();
+                            let text = resp.text().await.unwrap_or_default();
+                            let msg = serde_json::from_str::<Value>(&text)
+                                .ok()
+                                .and_then(|v| {
+                                    v.pointer("/error/message")
+                                        .and_then(Value::as_str)
+                                        .map(ToString::to_string)
+                                })
+                                .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+                            return Err(format!("获取模型失败: {msg}"));
+                        }
+                    }
+                    Err(e) => {
+                        if !is_bilibili_index {
+                            return Err(format!("获取模型失败: {e}"));
+                        }
+                    }
+                }
+                if models.is_empty() && is_bilibili_index {
+                    models.push("Index-Translate-35B-A3B".to_string());
+                }
+                models.sort();
+                Ok(json!({
+                    "models": models,
+                    "direct_ip": direct_ip,
+                }))
+            }
+
+            "fetch_proxy_subscription" => {
+                let raw_inline = params
+                    .get("raw_content")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+
+                let (body_text, userinfo) = if let Some(inline) = raw_inline {
+                    (inline.to_string(), None)
+                } else {
+                    let sub_url = str_param(&params, "url")?;
+                    let active_px = self.in_app_proxy_url.lock().clone();
+                    // Try via active proxy first if present, falling back to direct IP
+                    let mut fetched: Option<(String, Option<Value>)> = None;
+                    let mut last_err = String::new();
+                    let attempts: Vec<Option<String>> = if let Some(px) = active_px {
+                        vec![Some(px), None]
+                    } else {
+                        vec![None]
+                    };
+                    for px_opt in attempts {
+                        let mut b = reqwest::Client::builder()
+                            .timeout(Duration::from_secs(15))
+                            .user_agent("ClashMetaForAndroid/2.11.2 sing-box/1.10.7 Vedro/0.3.1");
+                        if let Some(ref p) = px_opt {
+                            if let Ok(proxy) = reqwest::Proxy::all(p) {
+                                b = b.proxy(proxy);
+                            }
+                        } else {
+                            b = b.no_proxy();
+                        }
+                        if let Ok(http) = b.build() {
+                            match http.get(sub_url.trim()).send().await {
+                                Ok(resp) if resp.status().is_success() => {
+                                    let ui = resp
+                                        .headers()
+                                        .get("subscription-userinfo")
+                                        .or_else(|| resp.headers().get("Subscription-Userinfo"))
+                                        .and_then(|h| h.to_str().ok())
+                                        .and_then(proxy_sub::parse_subscription_userinfo);
+                                    match resp.text().await {
+                                        Ok(txt) => {
+                                            fetched = Some((txt, ui));
+                                            break;
+                                        }
+                                        Err(e) => last_err = e.to_string(),
+                                    }
+                                }
+                                Ok(resp) => {
+                                    last_err = format!("HTTP {}", resp.status().as_u16());
+                                }
+                                Err(e) => {
+                                    last_err = e.to_string();
+                                }
+                            }
+                        }
+                    }
+                    fetched.ok_or_else(|| format!("订阅拉取失败: {last_err}"))?
+                };
+
+                let nodes = proxy_sub::parse_subscription_content(&body_text)?;
+                Ok(json!({
+                    "nodes": nodes,
+                    "count": nodes.len(),
+                    "userinfo": userinfo,
+                }))
+            }
+
+            "ping_proxy_nodes" => {
+                let arr = params
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let targets: Vec<(String, String, u16)> = arr
+                    .into_iter()
+                    .filter_map(|v| {
+                        let id = v.get("id")?.as_str()?.to_string();
+                        let server = v.get("server")?.as_str()?.to_string();
+                        let port = v.get("port")?.as_u64()? as u16;
+                        Some((id, server, port))
+                    })
+                    .collect();
+                let latencies = proxy_sub::ping_nodes_tcp(targets).await;
+                Ok(json!({ "latencies": latencies }))
+            }
+
+            "activate_proxy_node" => {
+                let node_val = params
+                    .get("node")
+                    .cloned()
+                    .ok_or_else(|| "缺少节点信息".to_string())?;
+                let node: proxy_sub::ProxyNodeInfo =
+                    serde_json::from_value(node_val).map_err(|e| format!("节点格式无效: {e}"))?;
+
+                *self.managed_proxy.lock() = None;
+
+                if let Some(ref direct_url) = node.direct_proxy_url {
+                    reqwest::Proxy::all(direct_url).map_err(|e| format!("节点地址无效: {e}"))?;
+                    *self.in_app_proxy_url.lock() = Some(direct_url.clone());
+                    let _ = self.store.set_setting(
+                        "in_app_proxy_config_v1",
+                        &json!({
+                            "mode": "node_direct",
+                            "proxy_url": direct_url,
+                            "node_id": node.id,
+                            "node_name": node.name,
+                        }),
+                    );
+                    self.rebuild_active_client_transport();
+                    return Ok(json!({
+                        "ok": true,
+                        "mode": "node",
+                        "active": true,
+                        "proxy_url": direct_url,
+                        "node_id": node.id,
+                        "node_name": node.name,
+                    }));
+                }
+
+                #[cfg(target_os = "ios")]
+                {
+                    let _ = &node;
+                    return Err("iOS 沙盒仅支持直接选用 SOCKS5/HTTP 节点或局域网端口".into());
+                }
+
+                #[cfg(not(target_os = "ios"))]
+                {
+                    let outbound = node
+                        .singbox_outbound
+                        .clone()
+                        .ok_or_else(|| "该节点缺少协议参数".to_string())?;
+                    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+                        .map_err(|e| format!("无法分配回环端口: {e}"))?;
+                    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+                    drop(listener);
+
+                    let temp_dir = std::env::temp_dir()
+                        .join(format!("vedro-node-{}", uuid::Uuid::new_v4().simple()));
+                    std::fs::create_dir_all(&temp_dir)
+                        .map_err(|e| format!("无法创建工作目录: {e}"))?;
+
+                    let mut ob = outbound;
+                    ob["tag"] = Value::String("proxy".into());
+                    let sb_doc = json!({
+                        "log": { "level": "warn" },
+                        "inbounds": [
+                            {
+                                "type": "mixed",
+                                "tag": "vedro-in",
+                                "listen": "127.0.0.1",
+                                "listen_port": port
+                            }
+                        ],
+                        "outbounds": [
+                            ob,
+                            { "type": "direct", "tag": "direct" }
+                        ],
+                        "route": { "final": "proxy" }
+                    });
+                    let cfg_file = temp_dir.join("config.json");
+                    std::fs::write(
+                        &cfg_file,
+                        serde_json::to_string_pretty(&sb_doc).map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                    let mut bin_candidates = Vec::new();
+                    if let Some(explicit) = params
+                        .get("binary_path")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        bin_candidates.push(explicit.to_string());
+                    }
+                    if let Some(ref d) = self.db_dir {
+                        let exe = if cfg!(windows) {
+                            "sing-box.exe"
+                        } else {
+                            "sing-box"
+                        };
+                        let managed_bin = d.join("cores").join(exe);
+                        if managed_bin.exists() {
+                            bin_candidates.push(managed_bin.to_string_lossy().into_owned());
+                        }
+                    }
+                    bin_candidates.push("sing-box".into());
+                    bin_candidates.push("sing-box.exe".into());
+
+                    let mut spawned: Option<std::process::Child> = None;
+                    let mut last_err = String::new();
+                    for bin in &bin_candidates {
+                        let mut cmd = std::process::Command::new(bin);
+                        cmd.arg("run")
+                            .arg("-c")
+                            .arg(&cfg_file)
+                            .arg("-D")
+                            .arg(&temp_dir)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::piped());
+                        match cmd.spawn() {
+                            Ok(c) => {
+                                spawned = Some(c);
+                                break;
+                            }
+                            Err(e) => last_err = format!("{bin}: {e}"),
+                        }
+                    }
+
+                    let mut child = match spawned {
+                        Some(c) => c,
+                        None => {
+                            let _ = std::fs::remove_dir_all(&temp_dir);
+                            return Err(format!(
+                                "NEEDS_CORE:未检测到 sing-box 内核（{last_err}），请点击「一键下载内核」"
+                            ));
+                        }
+                    };
+
+                    let mut ready = false;
+                    for _ in 0..30 {
+                        if let Ok(Some(exit)) = child.try_wait() {
+                            let _ = std::fs::remove_dir_all(&temp_dir);
+                            return Err(format!("节点启动退出 ({exit})，请检查节点协议参数"));
+                        }
+                        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                            .await
+                            .is_ok()
+                        {
+                            ready = true;
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    if !ready {
+                        let _ = child.kill();
+                        let _ = std::fs::remove_dir_all(&temp_dir);
+                        return Err("节点本地端口启动超时".into());
+                    }
+
+                    let local_proxy = format!("socks5h://127.0.0.1:{port}");
+                    *self.managed_proxy.lock() = Some(ManagedProxyProcess {
+                        engine_kind: "singbox".into(),
+                        listen_port: port,
+                        temp_dir,
+                        child,
+                    });
+                    *self.in_app_proxy_url.lock() = Some(local_proxy.clone());
+                    let _ = self.store.set_setting(
+                        "in_app_proxy_config_v1",
+                        &json!({
+                            "mode": "node_singbox",
+                            "node_id": node.id,
+                            "node_name": node.name,
+                        }),
+                    );
+                    self.rebuild_active_client_transport();
+                    Ok(json!({
+                        "ok": true,
+                        "mode": "node",
+                        "active": true,
+                        "proxy_url": local_proxy,
+                        "listen_port": port,
+                        "node_id": node.id,
+                        "node_name": node.name,
+                    }))
+                }
+            }
+
+            "install_singbox_core" => {
+                let ver = "1.10.7";
+                let (os_slug, arch_slug, ext) = match (std::env::consts::OS, std::env::consts::ARCH)
+                {
+                    ("macos", "aarch64") => ("darwin", "arm64", "tar.gz"),
+                    ("macos", "x86_64") => ("darwin", "amd64", "tar.gz"),
+                    ("linux", "aarch64") => ("linux", "arm64", "tar.gz"),
+                    ("linux", "x86_64") => ("linux", "amd64", "tar.gz"),
+                    ("android", "aarch64") => ("android", "arm64", "tar.gz"),
+                    ("windows", "x86_64") => ("windows", "amd64", "zip"),
+                    ("windows", "aarch64") => ("windows", "arm64", "zip"),
+                    (o, a) => return Err(format!("当前平台 ({o}/{a}) 请手动指定内核路径")),
+                };
+                let url = format!(
+                    "https://github.com/SagerNet/sing-box/releases/download/v{ver}/sing-box-{ver}-{os_slug}-{arch_slug}.{ext}"
+                );
+                let cores_dir = self
+                    .db_dir
+                    .clone()
+                    .unwrap_or_else(|| std::env::temp_dir().join("vedro-cores"))
+                    .join("cores");
+                std::fs::create_dir_all(&cores_dir).map_err(|e| e.to_string())?;
+                let exe_name = if cfg!(windows) {
+                    "sing-box.exe"
+                } else {
+                    "sing-box"
+                };
+                let dest_bin = cores_dir.join(exe_name);
+
+                let http = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(90))
+                    .user_agent("Vedro/0.3.1")
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                let resp = http
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("下载失败: {e}"))?;
+                if !resp.status().is_success() {
+                    return Err(format!("下载失败: HTTP {}", resp.status().as_u16()));
+                }
+                let archive_bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+
+                if ext == "tar.gz" {
+                    let bin_bytes =
+                        proxy_sub::extract_binary_from_targz(&archive_bytes, &["sing-box"])?;
+                    std::fs::write(&dest_bin, &bin_bytes).map_err(|e| e.to_string())?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(
+                            &dest_bin,
+                            std::fs::Permissions::from_mode(0o755),
+                        );
+                    }
+                } else {
+                    // Windows 10/11 built-in `tar.exe -xf` extracts `.zip` archives natively!
+                    let zip_path = cores_dir.join("sing-box.zip");
+                    let extract_dir = cores_dir.join("extract_tmp");
+                    let _ = std::fs::remove_dir_all(&extract_dir);
+                    std::fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
+                    std::fs::write(&zip_path, &archive_bytes).map_err(|e| e.to_string())?;
+                    let status = std::process::Command::new("tar")
+                        .arg("-xf")
+                        .arg(&zip_path)
+                        .arg("-C")
+                        .arg(&extract_dir)
+                        .status()
+                        .map_err(|e| format!("解压失败: {e}"))?;
+                    let _ = std::fs::remove_file(&zip_path);
+                    if !status.success() {
+                        return Err("解压 sing-box.zip 失败".into());
+                    }
+                    let mut found = None;
+                    if let Ok(entries) = std::fs::read_dir(&extract_dir) {
+                        for entry in entries.flatten() {
+                            let p = entry.path();
+                            if p.is_dir() {
+                                let cand = p.join("sing-box.exe");
+                                if cand.exists() {
+                                    found = Some(cand);
+                                    break;
+                                }
+                            } else if p.file_name().and_then(|n| n.to_str()) == Some("sing-box.exe")
+                            {
+                                found = Some(p);
+                                break;
+                            }
+                        }
+                    }
+                    let src = found.ok_or_else(|| "压缩包内未找到 sing-box.exe".to_string())?;
+                    std::fs::copy(&src, &dest_bin).map_err(|e| e.to_string())?;
+                    let _ = std::fs::remove_dir_all(&extract_dir);
+                }
+
+                Ok(json!({
+                    "binary_path": dest_bin.to_string_lossy().into_owned(),
+                    "version": ver,
                 }))
             }
 

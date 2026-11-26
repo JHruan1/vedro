@@ -71,13 +71,16 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Pick up to 6 featured Hero slides strictly requiring real widescreen landscape artwork
-  /// (Backdrop / ParentBackdrop / Thumb / Episode still). Never puts portrait posters in Hero!
+  /// Pick up to 6 featured Hero slides strictly requiring real widescreen landscape artwork,
+  /// leading with recent popular TV Series (`近期热播`) from server playback statistics.
   List<({MediaItemModel item, String eyebrow})> _pickFeatured() {
     final app = widget.appState;
     final pool = <({MediaItemModel item, String eyebrow})>[];
-    for (final i in app.popular) {
-      pool.add((item: i, eyebrow: i.type == 'Series' ? '热门剧集' : '热门电影'));
+    for (final i in app.popular.where((e) => e.type == 'Series')) {
+      pool.add((item: i, eyebrow: '近期热播'));
+    }
+    for (final i in app.popular.where((e) => e.type != 'Series')) {
+      pool.add((item: i, eyebrow: '热门电影'));
     }
     for (final i in app.resume) {
       pool.add((item: i, eyebrow: '继续播放'));
@@ -400,7 +403,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         Icon(Icons.tune_rounded, size: 15, color: skin.fg2),
                         const SizedBox(width: 7),
                         Text(
-                          '自定义首页布局与顺序',
+                          '自定义首页',
                           style: TextStyle(
                             color: skin.fg2,
                             fontSize: 12.5,
@@ -514,7 +517,7 @@ class _ServerWelcomeHub extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  '选择一个媒体服务器开始观影，支持多服务器聚合搜索、自定义卡片与多线路测速切换',
+                  '连接媒体服务器或打开本地视频',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: skin.fg3, fontSize: 13.5),
                 ),

@@ -486,12 +486,14 @@ impl EmbyClient {
             .await
     }
 
-    /// embygo extension: `GET /Users/{id}/Items/Popular` (returns bare `Vec<BaseItemDto>`).
-    /// Gracefully returns empty Vec if the server is Emby/Jellyfin and returns 404.
+    /// embygo extension: `GET /Users/{id}/Items/Popular` (returns bare `Vec<BaseItemDto>`,
+    /// prioritizing recent popular TV Series from server playback statistics).
+    /// On vanilla Emby/Jellyfin (404), falls back to popular Series sorted by PlayCount & Rating.
     pub async fn popular(&self, limit: u32) -> Result<Vec<BaseItemDto>> {
         let uid = self.require_user_id()?;
         let q = vec![
             ("Limit", limit.to_string()),
+            ("IncludeItemTypes", "Series,Movie".into()),
             ("EnableUserData", "true".into()),
             ("Fields", DEFAULT_ITEM_FIELDS.into()),
         ];
@@ -511,7 +513,17 @@ impl EmbyClient {
             }
             Err(ProtocolError::NotFound(_)) => {
                 self.state.write().capabilities.supports_popular = false;
-                Ok(Vec::new())
+                let fallback = self
+                    .items(&ItemsQuery {
+                        include_item_types: Some("Series".into()),
+                        recursive: Some(true),
+                        sort_by: Some("PlayCount,CommunityRating,DateCreated".into()),
+                        sort_order: Some("Descending".into()),
+                        limit: Some(limit.into()),
+                        ..Default::default()
+                    })
+                    .await;
+                Ok(fallback.map(|r| r.items).unwrap_or_default())
             }
             Err(e) => Err(e),
         }

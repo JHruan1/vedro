@@ -56,6 +56,116 @@ String fmtFileSize(int? bytes) {
   return '${value < 10 && unit > 0 ? value.toStringAsFixed(1) : value.round()} ${units[unit]}';
 }
 
+String fmtTicksClock(int ticks) {
+  if (ticks <= 0) return '00:00';
+  final total = (ticks / kEmbyTicksPerSecond).floor();
+  final h = total ~/ 3600;
+  final m = (total % 3600) ~/ 60;
+  final s = total % 60;
+  return h > 0
+      ? '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}'
+      : '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+}
+
+String fmtCurrencyUsd(int? amount) {
+  if (amount == null || amount <= 0) return '';
+  if (amount >= 100000000) {
+    return '\$${(amount / 100000000).toStringAsFixed(2)} 亿';
+  }
+  if (amount >= 10000) {
+    return '\$${(amount / 10000).toStringAsFixed(1)} 万';
+  }
+  return '\$$amount';
+}
+
+String fmtCompactCount(int n) {
+  if (n >= 10000) {
+    return '${(n / 10000).toStringAsFixed(1)}w';
+  }
+  return '$n';
+}
+
+String localizeAirDay(String raw) {
+  switch (raw.trim().toLowerCase()) {
+    case 'monday':
+      return '周一';
+    case 'tuesday':
+      return '周二';
+    case 'wednesday':
+      return '周三';
+    case 'thursday':
+      return '周四';
+    case 'friday':
+      return '周五';
+    case 'saturday':
+      return '周六';
+    case 'sunday':
+      return '周日';
+    default:
+      return raw.trim();
+  }
+}
+
+String localizePersonRole(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return '';
+  switch (raw.trim().toLowerCase()) {
+    case 'actor':
+      return '演员';
+    case 'director':
+      return '导演';
+    case 'writer':
+      return '编剧';
+    case 'producer':
+      return '制片人';
+    case 'composer':
+      return '配乐';
+    case 'gueststar':
+    case 'guest star':
+      return '客串';
+    case 'creator':
+      return '主创';
+    case 'conductor':
+      return '指挥';
+    case 'lyricist':
+      return '作词';
+    default:
+      return raw.trim();
+  }
+}
+
+class ServerLiveStatus {
+  const ServerLiveStatus({
+    required this.serverId,
+    required this.online,
+    this.latencyMs,
+    this.version,
+    this.movieCount,
+    this.seriesCount,
+    this.episodeCount,
+    this.error,
+  });
+
+  final String serverId;
+  final bool online;
+  final int? latencyMs;
+  final String? version;
+  final int? movieCount;
+  final int? seriesCount;
+  final int? episodeCount;
+  final String? error;
+
+  factory ServerLiveStatus.fromJson(String id, Map<String, dynamic> j) => ServerLiveStatus(
+        serverId: id,
+        online: j['online'] == true,
+        latencyMs: (j['latency_ms'] as num?)?.toInt(),
+        version: j['version']?.toString(),
+        movieCount: (j['movie_count'] as num?)?.toInt(),
+        seriesCount: (j['series_count'] as num?)?.toInt(),
+        episodeCount: (j['episode_count'] as num?)?.toInt(),
+        error: j['error']?.toString(),
+      );
+}
+
 class ResolvedArt {
   const ResolvedArt({required this.url, required this.isPoster});
   final String url;
@@ -366,6 +476,11 @@ class MediaStreamModel {
     this.colorSpace,
     this.colorTransfer,
     this.colorPrimaries,
+    this.realFrameRate,
+    this.averageFrameRate,
+    this.pixelFormat,
+    this.aspectRatio,
+    this.level,
   });
 
   final int index;
@@ -392,6 +507,11 @@ class MediaStreamModel {
   final String? colorSpace;
   final String? colorTransfer;
   final String? colorPrimaries;
+  final double? realFrameRate;
+  final double? averageFrameRate;
+  final String? pixelFormat;
+  final String? aspectRatio;
+  final double? level;
 
   String get label {
     if (displayTitle != null && displayTitle!.trim().isNotEmpty) return displayTitle!.trim();
@@ -408,9 +528,15 @@ class MediaStreamModel {
     final parts = <String>[];
     if (type.toLowerCase() == 'video') {
       if (width != null && height != null) parts.add('$width×$height');
+      if (aspectRatio != null && aspectRatio!.isNotEmpty) parts.add(aspectRatio!);
+      final fps = realFrameRate ?? averageFrameRate;
+      if (fps != null && fps > 0) {
+        parts.add('${fps.toStringAsFixed(fps == fps.roundToDouble() ? 0 : 2)} fps');
+      }
       if (codec != null && codec!.isNotEmpty) parts.add(codec!.toUpperCase());
       if (profile != null && profile!.isNotEmpty) parts.add(profile!);
       if (bitDepth != null && bitDepth! > 0) parts.add('${bitDepth}bit');
+      if (pixelFormat != null && pixelFormat!.isNotEmpty) parts.add(pixelFormat!);
       if (dvProfile != null) {
         parts.add('Dolby Vision P$dvProfile');
       } else if (videoDoViTitle != null && videoDoViTitle!.isNotEmpty) {
@@ -421,6 +547,8 @@ class MediaStreamModel {
         parts.add(videoRange!);
       }
       if (colorSpace != null && colorSpace!.isNotEmpty) parts.add(colorSpace!);
+      if (colorTransfer != null && colorTransfer!.isNotEmpty) parts.add(colorTransfer!);
+      if (colorPrimaries != null && colorPrimaries!.isNotEmpty) parts.add(colorPrimaries!);
       if (bitRate != null && bitRate! > 0) {
         parts.add('${(bitRate! / 1000000).toStringAsFixed(1)} Mbps');
       }
@@ -475,6 +603,11 @@ class MediaStreamModel {
         colorSpace: j['ColorSpace']?.toString(),
         colorTransfer: j['ColorTransfer']?.toString(),
         colorPrimaries: j['ColorPrimaries']?.toString(),
+        realFrameRate: (j['RealFrameRate'] as num?)?.toDouble(),
+        averageFrameRate: (j['AverageFrameRate'] as num?)?.toDouble(),
+        pixelFormat: j['PixelFormat']?.toString(),
+        aspectRatio: j['AspectRatio']?.toString(),
+        level: (j['Level'] as num?)?.toDouble(),
       );
 }
 
@@ -630,6 +763,17 @@ class ExternalLinkModel {
       );
 }
 
+class ChapterModel {
+  const ChapterModel({required this.startPositionTicks, required this.name});
+  final int startPositionTicks;
+  final String name;
+
+  factory ChapterModel.fromJson(Map<String, dynamic> j) => ChapterModel(
+        startPositionTicks: (j['StartPositionTicks'] as num?)?.toInt() ?? 0,
+        name: (j['Name'] ?? '').toString().trim(),
+      );
+}
+
 /// Format an ISO-8601 date string (`2024-03-01T00:00:00Z`) into clean `2024-03-01`.
 String fmtIsoDate(String? raw) {
   if (raw == null || raw.trim().isEmpty) return '';
@@ -645,6 +789,7 @@ class MediaItemModel {
     required this.id,
     required this.name,
     required this.type,
+    this.sortName,
     this.originalTitle,
     this.collectionType,
     this.overview,
@@ -660,6 +805,15 @@ class MediaItemModel {
     this.productionLocations = const [],
     this.providerIds = const {},
     this.externalUrls = const [],
+    this.remoteTrailers = const [],
+    this.chapters = const [],
+    this.aspectRatio,
+    this.customRating,
+    this.budget,
+    this.revenue,
+    this.awardSummary,
+    this.airsBeforeSeasonNumber,
+    this.airsBeforeEpisodeNumber,
     this.communityRating,
     this.criticRating,
     this.officialRating,
@@ -704,6 +858,7 @@ class MediaItemModel {
   final String id;
   final String name;
   final String type;
+  final String? sortName;
   final String? originalTitle;
   final String? collectionType;
   final String? overview;
@@ -719,6 +874,15 @@ class MediaItemModel {
   final List<String> productionLocations;
   final Map<String, String> providerIds;
   final List<ExternalLinkModel> externalUrls;
+  final List<ExternalLinkModel> remoteTrailers;
+  final List<ChapterModel> chapters;
+  final String? aspectRatio;
+  final String? customRating;
+  final int? budget;
+  final int? revenue;
+  final String? awardSummary;
+  final int? airsBeforeSeasonNumber;
+  final int? airsBeforeEpisodeNumber;
   final double? communityRating;
   final double? criticRating;
   final String? officialRating;
@@ -866,6 +1030,7 @@ class MediaItemModel {
       id: (j['Id'] ?? '').toString(),
       name: (j['Name'] ?? '').toString(),
       type: (j['Type'] ?? 'Movie').toString(),
+      sortName: j['SortName']?.toString(),
       originalTitle: j['OriginalTitle']?.toString(),
       collectionType: j['CollectionType']?.toString(),
       overview: j['Overview']?.toString(),
@@ -893,6 +1058,22 @@ class MediaItemModel {
           .map(ExternalLinkModel.fromJson)
           .where((e) => e.url.isNotEmpty)
           .toList(),
+      remoteTrailers: ((j['RemoteTrailers'] as List<dynamic>?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(ExternalLinkModel.fromJson)
+          .where((e) => e.url.isNotEmpty)
+          .toList(),
+      chapters: ((j['Chapters'] as List<dynamic>?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(ChapterModel.fromJson)
+          .toList(),
+      aspectRatio: j['AspectRatio']?.toString(),
+      customRating: j['CustomRating']?.toString(),
+      budget: (j['Budget'] as num?)?.toInt(),
+      revenue: (j['Revenue'] as num?)?.toInt(),
+      awardSummary: j['AwardSummary']?.toString(),
+      airsBeforeSeasonNumber: (j['AirsBeforeSeasonNumber'] as num?)?.toInt(),
+      airsBeforeEpisodeNumber: (j['AirsBeforeEpisodeNumber'] as num?)?.toInt(),
       communityRating: (j['CommunityRating'] as num?)?.toDouble(),
       criticRating: (j['CriticRating'] as num?)?.toDouble(),
       officialRating: j['OfficialRating']?.toString(),

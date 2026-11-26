@@ -10,6 +10,7 @@ import 'package:vedro/main.dart';
 import 'package:vedro/screens/detail_screen.dart';
 import 'package:vedro/state/app_state.dart';
 import 'package:vedro/widgets/danmaku_engine.dart';
+import 'package:vedro/widgets/server_card_grid.dart';
 
 class _MockVedroCore implements VedroCoreClient {
   _MockVedroCore({this.isAdmin = false});
@@ -171,42 +172,69 @@ class _MockVedroCore implements VedroCoreClient {
           'similar': <dynamic>[],
           'segments': <dynamic>[],
         };
+      case 'probe_servers_status':
+        return <String, dynamic>{
+          'srv-1': <String, dynamic>{
+            'server_id': 'srv-1',
+            'online': true,
+            'latency_ms': 28,
+            'movie_count': 420,
+            'series_count': 85,
+            'episode_count': 3120,
+          },
+          'srv-2': <String, dynamic>{
+            'server_id': 'srv-2',
+            'online': false,
+            'latency_ms': null,
+            'error': '连接超时',
+          },
+        };
       case 'get_seasons':
         return <String, dynamic>{
           'Items': <dynamic>[
-            <String, dynamic>{'Id': 's1', 'Name': '第 1 季', 'Type': 'Season', 'IndexNumber': 1},
+            <String, dynamic>{
+              'Id': 's1',
+              'Name': '第 1 季',
+              'Type': 'Season',
+              'IndexNumber': 1,
+              'Overview': '第一季 NFO 季度简介测试。',
+              'PremiereDate': '2024-03-21T00:00:00Z',
+            },
           ],
         };
       case 'get_episodes':
         return <String, dynamic>{
-          'Items': <dynamic>[
-            <String, dynamic>{
-              'Id': 'ep1',
-              'Name': '倒计时',
+          'Items': List<Map<String, dynamic>>.generate(120, (i) {
+            final epNum = i + 1;
+            return <String, dynamic>{
+              'Id': 'ep$epNum',
+              'Name': epNum == 1 ? '倒计时' : '第 $epNum 集剧情',
               'Type': 'Episode',
               'SeriesId': 'tv1',
               'SeriesName': '三体',
               'ParentIndexNumber': 1,
-              'IndexNumber': 1,
-              'MediaSourceCount': 2,
-              'MediaSources': <dynamic>[
-                <String, dynamic>{
-                  'Id': 'ms-4k',
-                  'Name': '4K · Dolby Vision · Atmos',
-                  'Container': 'mkv',
-                  'Size': 8589934592,
-                  'Bitrate': 28500000,
-                },
-                <String, dynamic>{
-                  'Id': 'ms-1080',
-                  'Name': '1080p · BluRay · x265',
-                  'Container': 'mkv',
-                  'Size': 2147483648,
-                  'Bitrate': 7200000,
-                },
-              ],
-            },
-          ],
+              'IndexNumber': epNum,
+              'MediaSourceCount': epNum == 1 ? 2 : 1,
+              'MediaSources': epNum == 1
+                  ? <dynamic>[
+                      <String, dynamic>{
+                        'Id': 'ms-4k',
+                        'Name': '4K · Dolby Vision · Atmos',
+                        'Container': 'mkv',
+                        'Size': 8589934592,
+                        'Bitrate': 28500000,
+                      },
+                      <String, dynamic>{
+                        'Id': 'ms-1080',
+                        'Name': '1080p · BluRay · x265',
+                        'Container': 'mkv',
+                        'Size': 2147483648,
+                        'Bitrate': 7200000,
+                      },
+                    ]
+                  : <dynamic>[],
+            };
+          }),
         };
       default:
         return <String, dynamic>{};
@@ -451,6 +479,21 @@ void main() {
     await tester.tap(find.text('1080p · BluRay · x265'));
     await tester.pumpAndSettle();
 
+    // 120-episode Series auto-switches to compact range pills (1-50, 51-100, 101-120) + Season NFO
+    expect(find.text('共 120 集'), findsOneWidget);
+    expect(find.text('1-50'), findsOneWidget);
+    expect(find.text('51-100'), findsOneWidget);
+    expect(find.text('101-120'), findsOneWidget);
+    expect(find.text('第一季 NFO 季度简介测试。'), findsOneWidget);
+
+    // Clicking More sheet on desktop (1280px) & clicking outside MUST dismiss cleanly!
+    await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+    await tester.pumpAndSettle();
+    expect(find.text('更多操作'), findsOneWidget);
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+    expect(find.text('更多操作'), findsNothing);
+
     expect(find.text('影片资料与 NFO 信息'), findsOneWidget);
     expect(find.text('Netflix'), findsOneWidget);
     expect(find.text('# 科幻'), findsOneWidget);
@@ -458,6 +501,40 @@ void main() {
     expect(find.text('2024-03-21'), findsWidgets);
     // Short overview MUST NOT show 展开全部
     expect(find.text('展开全部'), findsNothing);
+  });
+
+  testWidgets('ServerCardGrid probes and displays online/offline status & Movie/Series counts',
+      (tester) async {
+    tester.view.physicalSize = const Size(1000, 700);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final app = VedroAppState(_MockVedroCore());
+    app.savedServers = [
+      SavedServerProfile(id: 'srv-1', name: '主力服', url: 'https://s1.example.com', dialect: 'embygo'),
+      SavedServerProfile(id: 'srv-2', name: '备用服', url: 'https://s2.example.com', dialect: 'emby'),
+    ];
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: Padding(
+          padding: const EdgeInsets.all(20),
+          child: ListenableBuilder(
+            listenable: app,
+            builder: (_, __) => ServerCardGrid(
+              appState: app,
+              onSelectServer: (_) async {},
+              onAddServer: () {},
+            ),
+          ),
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.text('在线 · 28 ms'), findsOneWidget);
+    expect(find.text('电影 420'), findsOneWidget);
+    expect(find.text('剧集 85'), findsOneWidget);
+    expect(find.text('离线'), findsOneWidget);
   });
 
   testWidgets('Mobile Movie DetailScreen renders Poster Cover & solid Version/Audio/Subtitle Selector without overflow',

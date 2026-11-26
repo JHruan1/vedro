@@ -263,6 +263,16 @@ pub struct MediaStream {
     pub color_transfer: Option<String>,
     #[serde(default)]
     pub color_primaries: Option<String>,
+    #[serde(default)]
+    pub real_frame_rate: Option<f64>,
+    #[serde(default)]
+    pub average_frame_rate: Option<f64>,
+    #[serde(default)]
+    pub pixel_format: Option<String>,
+    #[serde(default)]
+    pub aspect_ratio: Option<String>,
+    #[serde(default)]
+    pub level: Option<f64>,
 }
 
 /// High-level technical badges extracted from `MediaStreams` and/or filename heuristics.
@@ -493,6 +503,15 @@ pub struct ExternalUrl {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
+pub struct ChapterInfo {
+    #[serde(default)]
+    pub start_position_ticks: i64,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct BaseItemDto {
     #[serde(default, deserialize_with = "deserialize_string_or_int")]
     pub id: String,
@@ -532,6 +551,24 @@ pub struct BaseItemDto {
     pub production_locations: Vec<String>,
     #[serde(default)]
     pub external_urls: Vec<ExternalUrl>,
+    #[serde(default)]
+    pub remote_trailers: Vec<ExternalUrl>,
+    #[serde(default)]
+    pub chapters: Vec<ChapterInfo>,
+    #[serde(default)]
+    pub aspect_ratio: Option<String>,
+    #[serde(default)]
+    pub custom_rating: Option<String>,
+    #[serde(default)]
+    pub budget: Option<u64>,
+    #[serde(default)]
+    pub revenue: Option<u64>,
+    #[serde(default)]
+    pub award_summary: Option<String>,
+    #[serde(default)]
+    pub airs_before_season_number: Option<i32>,
+    #[serde(default)]
+    pub airs_before_episode_number: Option<i32>,
     #[serde(default)]
     pub community_rating: Option<f64>,
     #[serde(default)]

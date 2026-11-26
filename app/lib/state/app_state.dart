@@ -32,6 +32,9 @@ class VedroAppState extends ChangeNotifier {
 
   List<SavedServerProfile> savedServers = [];
   List<Map<String, dynamic>> discoveredServers = [];
+  Map<String, ServerLiveStatus> serverStatuses = {};
+  bool isProbingServers = false;
+  DateTime? _lastServerProbeAt;
 
   ServerCapabilitiesModel? capabilities;
   String? activeServerId;
@@ -404,6 +407,43 @@ class VedroAppState extends ChangeNotifier {
       return res.whereType<Map<String, dynamic>>().toList();
     }
     return const [];
+  }
+
+  /// Probe all saved servers (or one server) concurrently for online/offline status,
+  /// latency, and Movie / Series / Episode inventory counts (`/Items/Counts`).
+  Future<void> probeServersStatus({String? serverId, bool force = false}) async {
+    if (savedServers.isEmpty) return;
+    if (!force &&
+        serverId == null &&
+        _lastServerProbeAt != null &&
+        DateTime.now().difference(_lastServerProbeAt!).inSeconds < 25) {
+      return;
+    }
+    if (isProbingServers && serverId == null) return;
+    isProbingServers = true;
+    notifyListeners();
+    try {
+      final res = await core.invoke('probe_servers_status', {
+        if (serverId != null) 'server_id': serverId,
+      });
+      if (res is Map) {
+        final next = Map<String, ServerLiveStatus>.from(serverStatuses);
+        res.forEach((k, v) {
+          if (v is Map) {
+            next[k.toString()] = ServerLiveStatus.fromJson(
+              k.toString(),
+              Map<String, dynamic>.from(v),
+            );
+          }
+        });
+        serverStatuses = next;
+        if (serverId == null) _lastServerProbeAt = DateTime.now();
+      }
+    } catch (_) {
+    } finally {
+      isProbingServers = false;
+      notifyListeners();
+    }
   }
 
   Future<void> switchServerRoute(String serverId, String routeId) async {

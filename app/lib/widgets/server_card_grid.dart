@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -49,11 +51,25 @@ class _ServerCardGridState extends State<ServerCardGrid> {
   final Map<String, Map<String, Map<String, dynamic>>> _pings = {};
   final Set<String> _pinging = {};
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && widget.appState.savedServers.isNotEmpty) {
+        unawaited(widget.appState.probeServersStatus());
+      }
+    });
+  }
+
   Future<void> _pingServer(String serverId) async {
     if (_pinging.contains(serverId)) return;
     setState(() => _pinging.add(serverId));
     try {
-      final res = await widget.appState.testServerRoutes(serverId);
+      final results = await Future.wait<dynamic>([
+        widget.appState.testServerRoutes(serverId),
+        widget.appState.probeServersStatus(serverId: serverId, force: true),
+      ]);
+      final res = results.first as List<Map<String, dynamic>>;
       final map = <String, Map<String, dynamic>>{};
       for (final r in res) {
         final rid = r['id']?.toString();
@@ -66,6 +82,7 @@ class _ServerCardGridState extends State<ServerCardGrid> {
   }
 
   Future<void> _pingAll() async {
+    unawaited(widget.appState.probeServersStatus(force: true));
     for (final s in widget.appState.savedServers) {
       await _pingServer(s.id);
     }
@@ -96,9 +113,9 @@ class _ServerCardGridState extends State<ServerCardGrid> {
                 const Spacer(),
                 if (servers.isNotEmpty)
                   _SmallGhostButton(
-                    icon: Icons.speed_rounded,
-                    label: _pinging.isNotEmpty ? '测速中…' : '全部测速',
-                    onTap: _pinging.isNotEmpty ? null : _pingAll,
+                    icon: Icons.refresh_rounded,
+                    label: (_pinging.isNotEmpty || app.isProbingServers) ? '检测中…' : '刷新状态',
+                    onTap: (_pinging.isNotEmpty || app.isProbingServers) ? null : _pingAll,
                   ),
                 const SizedBox(width: 8),
                 Container(
@@ -234,6 +251,8 @@ class _ServerRichCardState extends State<_ServerRichCard> {
     final displayName = style.customName.trim().isNotEmpty ? style.customName.trim() : srv.name;
     final activeRoute = srv.activeRoute;
     final activePing = activeRoute != null ? widget.pings[activeRoute.id] : null;
+    final liveStatus = widget.appState.serverStatuses[srv.id];
+    final isProbing = widget.pinging || (widget.appState.isProbingServers && liveStatus == null);
     final hostDisplay = style.hideAddress
         ? '地址已隐藏'
         : (Uri.tryParse(activeRoute?.url ?? srv.url)?.host ?? srv.url);
@@ -363,9 +382,43 @@ class _ServerRichCardState extends State<_ServerRichCard> {
               ],
             ),
 
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
 
-            // Bottom metadata chips: Dialect + Active Route + Latency + Quick Ping
+            // Live Online/Offline Status & Movie/Series Inventory Strip
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                _OnlineStatusChip(
+                  status: liveStatus,
+                  pingOverride: activePing,
+                  probing: isProbing,
+                  isActiveConnected: widget.isActive,
+                ),
+                if (liveStatus != null && liveStatus.online && liveStatus.movieCount != null)
+                  _InventoryChip(
+                    icon: Icons.movie_outlined,
+                    label: '电影 ${fmtCompactCount(liveStatus.movieCount!)}',
+                  ),
+                if (liveStatus != null && liveStatus.online && liveStatus.seriesCount != null)
+                  _InventoryChip(
+                    icon: Icons.live_tv_rounded,
+                    label: '剧集 ${fmtCompactCount(liveStatus.seriesCount!)}',
+                  ),
+                if (liveStatus != null &&
+                    liveStatus.online &&
+                    (liveStatus.episodeCount ?? 0) > 0)
+                  _InventoryChip(
+                    icon: Icons.video_library_outlined,
+                    label: '${fmtCompactCount(liveStatus.episodeCount!)} 集',
+                  ),
+              ],
+            ),
+
+            const SizedBox(height: 10),
+
+            // Bottom metadata chips: Dialect + Active Route + Quick Ping
             Row(
               children: [
                 _MiniCardChip(
@@ -381,33 +434,30 @@ class _ServerRichCardState extends State<_ServerRichCard> {
                   ),
                 ),
                 const Spacer(),
-                if (activePing != null)
-                  _LatencyBadge(ping: activePing)
-                else
-                  InkWell(
-                    borderRadius: BorderRadius.circular(7),
-                    onTap: widget.pinging ? null : widget.onPing,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                      child: widget.pinging
-                          ? const SizedBox(
-                              width: 12,
-                              height: 12,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 1.6,
-                                color: Color(0xB8FFFFFF),
-                              ),
-                            )
-                          : const Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.speed_rounded, size: 13, color: Color(0x99FFFFFF)),
-                                SizedBox(width: 3),
-                                Text('测速', style: TextStyle(color: Color(0x99FFFFFF), fontSize: 11)),
-                              ],
+                InkWell(
+                  borderRadius: BorderRadius.circular(7),
+                  onTap: isProbing ? null : widget.onPing,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                    child: isProbing
+                        ? const SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.6,
+                              color: Color(0xB8FFFFFF),
                             ),
-                    ),
+                          )
+                        : const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.speed_rounded, size: 13, color: Color(0x99FFFFFF)),
+                              SizedBox(width: 3),
+                              Text('测速', style: TextStyle(color: Color(0x99FFFFFF), fontSize: 11)),
+                            ],
+                          ),
                   ),
+                ),
               ],
             ),
           ],
@@ -445,6 +495,8 @@ class _ServerCompactRowCard extends StatelessWidget {
     final displayName = style.customName.trim().isNotEmpty ? style.customName.trim() : server.name;
     final activeRoute = server.activeRoute;
     final activePing = activeRoute != null ? pings[activeRoute.id] : null;
+    final liveStatus = appState.serverStatuses[server.id];
+    final isProbing = pinging || (appState.isProbingServers && liveStatus == null);
 
     return PressableScale(
       onTap: onTap,
@@ -494,22 +546,22 @@ class _ServerCompactRowCard extends StatelessWidget {
                           ),
                         ),
                       ),
-                      if (isActive) ...[
-                        const SizedBox(width: 7),
-                        Container(
-                          width: 7,
-                          height: 7,
-                          decoration: const BoxDecoration(
-                            color: Color(0xFF34D399),
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                      ],
+                      const SizedBox(width: 7),
+                      _OnlineStatusChip(
+                        status: liveStatus,
+                        pingOverride: activePing,
+                        probing: isProbing,
+                        isActiveConnected: isActive,
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 2),
+                  const SizedBox(height: 3),
                   Text(
                     [
+                      if (liveStatus != null && liveStatus.online && liveStatus.movieCount != null)
+                        '电影 ${fmtCompactCount(liveStatus.movieCount!)}',
+                      if (liveStatus != null && liveStatus.online && liveStatus.seriesCount != null)
+                        '剧集 ${fmtCompactCount(liveStatus.seriesCount!)}',
                       if (style.subtitle.trim().isNotEmpty) style.subtitle.trim(),
                       if (server.username != null && server.username!.isNotEmpty) server.username!,
                       activeRoute?.name ?? '默认线路',
@@ -517,24 +569,23 @@ class _ServerCompactRowCard extends StatelessWidget {
                     ].join(' · '),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Color(0x9EFFFFFF), fontSize: 12),
+                    style: const TextStyle(color: Color(0xB3FFFFFF), fontSize: 12),
                   ),
                 ],
               ),
             ),
-            if (activePing != null) _LatencyBadge(ping: activePing),
-            const SizedBox(width: 6),
+            const SizedBox(width: 4),
             IconButton(
-              tooltip: '测速',
+              tooltip: '测速与刷新状态',
               visualDensity: VisualDensity.compact,
-              icon: pinging
+              icon: isProbing
                   ? const SizedBox(
                       width: 14,
                       height: 14,
                       child: CircularProgressIndicator(strokeWidth: 1.7, color: VedroTheme.fg2),
                     )
                   : const Icon(Icons.speed_rounded, size: 17, color: VedroTheme.fg2),
-              onPressed: pinging ? null : onPing,
+              onPressed: isProbing ? null : onPing,
             ),
             IconButton(
               tooltip: '卡片与线路设置',
@@ -592,6 +643,119 @@ class _AddServerDashedTile extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _OnlineStatusChip extends StatelessWidget {
+  const _OnlineStatusChip({
+    required this.status,
+    required this.pingOverride,
+    required this.probing,
+    required this.isActiveConnected,
+  });
+
+  final ServerLiveStatus? status;
+  final Map<String, dynamic>? pingOverride;
+  final bool probing;
+  final bool isActiveConnected;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool? online;
+    final int? latencyMs;
+    if (pingOverride != null) {
+      online = pingOverride!['ok'] == true;
+      latencyMs = (pingOverride!['latency_ms'] as num?)?.toInt();
+    } else if (status != null) {
+      online = status!.online;
+      latencyMs = status!.latencyMs;
+    } else if (isActiveConnected) {
+      online = true;
+      latencyMs = null;
+    } else {
+      online = null;
+      latencyMs = null;
+    }
+
+    final Color dotColor;
+    final String label;
+    if (probing && online == null) {
+      dotColor = const Color(0xFF9EA3B5);
+      label = '检测中';
+    } else if (online == true) {
+      dotColor = latencyMs != null && latencyMs >= 350
+          ? const Color(0xFFFBBF24)
+          : const Color(0xFF34D399);
+      label = latencyMs != null ? '在线 · $latencyMs ms' : '在线';
+    } else if (online == false) {
+      dotColor = VedroTheme.danger;
+      label = '离线';
+    } else {
+      dotColor = const Color(0xFF7D8294);
+      label = '未检测';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+      decoration: BoxDecoration(
+        color: dotColor.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: dotColor.withValues(alpha: 0.42), width: 0.6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: TextStyle(
+              color: dotColor,
+              fontSize: 10.5,
+              fontWeight: FontWeight.w600,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InventoryChip extends StatelessWidget {
+  const _InventoryChip({required this.icon, required this.label});
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+      decoration: BoxDecoration(
+        color: const Color(0x1EFFFFFF),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 11.5, color: const Color(0xCCFFFFFF)),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Color(0xE8FFFFFF),
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+              fontFeatures: [FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -65,8 +65,8 @@ class _MediaCardState extends State<MediaCard> {
         onLongPress: widget.onLongPress,
         onSecondaryTap: widget.onLongPress,
         onHoverChanged: (v) => setState(() => _hovered = v),
-        hoverScale: 1.028,
-        pressScale: 0.965,
+        hoverScale: 1.015,
+        pressScale: 0.975,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -307,8 +307,8 @@ class _ResumeCardState extends State<ResumeCard> {
         onLongPress: widget.onLongPress,
         onSecondaryTap: widget.onLongPress,
         onHoverChanged: (v) => setState(() => _hovered = v),
-        hoverScale: 1.02,
-        pressScale: 0.97,
+        hoverScale: 1.014,
+        pressScale: 0.98,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -476,8 +476,8 @@ class _LibraryCardState extends State<LibraryCard> {
       child: PressableScale(
         onTap: widget.onTap,
         onHoverChanged: (v) => setState(() => _hovered = v),
-        hoverScale: 1.022,
-        pressScale: 0.97,
+        hoverScale: 1.014,
+        pressScale: 0.98,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

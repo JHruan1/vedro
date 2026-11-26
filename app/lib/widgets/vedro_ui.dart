@@ -317,60 +317,110 @@ class VedroSegmentedControl<T> extends StatelessWidget {
   }
 }
 
-/// Present a crisp, high-contrast solid elevated modal sheet (centered dialog on desktop,
-/// bottom sheet on mobile). Avoids heavy BackdropFilter smearing over video/artwork so text
-/// and selection rows are always razor-sharp and readable.
+/// Present a crisp, high-contrast solid elevated modal sheet:
+/// - On desktop/wide screens: uses `showDialog(barrierDismissible: true)` so clicking ANYWHERE
+///   outside the card (or pressing Esc) immediately dismisses it.
+/// - On mobile: uses `showModalBottomSheet(isDismissible: true, enableDrag: true)` without
+///   a full-screen wrapper swallowing taps above the sheet.
 Future<T?> showGlassSheet<T>({
   required BuildContext context,
   required WidgetBuilder builder,
 }) {
+  final size = MediaQuery.sizeOf(context);
+  final wide = size.width >= 720;
+
+  if (wide) {
+    return showDialog<T>(
+      context: context,
+      barrierDismissible: true,
+      barrierColor: const Color(0x9E000000),
+      builder: (ctx) {
+        final s = MediaQuery.sizeOf(ctx);
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          insetPadding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: 500,
+              maxHeight: s.height * 0.82,
+            ),
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF161821),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xFF2D3142), width: 1.0),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0xB8000000),
+                    blurRadius: 32,
+                    offset: Offset(0, 12),
+                  ),
+                ],
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: Material(
+                type: MaterialType.transparency,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(child: builder(ctx)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   return showModalBottomSheet<T>(
     context: context,
     backgroundColor: Colors.transparent,
     barrierColor: const Color(0xA6000000),
     isScrollControlled: true,
+    isDismissible: true,
+    enableDrag: true,
     builder: (ctx) {
-      final size = MediaQuery.sizeOf(ctx);
-      final wide = size.width >= 720;
+      final s = MediaQuery.sizeOf(ctx);
       return SafeArea(
         top: false,
-        child: Align(
-          alignment: wide ? Alignment.center : Alignment.bottomCenter,
-          child: Padding(
-            padding: EdgeInsets.fromLTRB(16, wide ? 24 : 0, 16, wide ? 24 : 14),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                maxWidth: wide ? 500 : 540,
-                maxHeight: size.height * 0.82,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: 540,
+              maxHeight: s.height * 0.82,
+            ),
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF161821),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xFF2D3142), width: 1.0),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0xB8000000),
+                    blurRadius: 32,
+                    offset: Offset(0, 12),
+                  ),
+                ],
               ),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF161821),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: const Color(0xFF2D3142), width: 1.0),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0xB8000000),
-                      blurRadius: 32,
-                      offset: Offset(0, 12),
-                    ),
-                  ],
-                ),
-                clipBehavior: Clip.antiAlias,
+              clipBehavior: Clip.antiAlias,
+              child: Material(
+                type: MaterialType.transparency,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (!wide) ...[
-                      const SizedBox(height: 10),
-                      Container(
-                        width: 36,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF3E4357),
-                          borderRadius: BorderRadius.circular(2),
-                        ),
+                    const SizedBox(height: 10),
+                    Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF3E4357),
+                        borderRadius: BorderRadius.circular(2),
                       ),
-                    ],
+                    ),
                     Flexible(child: builder(ctx)),
                   ],
                 ),

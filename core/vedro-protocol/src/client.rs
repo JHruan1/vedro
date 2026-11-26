@@ -12,7 +12,7 @@ use crate::dialect::{ServerCapabilities, ServerDialect};
 use crate::error::{ProtocolError, Result};
 use crate::models::*;
 
-const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,Overview,Taglines,ChildCount,RecursiveItemCount,People,Genres,Tags,Studios,ProviderIds,ExternalUrls,OriginalTitle,DateCreated,ProductionLocations,PremiereDate,EndDate,Status,OfficialRating,CriticRating,Path,AirDays,AirTime";
+const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,Overview,Taglines,ChildCount,RecursiveItemCount,People,Genres,Tags,Studios,ProviderIds,ExternalUrls,OriginalTitle,SortName,DateCreated,ProductionLocations,PremiereDate,EndDate,Status,OfficialRating,CustomRating,CriticRating,Path,AirDays,AirTime,RemoteTrailers,Chapters,AspectRatio,Budget,Revenue,AwardSummary";
 
 /// High-performance async REST client supporting `embygo`, `Emby`, and `Jellyfin`.
 ///
@@ -1005,7 +1005,11 @@ impl EmbyClient {
     }
 
     pub async fn item_counts(&self) -> Result<ItemCounts> {
-        self.request_json(Method::GET, "Items/Counts", &[], None)
+        let mut q: Vec<(&str, String)> = Vec::new();
+        if let Some(uid) = self.user_id() {
+            q.push(("UserId", uid));
+        }
+        self.request_json(Method::GET, "Items/Counts", &q, None)
             .await
     }
 

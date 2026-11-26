@@ -6,7 +6,6 @@ import '../core/models/models.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'vedro_artwork.dart';
-import 'vedro_ui.dart';
 
 /// macOS Spotlight / Forward style multi-server aggregated instant search palette (`⌘K`).
 Future<void> showSpotlightSearch({
@@ -106,22 +105,27 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
         : _hits.where((h) => h.serverId == _filterServerId).toList();
     final multiServer = _servers.length > 1;
 
-    return Material(
-      type: MaterialType.transparency,
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: Padding(
-          padding: EdgeInsets.fromLTRB(16, topPad.clamp(44.0, 110.0), 16, 24),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxWidth: 660,
-              maxHeight: MediaQuery.sizeOf(context).height * 0.76,
-            ),
-            child: GlassSurface(
-              borderRadius: 20,
-              blur: 32,
-              color: VedroTheme.glassStrong,
-              child: Column(
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      alignment: Alignment.topCenter,
+      insetPadding: EdgeInsets.fromLTRB(16, topPad.clamp(44.0, 110.0), 16, 24),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: 660,
+          maxHeight: MediaQuery.sizeOf(context).height * 0.76,
+        ),
+        child: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF161821),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xFF2D3142), width: 1.0),
+            boxShadow: const [
+              BoxShadow(color: Color(0xB8000000), blurRadius: 36, offset: Offset(0, 14)),
+            ],
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Padding(
@@ -325,8 +329,6 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                     ),
                 ],
               ),
-            ),
-          ),
         ),
       ),
     );

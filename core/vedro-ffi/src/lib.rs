@@ -356,6 +356,103 @@ impl VedroRuntime {
                 Ok(Value::Array(out))
             }
 
+            "probe_servers_status" => {
+                let target_id = params
+                    .get("server_id")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+                let servers = if let Some(sid) = target_id {
+                    self.store
+                        .get_server(&sid)
+                        .map_err(|e| e.to_string())?
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                } else {
+                    self.store.list_servers().map_err(|e| e.to_string())?
+                };
+
+                let identity = self.identity.lock().clone();
+                let mut set = tokio::task::JoinSet::new();
+                for srv in servers {
+                    let id_clone = identity.clone();
+                    set.spawn(async move {
+                        let active_route = srv
+                            .active_route_id
+                            .as_deref()
+                            .and_then(|rid| srv.routes.iter().find(|r| r.id == rid))
+                            .or_else(|| srv.routes.first());
+                        let url = active_route
+                            .map(|r| r.url.clone())
+                            .filter(|u| !u.is_empty())
+                            .unwrap_or_else(|| srv.url.clone());
+                        let proxy_url = active_route.and_then(|r| r.proxy_url.clone());
+                        let accept_invalid_certs = active_route
+                            .map(|r| r.accept_invalid_certs)
+                            .unwrap_or(false);
+
+                        let started = std::time::Instant::now();
+                        let res = tokio::time::timeout(Duration::from_secs(4), async {
+                            let client = EmbyClient::with_options(
+                                &url,
+                                id_clone,
+                                ClientTransportOptions {
+                                    proxy_url,
+                                    accept_invalid_certs,
+                                },
+                            )
+                            .map_err(|e| e.to_string())?;
+                            let (info, _caps) =
+                                client.probe_server().await.map_err(|e| e.to_string())?;
+                            let elapsed_ms = started.elapsed().as_millis() as u64;
+
+                            let counts = if let (Some(tok), Some(uid)) =
+                                (srv.access_token.clone(), srv.user_id.clone())
+                            {
+                                client.set_credentials(tok, uid);
+                                client.item_counts().await.ok()
+                            } else {
+                                None
+                            };
+                            Ok::<_, String>((elapsed_ms, info.version, counts))
+                        })
+                        .await;
+
+                        let payload = match res {
+                            Ok(Ok((latency_ms, version, counts))) => json!({
+                                "server_id": srv.id,
+                                "online": true,
+                                "latency_ms": latency_ms,
+                                "version": version,
+                                "movie_count": counts.as_ref().map(|c| c.movie_count),
+                                "series_count": counts.as_ref().map(|c| c.series_count),
+                                "episode_count": counts.as_ref().map(|c| c.episode_count),
+                            }),
+                            Ok(Err(err)) => json!({
+                                "server_id": srv.id,
+                                "online": false,
+                                "latency_ms": null,
+                                "error": err,
+                            }),
+                            Err(_) => json!({
+                                "server_id": srv.id,
+                                "online": false,
+                                "latency_ms": null,
+                                "error": "连接超时",
+                            }),
+                        };
+                        (srv.id, payload)
+                    });
+                }
+
+                let mut map = serde_json::Map::new();
+                while let Some(joined) = set.join_next().await {
+                    if let Ok((sid, val)) = joined {
+                        map.insert(sid, val);
+                    }
+                }
+                Ok(Value::Object(map))
+            }
+
             "switch_server_route" => {
                 let server_id = str_param(&params, "server_id")?;
                 let route_id = str_param(&params, "route_id")?;

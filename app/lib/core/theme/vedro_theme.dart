@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -188,9 +190,28 @@ Route<T> vedroRoute<T>(Widget page) {
   );
 }
 
-/// Global Cupertino-like smooth bouncing scroll behavior across all platforms.
-class VedroScrollBehavior extends ScrollBehavior {
+/// Global smooth scroll behavior across desktop & mobile:
+/// - Enables smooth touch, trackpad, and mouse drag scrolling on horizontal rails
+/// - Suppresses ugly grey desktop horizontal scrollbars inside category rails & filter strips
+class VedroScrollBehavior extends MaterialScrollBehavior {
   const VedroScrollBehavior();
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => const {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+        PointerDeviceKind.stylus,
+        PointerDeviceKind.invertedStylus,
+      };
+
+  @override
+  Widget buildScrollbar(BuildContext context, Widget child, ScrollableDetails details) {
+    if (details.direction == AxisDirection.left || details.direction == AxisDirection.right) {
+      return child;
+    }
+    return super.buildScrollbar(context, child, details);
+  }
 
   @override
   ScrollPhysics getScrollPhysics(BuildContext context) {

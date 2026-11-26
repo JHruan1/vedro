@@ -73,6 +73,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _hoveringChrome = false;
   bool _showStats = false;
   bool _showEpisodeDrawer = false;
+  bool _epDrawerGrid = false;
+  bool _epDrawerDescending = false;
+  int _epDrawerRangeIdx = 0;
   bool _showRemaining = false;
   bool _isFullscreen = false;
   bool _enteredFullscreenHere = false;
@@ -2042,124 +2045,278 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ),
 
-                  // Slide-out frosted Episode Drawer
+                  // Slide-out high-contrast Episode Drawer (supports 1000+ episodes via ranges + grid + sort)
                   AnimatedPositioned(
-                    duration: const Duration(milliseconds: 260),
+                    duration: const Duration(milliseconds: 240),
                     curve: Curves.easeOutCubic,
                     top: topPad + (isMac ? 42 : 16),
                     bottom: 16,
-                    right: _showEpisodeDrawer ? 16 : -360,
-                    width: 336,
-                    child: GlassSurface(
-                      borderRadius: 18,
-                      blur: 30,
-                      color: VedroTheme.glassStrong,
-                      borderColor: const Color(0x28FFFFFF),
-                      child: Column(
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(18, 12, 10, 10),
-                            child: Row(
-                              children: [
-                                Text(
-                                  '剧集 (${_episodes.length})',
-                                  style: const TextStyle(
-                                    color: VedroTheme.fg,
-                                    fontSize: 15.5,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const Spacer(),
-                                IconButton(
-                                  icon: const Icon(Icons.close_rounded, size: 18, color: VedroTheme.fg2),
-                                  onPressed: () {
-                                    setState(() => _showEpisodeDrawer = false);
-                                    _scheduleHideControls();
-                                  },
-                                ),
-                              ],
-                            ),
-                          ),
-                          const Divider(height: 1),
-                          Expanded(
-                            child: ListView.separated(
-                              padding: const EdgeInsets.all(12),
-                              itemCount: _episodes.length,
-                              separatorBuilder: (_, __) => const SizedBox(height: 8),
-                              itemBuilder: (_, idx) {
-                                final ep = _episodes[idx];
-                                final playing = ep.id == _currentItem.id;
-                                final accent = Theme.of(context).colorScheme.secondary;
-                                return PressableScale(
-                                  onTap: () => _switchEpisode(ep),
-                                  hoverScale: 1.015,
-                                  pressScale: 0.97,
-                                  child: Container(
-                                    padding: const EdgeInsets.all(8),
-                                    decoration: BoxDecoration(
-                                      color: playing
-                                          ? accent.withValues(alpha: 0.16)
-                                          : const Color(0x0FFFFFFF),
-                                      borderRadius: BorderRadius.circular(11),
-                                      border: Border.all(
-                                        color: playing
-                                            ? accent.withValues(alpha: 0.55)
-                                            : VedroTheme.line,
-                                        width: 0.7,
+                    right: _showEpisodeDrawer ? 16 : -380,
+                    width: 356,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xF8151720),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: const Color(0xFF2D3142), width: 1.0),
+                        boxShadow: const [
+                          BoxShadow(color: Color(0xB8000000), blurRadius: 32, offset: Offset(0, 12)),
+                        ],
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: Builder(
+                        builder: (ctx) {
+                          final accent = Theme.of(ctx).colorScheme.secondary;
+                          final ordered = _epDrawerDescending
+                              ? _episodes.reversed.toList()
+                              : _episodes;
+                          final chunkSize = ordered.length >= 400 ? 100 : 50;
+                          final rangeCount =
+                              ordered.isEmpty ? 0 : ((ordered.length - 1) ~/ chunkSize) + 1;
+                          final safeRangeIdx =
+                              rangeCount == 0 ? 0 : _epDrawerRangeIdx.clamp(0, rangeCount - 1);
+                          final start = safeRangeIdx * chunkSize;
+                          final end = (start + chunkSize).clamp(0, ordered.length);
+                          final visibleEps =
+                              rangeCount > 1 ? ordered.sublist(start, end) : ordered;
+
+                          return Column(
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(16, 10, 8, 8),
+                                child: Row(
+                                  children: [
+                                    Text(
+                                      '选集 (${_episodes.length})',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 15.5,
+                                        fontWeight: FontWeight.w600,
                                       ),
                                     ),
-                                    child: Row(
-                                      children: [
-                                        SizedBox(
-                                          width: 84,
-                                          child: AspectRatio(
-                                            aspectRatio: 16 / 9,
-                                            child: ClipRRect(
-                                              borderRadius: BorderRadius.circular(6),
-                                              child: VedroArtwork(
-                                                item: ep,
-                                                appState: widget.appState,
-                                                landscape: true,
-                                                width: 240,
-                                              ),
+                                    const Spacer(),
+                                    IconButton(
+                                      tooltip: _epDrawerDescending ? '切换正序' : '切换倒序',
+                                      visualDensity: VisualDensity.compact,
+                                      icon: Icon(
+                                        _epDrawerDescending
+                                            ? Icons.arrow_upward_rounded
+                                            : Icons.arrow_downward_rounded,
+                                        size: 17,
+                                        color: VedroTheme.fg2,
+                                      ),
+                                      onPressed: () => setState(() {
+                                        _epDrawerDescending = !_epDrawerDescending;
+                                        _epDrawerRangeIdx = 0;
+                                      }),
+                                    ),
+                                    IconButton(
+                                      tooltip: _epDrawerGrid ? '切换列表视图' : '切换数字网格',
+                                      visualDensity: VisualDensity.compact,
+                                      icon: Icon(
+                                        _epDrawerGrid
+                                            ? Icons.view_list_rounded
+                                            : Icons.grid_view_rounded,
+                                        size: 17,
+                                        color: VedroTheme.fg2,
+                                      ),
+                                      onPressed: () =>
+                                          setState(() => _epDrawerGrid = !_epDrawerGrid),
+                                    ),
+                                    IconButton(
+                                      visualDensity: VisualDensity.compact,
+                                      icon: const Icon(Icons.close_rounded,
+                                          size: 18, color: VedroTheme.fg2),
+                                      onPressed: () {
+                                        setState(() => _showEpisodeDrawer = false);
+                                        _scheduleHideControls();
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (rangeCount > 1)
+                                SizedBox(
+                                  height: 36,
+                                  child: ListView.separated(
+                                    scrollDirection: Axis.horizontal,
+                                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
+                                    itemCount: rangeCount,
+                                    separatorBuilder: (_, __) => const SizedBox(width: 6),
+                                    itemBuilder: (_, rIdx) {
+                                      final rStart = rIdx * chunkSize;
+                                      final rEnd = (rStart + chunkSize).clamp(0, ordered.length);
+                                      final firstNum =
+                                          ordered[rStart].indexNumber ?? (rStart + 1);
+                                      final lastNum =
+                                          ordered[rEnd - 1].indexNumber ?? rEnd;
+                                      final active = rIdx == safeRangeIdx;
+                                      return GestureDetector(
+                                        onTap: () => setState(() => _epDrawerRangeIdx = rIdx),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 10, vertical: 4),
+                                          decoration: BoxDecoration(
+                                            color: active
+                                                ? accent
+                                                : const Color(0xFF1F2230),
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          alignment: Alignment.center,
+                                          child: Text(
+                                            '$firstNum-$lastNum',
+                                            style: TextStyle(
+                                              color: active
+                                                  ? const Color(0xFF0B0B0D)
+                                                  : const Color(0xFFD5D9E6),
+                                              fontSize: 11.5,
+                                              fontWeight: FontWeight.w600,
+                                              fontFeatures: const [FontFeature.tabularFigures()],
                                             ),
                                           ),
                                         ),
-                                        const SizedBox(width: 10),
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                '${ep.indexNumber ?? idx + 1}. ${ep.displayName}',
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(
-                                                  color: playing ? Colors.white : VedroTheme.fg,
-                                                  fontSize: 13,
-                                                  fontWeight:
-                                                      playing ? FontWeight.w600 : FontWeight.w500,
-                                                ),
-                                              ),
-                                              if (fmtDurationTicks(ep.runTimeTicks).isNotEmpty)
-                                                Text(
-                                                  fmtDurationTicks(ep.runTimeTicks),
-                                                  style: const TextStyle(
-                                                    color: VedroTheme.fg3,
-                                                    fontSize: 11.5,
+                                      );
+                                    },
+                                  ),
+                                ),
+                              const Divider(height: 1, color: Color(0xFF262936)),
+                              Expanded(
+                                child: _epDrawerGrid
+                                    ? GridView.builder(
+                                        padding: const EdgeInsets.all(12),
+                                        gridDelegate:
+                                            const SliverGridDelegateWithFixedCrossAxisCount(
+                                          crossAxisCount: 5,
+                                          mainAxisSpacing: 8,
+                                          crossAxisSpacing: 8,
+                                          childAspectRatio: 1.25,
+                                        ),
+                                        itemCount: visibleEps.length,
+                                        itemBuilder: (_, idx) {
+                                          final ep = visibleEps[idx];
+                                          final playing = ep.id == _currentItem.id;
+                                          final numLabel = '${ep.indexNumber ?? (start + idx + 1)}';
+                                          return Tooltip(
+                                            message: ep.displayName,
+                                            child: InkWell(
+                                              borderRadius: BorderRadius.circular(9),
+                                              onTap: () => _switchEpisode(ep),
+                                              child: Container(
+                                                decoration: BoxDecoration(
+                                                  color: playing
+                                                      ? accent
+                                                      : const Color(0xFF1F2230),
+                                                  borderRadius: BorderRadius.circular(9),
+                                                  border: Border.all(
+                                                    color: playing
+                                                        ? accent
+                                                        : const Color(0xFF2F3346),
+                                                    width: 0.9,
                                                   ),
                                                 ),
-                                            ],
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        ],
+                                                alignment: Alignment.center,
+                                                child: Text(
+                                                  numLabel,
+                                                  style: TextStyle(
+                                                    color: playing
+                                                        ? const Color(0xFF0B0B0D)
+                                                        : (ep.played
+                                                            ? const Color(0xFF8B90A4)
+                                                            : Colors.white),
+                                                    fontSize: 13,
+                                                    fontWeight: FontWeight.w600,
+                                                    fontFeatures: const [
+                                                      FontFeature.tabularFigures(),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      )
+                                    : ListView.separated(
+                                        padding: const EdgeInsets.all(12),
+                                        itemCount: visibleEps.length,
+                                        separatorBuilder: (_, __) => const SizedBox(height: 8),
+                                        itemBuilder: (_, idx) {
+                                          final ep = visibleEps[idx];
+                                          final playing = ep.id == _currentItem.id;
+                                          return InkWell(
+                                            borderRadius: BorderRadius.circular(11),
+                                            onTap: () => _switchEpisode(ep),
+                                            child: Container(
+                                              padding: const EdgeInsets.all(8),
+                                              decoration: BoxDecoration(
+                                                color: playing
+                                                    ? const Color(0xFF1F2B44)
+                                                    : const Color(0xFF1D202C),
+                                                borderRadius: BorderRadius.circular(11),
+                                                border: Border.all(
+                                                  color: playing
+                                                      ? accent
+                                                      : const Color(0xFF2B2F40),
+                                                  width: playing ? 1.2 : 0.8,
+                                                ),
+                                              ),
+                                              child: Row(
+                                                children: [
+                                                  SizedBox(
+                                                    width: 84,
+                                                    child: AspectRatio(
+                                                      aspectRatio: 16 / 9,
+                                                      child: ClipRRect(
+                                                        borderRadius: BorderRadius.circular(6),
+                                                        child: VedroArtwork(
+                                                          item: ep,
+                                                          appState: widget.appState,
+                                                          landscape: true,
+                                                          width: 240,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 10),
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment.start,
+                                                      children: [
+                                                        Text(
+                                                          '${ep.indexNumber ?? (start + idx + 1)}. ${ep.displayName}',
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow.ellipsis,
+                                                          style: TextStyle(
+                                                            color: playing
+                                                                ? Colors.white
+                                                                : VedroTheme.fg,
+                                                            fontSize: 13,
+                                                            fontWeight: playing
+                                                                ? FontWeight.w600
+                                                                : FontWeight.w500,
+                                                          ),
+                                                        ),
+                                                        if (fmtDurationTicks(ep.runTimeTicks)
+                                                            .isNotEmpty)
+                                                          Text(
+                                                            fmtDurationTicks(ep.runTimeTicks),
+                                                            style: const TextStyle(
+                                                              color: VedroTheme.fg3,
+                                                              fontSize: 11.5,
+                                                            ),
+                                                          ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                              ),
+                            ],
+                          );
+                        },
                       ),
                     ),
                   ),

@@ -4,10 +4,12 @@ import '../core/models/models.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'media_card.dart';
-import 'vedro_ui.dart';
 
-/// Titled horizontal scrolling rail with smooth desktop left/right scroll buttons,
-/// Apple bouncing physics, and optional custom card builder (e.g. ResumeCard / LibraryCard).
+/// Apple TV+ / Infuse style horizontal scrolling rail:
+/// - Zero ugly desktop scrollbars
+/// - Smooth soft edge fade-out masks whenever off-screen items exist (never harshly chopped)
+/// - Hover-revealed floating left/right edge navigation paddles on desktop
+/// - Calm, generous vertical clearance so hovered cards and shadows never clip
 class HorizontalMediaRail extends StatefulWidget {
   const HorizontalMediaRail({
     super.key,
@@ -40,46 +42,11 @@ class HorizontalMediaRail extends StatefulWidget {
 
 class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
   final _scrollCtrl = ScrollController();
-  bool _atStart = true;
-  bool _atEnd = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _scrollCtrl.addListener(_syncEdges);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncEdges());
-  }
 
   @override
   void dispose() {
     _scrollCtrl.dispose();
     super.dispose();
-  }
-
-  void _syncEdges() {
-    if (!_scrollCtrl.hasClients) return;
-    final pos = _scrollCtrl.position;
-    final start = pos.pixels <= 4;
-    final end = pos.pixels >= pos.maxScrollExtent - 4;
-    if (start != _atStart || end != _atEnd) {
-      setState(() {
-        _atStart = start;
-        _atEnd = end;
-      });
-    }
-  }
-
-  void _scrollStep(int dir) {
-    if (!_scrollCtrl.hasClients) return;
-    final vp = _scrollCtrl.position.viewportDimension;
-    final stride = (vp * 0.8).clamp(280.0, 960.0);
-    final target = (_scrollCtrl.offset + dir * stride)
-        .clamp(0.0, _scrollCtrl.position.maxScrollExtent);
-    _scrollCtrl.animateTo(
-      target,
-      duration: const Duration(milliseconds: 420),
-      curve: Curves.easeOutCubic,
-    );
   }
 
   @override
@@ -92,112 +59,92 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
         : (widget.landscape
             ? (wide ? 286.0 : 252.0)
             : widget.appState.prefs.posterCardWidth(wide));
-    final railHeight = widget.isResume || widget.landscape
-        ? (cardWidth / (16 / 9)) + 68
-        : (cardWidth / (2 / 3)) + 68;
-    final showArrows = wide && !(_atStart && _atEnd);
+    final artHeight = widget.isResume || widget.landscape
+        ? (cardWidth / (16 / 9))
+        : (cardWidth / (2 / 3));
+    final railHeight = artHeight + 76;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: EdgeInsets.fromLTRB(padX, 30, padX, 12),
-          child: Row(
-            children: [
-              Expanded(
-                child: widget.onSeeAll != null
-                    ? GestureDetector(
-                        onTap: widget.onSeeAll,
-                        behavior: HitTestBehavior.opaque,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Flexible(
-                              child: Text(
-                                widget.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: VedroTheme.fg,
-                                  fontSize: wide ? 21 : 18,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: -0.35,
-                                ),
-                              ),
+          padding: EdgeInsets.fromLTRB(padX, 28, padX, 10),
+          child: widget.onSeeAll != null
+              ? MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: widget.onSeeAll,
+                    behavior: HitTestBehavior.opaque,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            widget.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: VedroTheme.fg,
+                              fontSize: wide ? 20 : 18,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: -0.3,
                             ),
-                            const SizedBox(width: 4),
-                            const Icon(Icons.chevron_right_rounded, size: 20, color: VedroTheme.fg3),
-                          ],
+                          ),
                         ),
-                      )
-                    : Text(
-                        widget.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: VedroTheme.fg,
-                          fontSize: wide ? 21 : 18,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: -0.35,
-                        ),
-                      ),
-              ),
-              if (showArrows) ...[
-                _RailArrowButton(
-                  icon: Icons.chevron_left_rounded,
-                  disabled: _atStart,
-                  onTap: () => _scrollStep(-1),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.chevron_right_rounded, size: 20, color: VedroTheme.fg3),
+                      ],
+                    ),
+                  ),
+                )
+              : Text(
+                  widget.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: VedroTheme.fg,
+                    fontSize: wide ? 20 : 18,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -0.3,
+                  ),
                 ),
-                const SizedBox(width: 6),
-                _RailArrowButton(
-                  icon: Icons.chevron_right_rounded,
-                  disabled: _atEnd,
-                  onTap: () => _scrollStep(1),
-                ),
-              ],
-            ],
-          ),
         ),
-        SizedBox(
+        SmoothHorizontalStrip(
+          controller: _scrollCtrl,
           height: railHeight,
-          child: ListView.separated(
-            controller: _scrollCtrl,
-            clipBehavior: Clip.none,
-            padding: EdgeInsets.fromLTRB(padX, 8, padX, 10),
-            scrollDirection: Axis.horizontal,
-            physics: const BouncingScrollPhysics(),
-            itemCount: widget.items.length,
-            separatorBuilder: (_, __) => SizedBox(width: wide ? 18 : 13),
-            itemBuilder: (context, idx) {
-              final item = widget.items[idx];
-              if (widget.isResume) {
-                return ResumeCard(
-                  item: item,
-                  appState: widget.appState,
-                  width: cardWidth,
-                  onTap: () => widget.onItemTap(item),
-                  onResumePlay: () => (widget.onItemQuickPlay ?? widget.onItemTap)(item),
-                  onLongPress: widget.onItemLongPress == null
-                      ? null
-                      : () => widget.onItemLongPress!(item),
-                );
-              }
-              return MediaCard(
+          paddleCenterY: 10 + (artHeight / 2),
+          padX: padX,
+          spacing: wide ? 18 : 13,
+          itemCount: widget.items.length,
+          itemBuilder: (context, idx) {
+            final item = widget.items[idx];
+            if (widget.isResume) {
+              return ResumeCard(
                 item: item,
                 appState: widget.appState,
                 width: cardWidth,
-                landscape: widget.landscape,
-                heroPrefix: widget.heroPrefix,
                 onTap: () => widget.onItemTap(item),
-                onQuickPlay: widget.onItemQuickPlay == null
-                    ? null
-                    : () => widget.onItemQuickPlay!(item),
+                onResumePlay: () => (widget.onItemQuickPlay ?? widget.onItemTap)(item),
                 onLongPress: widget.onItemLongPress == null
                     ? null
                     : () => widget.onItemLongPress!(item),
               );
-            },
-          ),
+            }
+            return MediaCard(
+              item: item,
+              appState: widget.appState,
+              width: cardWidth,
+              landscape: widget.landscape,
+              heroPrefix: widget.heroPrefix,
+              onTap: () => widget.onItemTap(item),
+              onQuickPlay: widget.onItemQuickPlay == null
+                  ? null
+                  : () => widget.onItemQuickPlay!(item),
+              onLongPress: widget.onItemLongPress == null
+                  ? null
+                  : () => widget.onItemLongPress!(item),
+            );
+          },
         ),
       ],
     );
@@ -225,15 +172,6 @@ class CustomHorizontalRail extends StatefulWidget {
 
 class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
   final _scrollCtrl = ScrollController();
-  bool _atStart = true;
-  bool _atEnd = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _scrollCtrl.addListener(_syncEdges);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncEdges());
-  }
 
   @override
   void dispose() {
@@ -241,11 +179,104 @@ class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
     super.dispose();
   }
 
+  @override
+  Widget build(BuildContext context) {
+    if (widget.itemCount == 0) return const SizedBox.shrink();
+    final wide = MediaQuery.sizeOf(context).width >= 820;
+    final padX = wide ? 32.0 : 20.0;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: EdgeInsets.fromLTRB(padX, 28, padX, 10),
+          child: Text(
+            widget.title,
+            style: TextStyle(
+              color: VedroTheme.fg,
+              fontSize: wide ? 20 : 18,
+              fontWeight: FontWeight.w600,
+              letterSpacing: -0.3,
+            ),
+          ),
+        ),
+        SmoothHorizontalStrip(
+          controller: _scrollCtrl,
+          height: widget.height + 12,
+          paddleCenterY: 10 + ((widget.height - 40) / 2),
+          padX: padX,
+          spacing: wide ? 18 : 13,
+          itemCount: widget.itemCount,
+          itemBuilder: widget.itemBuilder,
+        ),
+      ],
+    );
+  }
+}
+
+/// Reusable horizontal card strip with:
+/// - Hidden scrollbars on all platforms
+/// - Soft canvas-colored left/right edge fade masks when more items exist
+/// - Hover-revealed floating edge chevron buttons on wide/desktop viewports
+class SmoothHorizontalStrip extends StatefulWidget {
+  const SmoothHorizontalStrip({
+    super.key,
+    this.controller,
+    required this.height,
+    required this.itemCount,
+    required this.itemBuilder,
+    this.padX = 0,
+    this.spacing = 14,
+    this.paddleCenterY,
+  });
+
+  final ScrollController? controller;
+  final double height;
+  final int itemCount;
+  final IndexedWidgetBuilder itemBuilder;
+  final double padX;
+  final double spacing;
+  final double? paddleCenterY;
+
+  @override
+  State<SmoothHorizontalStrip> createState() => _SmoothHorizontalStripState();
+}
+
+class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
+  ScrollController? _ownedCtrl;
+  ScrollController get _ctrl => widget.controller ?? (_ownedCtrl ??= ScrollController());
+
+  bool _atStart = true;
+  bool _atEnd = true;
+  bool _hovered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl.addListener(_syncEdges);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncEdges());
+  }
+
+  @override
+  void didUpdateWidget(covariant SmoothHorizontalStrip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.itemCount != widget.itemCount) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _syncEdges());
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.removeListener(_syncEdges);
+    _ownedCtrl?.dispose();
+    super.dispose();
+  }
+
   void _syncEdges() {
-    if (!_scrollCtrl.hasClients) return;
-    final pos = _scrollCtrl.position;
-    final start = pos.pixels <= 4;
-    final end = pos.pixels >= pos.maxScrollExtent - 4;
+    if (!mounted || !_ctrl.hasClients) return;
+    final pos = _ctrl.position;
+    final start = pos.pixels <= 6;
+    final end = pos.maxScrollExtent <= 6 || pos.pixels >= pos.maxScrollExtent - 6;
     if (start != _atStart || end != _atEnd) {
       setState(() {
         _atStart = start;
@@ -255,104 +286,164 @@ class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
   }
 
   void _scrollStep(int dir) {
-    if (!_scrollCtrl.hasClients) return;
-    final vp = _scrollCtrl.position.viewportDimension;
-    final target = (_scrollCtrl.offset + dir * (vp * 0.8).clamp(300.0, 960.0))
-        .clamp(0.0, _scrollCtrl.position.maxScrollExtent);
-    _scrollCtrl.animateTo(
+    if (!_ctrl.hasClients) return;
+    final vp = _ctrl.position.viewportDimension;
+    final stride = (vp * 0.78).clamp(280.0, 920.0);
+    final target = (_ctrl.offset + dir * stride).clamp(0.0, _ctrl.position.maxScrollExtent);
+    _ctrl.animateTo(
       target,
-      duration: const Duration(milliseconds: 420),
+      duration: const Duration(milliseconds: 380),
       curve: Curves.easeOutCubic,
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (widget.itemCount == 0) return const SizedBox.shrink();
     final wide = MediaQuery.sizeOf(context).width >= 820;
-    final padX = wide ? 32.0 : 20.0;
-    final showArrows = wide && !(_atStart && _atEnd);
+    final paddleTop = ((widget.paddleCenterY ?? (widget.height * 0.44)) - 20)
+        .clamp(8.0, (widget.height - 48).clamp(8.0, widget.height));
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: EdgeInsets.fromLTRB(padX, 30, padX, 12),
-          child: Row(
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: SizedBox(
+        height: widget.height,
+        child: ClipRect(
+          child: Stack(
             children: [
-              Expanded(
-                child: Text(
-                  widget.title,
-                  style: TextStyle(
-                    color: VedroTheme.fg,
-                    fontSize: wide ? 21 : 18,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: -0.35,
+              NotificationListener<ScrollMetricsNotification>(
+                onNotification: (_) {
+                  _syncEdges();
+                  return false;
+                },
+                child: ScrollConfiguration(
+                  behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+                  child: ListView.separated(
+                    controller: _ctrl,
+                    padding: EdgeInsets.fromLTRB(widget.padX, 10, widget.padX, 12),
+                    scrollDirection: Axis.horizontal,
+                    physics: const BouncingScrollPhysics(
+                      parent: AlwaysScrollableScrollPhysics(),
+                    ),
+                    itemCount: widget.itemCount,
+                    separatorBuilder: (_, __) => SizedBox(width: widget.spacing),
+                    itemBuilder: widget.itemBuilder,
                   ),
                 ),
               ),
-              if (showArrows) ...[
-                _RailArrowButton(
-                  icon: Icons.chevron_left_rounded,
-                  disabled: _atStart,
-                  onTap: () => _scrollStep(-1),
+
+              // Subtle left edge fade dissolve when scrolled right
+              if (!_atStart)
+                Positioned(
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: wide ? 44 : 24,
+                  child: const IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                          colors: [
+                            VedroTheme.canvas,
+                            Color(0xB80B0B0D),
+                            Colors.transparent,
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
-                const SizedBox(width: 6),
-                _RailArrowButton(
-                  icon: Icons.chevron_right_rounded,
-                  disabled: _atEnd,
-                  onTap: () => _scrollStep(1),
+
+              // Subtle right edge fade dissolve when more items exist off-screen
+              if (!_atEnd)
+                Positioned(
+                  right: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: wide ? 48 : 26,
+                  child: const IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.centerRight,
+                          end: Alignment.centerLeft,
+                          colors: [
+                            VedroTheme.canvas,
+                            Color(0xB80B0B0D),
+                            Colors.transparent,
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
-              ],
+
+              // Hover-revealed desktop edge paddles (Apple TV+ / Infuse style)
+              if (wide && !_atStart)
+                Positioned(
+                  left: 10,
+                  top: paddleTop,
+                  child: _EdgePaddleButton(
+                    visible: _hovered,
+                    icon: Icons.chevron_left_rounded,
+                    onTap: () => _scrollStep(-1),
+                  ),
+                ),
+              if (wide && !_atEnd)
+                Positioned(
+                  right: 10,
+                  top: paddleTop,
+                  child: _EdgePaddleButton(
+                    visible: _hovered,
+                    icon: Icons.chevron_right_rounded,
+                    onTap: () => _scrollStep(1),
+                  ),
+                ),
             ],
           ),
         ),
-        SizedBox(
-          height: widget.height,
-          child: ListView.separated(
-            controller: _scrollCtrl,
-            clipBehavior: Clip.none,
-            padding: EdgeInsets.fromLTRB(padX, 8, padX, 10),
-            scrollDirection: Axis.horizontal,
-            physics: const BouncingScrollPhysics(),
-            itemCount: widget.itemCount,
-            separatorBuilder: (_, __) => SizedBox(width: wide ? 18 : 13),
-            itemBuilder: widget.itemBuilder,
-          ),
-        ),
-      ],
+      ),
     );
   }
 }
 
-class _RailArrowButton extends StatelessWidget {
-  const _RailArrowButton({
+class _EdgePaddleButton extends StatelessWidget {
+  const _EdgePaddleButton({
+    required this.visible,
     required this.icon,
-    required this.disabled,
     required this.onTap,
   });
 
+  final bool visible;
   final IconData icon;
-  final bool disabled;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Opacity(
-      opacity: disabled ? 0.3 : 1.0,
-      child: PressableScale(
-        onTap: disabled ? null : onTap,
-        hoverScale: 1.06,
-        pressScale: 0.92,
-        child: Container(
-          width: 30,
-          height: 30,
-          decoration: BoxDecoration(
-            color: VedroTheme.surface2,
-            shape: BoxShape.circle,
-            border: Border.all(color: VedroTheme.line, width: 0.8),
+    return IgnorePointer(
+      ignoring: !visible,
+      child: AnimatedOpacity(
+        opacity: visible ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 170),
+        curve: Curves.easeOut,
+        child: Material(
+          color: const Color(0xE8161821),
+          shape: const CircleBorder(
+            side: BorderSide(color: Color(0x40FFFFFF), width: 0.9),
           ),
-          child: Icon(icon, size: 18, color: VedroTheme.fg2),
+          elevation: 6,
+          shadowColor: const Color(0x99000000),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onTap,
+            child: SizedBox(
+              width: 40,
+              height: 40,
+              child: Icon(icon, size: 24, color: Colors.white),
+            ),
+          ),
         ),
       ),
     );

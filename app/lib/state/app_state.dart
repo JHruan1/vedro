@@ -71,6 +71,7 @@ class VedroAppState extends ChangeNotifier {
 
   // Local offline downloads queue persisted in SQLite KV (`downloads_queue`)
   List<DownloadTaskModel> downloads = [];
+  final Map<String, _ActiveDownloadHandle> _activeDownloadHandles = {};
   String? _supportDirPath;
 
   // Customizable Home layout (persisted in SQLite `settings` KV under `home_layout`)
@@ -165,6 +166,25 @@ class VedroAppState extends ChangeNotifier {
           downloads = (kv['value'] as List)
               .whereType<Map<String, dynamic>>()
               .map(DownloadTaskModel.fromJson)
+              .map((d) {
+                // Any interrupted in-progress transfer becomes resumable `paused` on next launch
+                if (d.status == 'downloading' || d.status == 'queued') {
+                  var syncedBytes = d.downloadedBytes;
+                  if (d.filePath.isNotEmpty) {
+                    final part = File('${d.filePath}.part');
+                    if (part.existsSync()) {
+                      syncedBytes = part.lengthSync();
+                    }
+                  }
+                  return d.copyWith(
+                    status: 'paused',
+                    downloadedBytes: syncedBytes,
+                    speedBytesPerSec: 0,
+                    error: '上次下载中断，可点击继续断点续传',
+                  );
+                }
+                return d;
+              })
               .toList();
         }
       } catch (_) {}
@@ -736,84 +756,283 @@ class VedroAppState extends ChangeNotifier {
     }
   }
 
-  Future<void> enqueueDownload(
-    MediaItemModel item, {
-    String? mediaSourceId,
-    int? expectedBytes,
-  }) async {
+  int get effectiveDownloadConcurrency {
+    final localMax = prefs.downloadMaxConcurrent.clamp(1, 5);
+    final dq = meQuota?.downloadQuota;
+    if (dq != null && dq.enabled && !dq.adminExempt && dq.maxConcurrentDownloads > 0) {
+      return localMax < dq.maxConcurrentDownloads ? localMax : dq.maxConcurrentDownloads;
+    }
+    return localMax;
+  }
+
+  Future<String> copyableDownloadUrl(MediaItemModel item, {String? mediaSourceId}) async {
     if (!canDownloadItem(item)) {
       throw Exception('当前账号未开放下载权限，请联系管理员');
     }
+    final prep = await core.invoke('prepare_download', {
+      'item_id': item.id,
+      if (mediaSourceId != null) 'media_source_id': mediaSourceId,
+    }) as Map<String, dynamic>;
+    final url = (prep['url'] ?? '').toString();
+    if (url.isEmpty) throw Exception('无法获取原文件下载地址');
+    return url;
+  }
+
+  Future<void> enqueueDownload(
+    MediaItemModel item, {
+    String? mediaSourceId,
+    String? versionLabel,
+    int? expectedBytes,
+  }) async {
+    await enqueueBatchDownloads([
+      (
+        item: item,
+        mediaSourceId: mediaSourceId,
+        versionLabel: versionLabel,
+        expectedBytes: expectedBytes,
+      ),
+    ]);
+  }
+
+  /// Enqueue one or more episodes/versions cleanly into the resumable, concurrency-bounded download queue.
+  Future<int> enqueueBatchDownloads(
+    List<({MediaItemModel item, String? mediaSourceId, String? versionLabel, int? expectedBytes})>
+        requests,
+  ) async {
+    if (requests.isEmpty) return 0;
+    for (final req in requests) {
+      if (!canDownloadItem(req.item)) {
+        throw Exception('当前账号未开放下载权限，请联系管理员');
+      }
+    }
+
     final dq = meQuota?.downloadQuota;
     if (dq != null && dq.enabled && !dq.adminExempt) {
-      if (dq.isConcurrencyFull) {
+      final totalNeeded = requests.fold<int>(0, (sum, r) => sum + (r.expectedBytes ?? 0));
+      if (totalNeeded > 0 && !dq.canFitBytes(totalNeeded)) {
         throw Exception(
-          '同时下载任务数已达上限（进行中 ${dq.activeDownloads} / 最多 ${dq.maxConcurrentDownloads} 个文件），请等待完成后再试',
-        );
-      }
-      if (expectedBytes != null && expectedBytes > 0 && !dq.canFitBytes(expectedBytes)) {
-        throw Exception(
-          '下载流量包余额不足：当前剩余 ${fmtQuotaBytes(dq.totalRemainingBytes)}，该文件需 ${fmtQuotaBytes(expectedBytes)}（仅限原文件下载，在线播放不限流量）',
+          '下载流量包余额不足：当前剩余 ${fmtQuotaBytes(dq.totalRemainingBytes)}，所选文件共需 ${fmtQuotaBytes(totalNeeded)}（仅限原文件下载，在线播放不限流量）',
         );
       }
     }
 
-    final taskId = '${item.id}_${DateTime.now().millisecondsSinceEpoch}';
-    final initial = DownloadTaskModel(
-      id: taskId,
-      itemId: item.id,
-      title: item.cardTitle,
-      subtitle: item.cardSubtitle,
-      totalBytes: expectedBytes ?? 0,
-      status: 'downloading',
-      createdAt: DateTime.now().millisecondsSinceEpoch,
-    );
-    downloads.insert(0, initial);
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    var added = 0;
+    for (var i = 0; i < requests.length; i++) {
+      final req = requests[i];
+      final dupIdx = downloads.indexWhere((d) =>
+          d.itemId == req.item.id &&
+          (req.mediaSourceId == null ||
+              d.mediaSourceId == null ||
+              d.mediaSourceId == req.mediaSourceId) &&
+          (d.status == 'downloading' || d.status == 'queued' || d.status == 'completed'));
+      if (dupIdx >= 0) continue;
+
+      final taskId = '${req.item.id}_${nowMs}_$i';
+      downloads.insert(
+        added,
+        DownloadTaskModel(
+          id: taskId,
+          itemId: req.item.id,
+          title: req.item.cardTitle,
+          subtitle: req.item.cardSubtitle,
+          mediaSourceId: req.mediaSourceId,
+          versionLabel: req.versionLabel ?? '',
+          totalBytes: req.expectedBytes ?? 0,
+          status: 'queued',
+          createdAt: nowMs + i,
+        ),
+      );
+      added++;
+    }
+    if (added == 0) return 0;
     notifyListeners();
     await _persistDownloads();
+    _pumpDownloadQueue();
+    return added;
+  }
 
-    unawaited(() async {
-      Timer? inFlightRefreshTimer;
-      try {
-        final prep = await core.invoke('prepare_download', {
-          'item_id': item.id,
-          if (mediaSourceId != null) 'media_source_id': mediaSourceId,
-        }) as Map<String, dynamic>;
+  void pauseDownload(String taskId) {
+    final handle = _activeDownloadHandles[taskId];
+    if (handle != null) {
+      handle.paused = true;
+      handle.abort();
+    }
+    _replaceDownload(
+      taskId,
+      (d) => d.copyWith(status: 'paused', speedBytesPerSec: 0, clearError: true),
+    );
+    unawaited(_persistDownloads());
+    _pumpDownloadQueue();
+  }
 
-        final initialUrlStr = (prep['url'] ?? '').toString();
-        if (initialUrlStr.isEmpty) {
-          throw Exception('无法获取原文件下载地址');
+  void resumeDownload(String taskId) {
+    final idx = downloads.indexWhere((d) => d.id == taskId);
+    if (idx < 0) return;
+    final task = downloads[idx];
+    if (task.status == 'downloading' || task.status == 'completed') return;
+    downloads[idx] = task.copyWith(
+      status: 'queued',
+      speedBytesPerSec: 0,
+      retryCount: 0,
+      clearError: true,
+    );
+    notifyListeners();
+    unawaited(_persistDownloads());
+    _pumpDownloadQueue();
+  }
+
+  void pauseAllDownloads() {
+    for (final d in List<DownloadTaskModel>.from(downloads)) {
+      if (d.status == 'downloading' || d.status == 'queued') {
+        pauseDownload(d.id);
+      }
+    }
+  }
+
+  void resumeAllDownloads() {
+    var changed = false;
+    for (var i = 0; i < downloads.length; i++) {
+      final d = downloads[i];
+      if (d.status == 'paused' || d.status == 'failed') {
+        downloads[i] = d.copyWith(
+          status: 'queued',
+          speedBytesPerSec: 0,
+          retryCount: 0,
+          clearError: true,
+        );
+        changed = true;
+      }
+    }
+    if (changed) {
+      notifyListeners();
+      unawaited(_persistDownloads());
+      _pumpDownloadQueue();
+    }
+  }
+
+  void _pumpDownloadQueue() {
+    final maxConcurrent = effectiveDownloadConcurrency;
+    while (_activeDownloadHandles.length < maxConcurrent) {
+      // Pick oldest queued task (so multi-episode downloads progress E01 -> E02 -> E03 in order)
+      DownloadTaskModel? nextTask;
+      for (final d in downloads.reversed) {
+        if (d.status == 'queued' && !_activeDownloadHandles.containsKey(d.id)) {
+          nextTask = d;
+          break;
         }
-        final rawHeaders = (prep['headers'] as Map?)?.map(
-              (k, v) => MapEntry(k.toString(), v.toString()),
-            ) ??
-            const <String, String>{};
-        final ext = (prep['container']?.toString().trim().isNotEmpty == true)
-            ? prep['container'].toString().trim().replaceFirst(RegExp(r'^\.'), '')
-            : 'mkv';
-        final rawFilename = prep['filename']?.toString().trim() ?? '';
-        final fallbackSize = (prep['size'] as num?)?.toInt() ?? expectedBytes ?? 0;
-        final proxyUrl = prep['proxy_url']?.toString().trim() ?? '';
-        final acceptInvalid = prep['accept_invalid_certs'] == true;
+      }
+      if (nextTask == null) break;
+      final handle = _ActiveDownloadHandle();
+      _activeDownloadHandles[nextTask.id] = handle;
+      unawaited(_runResumableDownload(nextTask.id, handle));
+    }
+  }
+
+  Future<void> _runResumableDownload(String taskId, _ActiveDownloadHandle handle) async {
+    const maxAttempts = 8;
+    Timer? inFlightRefreshTimer;
+
+    try {
+      for (var attempt = 0; attempt < maxAttempts; attempt++) {
+        if (handle.paused || handle.cancelled) return;
+        final currentIdx = downloads.indexWhere((d) => d.id == taskId);
+        if (currentIdx < 0) return;
+        final task = downloads[currentIdx];
+
+        _replaceDownload(
+          taskId,
+          (d) => d.copyWith(
+            status: 'downloading',
+            retryCount: attempt,
+            error: attempt > 0 ? '断流自动断点续传中（第 $attempt 次重试）…' : null,
+            clearError: attempt == 0,
+          ),
+        );
 
         final client = HttpClient();
-        if (acceptInvalid) {
-          client.badCertificateCallback = (_, __, ___) => true;
-        }
-        if (proxyUrl.isNotEmpty) {
-          final parsedProxy = Uri.tryParse(proxyUrl);
-          if (parsedProxy != null && parsedProxy.host.isNotEmpty && parsedProxy.port > 0) {
-            final proxySpec = 'PROXY ${parsedProxy.host}:${parsedProxy.port}';
-            client.findProxy = (_) => proxySpec;
-          }
-        }
+        client.connectionTimeout = const Duration(seconds: 20);
+        handle.client = client;
 
         try {
+          final prep = await core.invoke('prepare_download', {
+            'item_id': task.itemId,
+            if (task.mediaSourceId != null && task.mediaSourceId!.isNotEmpty)
+              'media_source_id': task.mediaSourceId,
+          }) as Map<String, dynamic>;
+
+          if (handle.paused || handle.cancelled) return;
+
+          final initialUrlStr = (prep['url'] ?? '').toString();
+          if (initialUrlStr.isEmpty) {
+            throw const _PermanentDownloadError('无法获取原文件下载地址');
+          }
+          final rawHeaders = (prep['headers'] as Map?)?.map(
+                (k, v) => MapEntry(k.toString(), v.toString()),
+              ) ??
+              const <String, String>{};
+          final ext = (prep['container']?.toString().trim().isNotEmpty == true)
+              ? prep['container'].toString().trim().replaceFirst(RegExp(r'^\.'), '')
+              : 'mkv';
+          final rawFilename = prep['filename']?.toString().trim() ?? '';
+          final fallbackSize = (prep['size'] as num?)?.toInt() ?? task.totalBytes;
+          final proxyUrl = prep['proxy_url']?.toString().trim() ?? '';
+          final acceptInvalid = prep['accept_invalid_certs'] == true;
+
+          if (acceptInvalid) {
+            client.badCertificateCallback = (_, __, ___) => true;
+          }
+          if (proxyUrl.isNotEmpty) {
+            final parsedProxy = Uri.tryParse(proxyUrl);
+            if (parsedProxy != null && parsedProxy.host.isNotEmpty && parsedProxy.port > 0) {
+              final proxySpec = 'PROXY ${parsedProxy.host}:${parsedProxy.port}';
+              client.findProxy = (_) => proxySpec;
+            }
+          }
+
+          // Determine stable final path & `.part` resume path BEFORE issuing HTTP request
+          final dir = Directory(downloadsDirectoryPath);
+          if (!dir.existsSync()) dir.createSync(recursive: true);
+
+          String outPath = task.filePath;
+          if (outPath.isEmpty) {
+            final baseName = rawFilename.isNotEmpty
+                ? rawFilename
+                : '${task.title}${task.subtitle.isNotEmpty ? ' - ${task.subtitle}' : ''}${task.versionLabel.isNotEmpty ? ' [${task.versionLabel}]' : ''}.$ext';
+            final safeName = baseName
+                .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ()\[\]]+'), '_')
+                .trim();
+            outPath = '${dir.path}/${safeName.isEmpty ? '${task.itemId}.$ext' : safeName}';
+            _replaceDownload(taskId, (d) => d.copyWith(filePath: outPath));
+          }
+
+          final partFile = File('$outPath.part');
+          var offset = partFile.existsSync() ? partFile.lengthSync() : 0;
+          if (fallbackSize > 0 && offset == fallbackSize) {
+            // Already completely on disk from previous interrupted rename
+            if (File(outPath).existsSync()) File(outPath).deleteSync();
+            partFile.renameSync(outPath);
+            _replaceDownload(
+              taskId,
+              (d) => d.copyWith(
+                filePath: outPath,
+                totalBytes: fallbackSize,
+                downloadedBytes: fallbackSize,
+                speedBytesPerSec: 0,
+                status: 'completed',
+                clearError: true,
+              ),
+            );
+            await _persistDownloads();
+            return;
+          }
+
           var currentUri = Uri.parse(initialUrlStr);
           final initialOrigin = '${currentUri.scheme}://${currentUri.authority}';
           HttpClientResponse? resp;
 
           for (var hop = 0; hop < 6; hop++) {
+            if (handle.paused || handle.cancelled) return;
             final req = await client.getUrl(currentUri);
             req.followRedirects = false;
             final sameOrigin = '${currentUri.scheme}://${currentUri.authority}' == initialOrigin;
@@ -827,7 +1046,13 @@ class VedroAppState extends ChangeNotifier {
                 req.headers.set(k, v);
               }
             });
-            final r = await req.close();
+            if (offset > 0) {
+              req.headers.set(HttpHeaders.rangeHeader, 'bytes=$offset-');
+              if (task.etag != null && task.etag!.isNotEmpty) {
+                req.headers.set('If-Range', task.etag!);
+              }
+            }
+            final r = await req.close().timeout(const Duration(seconds: 25));
             if (r.statusCode == 301 ||
                 r.statusCode == 302 ||
                 r.statusCode == 303 ||
@@ -836,7 +1061,7 @@ class VedroAppState extends ChangeNotifier {
               final loc = r.headers.value(HttpHeaders.locationHeader);
               await r.drain<void>();
               if (loc == null || loc.isEmpty) {
-                throw Exception('下载重定向地址无效');
+                throw const _PermanentDownloadError('下载重定向地址无效');
               }
               currentUri = currentUri.resolve(loc);
               continue;
@@ -846,7 +1071,30 @@ class VedroAppState extends ChangeNotifier {
           }
 
           if (resp == null) {
-            throw Exception('下载重定向次数过多');
+            throw const _PermanentDownloadError('下载重定向次数过多');
+          }
+
+          if (resp.statusCode == 416) {
+            await resp.drain<void>();
+            if (fallbackSize > 0 && offset >= fallbackSize) {
+              if (File(outPath).existsSync()) File(outPath).deleteSync();
+              partFile.renameSync(outPath);
+              _replaceDownload(
+                taskId,
+                (d) => d.copyWith(
+                  filePath: outPath,
+                  totalBytes: offset,
+                  downloadedBytes: offset,
+                  speedBytesPerSec: 0,
+                  status: 'completed',
+                  clearError: true,
+                ),
+              );
+              await _persistDownloads();
+              return;
+            }
+            if (partFile.existsSync()) partFile.deleteSync();
+            throw const _TransientDownloadError('断点偏移失效，正在重新下载');
           }
 
           if (resp.statusCode < 200 || resp.statusCode >= 300) {
@@ -862,47 +1110,104 @@ class VedroAppState extends ChangeNotifier {
                 }
               } catch (_) {}
             }
-            throw Exception(_formatDownloadHttpError(resp.statusCode, quotaErr, serverMsg));
+            final msg = _formatDownloadHttpError(resp.statusCode, quotaErr, serverMsg);
+            // 401/403/404 are non-retryable permission/quota errors; 429/5xx are transient
+            if (resp.statusCode == 429 || resp.statusCode >= 500) {
+              final retryAfter = int.tryParse(resp.headers.value('retry-after') ?? '');
+              throw _TransientDownloadError(msg, retryAfterSecs: retryAfter);
+            }
+            throw _PermanentDownloadError(msg);
           }
 
-          // Server accepted the download & reserved quota — refresh quota shortly to show live InFlight/Active.
+          // Refine filename from Content-Disposition only when starting fresh at offset 0
+          if (offset == 0 && task.filePath.isEmpty) {
+            final cdFilename = _parseContentDispositionFilename(
+              resp.headers.value('content-disposition'),
+            );
+            if (cdFilename.isNotEmpty) {
+              final safeCd = cdFilename
+                  .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ()\[\]]+'), '_')
+                  .trim();
+              if (safeCd.isNotEmpty) {
+                outPath = '${dir.path}/$safeCd';
+                _replaceDownload(taskId, (d) => d.copyWith(filePath: outPath));
+              }
+            }
+          }
+
+          final activePartFile = File('$outPath.part');
+          final respEtag = resp.headers.value(HttpHeaders.etagHeader)?.trim();
+          final contentRange = resp.headers.value(HttpHeaders.contentRangeHeader);
+          final isPartial = resp.statusCode == 206 && offset > 0;
+
+          int expectedTotal = fallbackSize;
+          FileMode writeMode = FileMode.write;
+          var received = 0;
+
+          if (isPartial) {
+            final parsedRange = _parseContentRange(contentRange);
+            if (parsedRange != null && parsedRange.start == offset) {
+              writeMode = FileMode.append;
+              received = offset;
+              if (parsedRange.total > 0) expectedTotal = parsedRange.total;
+            } else if (resp.contentLength > 0) {
+              writeMode = FileMode.append;
+              received = offset;
+              expectedTotal = offset + resp.contentLength;
+            } else {
+              offset = 0;
+              received = 0;
+              writeMode = FileMode.write;
+            }
+          } else {
+            offset = 0;
+            received = 0;
+            writeMode = FileMode.write;
+            if (resp.contentLength > 0) expectedTotal = resp.contentLength;
+          }
+
+          _replaceDownload(
+            taskId,
+            (d) => d.copyWith(
+              filePath: outPath,
+              etag: respEtag ?? d.etag,
+              totalBytes: expectedTotal,
+              downloadedBytes: received,
+              status: 'downloading',
+              clearError: true,
+            ),
+          );
+
+          inFlightRefreshTimer?.cancel();
           inFlightRefreshTimer = Timer(const Duration(milliseconds: 650), () {
             unawaited(refreshMeQuota());
           });
 
-          final cdFilename = _parseContentDispositionFilename(
-            resp.headers.value('content-disposition'),
-          );
-          final chosenName = cdFilename.isNotEmpty
-              ? cdFilename
-              : (rawFilename.isNotEmpty ? rawFilename : '${item.cardTitle}.$ext');
-          final safeName = chosenName
-              .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ()\[\]]+'), '_')
-              .trim();
-          final dir = Directory(downloadsDirectoryPath);
-          if (!dir.existsSync()) dir.createSync(recursive: true);
-          final outPath = '${dir.path}/${safeName.isEmpty ? '${item.id}.$ext' : safeName}';
-
-          final total = resp.contentLength > 0 ? resp.contentLength : fallbackSize;
-          final file = File(outPath);
-          final sink = file.openWrite();
-          var received = 0;
+          final sink = activePartFile.openWrite(mode: writeMode);
           var lastEmit = DateTime.now();
+          var lastEmitBytes = received;
 
           try {
-            await for (final chunk in resp) {
+            await for (final chunk in resp.timeout(const Duration(seconds: 25))) {
+              if (handle.paused || handle.cancelled) break;
               sink.add(chunk);
               received += chunk.length;
               final now = DateTime.now();
-              if (now.difference(lastEmit).inMilliseconds > 350) {
+              final elapsedMs = now.difference(lastEmit).inMilliseconds;
+              if (elapsedMs >= 400) {
+                final deltaBytes = received - lastEmitBytes;
+                final speed = elapsedMs > 0 ? ((deltaBytes * 1000) ~/ elapsedMs) : 0;
                 lastEmit = now;
+                lastEmitBytes = received;
                 _replaceDownload(
                   taskId,
                   (d) => d.copyWith(
                     filePath: outPath,
-                    totalBytes: total,
+                    totalBytes: expectedTotal,
                     downloadedBytes: received,
+                    speedBytesPerSec: speed,
                     status: 'downloading',
+                    clearError: true,
                   ),
                 );
               }
@@ -910,43 +1215,130 @@ class VedroAppState extends ChangeNotifier {
             await sink.flush();
             await sink.close();
           } catch (streamErr) {
-            await sink.close();
             try {
-              if (file.existsSync() && received == 0) file.deleteSync();
+              await sink.flush();
+              await sink.close();
             } catch (_) {}
-            rethrow;
+            if (handle.paused || handle.cancelled) return;
+            _replaceDownload(
+              taskId,
+              (d) => d.copyWith(downloadedBytes: received, speedBytesPerSec: 0),
+            );
+            throw _TransientDownloadError('连接中断，准备断点续传：$streamErr');
+          }
+
+          if (handle.paused || handle.cancelled) {
+            _replaceDownload(
+              taskId,
+              (d) => d.copyWith(
+                downloadedBytes: received,
+                speedBytesPerSec: 0,
+                status: handle.paused ? 'paused' : d.status,
+              ),
+            );
+            await _persistDownloads();
+            return;
+          }
+
+          // Strict integrity verification: NEVER mark a truncated half-downloaded file as completed!
+          if (expectedTotal > 0 && received < expectedTotal) {
+            _replaceDownload(
+              taskId,
+              (d) => d.copyWith(downloadedBytes: received, speedBytesPerSec: 0),
+            );
+            throw _TransientDownloadError(
+              '连接提前断开（已传 ${fmtFileSize(received)} / ${fmtFileSize(expectedTotal)}），正在断点续传…',
+            );
+          }
+
+          if (File(outPath).existsSync()) {
+            try {
+              File(outPath).deleteSync();
+            } catch (_) {}
+          }
+          if (activePartFile.existsSync()) {
+            activePartFile.renameSync(outPath);
           }
 
           _replaceDownload(
             taskId,
             (d) => d.copyWith(
               filePath: outPath,
-              totalBytes: total > 0 ? total : received,
+              totalBytes: expectedTotal > 0 ? expectedTotal : received,
               downloadedBytes: received,
+              speedBytesPerSec: 0,
               status: 'completed',
+              clearError: true,
             ),
           );
           await _persistDownloads();
+          return;
+        } on _PermanentDownloadError catch (e) {
+          _replaceDownload(
+            taskId,
+            (d) => d.copyWith(
+              status: 'failed',
+              speedBytesPerSec: 0,
+              error: e.message,
+            ),
+          );
+          await _persistDownloads();
+          return;
+        } catch (e) {
+          if (handle.paused || handle.cancelled) return;
+          final msg = e is _TransientDownloadError
+              ? e.message
+              : e.toString().replaceFirst('Exception: ', '');
+          if (attempt + 1 >= maxAttempts) {
+            _replaceDownload(
+              taskId,
+              (d) => d.copyWith(
+                status: 'failed',
+                speedBytesPerSec: 0,
+                error: '已自动续传 $maxAttempts 次仍中断：$msg（已保留进度，可点击继续）',
+              ),
+            );
+            await _persistDownloads();
+            return;
+          }
+          final waitSecs = e is _TransientDownloadError && e.retryAfterSecs != null
+              ? e.retryAfterSecs!.clamp(2, 30)
+              : [2, 4, 6, 10, 15, 20, 25][attempt.clamp(0, 6)];
+          _replaceDownload(
+            taskId,
+            (d) => d.copyWith(
+              status: 'downloading',
+              speedBytesPerSec: 0,
+              retryCount: attempt + 1,
+              error: '连接中断，${waitSecs}s 后断点续传（第 ${attempt + 1}/$maxAttempts 次）',
+            ),
+          );
+          await _persistDownloads();
+          await Future<void>.delayed(Duration(seconds: waitSecs));
         } finally {
           inFlightRefreshTimer?.cancel();
-          client.close();
-          unawaited(refreshMeQuota());
-          // EmbyGo Nginx billing callback settles shortly after transfer ends.
-          Timer(const Duration(seconds: 2), () => unawaited(refreshMeQuota()));
+          handle.client = null;
+          client.close(force: true);
         }
-      } catch (e) {
-        inFlightRefreshTimer?.cancel();
-        _replaceDownload(
-          taskId,
-          (d) => d.copyWith(
-            status: 'failed',
-            error: e.toString().replaceFirst('Exception: ', ''),
-          ),
-        );
-        await _persistDownloads();
-        unawaited(refreshMeQuota());
       }
-    }());
+    } finally {
+      inFlightRefreshTimer?.cancel();
+      _activeDownloadHandles.remove(taskId);
+      unawaited(refreshMeQuota());
+      Timer(const Duration(seconds: 2), () => unawaited(refreshMeQuota()));
+      _pumpDownloadQueue();
+    }
+  }
+
+  static ({int start, int end, int total})? _parseContentRange(String? header) {
+    if (header == null || header.isEmpty) return null;
+    final m = RegExp(r'bytes\s+(\d+)-(\d+)/(\d+|\*)', caseSensitive: false).firstMatch(header);
+    if (m == null) return null;
+    final start = int.tryParse(m.group(1)!) ?? -1;
+    final end = int.tryParse(m.group(2)!) ?? -1;
+    final total = m.group(3) == '*' ? 0 : (int.tryParse(m.group(3)!) ?? 0);
+    if (start < 0 || end < start) return null;
+    return (start: start, end: end, total: total);
   }
 
   static String _formatDownloadHttpError(int status, String quotaErr, String serverMsg) {
@@ -998,17 +1390,25 @@ class VedroAppState extends ChangeNotifier {
   }
 
   Future<void> deleteDownload(String taskId, {bool deleteFile = true}) async {
+    final handle = _activeDownloadHandles.remove(taskId);
+    if (handle != null) {
+      handle.cancelled = true;
+      handle.abort();
+    }
     final idx = downloads.indexWhere((d) => d.id == taskId);
     if (idx < 0) return;
     final task = downloads.removeAt(idx);
     if (deleteFile && task.filePath.isNotEmpty) {
-      try {
-        final f = File(task.filePath);
-        if (f.existsSync()) f.deleteSync();
-      } catch (_) {}
+      for (final p in [task.filePath, '${task.filePath}.part']) {
+        try {
+          final f = File(p);
+          if (f.existsSync()) f.deleteSync();
+        } catch (_) {}
+      }
     }
     notifyListeners();
     await _persistDownloads();
+    _pumpDownloadQueue();
   }
 
   Future<String> importSubtitleFont(String sourcePath) async {
@@ -1180,7 +1580,12 @@ class VedroAppState extends ChangeNotifier {
     } catch (_) {}
   }
 
-  DownloadTaskModel? findDownloadForItem(String itemId) {
+  DownloadTaskModel? findDownloadForItem(String itemId, {String? mediaSourceId}) {
+    if (mediaSourceId != null && mediaSourceId.isNotEmpty) {
+      for (final d in downloads) {
+        if (d.itemId == itemId && d.mediaSourceId == mediaSourceId) return d;
+      }
+    }
     for (final d in downloads) {
       if (d.itemId == itemId) return d;
     }
@@ -1518,6 +1923,38 @@ class VedroAppState extends ChangeNotifier {
   @override
   void dispose() {
     _wsPollTimer?.cancel();
+    for (final h in _activeDownloadHandles.values) {
+      h.cancelled = true;
+      h.abort();
+    }
+    _activeDownloadHandles.clear();
     super.dispose();
   }
+}
+
+class _ActiveDownloadHandle {
+  HttpClient? client;
+  bool paused = false;
+  bool cancelled = false;
+
+  void abort() {
+    try {
+      client?.close(force: true);
+    } catch (_) {}
+  }
+}
+
+class _PermanentDownloadError implements Exception {
+  const _PermanentDownloadError(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+class _TransientDownloadError implements Exception {
+  const _TransientDownloadError(this.message, {this.retryAfterSecs});
+  final String message;
+  final int? retryAfterSecs;
+  @override
+  String toString() => message;
 }

@@ -226,6 +226,7 @@ class _MockVedroCore implements VedroCoreClient {
               'Id': 'ep$epNum',
               'Name': epNum == 1 ? '倒计时' : '第 $epNum 集剧情',
               'Type': 'Episode',
+              'CanDownload': canDownload,
               'SeriesId': 'tv1',
               'SeriesName': '三体',
               'ParentIndexNumber': 1,
@@ -688,6 +689,14 @@ void main() {
     expect(find.textContaining('530.00 GB'), findsOneWidget);
     expect(find.textContaining('一次性永久包 500.00 GB'), findsOneWidget);
 
+    // 2b. Tapping download on multi-version movie opens Version Download Picker with both versions!
+    await tester.tap(find.byKey(const ValueKey('detail-download-button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('detail-version-download-sheet')), findsOneWidget);
+    expect(find.text('选择下载版本 (2)'), findsOneWidget);
+    await tester.tapAt(const Offset(10, 10));
+    await tester.pumpAndSettle();
+
     // 3. When remaining quota (10 GiB) is smaller than active 4K Remux (73.4 GB), warn clearly
     embygoApp.meQuota = MeQuotaModel.fromJson(<String, dynamic>{
       'limits': <String, dynamic>{'is_admin': false, 'allow_downloads': true},
@@ -708,6 +717,64 @@ void main() {
     embygoApp.notifyListeners();
     await tester.pumpAndSettle();
     expect(find.textContaining('下载流量包余额不足'), findsOneWidget);
+
+    // 4. Series multi-episode & multi-version Batch Download Picker
+    embygoApp.meQuota = MeQuotaModel.fromJson(<String, dynamic>{
+      'limits': <String, dynamic>{'is_admin': false, 'allow_downloads': true},
+      'download_quota': <String, dynamic>{
+        'Enabled': true,
+        'AdminExempt': false,
+        'MonthlyQuotaBytes': 30 * gib,
+        'MonthlyUsedBytes': 0,
+        'MonthlyRemainingBytes': 30 * gib,
+        'PackBytes': 500 * gib,
+        'InFlightBytes': 0,
+        'ActiveDownloads': 0,
+        'MaxConcurrentDownloads': 2,
+        'TotalRemainingBytes': 530 * gib,
+        'CycleDownloadBytes': 0,
+      },
+    });
+    await tester.pumpWidget(MaterialApp(
+      home: DetailScreen(
+        key: const ValueKey('embygo-series-batch-dl'),
+        item: MediaItemModel(id: 'tv1', name: '三体', type: 'Series'),
+        appState: embygoApp,
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('detail-batch-download-btn')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('detail-batch-download-btn')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('detail-batch-download-dialog')), findsOneWidget);
+    expect(find.textContaining('选择下载剧集与版本'), findsOneWidget);
+    expect(find.text('下载版本 (2)'), findsOneWidget);
+    expect(find.text('全选本段'), findsOneWidget);
+    await tester.tap(find.text('全选本段'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已选 50 集'), findsOneWidget);
+
+    // 5. Resumable DownloadTaskModel metadata roundtrip & concurrency capping
+    final task = DownloadTaskModel(
+      id: 't1',
+      itemId: 'ep1',
+      title: '三体',
+      subtitle: 'S01E01 · 倒计时',
+      mediaSourceId: 'ms-4k',
+      versionLabel: '4K · DV',
+      etag: '"abc123"',
+      totalBytes: 8589934592,
+      downloadedBytes: 4294967296,
+      retryCount: 2,
+      status: 'paused',
+    );
+    final roundtripped = DownloadTaskModel.fromJson(task.toJson());
+    expect(roundtripped.mediaSourceId, equals('ms-4k'));
+    expect(roundtripped.versionLabel, equals('4K · DV'));
+    expect(roundtripped.etag, equals('"abc123"'));
+    expect(roundtripped.retryCount, equals(2));
+    expect(roundtripped.progress, closeTo(0.5, 0.001));
+    expect(embygoApp.effectiveDownloadConcurrency, equals(2));
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {

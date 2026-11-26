@@ -191,10 +191,15 @@ class DownloadTaskModel {
     required this.itemId,
     required this.title,
     this.subtitle = '',
+    this.mediaSourceId,
+    this.versionLabel = '',
     this.filePath = '',
+    this.etag,
     this.totalBytes = 0,
     this.downloadedBytes = 0,
-    this.status = 'queued', // queued | downloading | completed | failed | paused
+    this.speedBytesPerSec = 0,
+    this.retryCount = 0,
+    this.status = 'queued', // queued | downloading | paused | completed | failed
     this.error,
     this.createdAt = 0,
   });
@@ -203,9 +208,14 @@ class DownloadTaskModel {
   final String itemId;
   final String title;
   final String subtitle;
+  final String? mediaSourceId;
+  final String versionLabel;
   final String filePath;
+  final String? etag;
   final int totalBytes;
   final int downloadedBytes;
+  final int speedBytesPerSec;
+  final int retryCount;
   final String status;
   final String? error;
   final int createdAt;
@@ -213,23 +223,36 @@ class DownloadTaskModel {
   double get progress =>
       totalBytes > 0 ? (downloadedBytes / totalBytes).clamp(0.0, 1.0) : (status == 'completed' ? 1.0 : 0.0);
 
+  bool get isActive => status == 'downloading' || status == 'queued';
+
   DownloadTaskModel copyWith({
+    String? mediaSourceId,
+    String? versionLabel,
     String? filePath,
+    String? etag,
     int? totalBytes,
     int? downloadedBytes,
+    int? speedBytesPerSec,
+    int? retryCount,
     String? status,
     String? error,
+    bool clearError = false,
   }) =>
       DownloadTaskModel(
         id: id,
         itemId: itemId,
         title: title,
         subtitle: subtitle,
+        mediaSourceId: mediaSourceId ?? this.mediaSourceId,
+        versionLabel: versionLabel ?? this.versionLabel,
         filePath: filePath ?? this.filePath,
+        etag: etag ?? this.etag,
         totalBytes: totalBytes ?? this.totalBytes,
         downloadedBytes: downloadedBytes ?? this.downloadedBytes,
+        speedBytesPerSec: speedBytesPerSec ?? this.speedBytesPerSec,
+        retryCount: retryCount ?? this.retryCount,
         status: status ?? this.status,
-        error: error,
+        error: clearError ? null : (error ?? this.error),
         createdAt: createdAt,
       );
 
@@ -238,9 +261,13 @@ class DownloadTaskModel {
         'item_id': itemId,
         'title': title,
         'subtitle': subtitle,
+        if (mediaSourceId != null && mediaSourceId!.isNotEmpty) 'media_source_id': mediaSourceId,
+        if (versionLabel.isNotEmpty) 'version_label': versionLabel,
         'file_path': filePath,
+        if (etag != null && etag!.isNotEmpty) 'etag': etag,
         'total_bytes': totalBytes,
         'downloaded_bytes': downloadedBytes,
+        'retry_count': retryCount,
         'status': status,
         if (error != null) 'error': error,
         'created_at': createdAt,
@@ -251,9 +278,13 @@ class DownloadTaskModel {
         itemId: (j['item_id'] ?? '').toString(),
         title: (j['title'] ?? '').toString(),
         subtitle: (j['subtitle'] ?? '').toString(),
+        mediaSourceId: j['media_source_id']?.toString(),
+        versionLabel: (j['version_label'] ?? '').toString(),
         filePath: (j['file_path'] ?? '').toString(),
+        etag: j['etag']?.toString(),
         totalBytes: (j['total_bytes'] as num?)?.toInt() ?? 0,
         downloadedBytes: (j['downloaded_bytes'] as num?)?.toInt() ?? 0,
+        retryCount: (j['retry_count'] as num?)?.toInt() ?? 0,
         status: (j['status'] ?? 'queued').toString(),
         error: j['error']?.toString(),
         createdAt: (j['created_at'] as num?)?.toInt() ?? 0,

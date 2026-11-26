@@ -917,7 +917,31 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           ],
         ),
         const SizedBox(height: 18),
-        _GroupHeader('下载队列 (${app.downloads.length})'),
+        Row(
+          children: [
+            Expanded(child: _GroupHeader('下载队列 (${app.downloads.length})')),
+            if (app.downloads.any((d) => d.status == 'downloading' || d.status == 'queued'))
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  foregroundColor: VedroTheme.fg2,
+                  visualDensity: VisualDensity.compact,
+                ),
+                onPressed: app.pauseAllDownloads,
+                icon: const Icon(Icons.pause_rounded, size: 15),
+                label: const Text('全部暂停', style: TextStyle(fontSize: 12)),
+              ),
+            if (app.downloads.any((d) => d.status == 'paused' || d.status == 'failed'))
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  foregroundColor: Theme.of(context).colorScheme.secondary,
+                  visualDensity: VisualDensity.compact,
+                ),
+                onPressed: app.resumeAllDownloads,
+                icon: const Icon(Icons.play_arrow_rounded, size: 15),
+                label: const Text('全部继续', style: TextStyle(fontSize: 12)),
+              ),
+          ],
+        ),
         if (app.downloads.isEmpty)
           _GroupedCard(
             children: const [
@@ -934,6 +958,27 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
             children: app.downloads.map((task) {
               final done = task.status == 'completed';
               final failed = task.status == 'failed';
+              final paused = task.status == 'paused';
+              final queued = task.status == 'queued';
+              final downloading = task.status == 'downloading';
+              final totalLabel = task.totalBytes > 0 ? ' / ${fmtFileSize(task.totalBytes)}' : '';
+              final dlLabel = fmtFileSize(task.downloadedBytes).isEmpty
+                  ? '0 B'
+                  : fmtFileSize(task.downloadedBytes);
+              final speedLabel = downloading && task.speedBytesPerSec > 0
+                  ? ' · ${fmtFileSize(task.speedBytesPerSec)}/s'
+                  : '';
+              final statusText = done
+                  ? '已完成 · ${fmtFileSize(task.downloadedBytes)}'
+                  : failed
+                      ? '失败：${task.error ?? '网络错误'}${task.downloadedBytes > 0 ? '（已保留 $dlLabel，可继续）' : ''}'
+                      : paused
+                          ? '已暂停 · $dlLabel$totalLabel（支持断点续传）'
+                          : queued
+                              ? '排队等待中${task.totalBytes > 0 ? ' · ${fmtFileSize(task.totalBytes)}' : ''}'
+                              : (task.error != null && task.error!.isNotEmpty)
+                                  ? '${task.error} · $dlLabel$totalLabel'
+                                  : '下载中 ${(task.progress * 100).round()}% · $dlLabel$totalLabel$speedLabel';
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 child: Column(
@@ -945,34 +990,91 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                task.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(color: VedroTheme.fg, fontSize: 14, fontWeight: FontWeight.w500),
+                              Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      task.subtitle.isNotEmpty
+                                          ? '${task.title} · ${task.subtitle}'
+                                          : task.title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: VedroTheme.fg,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
+                                  if (task.versionLabel.isNotEmpty) ...[
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF1F2331),
+                                        borderRadius: BorderRadius.circular(5),
+                                        border: Border.all(color: const Color(0xFF33394D), width: 0.7),
+                                      ),
+                                      child: Text(
+                                        task.versionLabel,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Color(0xFFC8CEDD),
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
                               ),
-                              const SizedBox(height: 2),
+                              const SizedBox(height: 3),
                               Text(
-                                done
-                                    ? '已完成 · ${fmtFileSize(task.downloadedBytes)}'
-                                    : (failed
-                                        ? '失败：${task.error ?? '网络错误'}'
-                                        : '下载中 ${(task.progress * 100).round()}% · ${fmtFileSize(task.downloadedBytes)}'),
+                                statusText,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  color: failed ? VedroTheme.danger : VedroTheme.fg3,
+                                  color: failed
+                                      ? VedroTheme.danger
+                                      : (paused
+                                          ? const Color(0xFFFBBF24)
+                                          : (done ? const Color(0xFF34D399) : VedroTheme.fg3)),
                                   fontSize: 12,
+                                  fontFeatures: const [FontFeature.tabularFigures()],
                                 ),
                               ),
                             ],
                           ),
                         ),
+                        if (downloading || queued)
+                          IconButton(
+                            tooltip: '暂停下载（保留进度）',
+                            icon: const Icon(Icons.pause_rounded, color: VedroTheme.fg2),
+                            onPressed: () => app.pauseDownload(task.id),
+                          ),
+                        if (paused || failed)
+                          IconButton(
+                            tooltip: '断点续传 / 重试',
+                            icon: Icon(
+                              failed ? Icons.refresh_rounded : Icons.play_arrow_rounded,
+                              color: Theme.of(context).colorScheme.secondary,
+                            ),
+                            onPressed: () => app.resumeDownload(task.id),
+                          ),
                         if (done && task.filePath.isNotEmpty)
                           IconButton(
                             tooltip: '播放离线文件',
                             icon: const Icon(Icons.play_arrow_rounded, color: VedroTheme.fg),
                             onPressed: () => Navigator.of(context).push(
                               vedroRoute(PlayerScreen(
-                                item: MediaItemModel(id: task.itemId, name: task.title, type: 'Movie'),
+                                item: MediaItemModel(
+                                  id: task.itemId,
+                                  name: task.subtitle.isNotEmpty
+                                      ? '${task.title} · ${task.subtitle}'
+                                      : task.title,
+                                  type: 'Movie',
+                                ),
                                 appState: app,
                                 localFilePath: task.filePath,
                               )),
@@ -985,14 +1087,19 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                         ),
                       ],
                     ),
-                    if (!done && !failed) ...[
+                    if (!done) ...[
                       const SizedBox(height: 8),
                       ClipRRect(
                         borderRadius: BorderRadius.circular(2),
                         child: LinearProgressIndicator(
-                          value: task.progress > 0 ? task.progress : null,
-                          minHeight: 3,
+                          value: (task.progress > 0 || paused || failed || queued)
+                              ? task.progress
+                              : null,
+                          minHeight: 3.5,
                           backgroundColor: VedroTheme.surface3,
+                          color: failed
+                              ? VedroTheme.danger
+                              : (paused ? const Color(0xFFFBBF24) : null),
                         ),
                       ),
                     ],
@@ -1001,6 +1108,14 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               );
             }).toList(),
           ),
+        const SizedBox(height: 12),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 4),
+          child: Text(
+            '支持 HTTP Range 断点续传与断流自动重连（保留 .part 临时进度）；若代理节点长连接易中断，建议切换直连线路或适当降低同时下载任务数。',
+            style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5, height: 1.5),
+          ),
+        ),
       ],
     );
   }

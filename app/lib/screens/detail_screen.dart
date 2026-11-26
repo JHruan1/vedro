@@ -451,9 +451,25 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Future<void> _startDownload() async {
+    // 1. Series -> open multi-episode + multi-version Batch Download Picker!
+    if (_item.isSeries) {
+      await _openBatchDownloadDialog();
+      return;
+    }
+
+    // 2. Movie / Episode with multiple versions -> open Version Download Picker!
+    if (_item.isPlayable && _item.mediaSources.length > 1) {
+      _openVersionDownloadSheet(_item);
+      return;
+    }
+
     final target = _resolveDownloadTarget();
     if (target == null || !widget.appState.canDownloadItem(target)) return;
+    await _enqueueSingleDownload(target, _resolveDownloadSource(target));
+  }
 
+  Future<void> _enqueueSingleDownload(MediaItemModel target, MediaSourceModel? source) async {
+    if (!widget.appState.canDownloadItem(target)) return;
     final now = DateTime.now();
     if (_lastDownloadTapAt != null &&
         now.difference(_lastDownloadTapAt!) < const Duration(milliseconds: 2500)) {
@@ -461,17 +477,17 @@ class _DetailScreenState extends State<DetailScreen> {
     }
     _lastDownloadTapAt = now;
 
-    final dlSource = _resolveDownloadSource(target);
     try {
       await widget.appState.enqueueDownload(
         target,
-        mediaSourceId: dlSource?.id ?? (target.id == _item.id ? _selectedSourceId : null),
-        expectedBytes: dlSource?.size,
+        mediaSourceId: source?.id ?? (target.id == _item.id ? _selectedSourceId : null),
+        versionLabel: source?.name ?? source?.container?.toUpperCase(),
+        expectedBytes: source?.size,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('已加入下载队列：${target.cardTitle}（设置 → 下载管理）'),
+          content: Text('已加入下载队列（支持断点续传）：${target.cardTitle}'),
           duration: const Duration(seconds: 3),
         ),
       );
@@ -488,6 +504,221 @@ class _DetailScreenState extends State<DetailScreen> {
         ),
       );
     }
+  }
+
+  Future<void> _copyDirectDownloadLink(MediaItemModel target, {String? sourceId}) async {
+    try {
+      final url = await widget.appState.copyableDownloadUrl(target, mediaSourceId: sourceId);
+      await Clipboard.setData(ClipboardData(text: url));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('已复制原文件下载直链（可粘贴至浏览器 / ADM / 1DM / IDM 下载）'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFF991B1B),
+          content: Text(
+            e.toString().replaceFirst('Exception: ', ''),
+            style: const TextStyle(color: Colors.white),
+          ),
+        ),
+      );
+    }
+  }
+
+  void _openVersionDownloadSheet(MediaItemModel target) {
+    if (!widget.appState.canDownloadItem(target)) return;
+    final sources = target.mediaSources;
+    if (sources.isEmpty) return;
+    final accent = Theme.of(context).colorScheme.secondary;
+    final dq = widget.appState.meQuota?.downloadQuota;
+
+    showGlassSheet<void>(
+      context: context,
+      builder: (ctx) => ListView(
+        key: const ValueKey('detail-version-download-sheet'),
+        shrinkWrap: true,
+        padding: const EdgeInsets.fromLTRB(18, 16, 18, 22),
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.download_rounded, size: 19, color: Colors.white),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '选择下载版本 (${sources.length})',
+                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.close_rounded, color: VedroTheme.fg2, size: 19),
+                onPressed: () => Navigator.pop(ctx),
+              ),
+            ],
+          ),
+          if (dq != null && dq.enabled) ...[
+            const SizedBox(height: 6),
+            Text(
+              dq.adminExempt
+                  ? '下载流量包：管理员不限 · 在线播放不限流量'
+                  : '剩余下载流量包：${fmtQuotaBytes(dq.totalRemainingBytes)}（仅限原文件下载，播放不限）',
+              style: const TextStyle(
+                color: VedroTheme.fg2,
+                fontSize: 12,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          ...sources.map((s) {
+            final existing = widget.appState.findDownloadForItem(target.id, mediaSourceId: s.id);
+            final alreadyDone = existing != null && existing.status == 'completed';
+            final inProgress = existing != null && existing.isActive;
+            final tooLarge = dq != null &&
+                dq.enabled &&
+                !dq.adminExempt &&
+                s.size != null &&
+                s.size! > 0 &&
+                !dq.canFitBytes(s.size);
+            final selected = s.id == _selectedSourceId;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Container(
+                padding: const EdgeInsets.all(13),
+                decoration: BoxDecoration(
+                  color: selected ? accent.withValues(alpha: 0.14) : const Color(0xFF1A1D28),
+                  borderRadius: BorderRadius.circular(13),
+                  border: Border.all(
+                    color: tooLarge
+                        ? const Color(0x66EF4444)
+                        : (selected ? accent : const Color(0xFF2D3142)),
+                    width: 1.0,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            (s.name?.trim().isNotEmpty == true)
+                                ? s.name!.trim()
+                                : (s.container?.toUpperCase() ?? '原画版本'),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            children: [
+                              if (fmtFileSize(s.size).isNotEmpty)
+                                Text(
+                                  fmtFileSize(s.size),
+                                  style: TextStyle(
+                                    color: tooLarge ? const Color(0xFFFCA5A5) : VedroTheme.fg2,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                              if (s.container != null && s.container!.isNotEmpty)
+                                Text(
+                                  s.container!.toUpperCase(),
+                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
+                                ),
+                              if (s.bitrate != null && s.bitrate! > 0)
+                                Text(
+                                  '${(s.bitrate! / 1000000).toStringAsFixed(1)} Mbps',
+                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
+                                ),
+                              if (tooLarge)
+                                const Text(
+                                  '余额不足',
+                                  style: TextStyle(color: Color(0xFFFCA5A5), fontSize: 11.5, fontWeight: FontWeight.w600),
+                                ),
+                              if (alreadyDone)
+                                const Text(
+                                  '已下载',
+                                  style: TextStyle(color: Color(0xFF34D399), fontSize: 11.5, fontWeight: FontWeight.w600),
+                                )
+                              else if (inProgress)
+                                const Text(
+                                  '下载队列中',
+                                  style: TextStyle(color: Color(0xFF60A5FA), fontSize: 11.5, fontWeight: FontWeight.w600),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '复制下载直链（ADM/1DM/IDM）',
+                      visualDensity: VisualDensity.compact,
+                      icon: const Icon(Icons.link_rounded, size: 18, color: VedroTheme.fg2),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _copyDirectDownloadLink(target, sourceId: s.id);
+                      },
+                    ),
+                    const SizedBox(width: 4),
+                    FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: alreadyDone ? const Color(0xFF1F2937) : accent,
+                        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+                        minimumSize: const Size(0, 34),
+                      ),
+                      onPressed: (tooLarge || inProgress)
+                          ? null
+                          : () {
+                              Navigator.pop(ctx);
+                              if (alreadyDone && existing.filePath.isNotEmpty) {
+                                _play(target, localPath: existing.filePath);
+                              } else {
+                                _enqueueSingleDownload(target, s);
+                              }
+                            },
+                      child: Text(
+                        alreadyDone ? '播放' : (inProgress ? '队列中' : '下载'),
+                        style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openBatchDownloadDialog() async {
+    final target = _resolveDownloadTarget();
+    if (!widget.appState.canDownloadItem(target)) return;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => _BatchDownloadDialog(
+        series: _item,
+        seasons: _seasons,
+        initialSeasonId: _selectedSeasonId ?? (_seasons.isNotEmpty ? _seasons.first.id : null),
+        initialEpisodes: _episodes,
+        initialVersionKey: _selectedSeriesVersionKey,
+        appState: widget.appState,
+        sourceVersionKeyOf: _sourceVersionKey,
+      ),
+    );
   }
 
   void _openMoreSheet() {
@@ -513,10 +744,15 @@ class _DetailScreenState extends State<DetailScreen> {
                 _launchExternal(playable, sourceId: _resolveDownloadSource(playable)?.id ?? _selectedSourceId);
               },
             ),
-            if (canDownload)
+            if (canDownload) ...[
               ListTile(
                 leading: const Icon(Icons.download_rounded, color: VedroTheme.fg2),
-                title: const Text('离线下载到本地', style: TextStyle(color: VedroTheme.fg, fontSize: 14)),
+                title: Text(
+                  _item.isSeries
+                      ? '批量下载剧集（选集与版本）'
+                      : (_item.mediaSources.length > 1 ? '离线下载到本地（选择版本）' : '离线下载到本地'),
+                  style: const TextStyle(color: VedroTheme.fg, fontSize: 14),
+                ),
                 subtitle: widget.appState.meQuota?.downloadQuota?.enabled == true
                     ? Text(
                         widget.appState.meQuota!.downloadQuota!.adminExempt
@@ -530,6 +766,19 @@ class _DetailScreenState extends State<DetailScreen> {
                   _startDownload();
                 },
               ),
+              ListTile(
+                leading: const Icon(Icons.link_rounded, color: VedroTheme.fg2),
+                title: const Text('复制原文件下载直链', style: TextStyle(color: VedroTheme.fg, fontSize: 14)),
+                subtitle: const Text('可粘贴至浏览器 / ADM / 1DM / IDM 断点续传', style: TextStyle(color: VedroTheme.fg3, fontSize: 12)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _copyDirectDownloadLink(
+                    playable,
+                    sourceId: _resolveDownloadSource(playable)?.id ?? _selectedSourceId,
+                  );
+                },
+              ),
+            ],
           ],
           if (_item.type != 'Person')
             ListTile(
@@ -1640,8 +1889,10 @@ class _DetailScreenState extends State<DetailScreen> {
                 }).toList(),
               ),
             ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Text(
                   '共 ${_episodes.length} 集',
@@ -1651,7 +1902,38 @@ class _DetailScreenState extends State<DetailScreen> {
                     fontFeatures: [FontFeature.tabularFigures()],
                   ),
                 ),
-                const SizedBox(width: 10),
+                if (widget.appState.canDownloadItem(_resolveDownloadTarget()))
+                  GestureDetector(
+                    key: const ValueKey('detail-batch-download-btn'),
+                    onTap: _openBatchDownloadDialog,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: Container(
+                        height: 30,
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        decoration: BoxDecoration(
+                          color: accent.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: accent.withValues(alpha: 0.5), width: 0.8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.download_rounded, size: 14, color: accent),
+                            const SizedBox(width: 4),
+                            Text(
+                              '批量下载',
+                              style: TextStyle(
+                                color: accent,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
                 // Asc / Desc toggle
                 GestureDetector(
                   onTap: () => setState(() {
@@ -1688,7 +1970,6 @@ class _DetailScreenState extends State<DetailScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
                 // 3-mode view toggle: Grid / Cards / List
                 Container(
                   padding: const EdgeInsets.all(2.5),
@@ -3628,6 +3909,611 @@ class _EpisodeRowState extends State<_EpisodeRow> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Scalable Multi-Episode & Multi-Version Batch Download Picker (supports 1,000+ episodes,
+/// season switching, version selection, live EmbyGo download quota pre-check & Range queue).
+class _BatchDownloadDialog extends StatefulWidget {
+  const _BatchDownloadDialog({
+    required this.series,
+    required this.seasons,
+    required this.initialSeasonId,
+    required this.initialEpisodes,
+    required this.initialVersionKey,
+    required this.appState,
+    required this.sourceVersionKeyOf,
+  });
+
+  final MediaItemModel series;
+  final List<MediaItemModel> seasons;
+  final String? initialSeasonId;
+  final List<MediaItemModel> initialEpisodes;
+  final String? initialVersionKey;
+  final VedroAppState appState;
+  final String Function(MediaSourceModel) sourceVersionKeyOf;
+
+  @override
+  State<_BatchDownloadDialog> createState() => _BatchDownloadDialogState();
+}
+
+class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
+  String? _seasonId;
+  late List<MediaItemModel> _episodes;
+  final Map<String, List<MediaItemModel>> _seasonCache = {};
+  final Map<String, MediaItemModel> _selectedById = {};
+  String? _versionKey;
+  int _rangeIdx = 0;
+  bool _loadingSeason = false;
+  bool _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _seasonId = widget.initialSeasonId;
+    _episodes = List<MediaItemModel>.from(widget.initialEpisodes);
+    if (_seasonId != null) {
+      _seasonCache[_seasonId!] = _episodes;
+    }
+    _versionKey = widget.initialVersionKey;
+    _ensureDefaultVersion();
+  }
+
+  List<MediaSourceModel> get _availableVersions {
+    final seen = <String, MediaSourceModel>{};
+    for (final ep in _episodes) {
+      for (final s in ep.mediaSources) {
+        final k = widget.sourceVersionKeyOf(s);
+        seen.putIfAbsent(k, () => s);
+      }
+    }
+    return seen.values.toList();
+  }
+
+  void _ensureDefaultVersion() {
+    final vers = _availableVersions;
+    if (vers.isEmpty) return;
+    if (_versionKey == null || !vers.any((v) => widget.sourceVersionKeyOf(v) == _versionKey)) {
+      _versionKey = widget.sourceVersionKeyOf(vers.first);
+    }
+  }
+
+  MediaSourceModel? _resolveSourceFor(MediaItemModel ep) {
+    if (ep.mediaSources.isEmpty) return null;
+    if (_versionKey != null) {
+      for (final s in ep.mediaSources) {
+        if (widget.sourceVersionKeyOf(s) == _versionKey) return s;
+      }
+    }
+    return ep.mediaSources.first;
+  }
+
+  Future<void> _selectSeason(String seasonId) async {
+    if (seasonId == _seasonId) return;
+    setState(() {
+      _seasonId = seasonId;
+      _rangeIdx = 0;
+    });
+    if (_seasonCache.containsKey(seasonId)) {
+      setState(() {
+        _episodes = _seasonCache[seasonId]!;
+        _ensureDefaultVersion();
+      });
+      return;
+    }
+    setState(() => _loadingSeason = true);
+    try {
+      final eRes = await widget.appState.core.invoke('get_episodes', {
+        'series_id': widget.series.id,
+        'season_id': seasonId,
+        'limit': 5000,
+      }) as Map<String, dynamic>;
+      final loaded = ((eRes['Items'] as List<dynamic>?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(MediaItemModel.fromJson)
+          .toList();
+      _seasonCache[seasonId] = loaded;
+      if (mounted && _seasonId == seasonId) {
+        setState(() {
+          _episodes = loaded;
+          _ensureDefaultVersion();
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _loadingSeason = false);
+    }
+  }
+
+  bool _isAlreadyQueuedOrDone(MediaItemModel ep) {
+    final src = _resolveSourceFor(ep);
+    final existing = widget.appState.findDownloadForItem(ep.id, mediaSourceId: src?.id);
+    return existing != null && (existing.status == 'completed' || existing.isActive);
+  }
+
+  int get _selectedTotalBytes {
+    var total = 0;
+    for (final ep in _selectedById.values) {
+      total += _resolveSourceFor(ep)?.size ?? 0;
+    }
+    return total;
+  }
+
+  Future<void> _submit() async {
+    if (_selectedById.isEmpty || _submitting) return;
+    setState(() => _submitting = true);
+    try {
+      final ordered = _selectedById.values.toList()
+        ..sort((a, b) {
+          final sa = a.parentIndexNumber ?? 0;
+          final sb = b.parentIndexNumber ?? 0;
+          if (sa != sb) return sa.compareTo(sb);
+          return (a.indexNumber ?? 0).compareTo(b.indexNumber ?? 0);
+        });
+      final batch = ordered.map((ep) {
+        final src = _resolveSourceFor(ep);
+        return (
+          item: ep,
+          mediaSourceId: src?.id,
+          versionLabel: src?.name ?? src?.container?.toUpperCase(),
+          expectedBytes: src?.size,
+        );
+      }).toList();
+
+      final added = await widget.appState.enqueueBatchDownloads(batch);
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            added > 0
+                ? '已加入下载队列：$added 集（支持 HTTP Range 断点续传，设置 → 下载管理）'
+                : '所选剧集已在下载队列或已缓存',
+          ),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFF991B1B),
+          content: Text(
+            e.toString().replaceFirst('Exception: ', ''),
+            style: const TextStyle(color: Colors.white),
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.secondary;
+    final versions = _availableVersions;
+    final dq = widget.appState.meQuota?.downloadQuota;
+    final totalBytes = _selectedTotalBytes;
+    final quotaExceeded = dq != null &&
+        dq.enabled &&
+        !dq.adminExempt &&
+        totalBytes > 0 &&
+        !dq.canFitBytes(totalBytes);
+
+    final chunkSize = _episodes.length >= 400 ? 100 : 50;
+    final rangeCount = _episodes.isEmpty ? 0 : ((_episodes.length - 1) ~/ chunkSize) + 1;
+    final safeRangeIdx = rangeCount == 0 ? 0 : _rangeIdx.clamp(0, rangeCount - 1);
+    final start = safeRangeIdx * chunkSize;
+    final end = (start + chunkSize).clamp(0, _episodes.length);
+    final visibleEps = rangeCount > 1 ? _episodes.sublist(start, end) : _episodes;
+
+    return Dialog(
+      key: const ValueKey('detail-batch-download-dialog'),
+      backgroundColor: const Color(0xFF151720),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: const BorderSide(color: Color(0x28FFFFFF), width: 0.9),
+      ),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 620, maxHeight: 720),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
+              child: Row(
+                children: [
+                  Icon(Icons.download_for_offline_rounded, size: 20, color: accent),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '选择下载剧集与版本 · ${widget.series.displayName}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (dq != null && dq.enabled)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              dq.adminExempt
+                                  ? '下载流量包：管理员不限 · 在线播放不限流量'
+                                  : '剩余下载流量包：${fmtQuotaBytes(dq.totalRemainingBytes)} · 并发上限 ${dq.maxConcurrentDownloads > 0 ? '${dq.maxConcurrentDownloads} 个文件（其余自动排队）' : '不限'}',
+                              style: const TextStyle(
+                                color: VedroTheme.fg2,
+                                fontSize: 11.5,
+                                fontFeatures: [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: VedroTheme.fg2),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+
+            // Season switcher (multi-season)
+            if (widget.seasons.length > 1)
+              SizedBox(
+                height: 36,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 18),
+                  itemCount: widget.seasons.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (_, idx) {
+                    final s = widget.seasons[idx];
+                    final active = s.id == _seasonId;
+                    return ChoiceChip(
+                      label: Text(s.name),
+                      selected: active,
+                      onSelected: (_) => _selectSeason(s.id),
+                      selectedColor: accent.withValues(alpha: 0.24),
+                      backgroundColor: const Color(0xFF1C1F2B),
+                      labelStyle: TextStyle(
+                        color: active ? Colors.white : VedroTheme.fg2,
+                        fontSize: 12,
+                        fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                      ),
+                    );
+                  },
+                ),
+              ),
+
+            // Multi-version selector
+            if (versions.length > 1) ...[
+              const SizedBox(height: 10),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '下载版本 (${versions.length})',
+                      style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5, fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: versions.map((v) {
+                        final vKey = widget.sourceVersionKeyOf(v);
+                        final active = vKey == _versionKey;
+                        final label = (v.name?.trim().isNotEmpty == true)
+                            ? v.name!.trim()
+                            : (v.container?.toUpperCase() ?? '原画');
+                        return GestureDetector(
+                          onTap: () => setState(() => _versionKey = vKey),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: active ? accent.withValues(alpha: 0.22) : const Color(0xFF1C1F2B),
+                              borderRadius: BorderRadius.circular(9),
+                              border: Border.all(
+                                color: active ? accent : const Color(0xFF2D3142),
+                                width: 0.9,
+                              ),
+                            ),
+                            child: Text(
+                              label,
+                              style: TextStyle(
+                                color: active ? Colors.white : VedroTheme.fg2,
+                                fontSize: 12,
+                                fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // Range pills + Quick Select actions
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              child: Row(
+                children: [
+                  if (rangeCount > 1)
+                    Expanded(
+                      child: SizedBox(
+                        height: 30,
+                        child: ListView.separated(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: rangeCount,
+                          separatorBuilder: (_, __) => const SizedBox(width: 6),
+                          itemBuilder: (_, rIdx) {
+                            final rStart = rIdx * chunkSize;
+                            final rEnd = (rStart + chunkSize).clamp(0, _episodes.length);
+                            final firstNum = _episodes[rStart].indexNumber ?? (rStart + 1);
+                            final lastNum = _episodes[rEnd - 1].indexNumber ?? rEnd;
+                            final active = rIdx == safeRangeIdx;
+                            return GestureDetector(
+                              onTap: () => setState(() => _rangeIdx = rIdx),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: active ? accent : const Color(0xFF1C1F2B),
+                                  borderRadius: BorderRadius.circular(7),
+                                ),
+                                child: Text(
+                                  '$firstNum-$lastNum',
+                                  style: TextStyle(
+                                    color: active ? Colors.white : VedroTheme.fg2,
+                                    fontSize: 11.5,
+                                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    )
+                  else
+                    const Spacer(),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        for (final ep in visibleEps) {
+                          if (!_isAlreadyQueuedOrDone(ep)) {
+                            _selectedById[ep.id] = ep;
+                          }
+                        }
+                      });
+                    },
+                    child: Text(rangeCount > 1 ? '全选本段' : '全选', style: const TextStyle(fontSize: 12)),
+                  ),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    onPressed: () {
+                      setState(() {
+                        for (final ep in visibleEps) {
+                          if (!ep.played && !_isAlreadyQueuedOrDone(ep)) {
+                            _selectedById[ep.id] = ep;
+                          }
+                        }
+                      });
+                    },
+                    child: const Text('选未看', style: TextStyle(fontSize: 12)),
+                  ),
+                  if (_selectedById.isNotEmpty)
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        foregroundColor: VedroTheme.fg3,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
+                      onPressed: () => setState(() => _selectedById.clear()),
+                      child: const Text('清空', style: TextStyle(fontSize: 12)),
+                    ),
+                ],
+              ),
+            ),
+
+            const Divider(height: 14),
+
+            // Episode list
+            Expanded(
+              child: _loadingSeason
+                  ? const Center(
+                      child: CircularProgressIndicator(strokeWidth: 2, color: VedroTheme.fg2),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                      itemCount: visibleEps.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 6),
+                      itemBuilder: (_, idx) {
+                        final ep = visibleEps[idx];
+                        final src = _resolveSourceFor(ep);
+                        final existing =
+                            widget.appState.findDownloadForItem(ep.id, mediaSourceId: src?.id);
+                        final done = existing != null && existing.status == 'completed';
+                        final active = existing != null && existing.isActive;
+                        final disabled = done || active;
+                        final checked = _selectedById.containsKey(ep.id);
+                        final sizeText = fmtFileSize(src?.size);
+
+                        return InkWell(
+                          borderRadius: BorderRadius.circular(11),
+                          onTap: disabled
+                              ? null
+                              : () {
+                                  setState(() {
+                                    if (checked) {
+                                      _selectedById.remove(ep.id);
+                                    } else {
+                                      _selectedById[ep.id] = ep;
+                                    }
+                                  });
+                                },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: checked
+                                  ? accent.withValues(alpha: 0.16)
+                                  : const Color(0xFF1A1D28),
+                              borderRadius: BorderRadius.circular(11),
+                              border: Border.all(
+                                color: checked ? accent : const Color(0xFF282C3C),
+                                width: 0.85,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  done
+                                      ? Icons.check_circle_rounded
+                                      : (checked
+                                          ? Icons.check_box_rounded
+                                          : Icons.check_box_outline_blank_rounded),
+                                  size: 19,
+                                  color: done
+                                      ? const Color(0xFF34D399)
+                                      : (checked ? accent : VedroTheme.fg3),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '${ep.episodeCode ?? 'E${ep.indexNumber ?? idx + 1}'} · ${ep.displayName}',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color: disabled ? VedroTheme.fg3 : Colors.white,
+                                          fontSize: 13.5,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      if (src != null && (src.name?.isNotEmpty == true))
+                                        Text(
+                                          src.name!,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 11),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                if (done)
+                                  const Text(
+                                    '已下载',
+                                    style: TextStyle(
+                                      color: Color(0xFF34D399),
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  )
+                                else if (active)
+                                  const Text(
+                                    '队列中',
+                                    style: TextStyle(
+                                      color: Color(0xFF60A5FA),
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  )
+                                else if (sizeText.isNotEmpty)
+                                  Text(
+                                    sizeText,
+                                    style: const TextStyle(
+                                      color: VedroTheme.fg2,
+                                      fontSize: 12,
+                                      fontFeatures: [FontFeature.tabularFigures()],
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+
+            const Divider(height: 1),
+
+            // Sticky Bottom Bar
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _selectedById.isEmpty
+                              ? '请勾选需要下载的剧集'
+                              : '已选 ${_selectedById.length} 集${totalBytes > 0 ? ' · 共 ${fmtQuotaBytes(totalBytes)}' : ''}',
+                          style: TextStyle(
+                            color: quotaExceeded ? const Color(0xFFFCA5A5) : Colors.white,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                        if (quotaExceeded)
+                          Text(
+                            '超出剩余下载流量包 (${fmtQuotaBytes(dq.totalRemainingBytes)})',
+                            style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 11.5),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: accent,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    ),
+                    onPressed: (_selectedById.isEmpty || quotaExceeded || _submitting)
+                        ? null
+                        : _submit,
+                    icon: const Icon(Icons.download_rounded, size: 17),
+                    label: Text(
+                      _submitting
+                          ? '提交中…'
+                          : '开始下载${_selectedById.isNotEmpty ? ' (${_selectedById.length})' : ''}',
+                      style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );

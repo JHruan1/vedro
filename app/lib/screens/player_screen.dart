@@ -79,6 +79,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _showRemaining = false;
   bool _isFullscreen = false;
   bool _enteredFullscreenHere = false;
+  bool _isLandscapeOrientation = true;
+  bool _userLockedOrientation = false;
   bool _alwaysOnTop = false;
   bool _screenLocked = false;
   bool _lockIconVisible = false;
@@ -255,8 +257,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _dialogueBoost = widget.appState.settings['dialogue_boost'] == true;
 
     NativePlaybackChannel.setKeepScreenOn(true);
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    if (_isMobile) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      final initialPortrait = _inferInitialPortraitVideo(_currentItem);
+      _applyMobileOrientation(landscape: !initialPortrait);
     }
     if (_isDesktop) {
       NativePlaybackChannel.ensureWindowListener();
@@ -325,6 +329,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _switchEpisode(_nextEpisode!);
       }
     }));
+    _subs.add(_player.stream.videoParams.listen(_onVideoParamsChanged));
     _subs.add(_player.stream.error.listen((err) {
       if (mounted && err.isNotEmpty) {
         setState(() => _error = err);
@@ -379,6 +384,62 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   bool get _isDesktop =>
       !kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux);
+
+  bool get _isMobile => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+
+  bool _inferInitialPortraitVideo(MediaItemModel item) {
+    if (item.mediaSources.isNotEmpty) {
+      final vs = item.mediaSources.first.videoStreams;
+      if (vs.isNotEmpty) {
+        final w = vs.first.width ?? 0;
+        final h = vs.first.height ?? 0;
+        if (w > 0 && h > 0) return h > w;
+      }
+    }
+    return false;
+  }
+
+  void _applyMobileOrientation({required bool landscape}) {
+    if (!_isMobile) return;
+    _isLandscapeOrientation = landscape;
+    if (landscape) {
+      SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    } else {
+      SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.portraitUp,
+      ]);
+    }
+  }
+
+  void _toggleMobileOrientation() {
+    if (!_isMobile) return;
+    final nextLandscape = !_isLandscapeOrientation;
+    setState(() {
+      _userLockedOrientation = true;
+      _isLandscapeOrientation = nextLandscape;
+    });
+    _applyMobileOrientation(landscape: nextLandscape);
+    _flashGestureHud('seek_feedback', text: nextLandscape ? '已切换横屏播放' : '已切换竖屏播放');
+  }
+
+  void _onVideoParamsChanged(VideoParams vp) {
+    if (!_isMobile || _userLockedOrientation || !mounted) return;
+    final rawW = vp.dw ?? vp.w ?? 0;
+    final rawH = vp.dh ?? vp.h ?? 0;
+    if (rawW <= 0 || rawH <= 0) return;
+    final rot = ((vp.rotate ?? 0) + _videoRotate) % 360;
+    final swapped = rot == 90 || rot == 270;
+    final effW = swapped ? rawH : rawW;
+    final effH = swapped ? rawW : rawH;
+    final wantLandscape = effW >= effH;
+    if (wantLandscape != _isLandscapeOrientation) {
+      setState(() => _isLandscapeOrientation = wantLandscape);
+      _applyMobileOrientation(landscape: wantLandscape);
+    }
+  }
 
   void _buildLocalPlaylist(List<String> files) {
     _localPathById.clear();
@@ -744,7 +805,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_alwaysOnTop) {
       unawaited(NativePlaybackChannel.setAlwaysOnTop(false));
     }
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    if (_isMobile) {
+      SystemChrome.setPreferredOrientations(const []);
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     NativePlaybackChannel.setKeepScreenOn(false);
@@ -875,7 +937,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
       await _applyMpvProperty('sub-delay', _subDelaySecs.toStringAsFixed(2));
     }
     await _applyAspectMode(_aspectMode);
-    await _applyMpvProperty('video-rotate', '$_videoRotate');
+    await _applyMpvProperty('video-autorotate', 'yes');
+    if (_videoRotate != 0) {
+      await _applyMpvProperty('video-rotate', '$_videoRotate');
+    }
     await _applyMpvProperty('video-zoom', _videoZoom.toStringAsFixed(3));
     await _applyAnime4k(_anime4kActive);
     await _applyCustomMpvConf(p.customMpvConf);
@@ -1973,52 +2038,70 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                                             const Spacer(),
 
-                                            // Right cohesive labeled pills
-                                            _DeckPillButton(
-                                              label:
-                                                  '${_speed.toStringAsFixed(_speed == _speed.roundToDouble() ? 1 : 2)}×',
-                                              onTap: _openSpeedSheet,
-                                            ),
-                                            const SizedBox(width: 6),
-                                            _DeckPillButton(
-                                              label: _danmakuEnabled && _danmakuComments.isNotEmpty
-                                                  ? '弹幕 ${_danmakuComments.length}'
-                                                  : '弹幕',
-                                              active: _danmakuEnabled,
-                                              onTap: _openDanmakuSheet,
-                                            ),
-                                            const SizedBox(width: 6),
-                                            _DeckPillButton(
-                                              label: '字幕',
-                                              onTap: _openSubtitleSheet,
-                                            ),
-                                            const SizedBox(width: 6),
-                                            _DeckPillButton(
-                                              label: '音轨',
-                                              onTap: _openAudioSheet,
-                                            ),
-                                            const SizedBox(width: 6),
-                                            _DeckPillButton(
-                                              label: '画面',
-                                              onTap: _openHdrSheet,
-                                            ),
-                                            if ((_prepared?.allSources.length ?? 0) > 1) ...[
-                                              const SizedBox(width: 6),
-                                              _DeckPillButton(
-                                                label: '版本',
-                                                onTap: _openVersionSheet,
+                                            // Right cohesive labeled pills (horizontally scrollable on narrow mobile screens)
+                                            Flexible(
+                                              child: SingleChildScrollView(
+                                                scrollDirection: Axis.horizontal,
+                                                reverse: true,
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    _DeckPillButton(
+                                                      label:
+                                                          '${_speed.toStringAsFixed(_speed == _speed.roundToDouble() ? 1 : 2)}×',
+                                                      onTap: _openSpeedSheet,
+                                                    ),
+                                                    const SizedBox(width: 6),
+                                                    _DeckPillButton(
+                                                      label: _danmakuEnabled && _danmakuComments.isNotEmpty
+                                                          ? '弹幕 ${_danmakuComments.length}'
+                                                          : '弹幕',
+                                                      active: _danmakuEnabled,
+                                                      onTap: _openDanmakuSheet,
+                                                    ),
+                                                    const SizedBox(width: 6),
+                                                    _DeckPillButton(
+                                                      label: '字幕',
+                                                      onTap: _openSubtitleSheet,
+                                                    ),
+                                                    const SizedBox(width: 6),
+                                                    _DeckPillButton(
+                                                      label: '音轨',
+                                                      onTap: _openAudioSheet,
+                                                    ),
+                                                    const SizedBox(width: 6),
+                                                    _DeckPillButton(
+                                                      label: '画面',
+                                                      onTap: _openHdrSheet,
+                                                    ),
+                                                    if ((_prepared?.allSources.length ?? 0) > 1) ...[
+                                                      const SizedBox(width: 6),
+                                                      _DeckPillButton(
+                                                        label: '版本',
+                                                        onTap: _openVersionSheet,
+                                                      ),
+                                                    ],
+                                                    if (_isDesktop) ...[
+                                                      const SizedBox(width: 6),
+                                                      _DeckIconButton(
+                                                        icon: _isFullscreen
+                                                            ? Icons.fullscreen_exit_rounded
+                                                            : Icons.fullscreen_rounded,
+                                                        tooltip: _isFullscreen ? '退出全屏 (F / Esc)' : '进入全屏 (F / 双击画面)',
+                                                        onTap: _toggleFullscreen,
+                                                      ),
+                                                    ] else if (_isMobile) ...[
+                                                      const SizedBox(width: 6),
+                                                      _DeckIconButton(
+                                                        icon: Icons.screen_rotation_rounded,
+                                                        tooltip: _isLandscapeOrientation ? '切换竖屏' : '切换横屏',
+                                                        onTap: _toggleMobileOrientation,
+                                                      ),
+                                                    ],
+                                                  ],
+                                                ),
                                               ),
-                                            ],
-                                            if (_isDesktop) ...[
-                                              const SizedBox(width: 6),
-                                              _DeckIconButton(
-                                                icon: _isFullscreen
-                                                    ? Icons.fullscreen_exit_rounded
-                                                    : Icons.fullscreen_rounded,
-                                                tooltip: _isFullscreen ? '退出全屏 (F / Esc)' : '进入全屏 (F / 双击画面)',
-                                                onTap: _toggleFullscreen,
-                                              ),
-                                            ],
+                                            ),
                                           ],
                                         ),
                                       ],

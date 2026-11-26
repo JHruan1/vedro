@@ -5,6 +5,7 @@ use std::os::raw::c_char;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod proxy_engine;
 mod proxy_sub;
 
 use parking_lot::Mutex;
@@ -101,6 +102,7 @@ pub struct VedroRuntime {
     events: Arc<Mutex<VecDeque<Value>>>,
     identity: Mutex<ClientIdentity>,
     in_app_proxy_url: Mutex<Option<String>>,
+    in_process_proxy: Mutex<Option<proxy_engine::InProcessProxyHandle>>,
     managed_proxy: Mutex<Option<ManagedProxyProcess>>,
 }
 
@@ -188,6 +190,7 @@ impl VedroRuntime {
             events: Arc::new(Mutex::new(VecDeque::with_capacity(256))),
             identity: Mutex::new(identity),
             in_app_proxy_url: Mutex::new(saved_in_app_proxy),
+            in_process_proxy: Mutex::new(None),
             managed_proxy: Mutex::new(None),
         })
     }
@@ -2412,11 +2415,14 @@ impl VedroRuntime {
                     .get("node")
                     .cloned()
                     .ok_or_else(|| "缺少节点信息".to_string())?;
-                let node: proxy_sub::ProxyNodeInfo =
+                let mut node: proxy_sub::ProxyNodeInfo =
                     serde_json::from_value(node_val).map_err(|e| format!("节点格式无效: {e}"))?;
+                node.refresh_native_support();
 
+                *self.in_process_proxy.lock() = None;
                 *self.managed_proxy.lock() = None;
 
+                // 1. Direct SOCKS5 / HTTP node
                 if let Some(ref direct_url) = node.direct_proxy_url {
                     reqwest::Proxy::all(direct_url).map_err(|e| format!("节点地址无效: {e}"))?;
                     *self.in_app_proxy_url.lock() = Some(direct_url.clone());
@@ -2433,6 +2439,7 @@ impl VedroRuntime {
                     return Ok(json!({
                         "ok": true,
                         "mode": "node",
+                        "engine": "direct",
                         "active": true,
                         "proxy_url": direct_url,
                         "node_id": node.id,
@@ -2440,18 +2447,53 @@ impl VedroRuntime {
                     }));
                 }
 
-                #[cfg(target_os = "ios")]
-                {
-                    let _ = &node;
-                    return Err("iOS 沙盒仅支持直接选用 SOCKS5/HTTP 节点或局域网端口".into());
+                let outbound = node
+                    .singbox_outbound
+                    .clone()
+                    .ok_or_else(|| "该节点缺少协议参数".to_string())?;
+
+                // 2. First-class In-Process Rust Multi-Protocol Engine (VLESS / Trojan / SS / VMess over TCP/TLS/WS/HTTPUpgrade).
+                // Works natively on Android 10–16 (W^X SELinux), iOS Sandbox, macOS, Windows, and Linux with ZERO external binary!
+                if proxy_engine::can_handle_outbound(&outbound) {
+                    let handle = proxy_engine::start_local_proxy(outbound).await?;
+                    let port = handle.listen_port;
+                    let local_proxy = format!("socks5h://127.0.0.1:{port}");
+                    *self.in_process_proxy.lock() = Some(handle);
+                    *self.in_app_proxy_url.lock() = Some(local_proxy.clone());
+                    let _ = self.store.set_setting(
+                        "in_app_proxy_config_v1",
+                        &json!({
+                            "mode": "node_native",
+                            "node_id": node.id,
+                            "node_name": node.name,
+                        }),
+                    );
+                    self.rebuild_active_client_transport();
+                    return Ok(json!({
+                        "ok": true,
+                        "mode": "node",
+                        "engine": "native_rust",
+                        "active": true,
+                        "proxy_url": local_proxy,
+                        "listen_port": port,
+                        "node_id": node.id,
+                        "node_name": node.name,
+                    }));
                 }
 
-                #[cfg(not(target_os = "ios"))]
+                // 3. Mobile OSes (Android W^X SELinux & iOS Sandbox) forbid spawning dynamically downloaded binaries:
+                // return a clean, accurate message without ever looking for `sing-box` or `.exe`!
+                #[cfg(any(target_os = "android", target_os = "ios"))]
                 {
-                    let outbound = node
-                        .singbox_outbound
-                        .clone()
-                        .ok_or_else(|| "该节点缺少协议参数".to_string())?;
+                    return Err(format!(
+                        "当前移动端免内核引擎暂不支持 {}（Reality/QUIC）协议，请切换 VLESS / Trojan / SS / VMess 节点",
+                        node.protocol.to_uppercase()
+                    ));
+                }
+
+                // 4. Desktop fallback (`macOS` / `Windows` / `Linux`) for Reality / Hysteria2 / TUIC via OS-matched `sing-box`
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                {
                     let listener = std::net::TcpListener::bind("127.0.0.1:0")
                         .map_err(|e| format!("无法分配回环端口: {e}"))?;
                     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
@@ -2487,6 +2529,11 @@ impl VedroRuntime {
                     )
                     .map_err(|e| e.to_string())?;
 
+                    let os_bin_name = if cfg!(windows) {
+                        "sing-box.exe"
+                    } else {
+                        "sing-box"
+                    };
                     let mut bin_candidates = Vec::new();
                     if let Some(explicit) = params
                         .get("binary_path")
@@ -2497,18 +2544,12 @@ impl VedroRuntime {
                         bin_candidates.push(explicit.to_string());
                     }
                     if let Some(ref d) = self.db_dir {
-                        let exe = if cfg!(windows) {
-                            "sing-box.exe"
-                        } else {
-                            "sing-box"
-                        };
-                        let managed_bin = d.join("cores").join(exe);
+                        let managed_bin = d.join("cores").join(os_bin_name);
                         if managed_bin.exists() {
                             bin_candidates.push(managed_bin.to_string_lossy().into_owned());
                         }
                     }
-                    bin_candidates.push("sing-box".into());
-                    bin_candidates.push("sing-box.exe".into());
+                    bin_candidates.push(os_bin_name.to_string());
 
                     let mut spawned: Option<std::process::Child> = None;
                     let mut last_err = String::new();
@@ -2536,7 +2577,7 @@ impl VedroRuntime {
                         None => {
                             let _ = std::fs::remove_dir_all(&temp_dir);
                             return Err(format!(
-                                "NEEDS_CORE:未检测到 sing-box 内核（{last_err}），请点击「一键下载内核」"
+                                "NEEDS_CORE:该节点使用 Reality/QUIC 协议，需桌面端 {os_bin_name} 内核（{last_err}），可点击「一键下载内核」"
                             ));
                         }
                     };
@@ -2582,6 +2623,7 @@ impl VedroRuntime {
                     Ok(json!({
                         "ok": true,
                         "mode": "node",
+                        "engine": "singbox",
                         "active": true,
                         "proxy_url": local_proxy,
                         "listen_port": port,
@@ -2592,119 +2634,156 @@ impl VedroRuntime {
             }
 
             "install_singbox_core" => {
-                let ver = "1.10.7";
-                let (os_slug, arch_slug, ext) = match (std::env::consts::OS, std::env::consts::ARCH)
+                #[cfg(any(target_os = "android", target_os = "ios"))]
                 {
-                    ("macos", "aarch64") => ("darwin", "arm64", "tar.gz"),
-                    ("macos", "x86_64") => ("darwin", "amd64", "tar.gz"),
-                    ("linux", "aarch64") => ("linux", "arm64", "tar.gz"),
-                    ("linux", "x86_64") => ("linux", "amd64", "tar.gz"),
-                    ("android", "aarch64") => ("android", "arm64", "tar.gz"),
-                    ("windows", "x86_64") => ("windows", "amd64", "zip"),
-                    ("windows", "aarch64") => ("windows", "arm64", "zip"),
-                    (o, a) => return Err(format!("当前平台 ({o}/{a}) 请手动指定内核路径")),
-                };
-                let url = format!(
-                    "https://github.com/SagerNet/sing-box/releases/download/v{ver}/sing-box-{ver}-{os_slug}-{arch_slug}.{ext}"
-                );
-                let cores_dir = self
-                    .db_dir
-                    .clone()
-                    .unwrap_or_else(|| std::env::temp_dir().join("vedro-cores"))
-                    .join("cores");
-                std::fs::create_dir_all(&cores_dir).map_err(|e| e.to_string())?;
-                let exe_name = if cfg!(windows) {
-                    "sing-box.exe"
-                } else {
-                    "sing-box"
-                };
-                let dest_bin = cores_dir.join(exe_name);
-
-                let http = reqwest::Client::builder()
-                    .timeout(Duration::from_secs(90))
-                    .user_agent(concat!("Vedro/", env!("CARGO_PKG_VERSION")))
-                    .build()
-                    .map_err(|e| e.to_string())?;
-                let resp = http
-                    .get(&url)
-                    .send()
-                    .await
-                    .map_err(|e| format!("下载失败: {e}"))?;
-                if !resp.status().is_success() {
-                    return Err(format!("下载失败: HTTP {}", resp.status().as_u16()));
+                    return Err(
+                        "移动端已内置 Rust 原生多协议代理引擎，无需下载外部内核即可直接连接节点"
+                            .into(),
+                    );
                 }
-                let archive_bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                {
+                    let ver = "1.10.7";
+                    let (os_slug, arch_slug, ext) =
+                        match (std::env::consts::OS, std::env::consts::ARCH) {
+                            ("macos", "aarch64") => ("darwin", "arm64", "tar.gz"),
+                            ("macos", "x86_64") => ("darwin", "amd64", "tar.gz"),
+                            ("linux", "aarch64") => ("linux", "arm64", "tar.gz"),
+                            ("linux", "x86_64") => ("linux", "amd64", "tar.gz"),
+                            ("windows", "x86_64") => ("windows", "amd64", "zip"),
+                            ("windows", "aarch64") => ("windows", "arm64", "zip"),
+                            (o, a) => return Err(format!("当前平台 ({o}/{a}) 请手动指定内核路径")),
+                        };
+                    let url = format!(
+                        "https://github.com/SagerNet/sing-box/releases/download/v{ver}/sing-box-{ver}-{os_slug}-{arch_slug}.{ext}"
+                    );
+                    let cores_dir = self
+                        .db_dir
+                        .clone()
+                        .unwrap_or_else(|| std::env::temp_dir().join("vedro-cores"))
+                        .join("cores");
+                    std::fs::create_dir_all(&cores_dir).map_err(|e| e.to_string())?;
+                    let exe_name = if cfg!(windows) {
+                        "sing-box.exe"
+                    } else {
+                        "sing-box"
+                    };
+                    let dest_bin = cores_dir.join(exe_name);
 
-                if ext == "tar.gz" {
-                    let bin_bytes =
-                        proxy_sub::extract_binary_from_targz(&archive_bytes, &["sing-box"])?;
-                    std::fs::write(&dest_bin, &bin_bytes).map_err(|e| e.to_string())?;
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(
-                            &dest_bin,
-                            std::fs::Permissions::from_mode(0o755),
-                        );
-                    }
-                } else {
-                    // Windows 10/11 built-in `tar.exe -xf` extracts `.zip` archives natively!
-                    let zip_path = cores_dir.join("sing-box.zip");
-                    let extract_dir = cores_dir.join("extract_tmp");
-                    let _ = std::fs::remove_dir_all(&extract_dir);
-                    std::fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
-                    std::fs::write(&zip_path, &archive_bytes).map_err(|e| e.to_string())?;
-                    let status = std::process::Command::new("tar")
-                        .arg("-xf")
-                        .arg(&zip_path)
-                        .arg("-C")
-                        .arg(&extract_dir)
-                        .status()
-                        .map_err(|e| format!("解压失败: {e}"))?;
-                    let _ = std::fs::remove_file(&zip_path);
-                    if !status.success() {
-                        return Err("解压 sing-box.zip 失败".into());
-                    }
-                    let mut found = None;
-                    if let Ok(entries) = std::fs::read_dir(&extract_dir) {
-                        for entry in entries.flatten() {
-                            let p = entry.path();
-                            if p.is_dir() {
-                                let cand = p.join("sing-box.exe");
-                                if cand.exists() {
-                                    found = Some(cand);
-                                    break;
+                    let active_proxy = self.in_app_proxy_url.lock().clone();
+                    let mut archive_bytes = None;
+                    let mut last_dl_err = String::new();
+                    for use_proxy in [true, false] {
+                        if use_proxy && active_proxy.is_none() {
+                            continue;
+                        }
+                        let mut b = reqwest::Client::builder()
+                            .timeout(Duration::from_secs(90))
+                            .user_agent(concat!("Vedro/", env!("CARGO_PKG_VERSION")));
+                        if use_proxy {
+                            if let Some(ref p_url) = active_proxy {
+                                if let Ok(px) = reqwest::Proxy::all(p_url) {
+                                    b = b.proxy(px);
                                 }
-                            } else if p.file_name().and_then(|n| n.to_str()) == Some("sing-box.exe")
-                            {
-                                found = Some(p);
-                                break;
+                            }
+                        }
+                        if let Ok(http) = b.build() {
+                            match http.get(&url).send().await {
+                                Ok(resp) if resp.status().is_success() => {
+                                    if let Ok(bytes) = resp.bytes().await {
+                                        archive_bytes = Some(bytes);
+                                        break;
+                                    }
+                                }
+                                Ok(resp) => {
+                                    last_dl_err = format!("HTTP {}", resp.status().as_u16());
+                                }
+                                Err(e) => {
+                                    last_dl_err = e.to_string();
+                                }
                             }
                         }
                     }
-                    let src = found.ok_or_else(|| "压缩包内未找到 sing-box.exe".to_string())?;
-                    std::fs::copy(&src, &dest_bin).map_err(|e| e.to_string())?;
-                    let _ = std::fs::remove_dir_all(&extract_dir);
-                }
+                    let archive_bytes =
+                        archive_bytes.ok_or_else(|| format!("下载失败: {last_dl_err}"))?;
 
-                Ok(json!({
-                    "binary_path": dest_bin.to_string_lossy().into_owned(),
-                    "version": ver,
-                }))
+                    if ext == "tar.gz" {
+                        let bin_bytes =
+                            proxy_sub::extract_binary_from_targz(&archive_bytes, &["sing-box"])?;
+                        std::fs::write(&dest_bin, &bin_bytes).map_err(|e| e.to_string())?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(
+                                &dest_bin,
+                                std::fs::Permissions::from_mode(0o755),
+                            );
+                        }
+                    } else {
+                        let zip_path = cores_dir.join("sing-box.zip");
+                        let extract_dir = cores_dir.join("extract_tmp");
+                        let _ = std::fs::remove_dir_all(&extract_dir);
+                        std::fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
+                        std::fs::write(&zip_path, &archive_bytes).map_err(|e| e.to_string())?;
+                        let status = std::process::Command::new("tar")
+                            .arg("-xf")
+                            .arg(&zip_path)
+                            .arg("-C")
+                            .arg(&extract_dir)
+                            .status()
+                            .map_err(|e| format!("解压失败: {e}"))?;
+                        let _ = std::fs::remove_file(&zip_path);
+                        if !status.success() {
+                            return Err("解压 sing-box.zip 失败".into());
+                        }
+                        let mut found = None;
+                        if let Ok(entries) = std::fs::read_dir(&extract_dir) {
+                            for entry in entries.flatten() {
+                                let p = entry.path();
+                                if p.is_dir() {
+                                    let cand = p.join("sing-box.exe");
+                                    if cand.exists() {
+                                        found = Some(cand);
+                                        break;
+                                    }
+                                } else if p.file_name().and_then(|n| n.to_str())
+                                    == Some("sing-box.exe")
+                                {
+                                    found = Some(p);
+                                    break;
+                                }
+                            }
+                        }
+                        let src = found.ok_or_else(|| "压缩包内未找到 sing-box.exe".to_string())?;
+                        std::fs::copy(&src, &dest_bin).map_err(|e| e.to_string())?;
+                        let _ = std::fs::remove_dir_all(&extract_dir);
+                    }
+
+                    Ok(json!({
+                        "binary_path": dest_bin.to_string_lossy().into_owned(),
+                        "version": ver,
+                    }))
+                }
             }
 
             "in_app_proxy_status" => {
                 let active_url = self.in_app_proxy_url.lock().clone();
-                let mut managed_guard = self.managed_proxy.lock();
-                let mut running_core: Option<(String, u16)> = None;
-                if let Some(proc_ref) = managed_guard.as_mut() {
-                    match proc_ref.child.try_wait() {
-                        Ok(None) => {
-                            running_core =
-                                Some((proc_ref.engine_kind.clone(), proc_ref.listen_port));
-                        }
-                        _ => {
-                            *managed_guard = None;
+                let mut running_core: Option<(String, u16)> = self
+                    .in_process_proxy
+                    .lock()
+                    .as_ref()
+                    .map(|h| ("native_rust".to_string(), h.listen_port));
+                if running_core.is_none() {
+                    let mut managed_guard = self.managed_proxy.lock();
+                    if let Some(proc_ref) = managed_guard.as_mut() {
+                        match proc_ref.child.try_wait() {
+                            Ok(None) => {
+                                running_core =
+                                    Some((proc_ref.engine_kind.clone(), proc_ref.listen_port));
+                            }
+                            _ => {
+                                *managed_guard = None;
+                            }
                         }
                     }
                 }
@@ -2726,7 +2805,8 @@ impl VedroRuntime {
                     .trim()
                     .to_ascii_lowercase();
 
-                // Always stop any previous managed sing-box / mihomo userspace process first
+                // Always stop any previous in-process or managed subprocess proxy first
+                *self.in_process_proxy.lock() = None;
                 *self.managed_proxy.lock() = None;
 
                 match mode.as_str() {
@@ -2749,7 +2829,6 @@ impl VedroRuntime {
                         if trimmed.is_empty() {
                             return Err("代理地址不能为空（例如 socks5h://127.0.0.1:7890）".into());
                         }
-                        // Validate URL syntax with reqwest::Proxy before activating
                         reqwest::Proxy::all(&trimmed)
                             .map_err(|e| format!("代理地址格式无效: {e}"))?;
                         *self.in_app_proxy_url.lock() = Some(trimmed.clone());
@@ -2767,11 +2846,14 @@ impl VedroRuntime {
                         }))
                     }
                     "singbox" | "mihomo" => {
-                        #[cfg(target_os = "ios")]
+                        #[cfg(any(target_os = "android", target_os = "ios"))]
                         {
-                            return Err("iOS 沙盒禁止启动独立子进程；在 iOS 上请使用「应用内 SOCKS5/HTTP 端口」连接本机或局域网代理（同样零占用 VPN 通道）".into());
+                            return Err(
+                                "移动端请使用「节点订阅」（内置免内核引擎）或「本地端口」连接代理"
+                                    .into(),
+                            );
                         }
-                        #[cfg(not(target_os = "ios"))]
+                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
                         {
                             let config_text = str_param(&params, "config_text")?;
                             if config_text.trim().is_empty() {
@@ -2786,9 +2868,15 @@ impl VedroRuntime {
                             let bin_candidates: Vec<String> = if let Some(b) = explicit_bin {
                                 vec![b]
                             } else if mode == "singbox" {
-                                vec!["sing-box".into(), "sing-box.exe".into()]
+                                if cfg!(windows) {
+                                    vec!["sing-box.exe".into()]
+                                } else {
+                                    vec!["sing-box".into()]
+                                }
+                            } else if cfg!(windows) {
+                                vec!["mihomo.exe".into(), "clash-meta.exe".into()]
                             } else {
-                                vec!["mihomo".into(), "clash-meta".into(), "mihomo.exe".into()]
+                                vec!["mihomo".into(), "clash-meta".into()]
                             };
 
                             // Pick an ephemeral loopback port on 127.0.0.1 (strictly local, ZERO TUN/VPN!)

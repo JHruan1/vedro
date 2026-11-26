@@ -576,18 +576,19 @@ class _MockVedroCore implements VedroCoreClient {
         };
       case 'fetch_proxy_subscription':
         return <String, dynamic>{
-          'count': 2,
+          'count': 3,
           'userinfo': <String, dynamic>{
             'used': 10737418240,
             'total': 107374182400,
           },
           'nodes': <Map<String, dynamic>>[
             <String, dynamic>{
-              'id': 'node_hk_01',
-              'name': '🇭🇰 香港 IEPL 01',
-              'protocol': 'vless',
-              'server': 'hk1.example.com',
+              'id': 'node_us_slow',
+              'name': '🇺🇸 洛杉矶 BGP 03',
+              'protocol': 'trojan',
+              'server': 'us3.example.com',
               'port': 443,
+              'native_supported': true,
             },
             <String, dynamic>{
               'id': 'node_sg_02',
@@ -596,12 +597,22 @@ class _MockVedroCore implements VedroCoreClient {
               'server': '127.0.0.1',
               'port': 7890,
               'direct_proxy_url': 'socks5h://127.0.0.1:7890',
+              'native_supported': true,
+            },
+            <String, dynamic>{
+              'id': 'node_hk_01',
+              'name': '🇭🇰 香港 IEPL 01',
+              'protocol': 'vless',
+              'server': 'hk1.example.com',
+              'port': 443,
+              'native_supported': true,
             },
           ],
         };
       case 'ping_proxy_nodes':
         return <String, dynamic>{
           'latencies': <String, dynamic>{
+            'node_us_slow': 240,
             'node_hk_01': 26,
             'node_sg_02': 48,
           },
@@ -1631,7 +1642,42 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('proxy-sub-fetch-btn')));
     await tester.pumpAndSettle();
     expect(find.text('🇭🇰 香港 IEPL 01'), findsOneWidget);
-    expect(find.text('26 ms'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('proxy-node-node_hk_01')),
+        matching: find.text('26 ms'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('proxy-node-auto')), findsOneWidget);
+
+    // Default sort is 'latency': HK (26 ms) MUST appear before US (240 ms) even though US was index 0!
+    final hkPos = tester.getTopLeft(find.byKey(const ValueKey('proxy-node-node_hk_01')));
+    final usPos = tester.getTopLeft(find.byKey(const ValueKey('proxy-node-node_us_slow')));
+    expect(hkPos.dy < usPos.dy || (hkPos.dy == usPos.dy && hkPos.dx < usPos.dx), isTrue);
+
+    // Tapping '自动选择' auto-picks lowest-latency HK (26 ms) node!
+    await tester.tap(find.byKey(const ValueKey('proxy-node-auto')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.selectedProxyNodeId, equals('auto'));
+    expect(app.autoProxyResolvedNodeId, equals('node_hk_01'));
+    expect(mock.lastActivatedNode?['name'], equals('🇭🇰 香港 IEPL 01'));
+
+    // Switching sort dropdown to '默认顺序' moves US (index 0) ahead of HK!
+    await tester.tap(find.byKey(const ValueKey('proxy-node-sort-dropdown')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('proxy-sort-default')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.proxyNodeSort, equals('default'));
+    final hkDefaultPos = tester.getTopLeft(find.byKey(const ValueKey('proxy-node-node_hk_01')));
+    final usDefaultPos = tester.getTopLeft(find.byKey(const ValueKey('proxy-node-node_us_slow')));
+    expect(
+      usDefaultPos.dy < hkDefaultPos.dy ||
+          (usDefaultPos.dy == hkDefaultPos.dy && usDefaultPos.dx < hkDefaultPos.dx),
+      isTrue,
+    );
+
+    // Direct manual node selection also works cleanly
     await tester.tap(find.byKey(const ValueKey('proxy-node-node_hk_01')));
     await tester.pumpAndSettle();
     expect(app.prefs.selectedProxyNodeId, equals('node_hk_01'));
@@ -1919,6 +1965,17 @@ void main() {
         'raw_content': 'socks5://127.0.0.1:1080#LocalNode\nvless://11111111-2222-3333-4444-555555555555@hk.example.com:443?security=tls#HK-VLESS',
       }) as Map<String, dynamic>;
       expect(subRes['count'], equals(2));
+      final subNodes = (subRes['nodes'] as List).cast<Map<String, dynamic>>();
+      expect(subNodes[1]['native_supported'], isTrue);
+      // Activate VLESS node via real in-process Rust multi-protocol engine (ZERO external sing-box binary!)
+      final actRes = await bridge.invoke('activate_proxy_node', {
+        'node': subNodes[1],
+      }) as Map<String, dynamic>;
+      expect(actRes['ok'], isTrue);
+      expect(actRes['engine'], equals('native_rust'));
+      final nativeStatus = await bridge.invoke('in_app_proxy_status') as Map<String, dynamic>;
+      expect(nativeStatus['active'], isTrue);
+      expect(nativeStatus['managed_engine'], equals('native_rust'));
       final resetProxy = await bridge.invoke('configure_in_app_proxy', {
         'mode': 'off',
       }) as Map<String, dynamic>;

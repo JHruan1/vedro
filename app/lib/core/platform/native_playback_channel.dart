@@ -225,4 +225,35 @@ class NativePlaybackChannel {
     } catch (_) {}
     return const [];
   }
+
+  /// Opens an external HTTP/HTTPS or custom scheme URL using the OS native handler
+  /// (`Intent.ACTION_VIEW` on Android, `UIApplication.open` on iOS, `NSWorkspace` on macOS, `ShellExecuteW` on Windows).
+  static Future<bool> openUrl(String url) async {
+    try {
+      final ok = await _channel.invokeMethod<bool>('openUrl', {'url': url});
+      if (ok != null) return ok;
+    } on MissingPluginException {
+      return false;
+    } catch (_) {}
+    return false;
+  }
+
+  /// Launches a media stream URL in a native external player (`Infuse`, `VLC`, `Outplayer`, `MX Player`, `PotPlayer`, etc.).
+  static Future<bool> launchExternalPlayer(
+    String url, {
+    String player = '',
+    String title = '',
+  }) async {
+    try {
+      final ok = await _channel.invokeMethod<bool>('launchExternalPlayer', {
+        'url': url,
+        'player': player,
+        'title': title,
+      });
+      if (ok != null) return ok;
+    } on MissingPluginException {
+      return false;
+    } catch (_) {}
+    return false;
+  }
 }

@@ -1188,7 +1188,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       final raw = await File(picked.first).readAsString();
       final parsed = DanmakuComment.parseBilibiliXml(raw);
       if (!mounted) return;
-      final fileName = picked.first.split(Platform.pathSeparator).last;
+      final fileName = picked.first.replaceAll('\\', '/').split('/').last;
       setState(() {
         _danmakuComments = parsed;
         _danmakuMatchTitle = fileName;

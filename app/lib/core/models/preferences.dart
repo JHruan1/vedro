@@ -417,6 +417,7 @@ class VedroPreferences {
     this.proxySubscriptionUrl = '',
     this.proxyNodes = const [],
     this.selectedProxyNodeId = '',
+    this.proxyNodeSort = 'latency', // latency | default | name
     this.proxySubUserinfo,
     // 隐私保护
     this.passcodeEnabled = false,
@@ -529,6 +530,7 @@ class VedroPreferences {
   final String proxySubscriptionUrl;
   final List<Map<String, dynamic>> proxyNodes;
   final String selectedProxyNodeId;
+  final String proxyNodeSort;
   final Map<String, dynamic>? proxySubUserinfo;
 
   final bool passcodeEnabled;
@@ -738,6 +740,7 @@ class VedroPreferences {
     String? proxySubscriptionUrl,
     List<Map<String, dynamic>>? proxyNodes,
     String? selectedProxyNodeId,
+    String? proxyNodeSort,
     Map<String, dynamic>? proxySubUserinfo,
     bool clearProxySubUserinfo = false,
     bool? passcodeEnabled,
@@ -839,6 +842,7 @@ class VedroPreferences {
         proxySubscriptionUrl: proxySubscriptionUrl ?? this.proxySubscriptionUrl,
         proxyNodes: proxyNodes ?? this.proxyNodes,
         selectedProxyNodeId: selectedProxyNodeId ?? this.selectedProxyNodeId,
+        proxyNodeSort: proxyNodeSort ?? this.proxyNodeSort,
         proxySubUserinfo:
             clearProxySubUserinfo ? null : (proxySubUserinfo ?? this.proxySubUserinfo),
         passcodeEnabled: passcodeEnabled ?? this.passcodeEnabled,
@@ -941,6 +945,7 @@ class VedroPreferences {
         'proxy_subscription_url': proxySubscriptionUrl,
         'proxy_nodes': proxyNodes,
         'selected_proxy_node_id': selectedProxyNodeId,
+        'proxy_node_sort': proxyNodeSort,
         if (proxySubUserinfo != null) 'proxy_sub_userinfo': proxySubUserinfo,
         'passcode_enabled': passcodeEnabled,
         'passcode_hash': passcodeHash,
@@ -1059,6 +1064,7 @@ class VedroPreferences {
             .whereType<Map<String, dynamic>>()
             .toList(),
         selectedProxyNodeId: (j['selected_proxy_node_id'] ?? '').toString(),
+        proxyNodeSort: (j['proxy_node_sort'] ?? 'latency').toString(),
         proxySubUserinfo: j['proxy_sub_userinfo'] is Map
             ? Map<String, dynamic>.from(j['proxy_sub_userinfo'] as Map)
             : null,

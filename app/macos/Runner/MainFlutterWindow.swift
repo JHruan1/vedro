@@ -200,6 +200,16 @@ final class VedroHardwarePlugin: NSObject {
       }
     case "enterPiP", "createVideoSurface":
       result(nil)
+    case "openUrl":
+      let args = call.arguments as? [String: Any]
+      let raw = (args?["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      guard let url = URL(string: raw) else {
+        result(false)
+        return
+      }
+      DispatchQueue.main.async {
+        result(NSWorkspace.shared.open(url))
+      }
     default:
       result(FlutterMethodNotImplemented)
     }

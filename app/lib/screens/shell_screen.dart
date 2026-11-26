@@ -88,7 +88,7 @@ class _ShellScreenState extends State<ShellScreen> {
 
   void _launchLocalMedia(List<String> files, int startIndex) {
     final targetPath = files[startIndex.clamp(0, files.length - 1)];
-    final name = targetPath.split(Platform.pathSeparator).last;
+    final name = targetPath.replaceAll('\\', '/').split('/').last;
     final dot = name.lastIndexOf('.');
     final stem = dot > 0 ? name.substring(0, dot) : name;
     Navigator.of(context).push(

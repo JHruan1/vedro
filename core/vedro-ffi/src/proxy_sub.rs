@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
 
+fn default_native_supported() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyNodeInfo {
     pub id: String,
@@ -18,6 +22,18 @@ pub struct ProxyNodeInfo {
     pub direct_proxy_url: Option<String>,
     #[serde(default)]
     pub singbox_outbound: Option<Value>,
+    #[serde(default = "default_native_supported")]
+    pub native_supported: bool,
+}
+
+impl ProxyNodeInfo {
+    pub fn refresh_native_support(&mut self) {
+        self.native_supported = self.direct_proxy_url.is_some()
+            || self
+                .singbox_outbound
+                .as_ref()
+                .is_some_and(crate::proxy_engine::can_handle_outbound);
+    }
 }
 
 pub fn parse_subscription_userinfo(raw: &str) -> Option<Value> {
@@ -91,20 +107,28 @@ pub fn parse_subscription_content(raw: &str) -> Result<Vec<ProxyNodeInfo>, Strin
         return Err("订阅内容为空".into());
     }
 
-    // 1. Sing-box JSON
-    if text.starts_with('{') {
-        if let Ok(doc) = serde_json::from_str::<Value>(text) {
-            let nodes = parse_singbox_json(&doc);
-            if !nodes.is_empty() {
-                return Ok(nodes);
-            }
+    let mut nodes = if text.starts_with('{') {
+        serde_json::from_str::<Value>(text)
+            .ok()
+            .map(|doc| parse_singbox_json(&doc))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if !nodes.is_empty() {
+        for n in &mut nodes {
+            n.refresh_native_support();
         }
+        return Ok(nodes);
     }
 
     // 2. Clash / Mihomo YAML
     if text.contains("proxies:") {
-        let nodes = parse_clash_yaml(text);
+        let mut nodes = parse_clash_yaml(text);
         if !nodes.is_empty() {
+            for n in &mut nodes {
+                n.refresh_native_support();
+            }
             return Ok(nodes);
         }
     }
@@ -121,8 +145,11 @@ pub fn parse_subscription_content(raw: &str) -> Result<Vec<ProxyNodeInfo>, Strin
     };
 
     if uri_source.contains("proxies:") {
-        let nodes = parse_clash_yaml(uri_source);
+        let mut nodes = parse_clash_yaml(uri_source);
         if !nodes.is_empty() {
+            for n in &mut nodes {
+                n.refresh_native_support();
+            }
             return Ok(nodes);
         }
     }
@@ -133,7 +160,8 @@ pub fn parse_subscription_content(raw: &str) -> Result<Vec<ProxyNodeInfo>, Strin
         if l.is_empty() || l.starts_with('#') || l.starts_with("//") {
             continue;
         }
-        if let Some(node) = parse_proxy_uri(l, out.len()) {
+        if let Some(mut node) = parse_proxy_uri(l, out.len()) {
+            node.refresh_native_support();
             out.push(node);
         }
     }
@@ -193,6 +221,8 @@ fn parse_singbox_json(doc: &Value) -> Vec<ProxyNodeInfo> {
         let mut cloned = ob.clone();
         cloned["tag"] = Value::String("proxy".into());
         let id = stable_node_id(&proto, &server, port, &name, out.len());
+        let native_supported =
+            direct_proxy_url.is_some() || crate::proxy_engine::can_handle_outbound(&cloned);
         out.push(ProxyNodeInfo {
             id,
             name,
@@ -201,6 +231,7 @@ fn parse_singbox_json(doc: &Value) -> Vec<ProxyNodeInfo> {
             port,
             direct_proxy_url,
             singbox_outbound: Some(cloned),
+            native_supported,
         });
     }
     out
@@ -629,6 +660,8 @@ fn clash_map_to_node(m: &HashMap<String, String>, idx: usize) -> Option<ProxyNod
         "hy2" => "hysteria2".to_string(),
         other => other.to_string(),
     };
+    let native_supported =
+        direct_proxy_url.is_some() || crate::proxy_engine::can_handle_outbound(&outbound);
     let id = stable_node_id(&proto_label, &server, port, &name, idx);
     Some(ProxyNodeInfo {
         id,
@@ -638,6 +671,7 @@ fn clash_map_to_node(m: &HashMap<String, String>, idx: usize) -> Option<ProxyNod
         port,
         direct_proxy_url,
         singbox_outbound: Some(outbound),
+        native_supported,
     })
 }
 
@@ -683,6 +717,7 @@ fn parse_proxy_uri(line: &str, idx: usize) -> Option<ProxyNodeInfo> {
         if let Some(tr) = build_transport_json(net, path, host, path) {
             ob["transport"] = tr;
         }
+        let native_supported = crate::proxy_engine::can_handle_outbound(&ob);
         let id = stable_node_id("vmess", &server, port, &name, idx);
         return Some(ProxyNodeInfo {
             id,
@@ -692,6 +727,7 @@ fn parse_proxy_uri(line: &str, idx: usize) -> Option<ProxyNodeInfo> {
             port,
             direct_proxy_url: None,
             singbox_outbound: Some(ob),
+            native_supported,
         });
     }
 
@@ -726,6 +762,7 @@ fn parse_proxy_uri(line: &str, idx: usize) -> Option<ProxyNodeInfo> {
             "method": method,
             "password": password,
         });
+        let native_supported = crate::proxy_engine::can_handle_outbound(&ob);
         let id = stable_node_id("ss", &server, port, &name, idx);
         return Some(ProxyNodeInfo {
             id,
@@ -735,6 +772,7 @@ fn parse_proxy_uri(line: &str, idx: usize) -> Option<ProxyNodeInfo> {
             port,
             direct_proxy_url: None,
             singbox_outbound: Some(ob),
+            native_supported,
         });
     }
 
@@ -788,6 +826,7 @@ fn parse_proxy_uri(line: &str, idx: usize) -> Option<ProxyNodeInfo> {
             if let Some(tr) = build_transport_json(net, path, host, svc) {
                 ob["transport"] = tr;
             }
+            let native_supported = crate::proxy_engine::can_handle_outbound(&ob);
             let id = stable_node_id("vless", &server, port, &name, idx);
             Some(ProxyNodeInfo {
                 id,
@@ -797,6 +836,7 @@ fn parse_proxy_uri(line: &str, idx: usize) -> Option<ProxyNodeInfo> {
                 port,
                 direct_proxy_url: None,
                 singbox_outbound: Some(ob),
+                native_supported,
             })
         }
         "trojan" => {
@@ -822,6 +862,7 @@ fn parse_proxy_uri(line: &str, idx: usize) -> Option<ProxyNodeInfo> {
             if let Some(tr) = build_transport_json(net, path, host, svc) {
                 ob["transport"] = tr;
             }
+            let native_supported = crate::proxy_engine::can_handle_outbound(&ob);
             let id = stable_node_id("trojan", &server, port, &name, idx);
             Some(ProxyNodeInfo {
                 id,
@@ -831,6 +872,7 @@ fn parse_proxy_uri(line: &str, idx: usize) -> Option<ProxyNodeInfo> {
                 port,
                 direct_proxy_url: None,
                 singbox_outbound: Some(ob),
+                native_supported,
             })
         }
         "hysteria2" | "hy2" => {
@@ -862,6 +904,7 @@ fn parse_proxy_uri(line: &str, idx: usize) -> Option<ProxyNodeInfo> {
                 port,
                 direct_proxy_url: None,
                 singbox_outbound: Some(ob),
+                native_supported: false,
             })
         }
         "tuic" => {
@@ -890,6 +933,7 @@ fn parse_proxy_uri(line: &str, idx: usize) -> Option<ProxyNodeInfo> {
                 port,
                 direct_proxy_url: None,
                 singbox_outbound: Some(ob),
+                native_supported: false,
             })
         }
         "socks5" | "socks5h" | "socks" | "http" | "https" => {
@@ -912,6 +956,7 @@ fn parse_proxy_uri(line: &str, idx: usize) -> Option<ProxyNodeInfo> {
                 port,
                 direct_proxy_url: Some(direct),
                 singbox_outbound: None,
+                native_supported: true,
             })
         }
         _ => None,

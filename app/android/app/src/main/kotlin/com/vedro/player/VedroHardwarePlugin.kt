@@ -3,35 +3,50 @@ package com.vedro.player
 import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.Context
-import android.media.AudioDeviceInfo
+import android.content.Intent
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.MediaCodecList
 import android.net.ConnectivityManager
+import android.net.Uri
 import android.os.Build
+import android.provider.OpenableColumns
 import android.util.Rational
 import android.view.Display
 import android.view.WindowManager
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
+import java.io.FileOutputStream
 
 /**
- * Native Android hardware bridge for Vedro:
- * - Probes Display HDR capabilities (Dolby Vision, HDR10, HDR10+, HLG, max luminance nits, refresh rate)
+ * Native Android hardware, SAF file picker & external intent bridge for Vedro:
+ * - Probes Display HDR capabilities (Dolby Vision, HDR10, HLG, max luminance nits, refresh rate)
  * - Probes MediaCodec hardware decoders (video/dolby-vision, video/hevc, video/av01)
  * - Probes AudioManager IEC61937 bitstream passthrough (TrueHD Atmos, E-AC-3 JOC Atmos, DTS-HD MA) + Spatializer
+ * - Native SAF `ACTION_OPEN_DOCUMENT` file picker (`pickFiles`) for local video, subtitles, danmaku XML & fonts
+ * - Browser URL launching (`openUrl`) & external Android video player chooser (`launchExternalPlayer`)
  * - Handles Picture-in-Picture (PiP) and WakeLock/KeepScreenOn
  */
 class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.MethodCallHandler {
     companion object {
         const val CHANNEL_NAME = "com.vedro.player/hardware"
+        private const val REQ_PICK_FILES = 9401
 
-        fun register(activity: Activity, messenger: BinaryMessenger) {
+        private val VIDEO_EXTS = setOf(
+            "mkv", "mp4", "m4v", "mov", "ts", "m2ts", "webm", "avi", "flv", "wmv", "mpg", "mpeg", "ogm", "iso", "strm"
+        )
+
+        fun register(activity: Activity, messenger: BinaryMessenger): VedroHardwarePlugin {
             val channel = MethodChannel(messenger, CHANNEL_NAME)
-            channel.setMethodCallHandler(VedroHardwarePlugin(activity))
+            val plugin = VedroHardwarePlugin(activity)
+            channel.setMethodCallHandler(plugin)
+            return plugin
         }
     }
+
+    private var pendingPickResult: MethodChannel.Result? = null
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
@@ -56,8 +71,155 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
                 }
                 result.success(null)
             }
+            "pickFiles" -> {
+                pendingPickResult?.success(emptyList<String>())
+                pendingPickResult = result
+                val extensions = call.argument<List<String>>("extensions") ?: emptyList()
+                val allowMultiple = call.argument<Boolean>("allow_multiple") ?: false
+                try {
+                    val isVideoOnly = extensions.isNotEmpty() && extensions.all { VIDEO_EXTS.contains(it.lowercase()) }
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = if (isVideoOnly) "video/*" else "*/*"
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
+                    }
+                    activity.startActivityForResult(intent, REQ_PICK_FILES)
+                } catch (_: Throwable) {
+                    pendingPickResult = null
+                    result.success(emptyList<String>())
+                }
+            }
+            "openUrl" -> {
+                val url = call.argument<String>("url")?.trim() ?: ""
+                if (url.isEmpty()) {
+                    result.success(false)
+                    return
+                }
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    activity.startActivity(intent)
+                    result.success(true)
+                } catch (_: Throwable) {
+                    result.success(false)
+                }
+            }
+            "launchExternalPlayer" -> {
+                val url = call.argument<String>("url")?.trim() ?: ""
+                val player = (call.argument<String>("player") ?: "").lowercase()
+                val title = call.argument<String>("title") ?: ""
+                if (url.isEmpty()) {
+                    result.success(false)
+                    return
+                }
+                result.success(launchAndroidExternalPlayer(url, player, title))
+            }
             "createVideoSurface" -> result.success(null)
             else -> result.notImplemented()
+        }
+    }
+
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
+        if (requestCode != REQ_PICK_FILES) return false
+        val pending = pendingPickResult ?: return true
+        pendingPickResult = null
+        if (resultCode != Activity.RESULT_OK || data == null) {
+            pending.success(emptyList<String>())
+            return true
+        }
+        val uris = mutableListOf<Uri>()
+        val clip = data.clipData
+        if (clip != null) {
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i)?.uri?.let { uris.add(it) }
+            }
+        } else {
+            data.data?.let { uris.add(it) }
+        }
+        if (uris.isEmpty()) {
+            pending.success(emptyList<String>())
+            return true
+        }
+        Thread {
+            val pickedDir = File(activity.cacheDir, "picked").apply { mkdirs() }
+            try {
+                val existing = pickedDir.listFiles()?.sortedBy { it.lastModified() } ?: emptyList()
+                if (existing.size > 10) {
+                    existing.take(existing.size - 10).forEach { runCatching { it.delete() } }
+                }
+            } catch (_: Throwable) {}
+
+            val paths = mutableListOf<String>()
+            for (uri in uris) {
+                try {
+                    val rawName = resolveDisplayName(uri) ?: "picked_${System.currentTimeMillis()}"
+                    val safeName = rawName.replace(Regex("[^A-Za-z0-9._\\-\\u4e00-\\u9fa5 ()\\[\\]]"), "_")
+                    val dest = File(pickedDir, safeName)
+                    activity.contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(dest).use { out ->
+                            input.copyTo(out, bufferSize = 64 * 1024)
+                        }
+                    }
+                    if (dest.exists() && dest.length() > 0L) {
+                        paths.add(dest.absolutePath)
+                    }
+                } catch (_: Throwable) {}
+            }
+            activity.runOnUiThread {
+                pending.success(paths)
+            }
+        }.start()
+        return true
+    }
+
+    private fun resolveDisplayName(uri: Uri): String? {
+        try {
+            activity.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) {
+                        val name = c.getString(idx)
+                        if (!name.isNullOrBlank()) return name
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
+        return uri.lastPathSegment?.substringAfterLast('/')
+    }
+
+    private fun launchAndroidExternalPlayer(url: String, player: String, title: String): Boolean {
+        val uri = Uri.parse(url)
+        val packages = when (player) {
+            "mxplayer" -> listOf("com.mxtech.videoplayer.pro", "com.mxtech.videoplayer.ad")
+            "vlc" -> listOf("org.videolan.vlc")
+            "mpv" -> listOf("is.xyz.mpv")
+            else -> emptyList()
+        }
+        for (pkg in packages) {
+            try {
+                val direct = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "video/*")
+                    setPackage(pkg)
+                    if (title.isNotBlank()) putExtra("title", title)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                activity.startActivity(direct)
+                return true
+            } catch (_: Throwable) {}
+        }
+        return try {
+            val base = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "video/*")
+                if (title.isNotBlank()) putExtra("title", title)
+            }
+            val chooser = Intent.createChooser(base, "选择外部播放器").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            activity.startActivity(chooser)
+            true
+        } catch (_: Throwable) {
+            false
         }
     }
 

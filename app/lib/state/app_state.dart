@@ -73,6 +73,7 @@ class VedroAppState extends ChangeNotifier {
   // Comprehensive user preferences persisted in SQLite KV (`vedro_prefs`)
   VedroPreferences prefs = const VedroPreferences();
   Map<String, int?> proxyNodeLatencies = {};
+  String? autoProxyResolvedNodeId;
   Color? dynamicPageSeedColor;
   String? _dynamicSeedSourceKey;
 
@@ -205,13 +206,17 @@ class VedroAppState extends ChangeNotifier {
           );
         }
       } catch (_) {}
-      // Re-activate selected subscription node on launch if sing-box node mode was active
+      // Re-activate selected subscription node (or auto-select lowest-latency node) on launch
       if (prefs.inAppProxyMode == 'sub' && prefs.selectedProxyNodeId.isNotEmpty) {
-        final chosen = prefs.proxyNodes
-            .where((n) => n['id']?.toString() == prefs.selectedProxyNodeId)
-            .firstOrNull;
-        if (chosen != null) {
-          unawaited(activateProxyNode(chosen).catchError((_) => <String, dynamic>{}));
+        if (prefs.selectedProxyNodeId == 'auto') {
+          unawaited(autoSelectFastestProxyNode().catchError((_) => <String, dynamic>{}));
+        } else {
+          final chosen = prefs.proxyNodes
+              .where((n) => n['id']?.toString() == prefs.selectedProxyNodeId)
+              .firstOrNull;
+          if (chosen != null) {
+            unawaited(activateProxyNode(chosen).catchError((_) => <String, dynamic>{}));
+          }
         }
       }
       try {
@@ -1564,17 +1569,108 @@ class VedroAppState extends ChangeNotifier {
     return parsed;
   }
 
-  Future<Map<String, dynamic>> activateProxyNode(Map<String, dynamic> node) async {
+  bool isProxyNodeSupportedOnCurrentOs(Map<String, dynamic> node) {
+    final isMobileOs = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+    if (!isMobileOs) return true;
+    return node['native_supported'] != false;
+  }
+
+  List<Map<String, dynamic>> sortedProxyNodes({
+    String? sortOverride,
+    String searchQuery = '',
+  }) {
+    final q = searchQuery.trim().toLowerCase();
+    final indexed = <(int, Map<String, dynamic>)>[];
+    for (var i = 0; i < prefs.proxyNodes.length; i++) {
+      final n = prefs.proxyNodes[i];
+      if (q.isNotEmpty) {
+        final name = (n['name'] ?? '').toString().toLowerCase();
+        final proto = (n['protocol'] ?? '').toString().toLowerCase();
+        final srv = (n['server'] ?? '').toString().toLowerCase();
+        if (!name.contains(q) && !proto.contains(q) && !srv.contains(q)) continue;
+      }
+      indexed.add((i, n));
+    }
+
+    final sort = sortOverride ?? prefs.proxyNodeSort;
+    if (sort == 'name') {
+      indexed.sort((a, b) =>
+          (a.$2['name'] ?? '').toString().compareTo((b.$2['name'] ?? '').toString()));
+    } else if (sort == 'latency') {
+      int rankOf(Map<String, dynamic> n) {
+        if (!isProxyNodeSupportedOnCurrentOs(n)) return 3;
+        final id = (n['id'] ?? '').toString();
+        if (!proxyNodeLatencies.containsKey(id)) return 1;
+        return proxyNodeLatencies[id] != null ? 0 : 2;
+      }
+
+      indexed.sort((a, b) {
+        final ra = rankOf(a.$2);
+        final rb = rankOf(b.$2);
+        if (ra != rb) return ra.compareTo(rb);
+        if (ra == 0) {
+          final ma = proxyNodeLatencies[(a.$2['id'] ?? '').toString()]!;
+          final mb = proxyNodeLatencies[(b.$2['id'] ?? '').toString()]!;
+          if (ma != mb) return ma.compareTo(mb);
+        }
+        return a.$1.compareTo(b.$1);
+      });
+    }
+    return indexed.map((e) => e.$2).toList();
+  }
+
+  Future<Map<String, dynamic>> activateProxyNode(
+    Map<String, dynamic> node, {
+    bool keepAutoMode = false,
+  }) async {
     final res = await core.invoke('activate_proxy_node', {
       'node': node,
       if (prefs.inAppProxyCorePath.trim().isNotEmpty)
         'binary_path': prefs.inAppProxyCorePath.trim(),
     }) as Map<String, dynamic>;
+    final nodeId = (node['id'] ?? '').toString();
+    autoProxyResolvedNodeId = keepAutoMode ? nodeId : null;
     await updatePrefs(prefs.copyWith(
       inAppProxyMode: 'sub',
-      selectedProxyNodeId: (node['id'] ?? '').toString(),
+      selectedProxyNodeId: keepAutoMode ? 'auto' : nodeId,
     ));
     return res;
+  }
+
+  /// Pings subscription nodes (if needed) and automatically activates the lowest-latency supported node.
+  Future<Map<String, dynamic>> autoSelectFastestProxyNode({bool forcePing = false}) async {
+    if (prefs.proxyNodes.isEmpty) {
+      throw Exception('请先更新订阅获取节点');
+    }
+    if (forcePing || proxyNodeLatencies.isEmpty) {
+      await pingProxyNodes();
+    }
+    final ordered = sortedProxyNodes(sortOverride: 'latency')
+        .where(isProxyNodeSupportedOnCurrentOs)
+        .toList();
+    if (ordered.isEmpty) {
+      throw Exception('订阅中暂无当前设备支持的节点');
+    }
+    final reachable = ordered
+        .where((n) => proxyNodeLatencies[(n['id'] ?? '').toString()] != null)
+        .toList();
+    final pool = reachable.isNotEmpty ? reachable : ordered;
+    Object? lastErr;
+    for (final cand in pool.take(4)) {
+      try {
+        final res = await activateProxyNode(cand, keepAutoMode: true);
+        final cid = (cand['id'] ?? '').toString();
+        return {
+          ...res,
+          'node_id': cid,
+          'node_name': (cand['name'] ?? '').toString(),
+          if (proxyNodeLatencies[cid] != null) 'latency_ms': proxyNodeLatencies[cid],
+        };
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr ?? Exception('自动选择节点失败');
   }
 
   Future<String> installSingboxCore() async {
@@ -1740,11 +1836,13 @@ class VedroAppState extends ChangeNotifier {
   Future<void> openExternalUrl(String url) async {
     final trimmed = url.trim();
     if (trimmed.isEmpty) return;
+    final openedByPlugin = await NativePlaybackChannel.openUrl(trimmed);
+    if (openedByPlugin) return;
     try {
       if (!kIsWeb && Platform.isMacOS) {
         await Process.start('open', [trimmed]);
       } else if (!kIsWeb && Platform.isWindows) {
-        await Process.start('cmd', ['/c', 'start', '', trimmed], runInShell: true);
+        await Process.start('rundll32', ['url.dll,FileProtocolHandler', trimmed]);
       } else if (!kIsWeb && Platform.isLinux) {
         await Process.start('xdg-open', [trimmed]);
       }
@@ -1768,7 +1866,7 @@ class VedroAppState extends ChangeNotifier {
     await refreshPlaylists();
   }
 
-  /// Launch an item in an external player (IINA / Infuse / MPV / VLC / PotPlayer) using a direct URL.
+  /// Launch an item in an external player (IINA / Infuse / MPV / VLC / PotPlayer / MX Player / Outplayer) across all 5 OSes.
   Future<String> launchExternalPlayer(
     MediaItemModel item, {
     String? mediaSourceId,
@@ -1782,6 +1880,18 @@ class VedroAppState extends ChangeNotifier {
     }) as Map<String, dynamic>;
     final streamUrl = (res['url'] ?? '').toString();
     if (streamUrl.isEmpty) throw Exception('无法获取外部播放直链');
+
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      final ok = await NativePlaybackChannel.launchExternalPlayer(
+        streamUrl,
+        player: targetPlayer,
+        title: item.name,
+      );
+      if (!ok) {
+        throw Exception('未检测到可用的外部播放器应用');
+      }
+      return '已调用外部播放器';
+    }
 
     if (!kIsWeb && Platform.isMacOS) {
       switch (targetPlayer) {
@@ -1802,10 +1912,23 @@ class VedroAppState extends ChangeNotifier {
           return '已交由系统播放器打开';
       }
     } else if (!kIsWeb && Platform.isWindows) {
-      await Process.start('cmd', ['/c', 'start', '', streamUrl], runInShell: true);
+      final ok = await NativePlaybackChannel.launchExternalPlayer(
+        streamUrl,
+        player: targetPlayer,
+        title: item.name,
+      );
+      if (!ok) {
+        await Process.start('rundll32', ['url.dll,FileProtocolHandler', streamUrl]);
+      }
       return '已调用外部播放器';
     } else if (!kIsWeb && Platform.isLinux) {
-      await Process.start('xdg-open', [streamUrl]);
+      if (targetPlayer == 'mpv') {
+        await Process.start('mpv', [streamUrl]);
+      } else if (targetPlayer == 'vlc') {
+        await Process.start('vlc', [streamUrl]);
+      } else {
+        await Process.start('xdg-open', [streamUrl]);
+      }
       return '已调用外部播放器';
     }
     return streamUrl;

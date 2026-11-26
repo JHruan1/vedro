@@ -92,6 +92,53 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
         self.pendingPickResult = result
         presenter.present(picker, animated: true)
       }
+    case "openUrl":
+      let args = call.arguments as? [String: Any]
+      let raw = (args?["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      guard let url = URL(string: raw) else {
+        result(false)
+        return
+      }
+      DispatchQueue.main.async {
+        UIApplication.shared.open(url, options: [:]) { ok in
+          result(ok)
+        }
+      }
+    case "launchExternalPlayer":
+      let args = call.arguments as? [String: Any]
+      let streamUrl = (args?["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      let player = ((args?["player"] as? String) ?? "").lowercased()
+      let encoded = streamUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? streamUrl
+      let candidateStr: String
+      switch player {
+      case "infuse":
+        candidateStr = "infuse://x-callback-url/play?url=\(encoded)"
+      case "vlc":
+        candidateStr = "vlc-x-callback://x-callback-url/stream?url=\(encoded)"
+      case "outplayer":
+        candidateStr = "outplayer://\(streamUrl)"
+      case "nplayer":
+        candidateStr = streamUrl
+          .replacingOccurrences(of: "https://", with: "nplayer-https://")
+          .replacingOccurrences(of: "http://", with: "nplayer-http://")
+      default:
+        candidateStr = streamUrl
+      }
+      guard let targetUrl = URL(string: candidateStr) ?? URL(string: streamUrl) else {
+        result(false)
+        return
+      }
+      DispatchQueue.main.async {
+        UIApplication.shared.open(targetUrl, options: [:]) { ok in
+          if !ok, targetUrl.absoluteString != streamUrl, let fallback = URL(string: streamUrl) {
+            UIApplication.shared.open(fallback, options: [:]) { ok2 in
+              result(ok2)
+            }
+          } else {
+            result(ok)
+          }
+        }
+      }
     case "enterPiP", "createVideoSurface":
       result(nil)
     default:

@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
@@ -750,7 +753,12 @@ class _MobileSettingsSubPageState extends State<_MobileSettingsSubPage> {
     return ListenableBuilder(
       listenable: widget.appState,
       builder: (context, _) {
-        final skin = widget.appState.prefs.activeSkin;
+        final sysBrightness = View.of(context).platformDispatcher.platformBrightness;
+        final skin = widget.appState.prefs.activeSkinFor(
+          isMobile: true,
+          systemBrightness: sysBrightness,
+          dynamicSeedOverride: widget.appState.dynamicPageSeedColor,
+        );
         return Theme(
           data: VedroTheme.fromSkin(skin),
           child: Scaffold(
@@ -807,6 +815,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
   final _proxyBinCtrl = TextEditingController();
   final _proxyCfgCtrl = TextEditingController();
   final _subUrlCtrl = TextEditingController();
+  final _nodeSearchCtrl = TextEditingController();
   bool _testingAi = false;
   bool _fetchingAiModels = false;
   String? _aiTestResult;
@@ -816,6 +825,8 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
   bool _pingingNodes = false;
   bool _installingCore = false;
   bool _needsSingboxCore = false;
+  bool _showNodeSearch = false;
+  String _nodeSearchQuery = '';
   String? _proxyStatusMsg;
 
   @override
@@ -857,6 +868,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     _proxyBinCtrl.dispose();
     _proxyCfgCtrl.dispose();
     _subUrlCtrl.dispose();
+    _nodeSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -959,12 +971,14 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     );
   }
 
-  // 1b. 网络代理（订阅节点选择 + 本地端口 + 自定义内核，零废话纯 UI）
+  // 1b. 网络代理（内置免内核多协议引擎 + 节点延迟排序 + 自动选择 + 按平台裁剪）
   Widget _buildInAppProxy(VedroAppState app, VedroPreferences p) {
     final skin = VedroSkin.of(context);
+    final isMobileOs = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+    final isWindowsOs = !kIsWeb && Platform.isWindows;
     final mode = p.inAppProxyMode;
-    final isCoreMode = mode == 'singbox' || mode == 'mihomo';
-    final isSubMode = mode == 'sub' || mode == 'node';
+    final isCoreMode = !isMobileOs && (mode == 'singbox' || mode == 'mihomo');
+    final isSubMode = mode == 'sub' || mode == 'node' || (isMobileOs && (mode == 'singbox' || mode == 'mihomo'));
     final uiMode = isCoreMode ? 'core' : (isSubMode ? 'sub' : mode);
     final userinfo = p.proxySubUserinfo;
     final usedBytes = ((userinfo?['used'] ?? userinfo?['used_bytes']) as num?)?.toInt() ?? 0;
@@ -985,7 +999,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
         final msg = e.toString().replaceFirst('VedroCoreException: ', '');
         if (mounted) {
           setState(() {
-            _needsSingboxCore = msg.contains('NEEDS_CORE:');
+            _needsSingboxCore = !isMobileOs && msg.contains('NEEDS_CORE:');
             _proxyStatusMsg = msg.replaceFirst('NEEDS_CORE:', '');
           });
         }
@@ -993,6 +1007,72 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
         if (mounted) setState(() => _applyingProxy = false);
       }
     }
+
+    Future<void> selectAutoProxyNode({bool forcePing = false}) async {
+      setState(() {
+        _applyingProxy = true;
+        _pingingNodes = forcePing || app.proxyNodeLatencies.isEmpty;
+        _needsSingboxCore = false;
+        _proxyStatusMsg = null;
+      });
+      try {
+        final res = await app.autoSelectFastestProxyNode(forcePing: forcePing);
+        final ms = res['latency_ms'];
+        final msSuffix = ms != null ? ' ($ms ms)' : '';
+        if (mounted) {
+          setState(() => _proxyStatusMsg = '自动优选：${res['node_name']}$msSuffix');
+        }
+      } catch (e) {
+        final msg = e
+            .toString()
+            .replaceFirst('VedroCoreException: ', '')
+            .replaceFirst('Exception: ', '');
+        if (mounted) {
+          setState(() => _proxyStatusMsg = msg.replaceFirst('NEEDS_CORE:', ''));
+        }
+      } finally {
+        if (mounted) {
+          setState(() {
+            _applyingProxy = false;
+            _pingingNodes = false;
+          });
+        }
+      }
+    }
+
+    final modeItems = <(String, String)>[
+      ('off', '关闭'),
+      ('sub', '节点订阅'),
+      ('custom', '本地端口'),
+      if (!isMobileOs) ('core', '高级内核'),
+    ];
+
+    final sortedNodes = app.sortedProxyNodes(searchQuery: _nodeSearchQuery);
+    final autoSelected = p.selectedProxyNodeId == 'auto';
+    Map<String, dynamic>? autoResolvedNode;
+    if (app.autoProxyResolvedNodeId != null) {
+      for (final n in p.proxyNodes) {
+        if (n['id']?.toString() == app.autoProxyResolvedNodeId) {
+          autoResolvedNode = n;
+          break;
+        }
+      }
+    }
+    if (autoResolvedNode == null && sortedNodes.isNotEmpty) {
+      final firstReachable = sortedNodes
+          .where((n) => app.proxyNodeLatencies[(n['id'] ?? '').toString()] != null)
+          .firstOrNull;
+      autoResolvedNode = firstReachable;
+    }
+    final autoMs = autoResolvedNode != null
+        ? app.proxyNodeLatencies[(autoResolvedNode['id'] ?? '').toString()]
+        : null;
+
+    const sortLabels = <String, String>{
+      'latency': '按延迟',
+      'default': '默认顺序',
+      'name': '按名称',
+    };
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1004,12 +1084,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               title: '模式',
               keyPrefix: 'proxy-mode',
               value: uiMode,
-              items: const [
-                ('off', '关闭'),
-                ('sub', '节点订阅'),
-                ('custom', '本地端口'),
-                ('core', '高级内核'),
-              ],
+              items: modeItems,
               onChanged: (nextUi) async {
                 if (nextUi == 'off') {
                   setState(() {
@@ -1047,7 +1122,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                             controller: _subUrlCtrl,
                             style: TextStyle(color: skin.fg, fontSize: 13),
                             decoration: const InputDecoration(
-                              hintText: '订阅链接 https://... 或直接粘贴节点 URI / Clash 配置',
+                              hintText: '订阅链接 https://... 或粘贴节点 URI / Clash 配置',
                             ),
                           ),
                         ),
@@ -1080,24 +1155,6 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                           icon: const Icon(Icons.sync_rounded, size: 15),
                           label: Text(_fetchingSub ? '更新中' : '更新订阅'),
                         ),
-                        if (p.proxyNodes.isNotEmpty) ...[
-                          const SizedBox(width: 8),
-                          OutlinedButton.icon(
-                            key: const ValueKey('proxy-sub-ping-btn'),
-                            onPressed: _pingingNodes
-                                ? null
-                                : () async {
-                                    setState(() => _pingingNodes = true);
-                                    try {
-                                      await app.pingProxyNodes();
-                                    } finally {
-                                      if (mounted) setState(() => _pingingNodes = false);
-                                    }
-                                  },
-                            icon: const Icon(Icons.bolt_rounded, size: 15),
-                            label: Text(_pingingNodes ? '测速中' : '测速'),
-                          ),
-                        ],
                       ],
                     ),
                     if (totalBytes > 0) ...[
@@ -1127,7 +1184,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                         ],
                       ),
                     ],
-                    if (_needsSingboxCore) ...[
+                    if (_needsSingboxCore && !isMobileOs) ...[
                       const SizedBox(height: 12),
                       Align(
                         alignment: Alignment.centerLeft,
@@ -1142,7 +1199,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                                     if (mounted) {
                                       setState(() {
                                         _needsSingboxCore = false;
-                                        _proxyStatusMsg = '核心安装完成，请再次点击节点启用';
+                                        _proxyStatusMsg = '桌面内核安装完成，请再次点击节点启用';
                                       });
                                     }
                                   } catch (e) {
@@ -1155,7 +1212,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                                   }
                                 },
                           icon: const Icon(Icons.download_for_offline_rounded, size: 16),
-                          label: Text(_installingCore ? '正在下载核心…' : '一键下载内置核心'),
+                          label: Text(_installingCore ? '正在下载核心…' : '一键下载桌面内核'),
                         ),
                       ),
                     ],
@@ -1198,7 +1255,9 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                             style: TextStyle(color: skin.fg, fontSize: 13, fontFamily: 'monospace'),
                             decoration: InputDecoration(
                               labelText: '内核路径（可留空）',
-                              hintText: mode == 'singbox' ? '/usr/local/bin/sing-box' : '/usr/local/bin/mihomo',
+                              hintText: isWindowsOs
+                                  ? (mode == 'singbox' ? r'C:\Tools\sing-box.exe' : r'C:\Tools\mihomo.exe')
+                                  : (mode == 'singbox' ? '/usr/local/bin/sing-box' : '/usr/local/bin/mihomo'),
                             ),
                           ),
                         ),
@@ -1206,6 +1265,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                         OutlinedButton.icon(
                           onPressed: () async {
                             final picked = await NativePlaybackChannel.pickFiles(
+                              extensions: isWindowsOs ? const ['exe'] : const [],
                               title: '选择内核文件',
                             );
                             if (picked.isNotEmpty) {
@@ -1309,7 +1369,9 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
             child: Text(
               _proxyStatusMsg!,
               style: TextStyle(
-                color: (_proxyStatusMsg!.contains('失败') || _proxyStatusMsg!.contains('未检测到'))
+                color: (_proxyStatusMsg!.contains('失败') ||
+                        _proxyStatusMsg!.contains('未检测到') ||
+                        _proxyStatusMsg!.contains('暂不支持'))
                     ? VedroTheme.danger
                     : const Color(0xFF10B981),
                 fontSize: 12.5,
@@ -1318,100 +1380,316 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
             ),
           ),
         ],
-        if (mode == 'sub' && p.proxyNodes.isNotEmpty) ...[
+        if (isSubMode && p.proxyNodes.isNotEmpty) ...[
           const SizedBox(height: 16),
-          _GroupHeader('节点列表 (${p.proxyNodes.length})'),
+          Row(
+            children: [
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Text(
+                    _nodeSearchQuery.isEmpty
+                        ? '节点 (${p.proxyNodes.length})'
+                        : '节点 (${sortedNodes.length}/${p.proxyNodes.length})',
+                    style: TextStyle(
+                      color: skin.fg3,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+              // Search toggle icon
+              SizedBox(
+                width: 32,
+                height: 32,
+                child: IconButton(
+                  key: const ValueKey('proxy-node-search-toggle'),
+                  padding: EdgeInsets.zero,
+                  tooltip: '筛选节点',
+                  icon: Icon(
+                    _showNodeSearch ? Icons.close_rounded : Icons.search_rounded,
+                    size: 16,
+                    color: _showNodeSearch ? skin.accent : skin.fg2,
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _showNodeSearch = !_showNodeSearch;
+                      if (!_showNodeSearch && _nodeSearchQuery.isNotEmpty) {
+                        _nodeSearchCtrl.clear();
+                        _nodeSearchQuery = '';
+                      }
+                    });
+                  },
+                ),
+              ),
+              const SizedBox(width: 4),
+              // Ping all button
+              SizedBox(
+                height: 32,
+                child: OutlinedButton.icon(
+                  key: const ValueKey('proxy-sub-ping-btn'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: _pingingNodes
+                      ? null
+                      : () async {
+                          setState(() => _pingingNodes = true);
+                          try {
+                            await app.pingProxyNodes();
+                          } finally {
+                            if (mounted) setState(() => _pingingNodes = false);
+                          }
+                        },
+                  icon: const Icon(Icons.bolt_rounded, size: 14),
+                  label: Text(
+                    _pingingNodes ? '测速中' : '测速',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              // Sort pull-down menu (`按延迟` / `默认顺序` / `按名称`)
+              VedroPullDownButton<String>(
+                key: const ValueKey('proxy-node-sort-dropdown'),
+                value: p.proxyNodeSort,
+                prefixIcon: Icons.swap_vert_rounded,
+                displayLabelOverride: sortLabels[p.proxyNodeSort] ?? '按延迟',
+                height: 32,
+                menuMinWidth: 168,
+                items: const [
+                  VedroDropdownItem(
+                    value: 'latency',
+                    label: '按延迟排序',
+                    itemKey: ValueKey('proxy-sort-latency'),
+                  ),
+                  VedroDropdownItem(
+                    value: 'default',
+                    label: '默认顺序',
+                    itemKey: ValueKey('proxy-sort-default'),
+                  ),
+                  VedroDropdownItem(
+                    value: 'name',
+                    label: '按名称排序',
+                    itemKey: ValueKey('proxy-sort-name'),
+                  ),
+                ],
+                onChanged: (sort) => _updatePrefs(p.copyWith(proxyNodeSort: sort)),
+              ),
+            ],
+          ),
+          if (_showNodeSearch) ...[
+            const SizedBox(height: 8),
+            TextField(
+              key: const ValueKey('proxy-node-search-field'),
+              controller: _nodeSearchCtrl,
+              onChanged: (v) => setState(() => _nodeSearchQuery = v),
+              style: TextStyle(color: skin.fg, fontSize: 13),
+              decoration: InputDecoration(
+                hintText: '搜索地区或协议（如 香港 / 日本 / VLESS）',
+                prefixIcon: Icon(Icons.search_rounded, size: 17, color: skin.fg3),
+                suffixIcon: _nodeSearchQuery.isNotEmpty
+                    ? IconButton(
+                        icon: Icon(Icons.clear_rounded, size: 16, color: skin.fg3),
+                        onPressed: () {
+                          _nodeSearchCtrl.clear();
+                          setState(() => _nodeSearchQuery = '');
+                        },
+                      )
+                    : null,
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
           LayoutBuilder(
             builder: (ctx, c) {
               final cols = c.maxWidth >= 560 ? 2 : 1;
               const gap = 10.0;
               final cardW = (c.maxWidth - gap * (cols - 1)) / cols;
+
+              // Pinned "⚡ 自动选择" smart card
+              final autoSubtitle = autoResolvedNode != null
+                  ? (autoSelected
+                      ? '当前：${autoResolvedNode['name']}'
+                      : '推荐：${autoResolvedNode['name']}')
+                  : '自动测速并连接最低延迟节点';
+
+              final autoCard = SizedBox(
+                width: cardW,
+                child: PressableScale(
+                  key: const ValueKey('proxy-node-auto'),
+                  onTap: _applyingProxy ? null : () => selectAutoProxyNode(forcePing: false),
+                  hoverScale: 1.01,
+                  pressScale: 0.98,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+                    decoration: BoxDecoration(
+                      color: skin.unifiedTileColor(selected: autoSelected),
+                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
+                      border: Border.all(
+                        color: autoSelected ? skin.accent : skin.borderStrong,
+                        width: autoSelected ? 1.25 : 0.85,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 26,
+                          height: 26,
+                          decoration: BoxDecoration(
+                            color: skin.accent.withValues(alpha: autoSelected ? 0.22 : 0.12),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Icon(Icons.auto_awesome_rounded, size: 15, color: skin.accent),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '自动选择',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: skin.fg,
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                autoSubtitle,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: autoSelected ? skin.accent : skin.fg3,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (autoMs != null)
+                          Text(
+                            '$autoMs ms',
+                            style: TextStyle(
+                              color: autoMs < 160
+                                  ? const Color(0xFF10B981)
+                                  : (autoMs < 360 ? const Color(0xFFF59E0B) : VedroTheme.danger),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+
               return Wrap(
                 spacing: gap,
                 runSpacing: gap,
-                children: p.proxyNodes.map((node) {
-                  final id = (node['id'] ?? '').toString();
-                  final name = (node['name'] ?? '').toString();
-                  final proto = (node['protocol'] ?? '').toString().toUpperCase();
-                  final selected = p.selectedProxyNodeId == id;
-                  final hasPing = app.proxyNodeLatencies.containsKey(id);
-                  final ms = app.proxyNodeLatencies[id];
-                  final msColor = ms == null
-                      ? skin.fg3
-                      : (ms < 160
-                          ? const Color(0xFF10B981)
-                          : (ms < 360 ? const Color(0xFFF59E0B) : VedroTheme.danger));
-                  return SizedBox(
-                    width: cardW,
-                    child: PressableScale(
-                      key: ValueKey('proxy-node-$id'),
-                      onTap: _applyingProxy ? null : () => selectProxyNode(node),
-                      hoverScale: 1.01,
-                      pressScale: 0.98,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 160),
-                        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
-                        decoration: BoxDecoration(
-                          color: skin.unifiedTileColor(selected: selected),
-                          borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
-                          border: Border.all(
-                            color: selected ? skin.accent : skin.border,
-                            width: selected ? 1.2 : 0.75,
+                children: [
+                  if (_nodeSearchQuery.isEmpty) autoCard,
+                  ...sortedNodes.map((node) {
+                    final id = (node['id'] ?? '').toString();
+                    final name = (node['name'] ?? '').toString();
+                    final proto = (node['protocol'] ?? '').toString().toUpperCase();
+                    final supported = app.isProxyNodeSupportedOnCurrentOs(node);
+                    final directSelected = p.selectedProxyNodeId == id;
+                    final resolvedByAuto = autoSelected && app.autoProxyResolvedNodeId == id;
+                    final highlighted = directSelected || resolvedByAuto;
+                    final hasPing = app.proxyNodeLatencies.containsKey(id);
+                    final ms = app.proxyNodeLatencies[id];
+                    final msColor = ms == null
+                        ? skin.fg3
+                        : (ms < 160
+                            ? const Color(0xFF10B981)
+                            : (ms < 360 ? const Color(0xFFF59E0B) : VedroTheme.danger));
+                    return SizedBox(
+                      width: cardW,
+                      child: Opacity(
+                        opacity: supported ? 1.0 : 0.52,
+                        child: PressableScale(
+                          key: ValueKey('proxy-node-$id'),
+                          onTap: (_applyingProxy || !supported) ? null : () => selectProxyNode(node),
+                          hoverScale: 1.01,
+                          pressScale: 0.98,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 160),
+                            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+                            decoration: BoxDecoration(
+                              color: skin.unifiedTileColor(selected: highlighted),
+                              borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
+                              border: Border.all(
+                                color: highlighted ? skin.accent : skin.border,
+                                width: highlighted ? 1.2 : 0.75,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: highlighted
+                                        ? skin.accent
+                                        : skin.fg3.withValues(alpha: 0.35),
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color: highlighted ? skin.fg : skin.fg2,
+                                          fontSize: 13.5,
+                                          fontWeight:
+                                              highlighted ? FontWeight.w600 : FontWeight.w500,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        supported ? proto : '$proto · 仅桌面端',
+                                        style: TextStyle(
+                                          color: skin.fg3,
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                if (hasPing)
+                                  Text(
+                                    ms != null ? '$ms ms' : '超时',
+                                    style: TextStyle(
+                                      color: msColor,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      fontFeatures: const [FontFeature.tabularFigures()],
+                                    ),
+                                  ),
+                              ],
+                            ),
                           ),
                         ),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: selected ? skin.accent : skin.fg3.withValues(alpha: 0.35),
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    name,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      color: selected ? skin.fg : skin.fg2,
-                                      fontSize: 13.5,
-                                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    proto,
-                                    style: TextStyle(
-                                      color: skin.fg3,
-                                      fontSize: 10.5,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            if (hasPing)
-                              Text(
-                                ms != null ? '$ms ms' : '超时',
-                                style: TextStyle(
-                                  color: msColor,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  fontFeatures: const [FontFeature.tabularFigures()],
-                                ),
-                              ),
-                          ],
-                        ),
                       ),
-                    ),
-                  );
-                }).toList(),
+                    );
+                  }),
+                ],
               );
             },
           ),
@@ -1470,36 +1748,76 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               items: const {1: '1 个任务', 2: '2 个任务', 3: '3 个任务'},
               onChanged: (v) => _updatePrefs(p.copyWith(downloadMaxConcurrent: v)),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '下载目录（已占用 ${fmtFileSize(totalBytes).isEmpty ? '0 B' : fmtFileSize(totalBytes)}）',
-                    style: TextStyle(color: skin.fg2, fontSize: 12.5),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _downloadDirCtrl,
-                          decoration: InputDecoration(hintText: app.downloadsDirectoryPath),
-                        ),
+            if (!kIsWeb && (Platform.isAndroid || Platform.isIOS))
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '离线缓存空间',
+                        style: TextStyle(color: skin.fg, fontSize: 14, fontWeight: FontWeight.w500),
                       ),
-                      const SizedBox(width: 10),
-                      OutlinedButton(
-                        onPressed: () => _updatePrefs(
-                          p.copyWith(downloadCustomDir: _downloadDirCtrl.text.trim()),
-                        ),
-                        child: const Text('保存路径', style: TextStyle(fontSize: 13)),
+                    ),
+                    Text(
+                      fmtFileSize(totalBytes).isEmpty ? '0 B' : fmtFileSize(totalBytes),
+                      style: TextStyle(
+                        color: skin.fg2,
+                        fontSize: 13,
+                        fontFeatures: const [FontFeature.tabularFigures()],
                       ),
-                    ],
-                  ),
-                ],
+                    ),
+                  ],
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '下载目录（已占用 ${fmtFileSize(totalBytes).isEmpty ? '0 B' : fmtFileSize(totalBytes)}）',
+                      style: TextStyle(color: skin.fg2, fontSize: 12.5),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _downloadDirCtrl,
+                            decoration: InputDecoration(hintText: app.downloadsDirectoryPath),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton.icon(
+                          onPressed: () async {
+                            final picked = await NativePlaybackChannel.pickFiles(
+                              allowDirectory: true,
+                              title: '选择离线下载目录',
+                            );
+                            if (picked.isNotEmpty) {
+                              _downloadDirCtrl.text = picked.first;
+                              await _updatePrefs(
+                                p.copyWith(downloadCustomDir: picked.first.trim()),
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.folder_open_rounded, size: 15),
+                          label: const Text('浏览', style: TextStyle(fontSize: 13)),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton(
+                          onPressed: () => _updatePrefs(
+                            p.copyWith(downloadCustomDir: _downloadDirCtrl.text.trim()),
+                          ),
+                          child: const Text('保存', style: TextStyle(fontSize: 13)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
           ],
         ),
         const SizedBox(height: 18),
@@ -1958,16 +2276,24 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     );
   }
 
-  // 3. 字体管理（内置实时字幕与界面排版预览窗！）
+  // 3. 字体管理（内置实时字幕与界面排版预览窗 + 按系统匹配内置字体！）
   Widget _buildFonts(VedroAppState app, VedroPreferences p) {
     final skin = VedroSkin.of(context);
+    final isMobileOs = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
     final previewFamily = p.subtitleFontFamily.isEmpty ? null : p.subtitleFontFamily;
-    const builtIn = [
+    final builtIn = <(String, String)>[
       ('', '系统默认字体'),
-      ('PingFang SC', '苹方简体 (PingFang SC)'),
-      ('Hiragino Sans GB', '冬青黑体 (Hiragino Sans GB)'),
+      if (!kIsWeb && (Platform.isMacOS || Platform.isIOS)) ...[
+        ('PingFang SC', '苹方简体 (PingFang SC)'),
+        ('Hiragino Sans GB', '冬青黑体 (Hiragino Sans GB)'),
+        ('SF Pro Display', 'SF Pro Display'),
+      ] else if (!kIsWeb && Platform.isWindows) ...[
+        ('Microsoft YaHei UI', '微软雅黑 (Microsoft YaHei UI)'),
+        ('SimHei', '中易黑体 (SimHei)'),
+      ] else ...[
+        ('Roboto', 'Roboto'),
+      ],
       ('Noto Sans CJK SC', '思源黑体 (Noto Sans CJK)'),
-      ('SF Pro Display', 'SF Pro Display'),
     ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2057,72 +2383,130 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           children: [
             Padding(
               padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('导入本地字体 (.ttf / .otf / .ttc)', style: TextStyle(color: skin.fg, fontSize: 14, fontWeight: FontWeight.w500)),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _fontPathCtrl,
-                          decoration: const InputDecoration(hintText: '/path/to/MySubtitleFont.ttf'),
+              child: isMobileOs
+                  ? Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '导入字体文件 (.ttf / .otf / .ttc)',
+                            style: TextStyle(
+                              color: skin.fg,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      OutlinedButton.icon(
-                        onPressed: () async {
-                          final picked = await NativePlaybackChannel.pickFiles(
-                            extensions: const ['ttf', 'otf', 'ttc'],
-                            title: '选择字幕字体文件',
-                          );
-                          if (picked.isNotEmpty) {
-                            try {
-                              final name = await app.importSubtitleFont(picked.first);
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('已导入并选用字体：$name')),
-                                );
+                        FilledButton.tonalIcon(
+                          onPressed: () async {
+                            final picked = await NativePlaybackChannel.pickFiles(
+                              extensions: const ['ttf', 'otf', 'ttc'],
+                              title: '选择字幕字体文件',
+                            );
+                            if (picked.isNotEmpty) {
+                              try {
+                                final name = await app.importSubtitleFont(picked.first);
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('已导入并选用字体：$name')),
+                                  );
+                                }
+                              } catch (e) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(e.toString().replaceFirst('Exception: ', '')),
+                                    ),
+                                  );
+                                }
                               }
-                            } catch (e) {
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+                            }
+                          },
+                          icon: const Icon(Icons.folder_open_rounded, size: 15),
+                          label: const Text('选择文件', style: TextStyle(fontSize: 13)),
+                        ),
+                      ],
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '导入本地字体 (.ttf / .otf / .ttc)',
+                          style: TextStyle(
+                            color: skin.fg,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _fontPathCtrl,
+                                decoration: const InputDecoration(
+                                  hintText: '/path/to/MySubtitleFont.ttf',
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            OutlinedButton.icon(
+                              onPressed: () async {
+                                final picked = await NativePlaybackChannel.pickFiles(
+                                  extensions: const ['ttf', 'otf', 'ttc'],
+                                  title: '选择字幕字体文件',
                                 );
-                              }
-                            }
-                          }
-                        },
-                        icon: const Icon(Icons.folder_open_rounded, size: 15),
-                        label: const Text('选择文件', style: TextStyle(fontSize: 13)),
-                      ),
-                      const SizedBox(width: 8),
-                      FilledButton(
-                        onPressed: () async {
-                          if (_fontPathCtrl.text.trim().isEmpty) return;
-                          try {
-                            final name = await app.importSubtitleFont(_fontPathCtrl.text.trim());
-                            _fontPathCtrl.clear();
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('已导入并选用字体：$name')),
-                              );
-                            }
-                          } catch (e) {
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
-                              );
-                            }
-                          }
-                        },
-                        child: const Text('导入', style: TextStyle(fontSize: 13)),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+                                if (picked.isNotEmpty) {
+                                  try {
+                                    final name = await app.importSubtitleFont(picked.first);
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('已导入并选用字体：$name')),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content:
+                                              Text(e.toString().replaceFirst('Exception: ', '')),
+                                        ),
+                                      );
+                                    }
+                                  }
+                                }
+                              },
+                              icon: const Icon(Icons.folder_open_rounded, size: 15),
+                              label: const Text('选择文件', style: TextStyle(fontSize: 13)),
+                            ),
+                            const SizedBox(width: 8),
+                            FilledButton(
+                              onPressed: () async {
+                                if (_fontPathCtrl.text.trim().isEmpty) return;
+                                try {
+                                  final name =
+                                      await app.importSubtitleFont(_fontPathCtrl.text.trim());
+                                  _fontPathCtrl.clear();
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('已导入并选用字体：$name')),
+                                    );
+                                  }
+                                } catch (e) {
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(e.toString().replaceFirst('Exception: ', '')),
+                                      ),
+                                    );
+                                  }
+                                }
+                              },
+                              child: const Text('导入', style: TextStyle(fontSize: 13)),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
             ),
           ],
         ),
@@ -2330,18 +2714,20 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
 
   // 7. 界面偏好
   Widget _buildUiPrefs(VedroPreferences p) {
+    final showAndroidBackConfirm = kIsWeb || Platform.isAndroid || Platform.isLinux;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _heading('界面偏好'),
         _GroupedCard(
           children: [
-            _SwitchRow(
-              key: const ValueKey('pref-confirm-exit-app'),
-              title: '按返回键二次确认退出',
-              value: p.confirmExitApp,
-              onChanged: (v) => _updatePrefs(p.copyWith(confirmExitApp: v)),
-            ),
+            if (showAndroidBackConfirm)
+              _SwitchRow(
+                key: const ValueKey('pref-confirm-exit-app'),
+                title: '按返回键二次确认退出',
+                value: p.confirmExitApp,
+                onChanged: (v) => _updatePrefs(p.copyWith(confirmExitApp: v)),
+              ),
             _SwitchRow(
               title: '显示画质与音频规格标识',
               value: p.showSpecBadges,
@@ -2370,6 +2756,38 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
 
   // 8. 播放设置
   Widget _buildPlayback(VedroPreferences p) {
+    final isMobileOs = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+    final supportsPip = !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS);
+    final playerChoices = <String, String>{
+      'builtin': !kIsWeb && Platform.isIOS ? '内置播放核心（推荐）' : '内置 Rust + MPV（推荐）',
+      if (!kIsWeb && Platform.isAndroid) ...{
+        'mxplayer': 'MX Player',
+        'vlc': 'VLC',
+        'mpv': 'MPV-Android',
+        'system': '系统外部播放器',
+      } else if (!kIsWeb && Platform.isIOS) ...{
+        'infuse': 'Infuse',
+        'vlc': 'VLC',
+        'outplayer': 'Outplayer',
+        'nplayer': 'nPlayer',
+      } else if (!kIsWeb && Platform.isMacOS) ...{
+        'iina': 'IINA',
+        'infuse': 'Infuse',
+        'mpv': 'MPV',
+        'vlc': 'VLC',
+      } else if (!kIsWeb && Platform.isWindows) ...{
+        'potplayer': 'PotPlayer',
+        'vlc': 'VLC',
+        'mpv': 'MPV',
+      } else ...{
+        'mpv': '外部 MPV',
+        'vlc': 'VLC',
+      },
+    };
+    if (!playerChoices.containsKey(p.externalPlayer)) {
+      playerChoices[p.externalPlayer] = p.externalPlayer;
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2413,14 +2831,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
             _AppleMenuPickerRow<String>(
               title: '默认播放器引擎',
               value: p.externalPlayer,
-              items: const {
-                'builtin': '内置 Rust + MPV（推荐）',
-                'iina': 'IINA (macOS)',
-                'infuse': 'Infuse (macOS / iOS)',
-                'mpv': '外部 MPV',
-                'vlc': 'VLC',
-                'potplayer': 'PotPlayer (Windows)',
-              },
+              items: playerChoices,
               onChanged: (v) => _updatePrefs(p.copyWith(externalPlayer: v)),
             ),
             _AppleMenuPickerRow<int>(
@@ -2484,24 +2895,27 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 onChanged: (v) => _updatePrefs(p.copyWith(longPressSpeed: v)),
               ),
             ),
-            _SwitchRow(
-              title: '双指捏合缩放画面',
-              subtitle: '播放时支持双指自由缩放，松手保持比例',
-              value: p.pinchToZoom,
-              onChanged: (v) => _updatePrefs(p.copyWith(pinchToZoom: v)),
-            ),
-            _SwitchRow(
-              title: '记忆播放器亮度',
-              subtitle: '下次进入播放时自动恢复上次调节的画面亮度',
-              value: p.rememberBrightness,
-              onChanged: (v) => _updatePrefs(p.copyWith(rememberBrightness: v)),
-            ),
-            _SwitchRow(
-              title: '启用画中画 (PiP)',
-              subtitle: '在播放器顶栏显示画中画入口',
-              value: p.enablePip,
-              onChanged: (v) => _updatePrefs(p.copyWith(enablePip: v)),
-            ),
+            if (isMobileOs) ...[
+              _SwitchRow(
+                title: '双指捏合缩放画面',
+                subtitle: '播放时支持双指自由缩放，松手保持比例',
+                value: p.pinchToZoom,
+                onChanged: (v) => _updatePrefs(p.copyWith(pinchToZoom: v)),
+              ),
+              _SwitchRow(
+                title: '记忆播放器亮度',
+                subtitle: '下次进入播放时自动恢复上次调节的画面亮度',
+                value: p.rememberBrightness,
+                onChanged: (v) => _updatePrefs(p.copyWith(rememberBrightness: v)),
+              ),
+            ],
+            if (supportsPip)
+              _SwitchRow(
+                title: '启用画中画 (PiP)',
+                subtitle: '在播放器顶栏显示画中画入口',
+                value: p.enablePip,
+                onChanged: (v) => _updatePrefs(p.copyWith(enablePip: v)),
+              ),
             _SwitchRow(
               title: '后台继续播放音频',
               value: p.backgroundAudio,

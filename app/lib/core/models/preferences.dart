@@ -61,6 +61,24 @@ class ServerCardTheme {
   final Color bgTop;
   final Color bgBottom;
 
+  Color cardBgTop(VedroSkin skin) =>
+      skin.isLight ? Color.lerp(skin.surface, accent, 0.12)! : bgTop;
+
+  Color cardBgBottom(VedroSkin skin) =>
+      skin.isLight ? Color.lerp(skin.surface, accent, 0.03)! : bgBottom;
+
+  Color cardAccent(VedroSkin skin) {
+    if (!skin.isLight) return accent;
+    if (id == 'graphite') return const Color(0xFF475569);
+    if (id == 'amber') return const Color(0xFFD97706);
+    if (id == 'emerald') return const Color(0xFF059669);
+    return HSLColor.fromColor(accent)
+        .withLightness(
+          HSLColor.fromColor(accent).lightness.clamp(0.28, 0.44),
+        )
+        .toColor();
+  }
+
   static const List<ServerCardTheme> all = [
     ServerCardTheme(
       id: 'cobalt',
@@ -365,13 +383,19 @@ class VedroPreferences {
     this.danmakuHideTop = false,
     this.danmakuHideBottom = false,
     this.danmakuApiUrl = '',
-    // AI 服务（翻译）
+    // AI 服务（翻译）— 默认预填哔哩哔哩免费 Index-Translate（客户端本机 IP 直连）
     this.aiEnabled = false,
-    this.aiBaseUrl = 'https://api.openai.com/v1',
+    this.aiBaseUrl = 'https://index-translate.bilibili.com/v1',
     this.aiApiKey = '',
-    this.aiModel = 'gpt-4o-mini',
+    this.aiModel = 'Index-Translate-35B-A3B',
     this.aiTargetLang = '简体中文',
     this.aiBilingualSubtitle = true,
+    this.aiDirectClientIp = true,
+    // 应用内专属代理（免系统 VPN 通道：仅对 Vedro 生效）
+    this.inAppProxyMode = 'off', // off | custom | singbox | mihomo
+    this.inAppProxyUrl = '',
+    this.inAppProxyCorePath = '',
+    this.inAppProxyConfigText = '',
     // 隐私保护
     this.passcodeEnabled = false,
     this.passcodeHash = '',
@@ -464,6 +488,12 @@ class VedroPreferences {
   final String aiModel;
   final String aiTargetLang;
   final bool aiBilingualSubtitle;
+  final bool aiDirectClientIp;
+
+  final String inAppProxyMode;
+  final String inAppProxyUrl;
+  final String inAppProxyCorePath;
+  final String inAppProxyConfigText;
 
   final bool passcodeEnabled;
   final String passcodeHash;
@@ -583,6 +613,11 @@ class VedroPreferences {
     String? aiModel,
     String? aiTargetLang,
     bool? aiBilingualSubtitle,
+    bool? aiDirectClientIp,
+    String? inAppProxyMode,
+    String? inAppProxyUrl,
+    String? inAppProxyCorePath,
+    String? inAppProxyConfigText,
     bool? passcodeEnabled,
     String? passcodeHash,
     int? lockTimeoutSecs,
@@ -664,6 +699,11 @@ class VedroPreferences {
         aiModel: aiModel ?? this.aiModel,
         aiTargetLang: aiTargetLang ?? this.aiTargetLang,
         aiBilingualSubtitle: aiBilingualSubtitle ?? this.aiBilingualSubtitle,
+        aiDirectClientIp: aiDirectClientIp ?? this.aiDirectClientIp,
+        inAppProxyMode: inAppProxyMode ?? this.inAppProxyMode,
+        inAppProxyUrl: inAppProxyUrl ?? this.inAppProxyUrl,
+        inAppProxyCorePath: inAppProxyCorePath ?? this.inAppProxyCorePath,
+        inAppProxyConfigText: inAppProxyConfigText ?? this.inAppProxyConfigText,
         passcodeEnabled: passcodeEnabled ?? this.passcodeEnabled,
         passcodeHash: passcodeHash ?? this.passcodeHash,
         lockTimeoutSecs: lockTimeoutSecs ?? this.lockTimeoutSecs,
@@ -746,6 +786,11 @@ class VedroPreferences {
         'ai_model': aiModel,
         'ai_target_lang': aiTargetLang,
         'ai_bilingual_subtitle': aiBilingualSubtitle,
+        'ai_direct_client_ip': aiDirectClientIp,
+        'in_app_proxy_mode': inAppProxyMode,
+        'in_app_proxy_url': inAppProxyUrl,
+        'in_app_proxy_core_path': inAppProxyCorePath,
+        'in_app_proxy_config_text': inAppProxyConfigText,
         'passcode_enabled': passcodeEnabled,
         'passcode_hash': passcodeHash,
         'lock_timeout_secs': lockTimeoutSecs,
@@ -830,11 +875,16 @@ class VedroPreferences {
         danmakuHideBottom: j['danmaku_hide_bottom'] == true,
         danmakuApiUrl: (j['danmaku_api_url'] ?? '').toString(),
         aiEnabled: j['ai_enabled'] == true,
-        aiBaseUrl: (j['ai_base_url'] ?? 'https://api.openai.com/v1').toString(),
+        aiBaseUrl: (j['ai_base_url'] ?? 'https://index-translate.bilibili.com/v1').toString(),
         aiApiKey: (j['ai_api_key'] ?? '').toString(),
-        aiModel: (j['ai_model'] ?? 'gpt-4o-mini').toString(),
+        aiModel: (j['ai_model'] ?? 'Index-Translate-35B-A3B').toString(),
         aiTargetLang: (j['ai_target_lang'] ?? '简体中文').toString(),
         aiBilingualSubtitle: j['ai_bilingual_subtitle'] != false,
+        aiDirectClientIp: j['ai_direct_client_ip'] != false,
+        inAppProxyMode: (j['in_app_proxy_mode'] ?? 'off').toString(),
+        inAppProxyUrl: (j['in_app_proxy_url'] ?? '').toString(),
+        inAppProxyCorePath: (j['in_app_proxy_core_path'] ?? '').toString(),
+        inAppProxyConfigText: (j['in_app_proxy_config_text'] ?? '').toString(),
         passcodeEnabled: j['passcode_enabled'] == true,
         passcodeHash: (j['passcode_hash'] ?? '').toString(),
         lockTimeoutSecs: (j['lock_timeout_secs'] as num?)?.toInt() ?? 60,

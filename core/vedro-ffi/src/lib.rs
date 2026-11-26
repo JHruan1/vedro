@@ -71,6 +71,21 @@ struct ActivePlaybackSession {
 }
 
 /// Core runtime backing both the C-ABI FFI library (`libvedro_ffi`) and native Rust hosts.
+struct ManagedProxyProcess {
+    engine_kind: String,
+    listen_port: u16,
+    temp_dir: std::path::PathBuf,
+    child: std::process::Child,
+}
+
+impl Drop for ManagedProxyProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.temp_dir);
+    }
+}
+
 pub struct VedroRuntime {
     rt: Runtime,
     store: VedroStore,
@@ -82,6 +97,8 @@ pub struct VedroRuntime {
     active_session: Mutex<Option<ActivePlaybackSession>>,
     events: Arc<Mutex<VecDeque<Value>>>,
     identity: Mutex<ClientIdentity>,
+    in_app_proxy_url: Mutex<Option<String>>,
+    managed_proxy: Mutex<Option<ManagedProxyProcess>>,
 }
 
 impl VedroRuntime {
@@ -127,9 +144,29 @@ impl VedroRuntime {
             ..Default::default()
         };
 
+        let saved_in_app_proxy: Option<String> = store
+            .get_setting::<Value>("in_app_proxy_config_v1")
+            .ok()
+            .flatten()
+            .and_then(|v| {
+                let mode = v.get("mode").and_then(Value::as_str).unwrap_or("off");
+                if mode == "custom" {
+                    v.get("proxy_url")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(ToString::to_string)
+                } else {
+                    None
+                }
+            });
+
         let proxy = rt
             .block_on(StreamProxy::start(StreamProxyConfig::default()))
             .map_err(|e| format!("failed to start local stream proxy: {e}"))?;
+        if let Some(ref p_url) = saved_in_app_proxy {
+            let _ = proxy.configure_transport(Some(p_url.as_str()), false);
+        }
 
         Ok(Self {
             rt,
@@ -142,7 +179,47 @@ impl VedroRuntime {
             active_session: Mutex::new(None),
             events: Arc::new(Mutex::new(VecDeque::with_capacity(256))),
             identity: Mutex::new(identity),
+            in_app_proxy_url: Mutex::new(saved_in_app_proxy),
+            managed_proxy: Mutex::new(None),
         })
+    }
+
+    fn effective_proxy_url(&self, explicit: Option<&str>) -> Option<String> {
+        if let Some(p) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
+            return Some(p.to_string());
+        }
+        self.in_app_proxy_url.lock().clone()
+    }
+
+    fn rebuild_active_client_transport(&self) {
+        let mut guard = self.client.lock();
+        let Some(existing) = guard.as_ref() else {
+            let eff = self.in_app_proxy_url.lock().clone();
+            let _ = self.proxy.configure_transport(eff.as_deref(), false);
+            return;
+        };
+        let accept_invalid = existing.transport_options().accept_invalid_certs;
+        let eff_proxy = self.in_app_proxy_url.lock().clone();
+        let _ = self
+            .proxy
+            .configure_transport(eff_proxy.as_deref(), accept_invalid);
+        let url_str = existing.base_url().to_string();
+        let identity = existing.identity().clone();
+        let tok = existing.access_token();
+        let uid = existing.user_id();
+        if let Ok(rebuilt) = EmbyClient::with_options(
+            &url_str,
+            identity,
+            ClientTransportOptions {
+                proxy_url: eff_proxy,
+                accept_invalid_certs: accept_invalid,
+            },
+        ) {
+            if let (Some(t), Some(u)) = (tok, uid) {
+                rebuilt.set_credentials(t, u);
+            }
+            *guard = Some(rebuilt);
+        }
     }
 
     pub fn poll_events(&self) -> Vec<Value> {
@@ -516,15 +593,16 @@ impl VedroRuntime {
                     .clone()
                     .ok_or_else(|| "server has no saved user_id".to_string())?;
 
+                let eff_route_proxy = self.effective_proxy_url(route.proxy_url.as_deref());
                 let _ = self
                     .proxy
-                    .configure_transport(route.proxy_url.as_deref(), route.accept_invalid_certs);
+                    .configure_transport(eff_route_proxy.as_deref(), route.accept_invalid_certs);
                 let identity = self.identity.lock().clone();
                 let client = EmbyClient::with_options(
                     &route.url,
                     identity,
                     ClientTransportOptions {
-                        proxy_url: route.proxy_url.clone(),
+                        proxy_url: eff_route_proxy,
                         accept_invalid_certs: route.accept_invalid_certs,
                     },
                 )
@@ -562,12 +640,12 @@ impl VedroRuntime {
                 if let Some(dev_name) = params.get("device_name").and_then(Value::as_str) {
                     self.identity.lock().device_name = dev_name.to_string();
                 }
-                let proxy_url = params
+                let raw_proxy = params
                     .get("proxy_url")
                     .and_then(Value::as_str)
                     .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(ToString::to_string);
+                    .filter(|s| !s.is_empty());
+                let proxy_url = self.effective_proxy_url(raw_proxy);
                 let accept_invalid_certs = params
                     .get("accept_invalid_certs")
                     .and_then(Value::as_bool)
@@ -685,12 +763,12 @@ impl VedroRuntime {
                 let url = str_param(&params, "url")?;
                 let token = str_param(&params, "access_token")?;
                 let user_id = str_param(&params, "user_id")?;
-                let proxy_url = params
+                let raw_proxy = params
                     .get("proxy_url")
                     .and_then(Value::as_str)
                     .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(ToString::to_string);
+                    .filter(|s| !s.is_empty());
+                let proxy_url = self.effective_proxy_url(raw_proxy);
                 let accept_invalid_certs = params
                     .get("accept_invalid_certs")
                     .and_then(Value::as_bool)
@@ -2024,41 +2102,93 @@ impl VedroRuntime {
             "ai_translate" => {
                 let base_url = str_param(&params, "base_url")?;
                 let api_key = params.get("api_key").and_then(Value::as_str).unwrap_or("");
+                let is_bilibili_index = base_url
+                    .to_ascii_lowercase()
+                    .contains("index-translate.bilibili.com")
+                    || params
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(|m| m.to_ascii_lowercase().starts_with("index-translate"))
+                        .unwrap_or(false);
                 let model = params
                     .get("model")
                     .and_then(Value::as_str)
+                    .map(str::trim)
                     .filter(|s| !s.is_empty())
-                    .unwrap_or("gpt-4o-mini");
+                    .unwrap_or(if is_bilibili_index {
+                        "Index-Translate-35B-A3B"
+                    } else {
+                        "gpt-4o-mini"
+                    });
                 let text = str_param(&params, "text")?;
                 let target_lang = params
                     .get("target_lang")
                     .and_then(Value::as_str)
                     .unwrap_or("简体中文");
-                let system_prompt = params
-                    .get("system_prompt")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| {
-                        format!(
-                            "You are a concise cinema translator. Translate the user text naturally into {target_lang}. Output only the translation with no extra commentary."
-                        )
-                    });
+                // Bilibili Index-Translate checks client IP: always default to user's direct IP (`no_proxy`)
+                // so it never exits via datacenter proxies and NEVER touches the media server!
+                let direct_ip = params
+                    .get("direct_ip")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(is_bilibili_index);
 
                 let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-                let http = reqwest::Client::builder()
-                    .timeout(Duration::from_secs(30))
-                    .build()
-                    .map_err(|e| e.to_string())?;
-                let mut req = http.post(&endpoint).json(&json!({
-                    "model": model,
-                    "temperature": 0.2,
-                    "messages": [
-                        { "role": "system", "content": system_prompt },
-                        { "role": "user", "content": text }
-                    ]
-                }));
-                if !api_key.is_empty() {
-                    req = req.bearer_auth(api_key);
+                let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(30));
+                if direct_ip {
+                    builder = builder.no_proxy();
+                } else if let Some(ref p_url) = *self.in_app_proxy_url.lock() {
+                    if let Ok(proxy) = reqwest::Proxy::all(p_url) {
+                        builder = builder.proxy(proxy);
+                    }
+                }
+                let http = builder.build().map_err(|e| e.to_string())?;
+
+                let payload = if is_bilibili_index {
+                    json!({
+                        "model": model,
+                        "temperature": 0.1,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": format!(
+                                    "请将以下文本翻译为{target_lang}，直接输出翻译结果，不要进行任何解释。\n\n{text}"
+                                )
+                            }
+                        ]
+                    })
+                } else {
+                    let system_prompt = params
+                        .get("system_prompt")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| {
+                            format!(
+                                "You are a concise cinema translator. Translate the user text naturally into {target_lang}. Output only the translation with no extra commentary."
+                            )
+                        });
+                    json!({
+                        "model": model,
+                        "temperature": 0.2,
+                        "messages": [
+                            { "role": "system", "content": system_prompt },
+                            { "role": "user", "content": text }
+                        ]
+                    })
+                };
+
+                let mut req = http
+                    .post(&endpoint)
+                    .header(
+                        reqwest::header::USER_AGENT,
+                        if is_bilibili_index {
+                            "Index-Translate-Client/1.0"
+                        } else {
+                            "Vedro-Translate/0.3"
+                        },
+                    )
+                    .json(&payload);
+                if !api_key.trim().is_empty() {
+                    req = req.bearer_auth(api_key.trim());
                 }
                 let resp = req.send().await.map_err(|e| e.to_string())?;
                 let status = resp.status();
@@ -2079,7 +2209,317 @@ impl VedroRuntime {
                     .unwrap_or("")
                     .trim()
                     .to_string();
-                Ok(json!({ "translated": translated }))
+                Ok(json!({
+                    "translated": translated,
+                    "direct_ip": direct_ip,
+                    "provider": if is_bilibili_index { "bilibili_index" } else { "openai_compat" }
+                }))
+            }
+
+            "in_app_proxy_status" => {
+                let active_url = self.in_app_proxy_url.lock().clone();
+                let mut managed_guard = self.managed_proxy.lock();
+                let mut running_core: Option<(String, u16)> = None;
+                if let Some(proc_ref) = managed_guard.as_mut() {
+                    match proc_ref.child.try_wait() {
+                        Ok(None) => {
+                            running_core =
+                                Some((proc_ref.engine_kind.clone(), proc_ref.listen_port));
+                        }
+                        _ => {
+                            *managed_guard = None;
+                        }
+                    }
+                }
+                Ok(json!({
+                    "active": active_url.is_some(),
+                    "proxy_url": active_url,
+                    "managed_running": running_core.is_some(),
+                    "managed_engine": running_core.as_ref().map(|x| x.0.clone()),
+                    "managed_port": running_core.as_ref().map(|x| x.1),
+                    "uses_system_vpn": false,
+                }))
+            }
+
+            "configure_in_app_proxy" => {
+                let mode = params
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("off")
+                    .trim()
+                    .to_ascii_lowercase();
+
+                // Always stop any previous managed sing-box / mihomo userspace process first
+                *self.managed_proxy.lock() = None;
+
+                match mode.as_str() {
+                    "off" | "" => {
+                        *self.in_app_proxy_url.lock() = None;
+                        let _ = self
+                            .store
+                            .set_setting("in_app_proxy_config_v1", &json!({"mode": "off"}));
+                        self.rebuild_active_client_transport();
+                        Ok(json!({
+                            "ok": true,
+                            "mode": "off",
+                            "active": false,
+                            "uses_system_vpn": false,
+                        }))
+                    }
+                    "custom" => {
+                        let raw = str_param(&params, "proxy_url")?;
+                        let trimmed = raw.trim().to_string();
+                        if trimmed.is_empty() {
+                            return Err("代理地址不能为空（例如 socks5h://127.0.0.1:7890）".into());
+                        }
+                        // Validate URL syntax with reqwest::Proxy before activating
+                        reqwest::Proxy::all(&trimmed)
+                            .map_err(|e| format!("代理地址格式无效: {e}"))?;
+                        *self.in_app_proxy_url.lock() = Some(trimmed.clone());
+                        let _ = self.store.set_setting(
+                            "in_app_proxy_config_v1",
+                            &json!({"mode": "custom", "proxy_url": trimmed}),
+                        );
+                        self.rebuild_active_client_transport();
+                        Ok(json!({
+                            "ok": true,
+                            "mode": "custom",
+                            "active": true,
+                            "proxy_url": trimmed,
+                            "uses_system_vpn": false,
+                        }))
+                    }
+                    "singbox" | "mihomo" => {
+                        #[cfg(target_os = "ios")]
+                        {
+                            return Err("iOS 沙盒禁止启动独立子进程；在 iOS 上请使用「应用内 SOCKS5/HTTP 端口」连接本机或局域网代理（同样零占用 VPN 通道）".into());
+                        }
+                        #[cfg(not(target_os = "ios"))]
+                        {
+                            let config_text = str_param(&params, "config_text")?;
+                            if config_text.trim().is_empty() {
+                                return Err(format!("请先粘贴或导入 {mode} 配置文件内容"));
+                            }
+                            let explicit_bin = params
+                                .get("binary_path")
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(ToString::to_string);
+                            let bin_candidates: Vec<String> = if let Some(b) = explicit_bin {
+                                vec![b]
+                            } else if mode == "singbox" {
+                                vec!["sing-box".into(), "sing-box.exe".into()]
+                            } else {
+                                vec!["mihomo".into(), "clash-meta".into(), "mihomo.exe".into()]
+                            };
+
+                            // Pick an ephemeral loopback port on 127.0.0.1 (strictly local, ZERO TUN/VPN!)
+                            let listener = std::net::TcpListener::bind("127.0.0.1:0")
+                                .map_err(|e| format!("无法分配本地回环端口: {e}"))?;
+                            let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+                            drop(listener);
+
+                            let temp_dir = std::env::temp_dir()
+                                .join(format!("vedro-{mode}-{}", uuid::Uuid::new_v4().simple()));
+                            std::fs::create_dir_all(&temp_dir)
+                                .map_err(|e| format!("无法创建代理工作目录: {e}"))?;
+
+                            let cfg_file = if mode == "singbox" {
+                                let mut doc: Value = serde_json::from_str(&config_text)
+                                    .map_err(|e| format!("sing-box JSON 解析失败: {e}"))?;
+                                // Strip ANY tun/redirect/tproxy inbound so OS VPN is NEVER touched!
+                                let mut clean_inbounds = vec![json!({
+                                    "type": "mixed",
+                                    "tag": "vedro-in-app-mixed",
+                                    "listen": "127.0.0.1",
+                                    "listen_port": port
+                                })];
+                                if let Some(arr) = doc.get("inbounds").and_then(Value::as_array) {
+                                    for ib in arr {
+                                        let t =
+                                            ib.get("type").and_then(Value::as_str).unwrap_or("");
+                                        if !matches!(t, "tun" | "redirect" | "tproxy") {
+                                            let _ = ib;
+                                        }
+                                    }
+                                    let _ = &mut clean_inbounds;
+                                }
+                                doc["inbounds"] = Value::Array(clean_inbounds);
+                                let path = temp_dir.join("config.json");
+                                std::fs::write(
+                                    &path,
+                                    serde_json::to_string_pretty(&doc)
+                                        .map_err(|e| e.to_string())?,
+                                )
+                                .map_err(|e| e.to_string())?;
+                                path
+                            } else {
+                                // Rewrite mihomo YAML header to force loopback mixed-port & disable TUN!
+                                let mut filtered_lines = Vec::new();
+                                let mut in_tun_block = false;
+                                for line in config_text.lines() {
+                                    let trimmed_start = line.trim_start();
+                                    let is_top_key = !line.starts_with(' ')
+                                        && !line.starts_with('\t')
+                                        && !trimmed_start.is_empty()
+                                        && !trimmed_start.starts_with('#');
+                                    if is_top_key {
+                                        in_tun_block = trimmed_start.starts_with("tun:");
+                                        if trimmed_start.starts_with("port:")
+                                            || trimmed_start.starts_with("socks-port:")
+                                            || trimmed_start.starts_with("mixed-port:")
+                                            || trimmed_start.starts_with("redir-port:")
+                                            || trimmed_start.starts_with("tproxy-port:")
+                                            || trimmed_start.starts_with("allow-lan:")
+                                            || trimmed_start.starts_with("bind-address:")
+                                        {
+                                            continue;
+                                        }
+                                    }
+                                    if in_tun_block {
+                                        continue;
+                                    }
+                                    filtered_lines.push(line);
+                                }
+                                let final_yaml = format!(
+                                    "mixed-port: {port}\nallow-lan: false\nbind-address: '127.0.0.1'\ntun:\n  enable: false\n{}\n",
+                                    filtered_lines.join("\n")
+                                );
+                                let path = temp_dir.join("config.yaml");
+                                std::fs::write(&path, final_yaml).map_err(|e| e.to_string())?;
+                                path
+                            };
+
+                            let mut spawned: Option<std::process::Child> = None;
+                            let mut last_err = String::new();
+                            for bin in &bin_candidates {
+                                let mut cmd = std::process::Command::new(bin);
+                                if mode == "singbox" {
+                                    cmd.arg("run")
+                                        .arg("-c")
+                                        .arg(&cfg_file)
+                                        .arg("-D")
+                                        .arg(&temp_dir);
+                                } else {
+                                    cmd.arg("-f").arg(&cfg_file).arg("-d").arg(&temp_dir);
+                                }
+                                cmd.stdin(std::process::Stdio::null())
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::piped());
+                                match cmd.spawn() {
+                                    Ok(c) => {
+                                        spawned = Some(c);
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        last_err = format!("{bin}: {e}");
+                                    }
+                                }
+                            }
+
+                            let mut child = match spawned {
+                                Some(c) => c,
+                                None => {
+                                    let _ = std::fs::remove_dir_all(&temp_dir);
+                                    return Err(format!(
+                                        "未找到 {mode} 可执行内核（{last_err}）。请指定内核文件路径，或直接使用「SOCKS5 / HTTP 端口模式」"
+                                    ));
+                                }
+                            };
+
+                            // Wait up to 3s for 127.0.0.1:{port} to accept TCP connections
+                            let mut ready = false;
+                            for _ in 0..30 {
+                                if let Ok(Some(exit)) = child.try_wait() {
+                                    let _ = std::fs::remove_dir_all(&temp_dir);
+                                    return Err(format!(
+                                        "{mode} 内核启动后立即退出 (code: {exit})，请检查节点配置格式"
+                                    ));
+                                }
+                                if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                                    .await
+                                    .is_ok()
+                                {
+                                    ready = true;
+                                    break;
+                                }
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            }
+                            if !ready {
+                                let _ = child.kill();
+                                let _ = std::fs::remove_dir_all(&temp_dir);
+                                return Err(format!(
+                                    "{mode} 本地回环端口 127.0.0.1:{port} 启动超时"
+                                ));
+                            }
+
+                            let local_proxy = format!("socks5h://127.0.0.1:{port}");
+                            *self.managed_proxy.lock() = Some(ManagedProxyProcess {
+                                engine_kind: mode.clone(),
+                                listen_port: port,
+                                temp_dir,
+                                child,
+                            });
+                            *self.in_app_proxy_url.lock() = Some(local_proxy.clone());
+                            self.rebuild_active_client_transport();
+                            Ok(json!({
+                                "mode": mode,
+                                "active": true,
+                                "proxy_url": local_proxy,
+                                "listen_port": port,
+                                "uses_system_vpn": false,
+                            }))
+                        }
+                    }
+                    other => Err(format!("未知代理模式: {other}")),
+                }
+            }
+
+            "test_in_app_proxy" => {
+                let test_url = params
+                    .get("test_url")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(ToString::to_string)
+                    .or_else(|| {
+                        self.client
+                            .lock()
+                            .as_ref()
+                            .map(|c| format!("{}System/Ping", c.base_url()))
+                    })
+                    .unwrap_or_else(|| "https://cp.cloudflare.com/generate_204".to_string());
+                let proxy_url = params
+                    .get("proxy_url")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string)
+                    .or_else(|| self.in_app_proxy_url.lock().clone());
+
+                let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(8));
+                if let Some(ref p) = proxy_url {
+                    let px =
+                        reqwest::Proxy::all(p).map_err(|e| format!("代理地址格式错误: {e}"))?;
+                    builder = builder.proxy(px);
+                } else {
+                    builder = builder.no_proxy();
+                }
+                let http = builder.build().map_err(|e| e.to_string())?;
+                let started = std::time::Instant::now();
+                let resp = http
+                    .get(&test_url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("连通测试失败: {e}"))?;
+                let latency_ms = started.elapsed().as_millis() as u64;
+                Ok(json!({
+                    "ok": resp.status().is_success() || resp.status().as_u16() < 500,
+                    "status": resp.status().as_u16(),
+                    "latency_ms": latency_ms,
+                    "proxy_url": proxy_url,
+                    "test_url": test_url,
+                }))
             }
 
             "delete_playlist" => {

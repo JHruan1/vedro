@@ -49,7 +49,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消', style: TextStyle(color: VedroTheme.fg2)),
+            child: Text('取消', style: TextStyle(color: VedroSkin.of(ctx).fg2)),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
@@ -319,6 +319,7 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final width = MediaQuery.sizeOf(context).width;
     final wide = width >= 820;
     final padX = wide ? 36.0 : 20.0;
@@ -327,71 +328,72 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
     final cols = ((width - padX * 2) / (cardW + 16)).floor().clamp(3, 9);
 
     return Scaffold(
-      backgroundColor: VedroTheme.canvas,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: EdgeInsets.fromLTRB(isMac ? 82 : padX, 10, padX, 12),
-              child: Row(
-                children: [
-                  PressableScale(
-                    onTap: () => Navigator.of(context).pop(),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: VedroTheme.surface2,
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: VedroTheme.line, width: 0.7),
+      backgroundColor: skin.canvas,
+      body: VedroSkinCanvas(
+        child: SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding: EdgeInsets.fromLTRB(isMac ? 82 : padX, 10, padX, 12),
+                child: Row(
+                  children: [
+                    PressableScale(
+                      onTap: () => Navigator.of(context).pop(),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                        decoration: BoxDecoration(
+                          color: skin.surface2,
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: skin.border, width: 0.7),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.arrow_back_ios_new_rounded, size: 14, color: skin.fg),
+                            const SizedBox(width: 5),
+                            Text('返回', style: TextStyle(color: skin.fg, fontSize: 13)),
+                          ],
+                        ),
                       ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Icon(Icons.arrow_back_ios_new_rounded, size: 14, color: VedroTheme.fg),
-                          SizedBox(width: 5),
-                          Text('返回', style: TextStyle(color: VedroTheme.fg, fontSize: 13)),
+                          Text(
+                            widget.playlist.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: skin.fg,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          Text(
+                            '共 ${_items.length} 项 · 长按/右键卡片可移出片单',
+                            style: TextStyle(color: skin.fg3, fontSize: 12),
+                          ),
                         ],
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.playlist.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: VedroTheme.fg,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        Text(
-                          '共 ${_items.length} 项 · 长按/右键卡片可移出片单',
-                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
-                        ),
-                      ],
+                    IconButton(
+                      tooltip: '删除片单',
+                      icon: const Icon(Icons.delete_outline_rounded, color: VedroTheme.danger),
+                      onPressed: _confirmDeletePlaylist,
                     ),
-                  ),
-                  IconButton(
-                    tooltip: '删除片单',
-                    icon: const Icon(Icons.delete_outline_rounded, color: VedroTheme.danger),
-                    onPressed: _confirmDeletePlaylist,
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            Expanded(
-              child: _loading
-                  ? const Center(child: CircularProgressIndicator(strokeWidth: 2, color: VedroTheme.fg2))
-                  : _items.isEmpty
-                      ? const Center(
-                          child: Text('此片单还没有影片，可在任意详情页点击「片单」添加',
-                              style: TextStyle(color: VedroTheme.fg3, fontSize: 13.5)),
-                        )
+              Expanded(
+                child: _loading
+                    ? Center(child: CircularProgressIndicator(strokeWidth: 2, color: skin.fg2))
+                    : _items.isEmpty
+                        ? Center(
+                            child: Text('此片单还没有影片，可在任意详情页点击「片单」添加',
+                                style: TextStyle(color: skin.fg3, fontSize: 13.5)),
+                          )
                       : GridView.builder(
                           padding: EdgeInsets.fromLTRB(padX, 6, padX, 40),
                           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -414,8 +416,9 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
                             );
                           },
                         ),
-            ),
-          ],
+              ),
+            ],
+          ),
         ),
       ),
     );

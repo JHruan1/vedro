@@ -20,17 +20,50 @@ class SkinStudioPane extends StatefulWidget {
     super.key,
     required this.appState,
     this.hideHeading = false,
+    this.stickyDesktop = false,
   });
 
   final VedroAppState appState;
   final bool hideHeading;
+  final bool stickyDesktop;
 
   @override
   State<SkinStudioPane> createState() => _SkinStudioPaneState();
 }
 
 class _SkinStudioPaneState extends State<SkinStudioPane> {
-  String _previewScene = 'home'; // 'home' | 'detail' | 'player'
+  String _previewScene = 'overview'; // 'overview' | 'home' | 'detail' | 'typography' | 'player'
+  String? _lastChangeNotice;
+  final ScrollController _scrollCtrl = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollCtrl.dispose();
+    super.dispose();
+  }
+
+  String _describeSkinTraits(VedroSkin s) {
+    final tone = s.isLight ? '浅色明快画布' : '深色影院画布';
+    final nav = switch (s.navLayout) {
+      'left_rail' => '左侧垂直边栏',
+      'centered_capsule' => '居中胶囊顶栏',
+      'minimal_auto_hide' => '自动半隐顶栏',
+      _ => '悬浮顶栏',
+    };
+    final hero = switch (s.heroStyle) {
+      'framed_stage' => '圆角画框巨幕',
+      'split_showcase' => '双栏杂志巨幕',
+      'compact_minimal' => '纯海报墙',
+      _ => '全屏沉浸巨幕',
+    };
+    final detail = switch (s.detailLayout) {
+      'jellyfin_glass' => '毛玻璃详情仓',
+      'centered_editorial' => '居中对称详情页',
+      _ => '影院沉浸详情页',
+    };
+    final font = s.editorialSerif ? '衬线电影大标题' : '现代无衬线排版';
+    return '$tone · $nav · $hero · $detail · $font';
+  }
 
   VedroAppState get appState => widget.appState;
 
@@ -176,14 +209,29 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
     }
   }
 
-  void _setOverride(String key, dynamic value) {
+  void _setOverride(
+    String key,
+    dynamic value, {
+    String? focusScene,
+    String? notice,
+  }) {
+    if (focusScene != null || notice != null) {
+      setState(() {
+        if (focusScene != null) _previewScene = focusScene;
+        if (notice != null) _lastChangeNotice = notice;
+      });
+    }
     final p = appState.prefs;
     final next = Map<String, dynamic>.from(p.skinOverrides);
     next[key] = value;
     appState.updatePrefs(p.copyWith(skinOverrides: next));
   }
 
-  void _applyCornerPreset(double radius, double pill) {
+  void _applyCornerPreset(double radius, double pill, String label) {
+    setState(() {
+      _previewScene = 'home';
+      _lastChangeNotice = '已调整（影响主页卡片）：全局圆角 → $label';
+    });
     final p = appState.prefs;
     final next = Map<String, dynamic>.from(p.skinOverrides);
     next['card_radius'] = radius;
@@ -211,16 +259,16 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
     final skin = VedroSkin.of(context);
     final hasOverrides = p.skinOverrides.isNotEmpty;
 
-    return Column(
-      key: const ValueKey('skin-studio-pane'),
+    final headerAndStage = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
       children: [
         if (!widget.hideHeading)
           Padding(
-            padding: const EdgeInsets.only(bottom: 16),
+            padding: const EdgeInsets.only(bottom: 12),
             child: Wrap(
               spacing: 16,
-              runSpacing: 10,
+              runSpacing: 8,
               alignment: WrapAlignment.spaceBetween,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
@@ -228,20 +276,20 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '皮肤管理与实时预览工坊',
+                      '皮肤管理与智能联动预览工坊',
                       style: skin.applyHeadlineMood(
                         TextStyle(
                           color: skin.fg,
-                          fontSize: 22,
+                          fontSize: 21,
                           fontWeight: FontWeight.w700,
                           letterSpacing: -0.5,
                         ),
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 3),
                     Text(
-                      '完整吸收 Jellyfin Skin Manager / Ultrachromic / ElegantFin / Scyfin：所见即所得实时预览 14 维布局、统一磨砂材质、画幅、角标与播放器 OSD',
-                      style: TextStyle(color: skin.fg3, fontSize: 12.5, height: 1.45),
+                      '点主页项看主页、点详情项看详情、点字体项看字体、切整套主题看全景对比（预览窗置顶常驻）',
+                      style: TextStyle(color: skin.fg3, fontSize: 12, height: 1.4),
                     ),
                   ],
                 ),
@@ -272,7 +320,7 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
           )
         else
           Padding(
-            padding: const EdgeInsets.only(bottom: 14),
+            padding: const EdgeInsets.only(bottom: 12),
             child: Wrap(
               spacing: 10,
               runSpacing: 8,
@@ -297,19 +345,32 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
             ),
           ),
 
-        // 1. LIVE INTERACTIVE CINEMA PREVIEW MONITOR (never guess blindly in Settings!)
+        // 1. PINNED SMART CONTEXT-AWARE LIVE PREVIEW MONITOR
         _LiveSkinInteractiveStage(
           key: const ValueKey('skin-live-preview-stage'),
           skin: activeSkin,
           appState: appState,
           scene: _previewScene,
+          changeNotice: _lastChangeNotice,
           hasOverrides: hasOverrides,
+          compactHeight: widget.stickyDesktop,
           onSelectScene: (sc) => setState(() => _previewScene = sc),
-          onResetOverrides: () => appState.updatePrefs(p.copyWith(skinOverrides: const {})),
+          onResetOverrides: () {
+            setState(() {
+              _previewScene = 'overview';
+              _lastChangeNotice = '已重置混搭参数，恢复「${VedroSkin.byId(p.skinId, customSkins: p.customSkins).name}」默认结构';
+            });
+            appState.updatePrefs(p.copyWith(skinOverrides: const {}));
+          },
           onSaveAsSkin: () => _openEditor(context, forkFrom: activeSkin),
         ),
+      ],
+    );
 
-        const SizedBox(height: 22),
+    final scrollableControls = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 18),
 
         // 2. Custom Skins Section (when user has created or imported any)
         if (p.customSkins.isNotEmpty) ...[
@@ -335,9 +396,16 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                       key: ValueKey('skin-custom-${spec.id}'),
                       skinPreview: customSkin,
                       selected: selected,
-                      onSelect: () => appState.updatePrefs(
-                        p.copyWith(skinId: spec.id, skinOverrides: const {}, useSkinGeometry: true),
-                      ),
+                      onSelect: () {
+                        setState(() {
+                          _previewScene = 'overview';
+                          _lastChangeNotice =
+                              '已切换至「${customSkin.name}」：${_describeSkinTraits(customSkin)}';
+                        });
+                        appState.updatePrefs(
+                          p.copyWith(skinId: spec.id, skinOverrides: const {}, useSkinGeometry: true),
+                        );
+                      },
                       onEdit: () => _openEditor(context, existing: spec),
                       onShare: () {
                         Clipboard.setData(ClipboardData(text: spec.encodeShareCode()));
@@ -394,9 +462,16 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                     key: ValueKey('skin-preset-${preset.id}'),
                     skinPreview: preset,
                     selected: selected,
-                    onSelect: () => appState.updatePrefs(
-                      p.copyWith(skinId: preset.id, skinOverrides: const {}, useSkinGeometry: true),
-                    ),
+                    onSelect: () {
+                      setState(() {
+                        _previewScene = 'overview';
+                        _lastChangeNotice =
+                            '已切换至「${preset.name}」：${_describeSkinTraits(preset)}';
+                      });
+                      appState.updatePrefs(
+                        p.copyWith(skinId: preset.id, skinOverrides: const {}, useSkinGeometry: true),
+                      );
+                    },
                     onFork: () => _openEditor(context, forkFrom: preset),
                   ),
                 );
@@ -476,7 +551,7 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
 
               _ModuleOptionRow(
                 title: '导航栏架构',
-                subtitle: '切换悬浮顶栏、Scyfin 左侧垂直栏、Ultrachromic 灵动胶囊岛或沉浸自动收纳栏',
+                subtitle: '自动展示「首页舞台」：切换悬浮顶栏、Scyfin 左侧垂直栏、居中胶囊岛或半隐顶栏',
                 value: activeSkin.navLayout,
                 options: const [
                   ('top_floating', '顶部悬浮栏', Icons.web_asset_rounded),
@@ -484,13 +559,18 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                   ('centered_capsule', '居中灵动胶囊岛', Icons.smart_button_rounded),
                   ('minimal_auto_hide', '沉浸自动半隐顶栏', Icons.visibility_off_outlined),
                 ],
-                onChanged: (v) => _setOverride('nav_layout', v),
+                onChanged: (v) => _setOverride(
+                  'nav_layout',
+                  v,
+                  focusScene: 'home',
+                  notice: '已调整（影响主页与全局顶栏）：导航栏架构',
+                ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
                 title: '全局表面材质引擎（解决毛玻璃与纯色卡片混搭割裂）',
-                subtitle: '控制详情面板、剧集行、版本卡、设置框与背景的融合质感，让卡片与毛玻璃浑然一体',
+                subtitle: '自动展示「详情构图」：控制详情面板、版本卡、剧集行与背景的磨砂融合质感',
                 value: activeSkin.effectiveSurfaceMaterial,
                 options: const [
                   ('unified_glass', '全站统一磨砂琉璃', Icons.blur_circular_rounded),
@@ -498,20 +578,30 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                   ('matte_solid', '温润哑光实色', Icons.rectangle_rounded),
                   ('oled_borderless', '无界暗场隐形框', Icons.border_clear_rounded),
                 ],
-                onChanged: (v) => _setOverride('surface_material', v),
+                onChanged: (v) => _setOverride(
+                  'surface_material',
+                  v,
+                  focusScene: 'detail',
+                  notice: '已调整（影响详情页与面板）：表面材质引擎',
+                ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
                 title: '全局背景氛围引擎',
-                subtitle: '纯净画布、双色极光漫反射或全页高斯模糊电影剧照背景',
+                subtitle: '自动展示「详情构图」：纯净画布、双色极光漫反射或全页高斯模糊电影剧照背景',
                 value: activeSkin.backdropMode,
                 options: const [
                   ('solid_clean', '纯净实色画布', Icons.crop_square_rounded),
                   ('ambient_orb', '双色流光漫反射', Icons.gradient_rounded),
                   ('blurred_fanart', '全页剧照毛玻璃', Icons.deblur_rounded),
                 ],
-                onChanged: (v) => _setOverride('backdrop_mode', v),
+                onChanged: (v) => _setOverride(
+                  'backdrop_mode',
+                  v,
+                  focusScene: 'detail',
+                  notice: '已调整（影响背景氛围）：全局背景模式',
+                ),
               ),
 
               if (activeSkin.usesBlurredFanart ||
@@ -532,7 +622,12 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                           value: activeSkin.backdropBlur.clamp(12.0, 60.0),
                           min: 12,
                           max: 60,
-                          onChanged: (v) => _setOverride('backdrop_blur', v),
+                          onChanged: (v) => _setOverride(
+                            'backdrop_blur',
+                            v,
+                            focusScene: 'detail',
+                            notice: '已调整（影响背景毛玻璃）：模糊半径 ${v.round()} px',
+                          ),
                         ),
                       ],
                     );
@@ -547,7 +642,12 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                           value: activeSkin.surfaceOpacity.clamp(0.45, 0.98),
                           min: 0.45,
                           max: 0.98,
-                          onChanged: (v) => _setOverride('surface_opacity', v),
+                          onChanged: (v) => _setOverride(
+                            'surface_opacity',
+                            v,
+                            focusScene: 'detail',
+                            notice: '已调整（影响详情面板）：透光浓度 ${(v * 100).round()}%',
+                          ),
                         ),
                       ],
                     );
@@ -575,7 +675,7 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
 
               _ModuleOptionRow(
                 title: '首页轮播舞台形态',
-                subtitle: '全屏沉浸巨幕、ElegantFin 圆角画框、双栏杂志画报或无轮播直达海报墙',
+                subtitle: '自动展示「首页舞台」：全屏沉浸巨幕、ElegantFin 圆角画框、双栏杂志画报或纯海报墙',
                 value: activeSkin.heroStyle,
                 options: const [
                   ('full_bleed', '全屏沉浸巨幕', Icons.panorama_wide_angle_select_rounded),
@@ -583,39 +683,48 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                   ('split_showcase', '双栏画报橱窗', Icons.vertical_split_rounded),
                   ('compact_minimal', '极简纯海报墙', Icons.apps_rounded),
                 ],
-                onChanged: (v) => _setOverride('hero_style', v),
+                onChanged: (v) => _setOverride(
+                  'hero_style',
+                  v,
+                  focusScene: 'home',
+                  notice: '已调整（影响主页轮播）：巨幕舞台形态',
+                ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
                 title: '详情页构图模式',
-                subtitle: '自动同步预览窗「详情与多版本」视图',
+                subtitle: '自动展示「详情构图」：影院沉浸式、毛玻璃悬浮仓或居中对称画报',
                 value: activeSkin.detailLayout,
                 options: const [
                   ('apple_immersive', '影院沉浸式', Icons.movie_creation_outlined),
                   ('jellyfin_glass', '毛玻璃悬浮仓', Icons.blur_on_rounded),
                   ('centered_editorial', '居中对称画报', Icons.format_align_center_rounded),
                 ],
-                onChanged: (v) {
-                  setState(() => _previewScene = 'detail');
-                  _setOverride('detail_layout', v);
-                },
+                onChanged: (v) => _setOverride(
+                  'detail_layout',
+                  v,
+                  focusScene: 'detail',
+                  notice: '已调整（影响详情页）：详情构图模式',
+                ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
                 title: '演职人员卡片样式',
-                subtitle: '切换圆形肖像勋章、Jellyfin 2:3 竖版写真卡或紧凑胶囊名牌',
+                subtitle: '自动展示「详情构图」：切换圆形肖像勋章、Jellyfin 2:3 竖版写真卡或紧凑胶囊名牌',
                 value: activeSkin.castStyle,
                 options: const [
                   ('circle_medallion', '圆形头像勋章', Icons.account_circle_outlined),
                   ('portrait_card', '2:3 竖版写真卡', Icons.portrait_rounded),
                   ('compact_pill', '紧凑胶囊名牌', Icons.badge_outlined),
                 ],
-                onChanged: (v) {
-                  setState(() => _previewScene = 'detail');
-                  _setOverride('cast_style', v);
-                },
+                onChanged: (v) => _setOverride(
+                  'cast_style',
+                  v,
+                  focusScene: 'detail',
+                  notice: '已调整（影响详情页）：演职员卡片样式',
+                ),
               ),
 
               const SizedBox(height: 18),
@@ -628,23 +737,25 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
 
               _ModuleOptionRow(
                 title: '海报墙画幅比例',
-                subtitle: '支持经典 2:3 竖版海报、16:9 横版宽幅剧照墙或 4:5 艺术画册比例',
+                subtitle: '自动展示「首页舞台」：2:3 竖版海报、16:9 横版宽幅剧照墙或 4:5 艺术画册比例',
                 value: activeSkin.posterAspect,
                 options: const [
                   ('poster_2_3', '2:3 竖版海报', Icons.crop_portrait_rounded),
                   ('landscape_16_9', '16:9 横版剧照墙', Icons.crop_16_9_rounded),
                   ('cinema_4_5', '4:5 画册比例', Icons.crop_din_rounded),
                 ],
-                onChanged: (v) {
-                  setState(() => _previewScene = 'home');
-                  _setOverride('poster_aspect', v);
-                },
+                onChanged: (v) => _setOverride(
+                  'poster_aspect',
+                  v,
+                  focusScene: 'home',
+                  notice: '已调整（影响主页与媒体库）：海报画幅比例',
+                ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
                 title: '海报卡片标题结构',
-                subtitle: '经典图下双行字、海报内嵌渐变字、悬停显字或零文字纯海报画廊',
+                subtitle: '自动展示「首页舞台」：经典图下双行字、海报内嵌渐变字、悬停显字或纯净无字画廊',
                 value: activeSkin.cardStyle,
                 options: const [
                   ('classic_below', '经典图下文字', Icons.subtitles_outlined),
@@ -652,29 +763,36 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                   ('hover_reveal', '悬停浮现文字', Icons.visibility_outlined),
                   ('minimal_clean', '纯净无字画廊', Icons.image_outlined),
                 ],
-                onChanged: (v) {
-                  setState(() => _previewScene = 'home');
-                  _setOverride('card_style', v);
-                },
+                onChanged: (v) => _setOverride(
+                  'card_style',
+                  v,
+                  focusScene: 'home',
+                  notice: '已调整（影响主页卡片）：海报标题结构',
+                ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
                 title: '海报墙排版密度',
-                subtitle: '调节单行容纳的海报数量与间距呼吸感',
+                subtitle: '自动展示「首页舞台」：调节单行容纳的海报数量与间距呼吸感',
                 value: p.skinOverrides['grid_density']?.toString() ?? p.listDensity,
                 options: const [
                   ('spacious', '画廊宽松大卡', Icons.view_comfortable_rounded),
                   ('comfortable', '标准均衡比例', Icons.grid_view_rounded),
                   ('compact', '发烧友紧凑墙', Icons.view_compact_alt_rounded),
                 ],
-                onChanged: (v) => _setOverride('grid_density', v),
+                onChanged: (v) => _setOverride(
+                  'grid_density',
+                  v,
+                  focusScene: 'home',
+                  notice: '已调整（影响主页与媒体库）：海报墙排版密度',
+                ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
                 title: '全局圆角体系预设（Ultrachromic Rounding）',
-                subtitle: '一键切换胶片锐角、现代圆角或鹅卵石大圆角',
+                subtitle: '自动展示「首页舞台」：一键切换胶片锐角、现代圆角或鹅卵石大圆角',
                 value: _activeCornerBucket(activeSkin),
                 options: const [
                   ('sharp', '锐利直角 (3px)', Icons.crop_sharp),
@@ -685,16 +803,16 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                 onChanged: (v) {
                   switch (v) {
                     case 'sharp':
-                      _applyCornerPreset(3.0, 6.0);
+                      _applyCornerPreset(3.0, 6.0, '锐利直角 (3px)');
                       break;
                     case 'cinema':
-                      _applyCornerPreset(8.0, 10.0);
+                      _applyCornerPreset(8.0, 10.0, '影院微圆 (8px)');
                       break;
                     case 'modern':
-                      _applyCornerPreset(14.0, 999.0);
+                      _applyCornerPreset(14.0, 999.0, '现代均衡 (14px)');
                       break;
                     case 'pebble':
-                      _applyCornerPreset(22.0, 999.0);
+                      _applyCornerPreset(22.0, 999.0, '鹅卵石超圆 (22px)');
                       break;
                   }
                 },
@@ -703,7 +821,7 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
 
               _ModuleOptionRow(
                 title: '未看集数与已看角标样式',
-                subtitle: '自定义海报右上角状态指示器风格',
+                subtitle: '自动展示「首页舞台」：自定义海报右上角状态指示器风格',
                 value: activeSkin.badgeStyle,
                 options: const [
                   ('glass_pill', '毛玻璃胶囊', Icons.lens_blur_rounded),
@@ -711,62 +829,73 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                   ('minimal_dot', '极简发光圆点', Icons.fiber_manual_record_rounded),
                   ('hidden', '纯净隐藏角标', Icons.visibility_off_rounded),
                 ],
-                onChanged: (v) {
-                  setState(() => _previewScene = 'home');
-                  _setOverride('badge_style', v);
-                },
+                onChanged: (v) => _setOverride(
+                  'badge_style',
+                  v,
+                  focusScene: 'home',
+                  notice: '已调整（影响主页海报角标）：右上角标样式',
+                ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
                 title: '播放进度条样式',
-                subtitle: '控制「继续观看」与海报底部的观看进度条外观',
+                subtitle: '自动展示「首页舞台」：控制「继续观看」与海报底部的观看进度条外观',
                 value: activeSkin.progressStyle,
                 options: const [
                   ('floating_bar', '底部悬浮圆角条', Icons.linear_scale_rounded),
                   ('edge_flush', '贴底满宽极细线', Icons.horizontal_rule_rounded),
                   ('glow_accent', '电光辉光进度条', Icons.bolt_rounded),
                 ],
-                onChanged: (v) {
-                  setState(() => _previewScene = 'home');
-                  _setOverride('progress_style', v);
-                },
+                onChanged: (v) => _setOverride(
+                  'progress_style',
+                  v,
+                  focusScene: 'home',
+                  notice: '已调整（影响主页继续观看）：播放进度条样式',
+                ),
               ),
               const Divider(height: 22),
 
               _ModuleOptionRow(
                 title: '卡片悬停反馈动效',
-                subtitle: '鼠标悬停或焦点落上时的动态交互反馈',
+                subtitle: '自动展示「首页舞台」：把鼠标移入预览窗海报卡即可实时体验',
                 value: activeSkin.cardHoverEffect,
                 options: const [
                   ('lift', '弹簧悬浮抬升', Icons.open_in_new_rounded),
                   ('glow_ring', '主题电光环描边', Icons.flare_rounded),
                   ('zoom_art', '内景微距缩放', Icons.zoom_in_rounded),
                 ],
-                onChanged: (v) => _setOverride('card_hover_effect', v),
+                onChanged: (v) => _setOverride(
+                  'card_hover_effect',
+                  v,
+                  focusScene: 'home',
+                  notice: '已调整（影响主页交互）：卡片悬停反馈动效',
+                ),
               ),
 
               const SizedBox(height: 18),
               _CategoryBanner(
                 icon: Icons.play_circle_outline_rounded,
-                label: '四、播放器控制栏（OSD）与品牌排版开关',
+                label: '四、播放器控制栏（OSD）与字体排版开关',
                 skin: skin,
               ),
               const SizedBox(height: 12),
 
               _ModuleOptionRow(
                 title: '播放器 HUD 控制栏风格',
-                subtitle: '自动同步预览窗「播放器 HUD」场景',
+                subtitle: '自动展示「播放器 HUD」场景',
                 value: activeSkin.osdStyle,
                 options: const [
                   ('floating_island', '灵动悬浮控制台', Icons.space_bar_rounded),
                   ('cinema_gradient', '影院全宽底栏', Icons.video_label_rounded),
                   ('minimal_glass', 'Ultrachromic 琉璃舱', Icons.blur_linear_rounded),
                 ],
-                onChanged: (v) {
-                  setState(() => _previewScene = 'player');
-                  _setOverride('osd_style', v);
-                },
+                onChanged: (v) => _setOverride(
+                  'osd_style',
+                  v,
+                  focusScene: 'player',
+                  notice: '已调整（影响播放器）：HUD 控制栏形态',
+                ),
               ),
             ],
           ),
@@ -783,10 +912,12 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
               children: [
                 SwitchListTile.adaptive(
                   value: activeSkin.showCardRating,
-                  onChanged: (v) {
-                    setState(() => _previewScene = 'home');
-                    _setOverride('show_card_rating', v);
-                  },
+                  onChanged: (v) => _setOverride(
+                    'show_card_rating',
+                    v,
+                    focusScene: 'home',
+                    notice: '已${v ? '开启' : '隐藏'}（影响主页海报）：左上角 TMDB 评分角标',
+                  ),
                   title: Text(
                     '在海报左上角展示 TMDB 评分角标',
                     style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
@@ -799,7 +930,12 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                 Divider(height: 1, color: skin.border),
                 SwitchListTile.adaptive(
                   value: activeSkin.preferClearLogo,
-                  onChanged: (v) => _setOverride('prefer_clear_logo', v),
+                  onChanged: (v) => _setOverride(
+                    'prefer_clear_logo',
+                    v,
+                    focusScene: 'detail',
+                    notice: '已${v ? '开启' : '关闭'}（影响主页与详情页）：优先透明艺术片名 ClearLogo',
+                  ),
                   title: Text(
                     '优先展示电影/剧集透明艺术片名 (ClearLogo)',
                     style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
@@ -811,14 +947,20 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                 ),
                 Divider(height: 1, color: skin.border),
                 SwitchListTile.adaptive(
+                  key: const ValueKey('skin-mod-serif'),
                   value: activeSkin.editorialSerif,
-                  onChanged: (v) => _setOverride('editorial_serif', v),
+                  onChanged: (v) => _setOverride(
+                    'editorial_serif',
+                    v,
+                    focusScene: 'typography',
+                    notice: '已${v ? '开启' : '关闭'}（影响字体排印）：电影画报衬线标题字体',
+                  ),
                   title: Text(
                     '启用电影画报衬线标题字体 (Editorial Serif)',
                     style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w500),
                   ),
                   subtitle: Text(
-                    '为片名与栏目标题启用经典杂志衬线字重',
+                    '切换时上方预览窗自动展示「字体排版」实时对比样张',
                     style: TextStyle(color: skin.fg3, fontSize: 12),
                   ),
                 ),
@@ -839,6 +981,33 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
             ),
           ),
         ),
+      ],
+    );
+
+    if (widget.stickyDesktop) {
+      return Column(
+        key: const ValueKey('skin-studio-pane'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          headerAndStage,
+          const SizedBox(height: 8),
+          Expanded(
+            child: SingleChildScrollView(
+              controller: _scrollCtrl,
+              padding: const EdgeInsets.only(bottom: 56),
+              child: scrollableControls,
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      key: const ValueKey('skin-studio-pane'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        headerAndStage,
+        scrollableControls,
       ],
     );
   }
@@ -892,7 +1061,9 @@ class _LiveSkinInteractiveStage extends StatefulWidget {
     required this.skin,
     required this.appState,
     required this.scene,
+    this.changeNotice,
     required this.hasOverrides,
+    this.compactHeight = false,
     required this.onSelectScene,
     required this.onResetOverrides,
     required this.onSaveAsSkin,
@@ -901,7 +1072,9 @@ class _LiveSkinInteractiveStage extends StatefulWidget {
   final VedroSkin skin;
   final VedroAppState appState;
   final String scene;
+  final String? changeNotice;
   final bool hasOverrides;
+  final bool compactHeight;
   final ValueChanged<String> onSelectScene;
   final VoidCallback onResetOverrides;
   final VoidCallback onSaveAsSkin;
@@ -1008,8 +1181,10 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
                   spacing: 6,
                   children: [
                     for (final tab in const [
+                      ('overview', '主题总览', Icons.auto_awesome_mosaic_rounded),
                       ('home', '首页舞台', Icons.home_rounded),
-                      ('detail', '详情与多版本', Icons.dynamic_feed_rounded),
+                      ('detail', '详情构图', Icons.dynamic_feed_rounded),
+                      ('typography', '字体排版', Icons.text_fields_rounded),
                       ('player', '播放器 HUD', Icons.play_circle_fill_rounded),
                     ])
                       GestureDetector(
@@ -1017,7 +1192,7 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
                         onTap: () => widget.onSelectScene(tab.$1),
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 150),
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4.5),
                           decoration: BoxDecoration(
                             color: widget.scene == tab.$1 ? s.activePillBg : Colors.transparent,
                             borderRadius: BorderRadius.circular(s.radiusForPill(26)),
@@ -1030,7 +1205,7 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
                             children: [
                               Icon(
                                 tab.$3,
-                                size: 13,
+                                size: 12.5,
                                 color: widget.scene == tab.$1 ? s.activePillFg : s.fg2,
                               ),
                               const SizedBox(width: 4),
@@ -1038,7 +1213,7 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
                                 tab.$2,
                                 style: TextStyle(
                                   color: widget.scene == tab.$1 ? s.activePillFg : s.fg2,
-                                  fontSize: 11.5,
+                                  fontSize: 11,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
@@ -1052,9 +1227,36 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
             ),
           ),
 
+          if (widget.changeNotice != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              decoration: BoxDecoration(
+                color: s.accent.withValues(alpha: s.isLight ? 0.08 : 0.14),
+                border: Border(bottom: BorderSide(color: s.border, width: 0.6)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.auto_fix_high_rounded, size: 13.5, color: s.accent),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      widget.changeNotice!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: s.fg,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
           // Live Simulated Cinema Viewport
           SizedBox(
-            height: 286,
+            height: widget.compactHeight ? 256 : 284,
             child: Theme(
               data: VedroTheme.fromSkin(s),
               child: Builder(
@@ -1173,9 +1375,12 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
                             16,
                             12,
                           ),
-                          child: widget.scene == 'detail'
-                              ? _buildDetailPreview(s, heroTitle)
-                              : _buildHomePreview(s, heroTitle, fanartUrl),
+                          child: switch (widget.scene) {
+                            'overview' => _buildOverviewPreview(s, heroTitle),
+                            'detail' => _buildDetailPreview(s, heroTitle),
+                            'typography' => _buildTypographyPreview(s, heroTitle),
+                            _ => _buildHomePreview(s, heroTitle, fanartUrl),
+                          },
                         ),
                       ),
                       if (!isLeftRail)
@@ -1558,6 +1763,292 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
     );
   }
 
+  Widget _buildOverviewPreview(VedroSkin s, String heroTitle) {
+    final r = s.cardRadius.clamp(4.0, 18.0);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 1. Mini Home + Poster Aspect Preview
+        Expanded(
+          flex: 4,
+          child: VedroAdaptiveSurface(
+            padding: const EdgeInsets.all(10),
+            borderRadius: r,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.home_rounded, size: 12, color: s.accent),
+                    const SizedBox(width: 4),
+                    Text('主页与海报卡', style: TextStyle(color: s.fg2, fontSize: 10.5, fontWeight: FontWeight.w700)),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Expanded(
+                  child: Row(
+                    children: [
+                      for (var i = 0; i < 3; i++)
+                        Expanded(
+                          child: Padding(
+                            padding: EdgeInsets.only(right: i < 2 ? 6 : 0),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(r * 0.65),
+                                border: s.cardBorder(hovered: i == 0),
+                              ),
+                              clipBehavior: Clip.antiAlias,
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  GeneratedArt(seed: 'ov-card-$i'),
+                                  if (s.showCardRating && s.badgeStyle != 'hidden')
+                                    Positioned(
+                                      top: 4,
+                                      left: 4,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xAA09090B),
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: const Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(Icons.star_rounded, size: 9, color: Color(0xFFFBBF24)),
+                                            SizedBox(width: 1),
+                                            Text('8.9', style: TextStyle(color: Color(0xFFFBBF24), fontSize: 8, fontWeight: FontWeight.w700)),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        // 2. Mini Detail Surface Preview
+        Expanded(
+          flex: 4,
+          child: VedroAdaptiveSurface(
+            padding: const EdgeInsets.all(10),
+            borderRadius: r,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.dynamic_feed_rounded, size: 12, color: s.accent),
+                    const SizedBox(width: 4),
+                    Text('详情构图与材质', style: TextStyle(color: s.fg2, fontSize: 10.5, fontWeight: FontWeight.w700)),
+                  ],
+                ),
+                Text(
+                  heroTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: s.applyHeadlineMood(
+                    TextStyle(color: s.fg, fontSize: 13.5, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: s.unifiedTileColor(selected: true),
+                    borderRadius: BorderRadius.circular(r * 0.55),
+                    border: s.cardBorder(selected: true),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '4K DoVi · TrueHD',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: s.fg, fontSize: 10, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: s.primaryCtaBg,
+                          borderRadius: BorderRadius.circular(99),
+                        ),
+                        child: Text('当前', style: TextStyle(color: s.primaryCtaFg, fontSize: 8.5, fontWeight: FontWeight.w700)),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  height: 24,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: s.primaryCtaBg,
+                    gradient: s.primaryCtaGradient,
+                    borderRadius: BorderRadius.circular(s.radiusForPill(24)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.play_arrow_rounded, size: 13, color: s.primaryCtaFg),
+                      const SizedBox(width: 2),
+                      Text('立即播放', style: TextStyle(color: s.primaryCtaFg, fontSize: 10, fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        // 3. Mini Typography & Color Contrast Preview
+        Expanded(
+          flex: 4,
+          child: VedroAdaptiveSurface(
+            padding: const EdgeInsets.all(10),
+            borderRadius: r,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.text_fields_rounded, size: 12, color: s.accent),
+                    const SizedBox(width: 4),
+                    Text('字体与对比度', style: TextStyle(color: s.fg2, fontSize: 10.5, fontWeight: FontWeight.w700)),
+                  ],
+                ),
+                Text(
+                  s.editorialSerif ? '画报衬线标题 Aa' : '现代无衬线标题 Aa',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: s.applyHeadlineMood(
+                    TextStyle(color: s.fg, fontSize: 14.5, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                Text(
+                  '正文阅读舒适度与主次文字对比层级预览。',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: s.fg2, fontSize: 10.5, height: 1.35),
+                ),
+                Text(
+                  '02:46:18 · 61.2 Mbps',
+                  style: TextStyle(
+                    color: s.fg3,
+                    fontSize: 10,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTypographyPreview(VedroSkin s, String heroTitle) {
+    final r = s.cardRadius.clamp(6.0, 18.0);
+    final subFont = widget.appState.prefs.subtitleFontFamily;
+    final subFamily = subFont.isEmpty ? null : subFont;
+    return VedroAdaptiveSurface(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      borderRadius: r,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Flexible(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
+                  decoration: BoxDecoration(
+                    color: s.accent.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    s.editorialSerif ? '当前标题风格：Editorial Serif 电影画报衬线' : '当前标题风格：Modern Sans 现代几何无衬线',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: s.accent, fontSize: 10.5, fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '字幕字体：${subFont.isEmpty ? '系统默认' : subFont}',
+                style: TextStyle(color: s.fg3, fontSize: 10.5),
+              ),
+            ],
+          ),
+          Text(
+            '沙丘 2 · Dune: Part Two',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: s.applyHeadlineMood(
+              TextStyle(
+                color: s.fg,
+                fontSize: 21,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.4,
+              ),
+            ),
+          ),
+          Text(
+            '保罗·厄崔迪与弗雷曼人汇合后展开复仇，在挚爱与已知宇宙命运之间做出抉择。',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: s.fg2, fontSize: 12, height: 1.4),
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '4K UHD · Dolby Vision · 61.2 Mbps · 02:46:08',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: s.fg3,
+                    fontSize: 11,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xDD0B0E18),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  '字幕样张：不要温顺地走进那个良夜',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontFamily: subFamily,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildDetailPreview(VedroSkin s, String heroTitle) {
     final isCentered = s.detailLayout == 'centered_editorial';
     final isGlass = s.detailLayout == 'jellyfin_glass';
@@ -1574,7 +2065,7 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
       children: [
         // Hero Card (harmonized with `VedroAdaptiveSurface`!)
         Container(
-          padding: EdgeInsets.all(isGlass ? 11 : 4),
+          padding: EdgeInsets.all(isGlass ? 7 : 3),
           decoration: isGlass
               ? BoxDecoration(
                   color: s.unifiedPanelColor,
@@ -1586,8 +2077,8 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
             mainAxisAlignment: isCentered ? MainAxisAlignment.center : MainAxisAlignment.start,
             children: [
               Container(
-                width: 46,
-                height: 66,
+                width: 40,
+                height: 56,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(r * 0.55),
                   border: s.cardBorder(),
@@ -1595,7 +2086,7 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
                 clipBehavior: Clip.antiAlias,
                 child: GeneratedArt(seed: '$heroTitle-cov'),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 10),
               Flexible(
                 child: Column(
                   crossAxisAlignment:
@@ -1606,10 +2097,10 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: s.applyHeadlineMood(
-                        TextStyle(color: s.fg, fontSize: 15, fontWeight: FontWeight.w800),
+                        TextStyle(color: s.fg, fontSize: 14.5, fontWeight: FontWeight.w800),
                       ),
                     ),
-                    const SizedBox(height: 3),
+                    const SizedBox(height: 2),
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1631,119 +2122,129 @@ class _LiveSkinInteractiveStageState extends State<_LiveSkinInteractiveStage> {
             ],
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 7),
 
         // Harmonized Multi-Version & Track Panel Preview (interactive!)
         Expanded(
           child: VedroAdaptiveSurface(
-            padding: const EdgeInsets.all(10),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
             borderRadius: r,
             blurSigma: 18,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    for (var i = 0; i < versions.length; i++)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: GestureDetector(
-                          onTap: () => setState(() => _previewVersionIdx = i),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4.5),
-                            decoration: BoxDecoration(
-                              color: s.unifiedTileColor(selected: _previewVersionIdx == i),
-                              borderRadius: BorderRadius.circular(r * 0.55),
-                              border: s.cardBorder(selected: _previewVersionIdx == i),
-                            ),
-                            child: Text(
-                              '版本 ${i + 1}：${versions[i].$1}',
-                              style: TextStyle(
-                                color: _previewVersionIdx == i ? s.fg : s.fg2,
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    Text('音轨/字幕：', style: TextStyle(color: s.fg3, fontSize: 10.5)),
-                    for (final a in activeV.$2)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: a == activeV.$2.first ? s.activePillBg : s.unifiedTileColor(),
-                          borderRadius: BorderRadius.circular(s.radiusForPill(20)),
-                        ),
-                        child: Text(
-                          a,
-                          style: TextStyle(
-                            color: a == activeV.$2.first ? s.activePillFg : s.fg2,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    for (final sub in activeV.$3)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: s.unifiedTileColor(),
-                          borderRadius: BorderRadius.circular(s.radiusForPill(20)),
-                        ),
-                        child: Text(sub, style: TextStyle(color: s.fg2, fontSize: 10)),
-                      ),
-                  ],
-                ),
-                // Cast style mini-row
-                Row(
-                  children: [
-                    Text('演职员：', style: TextStyle(color: s.fg3, fontSize: 10.5)),
-                    const SizedBox(width: 6),
-                    for (final actor in const ['马修·麦康纳', '安妮·海瑟薇', '杰西卡·查斯坦'])
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: s.unifiedTileColor(),
-                            borderRadius: BorderRadius.circular(
-                              s.castStyle == 'circle_medallion'
-                                  ? 99
-                                  : (s.castStyle == 'portrait_card' ? 6 : 99),
-                            ),
-                            border: s.cardBorder(),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Container(
-                                width: s.castStyle == 'portrait_card' ? 11 : 13,
-                                height: s.castStyle == 'portrait_card' ? 15 : 13,
+            child: SingleChildScrollView(
+              physics: const NeverScrollableScrollPhysics(),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (var i = 0; i < versions.length; i++)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: GestureDetector(
+                              onTap: () => setState(() => _previewVersionIdx = i),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3.5),
                                 decoration: BoxDecoration(
-                                  color: s.accent.withValues(alpha: 0.45),
-                                  borderRadius: BorderRadius.circular(
-                                    s.castStyle == 'portrait_card' ? 3 : 99,
+                                  color: s.unifiedTileColor(selected: _previewVersionIdx == i),
+                                  borderRadius: BorderRadius.circular(r * 0.55),
+                                  border: s.cardBorder(selected: _previewVersionIdx == i),
+                                ),
+                                child: Text(
+                                  '版本 ${i + 1}：${versions[i].$1}',
+                                  style: TextStyle(
+                                    color: _previewVersionIdx == i ? s.fg : s.fg2,
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 5),
-                              Text(actor, style: TextStyle(color: s.fg, fontSize: 10)),
-                            ],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Text('音轨/字幕：', style: TextStyle(color: s.fg3, fontSize: 10)),
+                      for (final a in activeV.$2)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                          decoration: BoxDecoration(
+                            color: a == activeV.$2.first ? s.activePillBg : s.unifiedTileColor(),
+                            borderRadius: BorderRadius.circular(s.radiusForPill(20)),
+                          ),
+                          child: Text(
+                            a,
+                            style: TextStyle(
+                              color: a == activeV.$2.first ? s.activePillFg : s.fg2,
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
-                      ),
-                  ],
-                ),
-              ],
+                      for (final sub in activeV.$3)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                          decoration: BoxDecoration(
+                            color: s.unifiedTileColor(),
+                            borderRadius: BorderRadius.circular(s.radiusForPill(20)),
+                          ),
+                          child: Text(sub, style: TextStyle(color: s.fg2, fontSize: 9.5)),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  // Cast style mini-row
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        Text('演职员：', style: TextStyle(color: s.fg3, fontSize: 10)),
+                        const SizedBox(width: 6),
+                        for (final actor in const ['马修·麦康纳', '安妮·海瑟薇', '杰西卡·查斯坦'])
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
+                              decoration: BoxDecoration(
+                                color: s.unifiedTileColor(),
+                                borderRadius: BorderRadius.circular(
+                                  s.castStyle == 'circle_medallion'
+                                      ? 99
+                                      : (s.castStyle == 'portrait_card' ? 6 : 99),
+                                ),
+                                border: s.cardBorder(),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: s.castStyle == 'portrait_card' ? 10 : 12,
+                                    height: s.castStyle == 'portrait_card' ? 13 : 12,
+                                    decoration: BoxDecoration(
+                                      color: s.accent.withValues(alpha: 0.45),
+                                      borderRadius: BorderRadius.circular(
+                                        s.castStyle == 'portrait_card' ? 3 : 99,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Text(actor, style: TextStyle(color: s.fg, fontSize: 9.5)),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),

@@ -790,7 +790,7 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     fg3: Color(0xFF7C8698),
     accent: Color(0xFF0066FF),
     accentSecondary: Color(0xFF3B82F6),
-    ctaStyle: 'contrast',
+    ctaStyle: 'accent',
     frameStyle: 'borderless',
     cardRadius: 15.0,
     pillRadius: 999.0,

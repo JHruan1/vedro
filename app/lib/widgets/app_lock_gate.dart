@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/models/preferences.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'vedro_ui.dart';
@@ -125,6 +126,7 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final skin = widget.appState.prefs.activeSkin;
     return Stack(
       children: [
         widget.child,
@@ -133,7 +135,7 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
             child: BackdropFilter(
               filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
               child: Container(
-                color: const Color(0xBB0B0B0D),
+                color: skin.canvas.withValues(alpha: 0.78),
                 child: const Center(child: VedroBrandMark(size: 56)),
               ),
             ),
@@ -154,7 +156,7 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
               child: BackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 34, sigmaY: 34),
                 child: Material(
-                  color: const Color(0xEB0B0B0D),
+                  color: skin.canvas.withValues(alpha: 0.90),
                   child: Center(
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 300),
@@ -163,10 +165,10 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
                         children: [
                           const VedroBrandMark(size: 48),
                           const SizedBox(height: 18),
-                          const Text(
+                          Text(
                             '输入密码解锁 Vedro',
                             style: TextStyle(
-                              color: VedroTheme.fg,
+                              color: skin.fg,
                               fontSize: 17,
                               fontWeight: FontWeight.w600,
                             ),
@@ -183,9 +185,9 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
                                 height: 13,
                                 decoration: BoxDecoration(
                                   shape: BoxShape.circle,
-                                  color: filled ? Colors.white : Colors.transparent,
+                                  color: filled ? skin.fg : Colors.transparent,
                                   border: Border.all(
-                                    color: filled ? Colors.white : const Color(0x55FFFFFF),
+                                    color: filled ? skin.fg : skin.borderStrong,
                                     width: 1.4,
                                   ),
                                 ),
@@ -203,7 +205,7 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
                                 : null,
                           ),
                           const SizedBox(height: 18),
-                          _PinKeypad(onDigit: _pressDigit, onBackspace: _backspace),
+                          _PinKeypad(skin: skin, onDigit: _pressDigit, onBackspace: _backspace),
                         ],
                       ),
                     ),
@@ -218,7 +220,8 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
 }
 
 class _PinKeypad extends StatelessWidget {
-  const _PinKeypad({required this.onDigit, required this.onBackspace});
+  const _PinKeypad({required this.skin, required this.onDigit, required this.onBackspace});
+  final VedroSkin skin;
   final ValueChanged<String> onDigit;
   final VoidCallback onBackspace;
 
@@ -252,20 +255,20 @@ class _PinKeypad extends StatelessWidget {
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: isBack ? Colors.transparent : const Color(0x14FFFFFF),
+                    color: isBack ? Colors.transparent : skin.subtleChipBg,
                     border: isBack
                         ? null
-                        : Border.all(color: const Color(0x1EFFFFFF), width: 0.8),
+                        : Border.all(color: skin.borderStrong, width: 0.8),
                   ),
                   child: isBack
-                      ? const Icon(Icons.backspace_outlined, size: 22, color: VedroTheme.fg2)
+                      ? Icon(Icons.backspace_outlined, size: 22, color: skin.fg2)
                       : Text(
                           key,
-                          style: const TextStyle(
-                            color: VedroTheme.fg,
+                          style: TextStyle(
+                            color: skin.fg,
                             fontSize: 24,
                             fontWeight: FontWeight.w400,
-                            fontFeatures: [FontFeature.tabularFigures()],
+                            fontFeatures: const [FontFeature.tabularFigures()],
                           ),
                         ),
                 ),

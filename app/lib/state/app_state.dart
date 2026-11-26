@@ -1429,19 +1429,58 @@ class VedroAppState extends ChangeNotifier {
     await updatePrefs(prefs.copyWith(customFontPaths: next));
   }
 
-  /// Translate text (movie overview / subtitle line) through Rust OpenAI-compatible proxy.
+  /// Translate text (movie overview / subtitle line) through client-side Rust engine.
+  /// Never touches the user's EmbyGo server; defaults to direct client IP (`no_proxy`) for Bilibili!
   Future<String> translateText(String text, {String? targetLang}) async {
     if (!prefs.isAiReady) {
       throw Exception('请先在「设置 → AI 服务（翻译）」中启用并配置接口');
     }
+    final baseUrl = prefs.aiBaseUrl.trim();
+    final isBili = baseUrl.toLowerCase().contains('index-translate.bilibili.com');
     final res = await core.invoke('ai_translate', {
-      'base_url': prefs.aiBaseUrl.trim(),
+      'base_url': baseUrl,
       'api_key': prefs.aiApiKey.trim(),
       'model': prefs.aiModel.trim(),
       'text': text,
       'target_lang': targetLang ?? prefs.aiTargetLang,
+      'direct_ip': prefs.aiDirectClientIp || isBili,
     }) as Map<String, dynamic>;
     return (res['translated'] ?? '').toString();
+  }
+
+  /// Configure Vedro's zero-VPN app-internal proxy (`off` | `custom` | `singbox` | `mihomo`).
+  Future<Map<String, dynamic>> configureInAppProxy({
+    required String mode,
+    String proxyUrl = '',
+    String binaryPath = '',
+    String configText = '',
+  }) async {
+    final res = await core.invoke('configure_in_app_proxy', {
+      'mode': mode,
+      'proxy_url': proxyUrl,
+      'binary_path': binaryPath,
+      'config_text': configText,
+    }) as Map<String, dynamic>;
+    await updatePrefs(prefs.copyWith(
+      inAppProxyMode: mode,
+      inAppProxyUrl: proxyUrl,
+      inAppProxyCorePath: binaryPath,
+      inAppProxyConfigText: configText,
+    ));
+    return res;
+  }
+
+  Future<Map<String, dynamic>> getInAppProxyStatus() async {
+    final res = await core.invoke('in_app_proxy_status', const {});
+    return res is Map<String, dynamic> ? res : <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> testInAppProxy({String? proxyUrl, String? testUrl}) async {
+    final res = await core.invoke('test_in_app_proxy', {
+      if (proxyUrl != null && proxyUrl.trim().isNotEmpty) 'proxy_url': proxyUrl.trim(),
+      if (testUrl != null && testUrl.trim().isNotEmpty) 'test_url': testUrl.trim(),
+    }) as Map<String, dynamic>;
+    return res;
   }
 
   Future<void> adminEndSession(String sessionId) async {

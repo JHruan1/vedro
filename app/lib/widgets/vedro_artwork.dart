@@ -4,27 +4,37 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
-import '../core/theme/vedro_theme.dart';
+import '../core/theme/vedro_skin.dart';
 import '../state/app_state.dart';
 
 /// Deterministic, low-chroma two-tone field with clean display initials
-/// for any media item without artwork (mirrors embygo Web's `GeneratedArt`).
+/// for any media item without artwork (adapts seamlessly to both Light & Dark skins!).
 class GeneratedArt extends StatelessWidget {
   const GeneratedArt({
     super.key,
     required this.seed,
     this.label,
+    this.forceDark = false,
   });
 
   final String seed;
   final String? label;
+  final bool forceDark;
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final isLight = skin.isLight && !forceDark;
     final (h1, h2) = deterministicHues(seed);
-    final c1 = HSLColor.fromAHSL(1.0, h1, 0.28, 0.20).toColor();
-    final c2 = HSLColor.fromAHSL(1.0, h2, 0.24, 0.09).toColor();
-    final glow = HSLColor.fromAHSL(0.38, h1, 0.45, 0.34).toColor();
+    final c1 = isLight
+        ? HSLColor.fromAHSL(1.0, h1, 0.30, 0.90).toColor()
+        : HSLColor.fromAHSL(1.0, h1, 0.28, 0.20).toColor();
+    final c2 = isLight
+        ? HSLColor.fromAHSL(1.0, h2, 0.22, 0.83).toColor()
+        : HSLColor.fromAHSL(1.0, h2, 0.24, 0.09).toColor();
+    final glow = isLight
+        ? HSLColor.fromAHSL(0.36, h1, 0.44, 0.76).toColor()
+        : HSLColor.fromAHSL(0.38, h1, 0.45, 0.34).toColor();
     final text = label == null ? '' : artworkInitials(label);
 
     return DecoratedBox(
@@ -61,7 +71,9 @@ class GeneratedArt extends StatelessWidget {
                       overflow: TextOverflow.fade,
                       softWrap: false,
                       style: TextStyle(
-                        color: const Color(0x78FFFFFF),
+                        color: isLight
+                            ? HSLColor.fromAHSL(0.55, h1, 0.28, 0.28).toColor()
+                            : const Color(0x78FFFFFF),
                         fontSize: fontSize,
                         fontWeight: FontWeight.w600,
                         letterSpacing: -0.5,
@@ -305,6 +317,7 @@ class _VedroShimmerState extends State<VedroShimmer> with SingleTickerProviderSt
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final box = AnimatedBuilder(
       animation: _ctrl,
       builder: (_, __) {
@@ -318,10 +331,10 @@ class _VedroShimmerState extends State<VedroShimmer> with SingleTickerProviderSt
             gradient: LinearGradient(
               begin: Alignment(slide - 0.8, -0.3),
               end: Alignment(slide + 0.8, 0.3),
-              colors: const [
-                VedroTheme.surface,
-                VedroTheme.surface2,
-                VedroTheme.surface,
+              colors: [
+                skin.surface,
+                skin.surface2,
+                skin.surface,
               ],
             ),
           ),
@@ -340,6 +353,7 @@ class HeroSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final screenH = MediaQuery.sizeOf(context).height;
     final heroH = (screenH * 0.66).clamp(420.0, 680.0);
     return SizedBox(
@@ -349,12 +363,12 @@ class HeroSkeleton extends StatelessWidget {
         children: [
           const VedroShimmer(borderRadius: 0),
           Container(
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                stops: [0.35, 1.0],
-                colors: [Colors.transparent, VedroTheme.canvas],
+                stops: const [0.35, 1.0],
+                colors: [Colors.transparent, skin.canvas],
               ),
             ),
           ),

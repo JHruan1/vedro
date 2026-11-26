@@ -31,6 +31,8 @@ class _MockVedroCore implements VedroCoreClient {
   final bool enableContentDownloading;
   final Map<String, dynamic>? meQuotaJson;
   int probeMediaSourceCalls = 0;
+  Map<String, dynamic>? lastAiTranslateParams;
+  Map<String, dynamic>? lastProxyConfigParams;
 
   @override
   String get coreVersion => '0.2.2-test';
@@ -522,6 +524,35 @@ class _MockVedroCore implements VedroCoreClient {
           }
         }
         return <String, dynamic>{};
+      case 'in_app_proxy_status':
+        return <String, dynamic>{
+          'active': lastProxyConfigParams != null && lastProxyConfigParams!['mode'] != 'off',
+          'mode': lastProxyConfigParams?['mode'] ?? 'off',
+          'proxy_url': lastProxyConfigParams?['proxy_url'],
+          'managed_core': false,
+        };
+      case 'configure_in_app_proxy':
+        lastProxyConfigParams = Map<String, dynamic>.from(params);
+        return <String, dynamic>{
+          'ok': true,
+          'active': params['mode'] != 'off',
+          'mode': params['mode'] ?? 'off',
+          'proxy_url': params['proxy_url'],
+          'managed_core': params['mode'] == 'singbox' || params['mode'] == 'mihomo',
+        };
+      case 'test_in_app_proxy':
+        return <String, dynamic>{
+          'ok': true,
+          'status': 204,
+          'latency_ms': 42,
+          'proxy_url': lastProxyConfigParams?['proxy_url'] ?? 'socks5h://127.0.0.1:1080',
+        };
+      case 'ai_translate':
+        lastAiTranslateParams = Map<String, dynamic>.from(params);
+        return <String, dynamic>{
+          'translated': '【B站客户端直连翻译】${params['text']}',
+          'direct_ip': params['direct_ip'] == true,
+        };
       default:
         return <String, dynamic>{};
     }
@@ -1151,7 +1182,7 @@ void main() {
   });
 
   testWidgets(
-      '5-version Movie & Series enforce strict single-selection (never multi-select) and surface visible Audio/Subtitle panel even when unprobed',
+      '5-version Movie & Series enforce strict single-selection and keep DetailScreen free of global preferred-language clutter',
       (tester) async {
     tester.view.physicalSize = const Size(1280, 1100);
     tester.view.devicePixelRatio = 1.0;
@@ -1178,11 +1209,14 @@ void main() {
     // Strictly ONE active version badge initially!
     expect(find.text('当前'), findsOneWidget);
 
-    // Always-visible Audio & Subtitle control bar even when MediaStreams is empty (embygo unprobed)
+    // DetailScreen NEVER shows global preferred audio/subtitle rows ("首选配音" / "首选字幕" live in Settings!)
+    expect(find.text('首选配音'), findsNothing);
+    expect(find.text('首选字幕'), findsNothing);
+
+    // Unplayed Movie shows compact passive notice + "+ 本地字幕" button without cloud probing
     expect(find.byKey(const ValueKey('detail-audio-subtitle-panel')), findsOneWidget);
     expect(find.byKey(const ValueKey('detail-mount-local-sub-btn')), findsOneWidget);
-    expect(find.text('音轨与字幕'), findsOneWidget);
-    expect(find.text('关闭字幕'), findsOneWidget);
+    expect(find.textContaining('网盘尚未缓存该版本内封轨道'), findsOneWidget);
 
     // Tap through versions #2, #3, #4, #5 — strictly ONE '当前' badge at every single step!
     for (final idx in [1, 2, 3, 4, 0]) {
@@ -1192,26 +1226,6 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('当前'), findsOneWidget);
     }
-
-    // Tap '繁体中文' & '关闭字幕' on unprobed Movie DetailScreen -> follows EACH version independently!
-    await tester.ensureVisible(find.text('繁体中文'));
-    await tester.tap(find.text('繁体中文'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('preplay-sub-zh-Hant-on')), findsOneWidget);
-
-    // Switch to version #2 -> resets to version #2's independent default ('zh'), then switch back -> restores 'zh-Hant'!
-    await tester.tap(find.byKey(const ValueKey('movie-version-card-1')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('preplay-sub-zh-on')), findsOneWidget);
-    expect(find.byKey(const ValueKey('preplay-sub-zh-Hant-on')), findsNothing);
-
-    await tester.tap(find.byKey(const ValueKey('movie-version-card-0')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('preplay-sub-zh-Hant-on')), findsOneWidget);
-
-    await tester.tap(find.text('关闭字幕'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('preplay-sub-off-on')), findsOneWidget);
 
     // 2. 5-version Series with colliding Name="S01E01" & empty Id="" & empty MediaStreams=[]
     await tester.pumpWidget(MaterialApp(
@@ -1227,9 +1241,10 @@ void main() {
     expect(find.byKey(const ValueKey('detail-version-selector')), findsOneWidget);
     expect(find.text('选择剧集片源版本 (5)'), findsOneWidget);
     expect(find.text('当前'), findsOneWidget);
-    // Series also surfaces Audio & Subtitle panel directly on DetailScreen!
-    expect(find.byKey(const ValueKey('detail-audio-subtitle-panel')), findsOneWidget);
-    expect(find.byKey(const ValueKey('detail-mount-local-sub-btn')), findsOneWidget);
+    // Unplayed Series hides empty Audio/Subtitle box completely and never shows preferred language clutter!
+    expect(find.byKey(const ValueKey('detail-audio-subtitle-panel')), findsNothing);
+    expect(find.text('首选配音'), findsNothing);
+    expect(find.text('首选字幕'), findsNothing);
 
     for (final idx in [1, 2, 3, 4, 2]) {
       final card = find.byKey(ValueKey('series-version-card-$idx'));
@@ -1364,6 +1379,98 @@ void main() {
     await tester.pumpAndSettle();
     expect(app.prefs.activeSkin.cardStyle, equals('overlay_poster'));
     expect(find.byKey(const ValueKey('skin-studio-pane')), findsOneWidget);
+
+    // Smart context-aware preview auto-switches scene to match what changed:
+    // - Tapping editorial_serif ('serif') -> switches to Typography scene!
+    await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-serif')));
+    await tester.tap(find.byKey(const ValueKey('skin-mod-serif')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('当前标题风格：Editorial Serif'), findsOneWidget);
+
+    // - Tapping detail_layout ('centered_editorial') -> switches to Detail scene!
+    await tester.ensureVisible(find.byKey(const ValueKey('skin-mod-centered_editorial')));
+    await tester.tap(find.byKey(const ValueKey('skin-mod-centered_editorial')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('版本 1：4K DoVi'), findsOneWidget);
+
+    // - Tapping a full preset ('daylight') -> switches to 3-column Theme Overview scene!
+    await tester.ensureVisible(find.byKey(const ValueKey('skin-preset-daylight')));
+    await tester.tap(find.byKey(const ValueKey('skin-preset-daylight')));
+    await tester.pumpAndSettle();
+    expect(find.text('主页与海报卡'), findsOneWidget);
+    expect(find.text('详情构图与材质'), findsOneWidget);
+    expect(find.text('字体与对比度'), findsOneWidget);
+  });
+
+  testWidgets(
+      'Settings hosts Global Audio/Subtitle preferences, Font live preview, Bilibili client-direct AI translation & Zero-VPN In-App Proxy',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 960);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final mock = _MockVedroCore();
+    final app = VedroAppState(mock);
+
+    // 1. Default AI translation uses Bilibili Index-Translate keyless with direct client IP!
+    expect(app.prefs.aiBaseUrl, equals('https://index-translate.bilibili.com/v1'));
+    expect(app.prefs.aiModel, equals('Index-Translate-35B-A3B'));
+    expect(app.prefs.aiDirectClientIp, isTrue);
+    expect(app.prefs.aiApiKey, isEmpty);
+
+    await app.updatePrefs(app.prefs.copyWith(aiEnabled: true));
+    expect(app.prefs.isAiReady, isTrue);
+    final translated = await app.translateText('Do not go gentle into that good night.');
+    expect(translated, contains('B站客户端直连翻译'));
+    expect(mock.lastAiTranslateParams?['direct_ip'], isTrue);
+    expect(mock.lastAiTranslateParams?['base_url'], equals('https://index-translate.bilibili.com/v1'));
+
+    await tester.pumpWidget(
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) => MaterialApp(
+          theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+          home: SettingsScreen(
+            appState: app,
+            onOpenServerHub: () {},
+            onOpenAddServer: ([_]) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 2. Settings -> 播放设置 prominently hosts Global Preferred Audio & Subtitle Languages
+    await tester.tap(find.text('播放设置'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings-global-audio-sub-card')), findsOneWidget);
+    expect(find.text('首选音轨语言'), findsOneWidget);
+    expect(find.text('首选字幕语言'), findsOneWidget);
+
+    // 3. Settings -> 字体管理 shows live Font & Cinema Subtitle preview card
+    await tester.tap(find.text('字体管理'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('font-live-preview-card')), findsOneWidget);
+    expect(find.text('不要温顺地走进那个良夜'), findsOneWidget);
+
+    // 4. Settings -> 应用内代理 configures Zero-VPN local proxy without occupying OS VPN
+    await tester.drag(find.byType(ListView).first, const Offset(0, -340));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('应用内代理'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('零系统 VPN 占用'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('proxy-mode-singbox')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.inAppProxyMode, equals('singbox'));
+    await tester.tap(find.byKey(const ValueKey('proxy-mode-custom')));
+    await tester.pumpAndSettle();
+    expect(app.prefs.inAppProxyMode, equals('custom'));
+
+    // 5. Settings -> AI 服务（翻译） provides 1-click Bilibili Index-Translate preset
+    await tester.tap(find.text('AI 服务（翻译）'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('ai-preset-bilibili')), findsOneWidget);
+    expect(find.textContaining('本机 IP 直连'), findsWidgets);
   });
 
   testWidgets('Audio & Subtitle tracks follow selected video version passively with ZERO cloud-drive API probes',
@@ -1431,6 +1538,18 @@ void main() {
         ],
       }) as Map<String, dynamic>;
       expect(savedTracks['saved'], isTrue);
+      final proxyStatus = await bridge.invoke('in_app_proxy_status') as Map<String, dynamic>;
+      expect(proxyStatus['active'], isFalse);
+      final setCustomProxy = await bridge.invoke('configure_in_app_proxy', {
+        'mode': 'custom',
+        'proxy_url': 'socks5h://127.0.0.1:10808',
+      }) as Map<String, dynamic>;
+      expect(setCustomProxy['ok'], isTrue);
+      expect(setCustomProxy['active'], isTrue);
+      final resetProxy = await bridge.invoke('configure_in_app_proxy', {
+        'mode': 'off',
+      }) as Map<String, dynamic>;
+      expect(resetProxy['active'], isFalse);
     } finally {
       bridge.dispose();
     }

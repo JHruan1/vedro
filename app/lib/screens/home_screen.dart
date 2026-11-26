@@ -854,8 +854,11 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
   }
 
   Widget _buildMobileTopBar() {
+    final skin = VedroSkin.of(context);
     final serverName = widget.appState.activeServerDisplayName;
     final routeName = widget.appState.activeRouteDisplayName;
+    final pillBg = skin.isLight ? const Color(0xCCFFFFFF) : const Color(0x58141417);
+    final pillFg = skin.isLight ? skin.fg : Colors.white;
     return SafeArea(
       bottom: false,
       child: Padding(
@@ -867,8 +870,8 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               child: GlassSurface(
                 borderRadius: 18,
                 blur: 18,
-                color: const Color(0x58141417),
-                borderColor: Colors.transparent,
+                color: pillBg,
+                borderColor: skin.isLight ? skin.border : Colors.transparent,
                 padding: const EdgeInsets.fromLTRB(6, 5, 10, 5),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -881,18 +884,18 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                         routeName != null ? '$serverName · $routeName' : serverName,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: pillFg,
                           fontSize: 13.5,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
                     const SizedBox(width: 3),
-                    const Icon(
+                    Icon(
                       Icons.keyboard_arrow_down_rounded,
                       size: 16,
-                      color: Color(0xCCFFFFFF),
+                      color: skin.isLight ? skin.fg2 : const Color(0xCCFFFFFF),
                     ),
                   ],
                 ),
@@ -905,10 +908,10 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 child: GlassSurface(
                   borderRadius: 18,
                   blur: 18,
-                  color: const Color(0x52141417),
-                  borderColor: Colors.transparent,
+                  color: pillBg,
+                  borderColor: skin.isLight ? skin.border : Colors.transparent,
                   padding: const EdgeInsets.all(8),
-                  child: const Icon(Icons.favorite_border_rounded, size: 17, color: Colors.white),
+                  child: Icon(Icons.favorite_border_rounded, size: 17, color: pillFg),
                 ),
               ),
               const SizedBox(width: 8),
@@ -918,10 +921,10 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               child: GlassSurface(
                 borderRadius: 18,
                 blur: 18,
-                color: const Color(0x52141417),
-                borderColor: Colors.transparent,
+                color: pillBg,
+                borderColor: skin.isLight ? skin.border : Colors.transparent,
                 padding: const EdgeInsets.all(8),
-                child: const Icon(Icons.refresh_rounded, size: 17, color: Colors.white),
+                child: Icon(Icons.refresh_rounded, size: 17, color: pillFg),
               ),
             ),
           ],
@@ -1008,14 +1011,25 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                     style: TextStyle(color: textSecondary, fontSize: 13.5),
                   ),
                 if (item.communityRating != null)
-                  Text(
-                    '★ ${item.communityRating!.toStringAsFixed(1)}',
-                    style: TextStyle(
-                      color: onPhoto ? const Color(0xF2FFFFFF) : const Color(0xFFD97706),
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w700,
-                      fontFeatures: const [FontFeature.tabularFigures()],
-                    ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.star_rounded,
+                        size: 15,
+                        color: onPhoto ? const Color(0xFFFBBF24) : const Color(0xFFD97706),
+                      ),
+                      const SizedBox(width: 2.5),
+                      Text(
+                        item.communityRating!.toStringAsFixed(1),
+                        style: TextStyle(
+                          color: onPhoto ? const Color(0xF2FFFFFF) : const Color(0xFFD97706),
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ],
                   ),
                 if (item.productionYear != null)
                   Text(
@@ -1320,23 +1334,43 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                           showInitials: false,
                         ),
                       ),
-                    const DecoratedBox(
+                    DecoratedBox(
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
                           begin: Alignment.centerLeft,
                           end: Alignment.centerRight,
-                          stops: [0.0, 0.55, 1.0],
-                          colors: [Color(0xD808090E), Color(0x6E08090E), Color(0x1808090E)],
+                          stops: const [0.0, 0.55, 1.0],
+                          colors: skin.isLight
+                              ? [
+                                  skin.surface.withValues(alpha: 0.94),
+                                  skin.surface.withValues(alpha: 0.58),
+                                  skin.surface.withValues(alpha: 0.06),
+                                ]
+                              : const [
+                                  Color(0xD808090E),
+                                  Color(0x6E08090E),
+                                  Color(0x1808090E),
+                                ],
                         ),
                       ),
                     ),
-                    const DecoratedBox(
+                    DecoratedBox(
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
                           begin: Alignment.topCenter,
                           end: Alignment.bottomCenter,
-                          stops: [0.0, 0.45, 1.0],
-                          colors: [Color(0x2808090E), Color(0x3808090E), Color(0xDE08090E)],
+                          stops: const [0.0, 0.45, 1.0],
+                          colors: skin.isLight
+                              ? [
+                                  skin.surface.withValues(alpha: 0.08),
+                                  skin.surface.withValues(alpha: 0.24),
+                                  skin.surface.withValues(alpha: 0.90),
+                                ]
+                              : const [
+                                  Color(0x2808090E),
+                                  Color(0x3808090E),
+                                  Color(0xDE08090E),
+                                ],
                         ),
                       ),
                     ),
@@ -1351,7 +1385,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                         eyebrow: current.eyebrow,
                         logoUrl: logoUrl,
                         wide: wide,
-                        onPhoto: true,
+                        onPhoto: !skin.isLight,
                       ),
                     ),
                     if (widget.featured.length > 1)
@@ -1360,8 +1394,8 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                         left: wide ? null : 20,
                         bottom: wide ? 26 : 12,
                         child: wide
-                            ? _buildBorderlessPreviewStrip(skin)
-                            : _buildCapsuleDots(skin: skin),
+                            ? _buildBorderlessPreviewStrip(skin, onLightSurface: skin.isLight)
+                            : _buildCapsuleDots(skin: skin, onLightSurface: skin.isLight),
                       ),
                   ],
                 ),
@@ -1436,18 +1470,25 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
             ),
 
             if (wide)
-              const DecoratedBox(
+              DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.centerLeft,
                     end: Alignment.centerRight,
-                    stops: [0.0, 0.48, 0.82, 1.0],
-                    colors: [
-                      Color(0xDC0B0B0D),
-                      Color(0x780B0B0D),
-                      Color(0x140B0B0D),
-                      Colors.transparent,
-                    ],
+                    stops: const [0.0, 0.48, 0.82, 1.0],
+                    colors: skin.isLight
+                        ? [
+                            canvasColor.withValues(alpha: 0.92),
+                            canvasColor.withValues(alpha: 0.62),
+                            canvasColor.withValues(alpha: 0.14),
+                            Colors.transparent,
+                          ]
+                        : const [
+                            Color(0xDC0B0B0D),
+                            Color(0x780B0B0D),
+                            Color(0x140B0B0D),
+                            Colors.transparent,
+                          ],
                   ),
                 ),
               ),
@@ -1458,20 +1499,29 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                   stops: const [0.0, 0.24, 0.56, 0.84, 0.95, 1.0],
-                  colors: [
-                    const Color(0x660B0B0D),
-                    Colors.transparent,
-                    const Color(0x5E0B0B0D),
-                    Color.lerp(const Color(0xD80B0B0D), canvasColor, 0.55)!,
-                    canvasColor,
-                    canvasColor,
-                  ],
+                  colors: skin.isLight
+                      ? [
+                          canvasColor.withValues(alpha: 0.42),
+                          Colors.transparent,
+                          canvasColor.withValues(alpha: 0.46),
+                          canvasColor.withValues(alpha: 0.88),
+                          canvasColor,
+                          canvasColor,
+                        ]
+                      : [
+                          const Color(0x660B0B0D),
+                          Colors.transparent,
+                          const Color(0x5E0B0B0D),
+                          Color.lerp(const Color(0xD80B0B0D), canvasColor, 0.55)!,
+                          canvasColor,
+                          canvasColor,
+                        ],
                 ),
               ),
             ),
 
             // Subpixel anti-bleed bottom seal eliminating 1px rasterization seam on scroll!
-            if (!skin.usesBlurredFanart)
+            if (skin.backdropMode == 'solid')
               Positioned(
                 left: 0,
                 right: 0,
@@ -1499,7 +1549,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 eyebrow: current.eyebrow,
                 logoUrl: logoUrl,
                 wide: wide,
-                onPhoto: true,
+                onPhoto: !skin.isLight,
               ),
             ),
 
@@ -1518,10 +1568,14 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                       child: GlassSurface(
                         borderRadius: 20,
                         blur: 18,
-                        color: const Color(0x66141418),
-                        borderColor: Colors.transparent,
+                        color: skin.isLight ? const Color(0xCCFFFFFF) : const Color(0x66141418),
+                        borderColor: skin.isLight ? skin.border : Colors.transparent,
                         padding: const EdgeInsets.all(8),
-                        child: const Icon(Icons.chevron_left_rounded, size: 22, color: Colors.white),
+                        child: Icon(
+                          Icons.chevron_left_rounded,
+                          size: 22,
+                          color: skin.isLight ? skin.fg : Colors.white,
+                        ),
                       ),
                     ),
                   ),
@@ -1540,10 +1594,14 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                       child: GlassSurface(
                         borderRadius: 20,
                         blur: 18,
-                        color: const Color(0x66141418),
-                        borderColor: Colors.transparent,
+                        color: skin.isLight ? const Color(0xCCFFFFFF) : const Color(0x66141418),
+                        borderColor: skin.isLight ? skin.border : Colors.transparent,
                         padding: const EdgeInsets.all(8),
-                        child: const Icon(Icons.chevron_right_rounded, size: 22, color: Colors.white),
+                        child: Icon(
+                          Icons.chevron_right_rounded,
+                          size: 22,
+                          color: skin.isLight ? skin.fg : Colors.white,
+                        ),
                       ),
                     ),
                   ),
@@ -1557,7 +1615,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 left: wide ? null : padX,
                 bottom: wide ? 40 : 16,
                 child: wide
-                    ? _buildBorderlessPreviewStrip(skin)
+                    ? _buildBorderlessPreviewStrip(skin, onLightSurface: skin.isLight)
                     : _buildCapsuleDots(skin: skin),
               ),
           ],

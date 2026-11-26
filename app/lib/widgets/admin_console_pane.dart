@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'vedro_ui.dart';
@@ -117,6 +118,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
       return const SizedBox.shrink();
     }
 
+    final skin = VedroSkin.of(context);
     final data = widget.appState.embygoAdminDashboard;
     final status = data?['status'] as Map<String, dynamic>?;
     final sessions = _extractList(data?['sessions']);
@@ -131,13 +133,9 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
         Container(
           padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xFF171A24), Color(0xFF12131A)],
-            ),
+            color: skin.surface,
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: const Color(0x22FFFFFF), width: 0.9),
+            border: skin.cardBorder(),
           ),
           child: Row(
             children: [
@@ -149,7 +147,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                   borderRadius: BorderRadius.circular(13),
                   border: Border.all(color: const Color(0x45F59E0B), width: 0.8),
                 ),
-                child: const Icon(Icons.admin_panel_settings_rounded, size: 22, color: Color(0xFFFBBF24)),
+                child: const Icon(Icons.admin_panel_settings_rounded, size: 22, color: Color(0xFFD97706)),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -163,8 +161,8 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                             widget.appState.activeServerDisplayName,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
+                            style: TextStyle(
+                              color: skin.fg,
                               fontSize: 17,
                               fontWeight: FontWeight.w600,
                               letterSpacing: -0.3,
@@ -239,10 +237,10 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
         const SizedBox(height: 18),
 
         if (data == null)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 48),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 48),
             child: Center(
-              child: CircularProgressIndicator(strokeWidth: 2, color: VedroTheme.fg2),
+              child: CircularProgressIndicator(strokeWidth: 2, color: VedroSkin.of(context).fg2),
             ),
           )
         else
@@ -328,6 +326,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                   if (status['built_at'] != null)
                     ('构建时间', status['built_at'].toString().split('T').first),
                 ];
+                final skin = VedroSkin.of(context);
                 return Wrap(
                   spacing: gap,
                   runSpacing: 12,
@@ -337,15 +336,15 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(f.$1, style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5)),
+                          Text(f.$1, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
                           const SizedBox(height: 3),
                           Text(
                             f.$2,
-                            style: const TextStyle(
-                              color: VedroTheme.fg,
+                            style: TextStyle(
+                              color: skin.fg,
                               fontSize: 14,
                               fontWeight: FontWeight.w500,
-                              fontFeatures: [FontFeature.tabularFigures()],
+                              fontFeatures: const [FontFeature.tabularFigures()],
                             ),
                           ),
                         ],
@@ -378,6 +377,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
   }
 
   Widget _buildLibraryRow(Map<String, dynamic> lib) {
+    final skin = VedroSkin.of(context);
     final id = (lib['ItemId'] ?? lib['Id'] ?? '').toString();
     final name = (lib['Name'] ?? '未命名').toString();
     final ctype = (lib['CollectionType'] ?? '').toString();
@@ -413,7 +413,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                       name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: VedroTheme.fg, fontSize: 14, fontWeight: FontWeight.w600),
+                      style: TextStyle(color: skin.fg, fontSize: 14, fontWeight: FontWeight.w600),
                     ),
                   ),
                   if (ctype.isNotEmpty) ...[
@@ -428,8 +428,8 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                   locations.join(' · '),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: VedroTheme.fg3,
+                  style: TextStyle(
+                    color: skin.fg3,
                     fontSize: 11.5,
                     fontFamily: 'monospace',
                   ),
@@ -440,7 +440,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
         ),
         if (id.isNotEmpty && widget.appState.capabilities?.isEmbyGo == true) ...[
           const SizedBox(width: 10),
-          const Text('自动封面', style: TextStyle(color: VedroTheme.fg3, fontSize: 12)),
+          Text('自动封面', style: TextStyle(color: skin.fg3, fontSize: 12)),
           const SizedBox(width: 6),
           Transform.scale(
             scale: 0.78,
@@ -489,6 +489,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final isPaused = playState?['IsPaused'] == true;
     final playMethod = playState?['PlayMethod']?.toString() ?? '';
 
+    final skin = VedroSkin.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -498,14 +499,14 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
               width: 36,
               height: 36,
               decoration: BoxDecoration(
-                color: itemTitle != null ? const Color(0x2234D399) : const Color(0x16FFFFFF),
+                color: itemTitle != null ? const Color(0x2234D399) : skin.subtleChipBg,
                 borderRadius: BorderRadius.circular(10),
               ),
               alignment: Alignment.center,
               child: Text(
                 artworkInitials(user),
                 style: TextStyle(
-                  color: itemTitle != null ? const Color(0xFF34D399) : VedroTheme.fg2,
+                  color: itemTitle != null ? const Color(0xFF10B981) : skin.fg2,
                   fontSize: 12.5,
                   fontWeight: FontWeight.w700,
                 ),
@@ -520,7 +521,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                     children: [
                       Text(
                         user,
-                        style: const TextStyle(color: VedroTheme.fg, fontSize: 14, fontWeight: FontWeight.w600),
+                        style: TextStyle(color: skin.fg, fontSize: 14, fontWeight: FontWeight.w600),
                       ),
                       const SizedBox(width: 8),
                       _MetaBadge([client, device].where((e) => e.isNotEmpty).join(' · ')),
@@ -538,7 +539,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      color: itemTitle != null ? const Color(0xFFD6DAE4) : VedroTheme.fg3,
+                      color: itemTitle != null ? skin.fg2 : skin.fg3,
                       fontSize: 12.5,
                     ),
                   ),
@@ -566,7 +567,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                   child: LinearProgressIndicator(
                     value: progress,
                     minHeight: 3.5,
-                    backgroundColor: const Color(0x20FFFFFF),
+                    backgroundColor: skin.borderStrong,
                     color: const Color(0xFF34D399),
                   ),
                 ),
@@ -574,10 +575,10 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
               const SizedBox(width: 10),
               Text(
                 '${(progress * 100).round()}%',
-                style: const TextStyle(
-                  color: VedroTheme.fg3,
+                style: TextStyle(
+                  color: skin.fg3,
                   fontSize: 11.5,
-                  fontFeatures: [FontFeature.tabularFigures()],
+                  fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
             ],
@@ -600,9 +601,9 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
         onTap: _openCreateUserDialog,
       ),
       child: users.isEmpty
-          ? const Padding(
-              padding: EdgeInsets.symmetric(vertical: 16),
-              child: Text('未获取到用户列表', style: TextStyle(color: VedroTheme.fg3, fontSize: 13)),
+          ? Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Text('未获取到用户列表', style: TextStyle(color: VedroSkin.of(context).fg3, fontSize: 13)),
             )
           : Column(
               children: [
@@ -625,20 +626,21 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final isSelf = uid == widget.appState.userId;
     final isEmbyGo = widget.appState.capabilities?.isEmbyGo == true;
 
+    final skin = VedroSkin.of(context);
     return Row(
       children: [
         Container(
           width: 36,
           height: 36,
           decoration: BoxDecoration(
-            color: isAdm ? const Color(0x225B9BFF) : const Color(0x16FFFFFF),
+            color: isAdm ? const Color(0x225B9BFF) : skin.subtleChipBg,
             borderRadius: BorderRadius.circular(10),
           ),
           alignment: Alignment.center,
           child: Text(
             artworkInitials(name),
             style: TextStyle(
-              color: isAdm ? const Color(0xFF5B9BFF) : VedroTheme.fg2,
+              color: isAdm ? const Color(0xFF5B9BFF) : skin.fg2,
               fontSize: 12.5,
               fontWeight: FontWeight.w700,
             ),
@@ -657,7 +659,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                   Text(
                     name,
                     style: TextStyle(
-                      color: isDisabled ? VedroTheme.fg3 : VedroTheme.fg,
+                      color: isDisabled ? skin.fg3 : skin.fg,
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
                     ),
@@ -765,13 +767,14 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final state = (t['State'] ?? t['state'] ?? 'Idle').toString();
     final running = state.toLowerCase() == 'running';
 
+    final skin = VedroSkin.of(context);
     return Row(
       children: [
         Container(
           width: 8,
           height: 8,
           decoration: BoxDecoration(
-            color: running ? const Color(0xFF34D399) : VedroTheme.fg3,
+            color: running ? const Color(0xFF34D399) : skin.fg3,
             shape: BoxShape.circle,
           ),
         ),
@@ -782,14 +785,14 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
             children: [
               Text(
                 name,
-                style: const TextStyle(color: VedroTheme.fg, fontSize: 14, fontWeight: FontWeight.w500),
+                style: TextStyle(color: skin.fg, fontSize: 14, fontWeight: FontWeight.w500),
               ),
               const SizedBox(height: 2),
               Text(
                 running ? '运行中…' : (desc.isNotEmpty ? desc : '空闲 ($state)'),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: VedroTheme.fg3, fontSize: 12),
+                style: TextStyle(color: skin.fg3, fontSize: 12),
               ),
             ],
           ),
@@ -842,6 +845,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
         ? VedroTheme.danger
         : (sev.toLowerCase().contains('warn') ? const Color(0xFFFBBF24) : const Color(0xFF60A5FA));
 
+    final skin = VedroSkin.of(context);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -858,15 +862,15 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(name, style: const TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+              Text(name, style: TextStyle(color: skin.fg, fontSize: 13.5)),
               if (date.isNotEmpty) ...[
                 const SizedBox(height: 2),
                 Text(
                   date,
-                  style: const TextStyle(
-                    color: VedroTheme.fg3,
+                  style: TextStyle(
+                    color: skin.fg3,
                     fontSize: 11.5,
-                    fontFeatures: [FontFeature.tabularFigures()],
+                    fontFeatures: const [FontFeature.tabularFigures()],
                   ),
                 ),
               ],
@@ -896,13 +900,14 @@ class _BentoMetricCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Container(
       width: width,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF13141A),
+        color: skin.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x1DFFFFFF), width: 0.85),
+        border: skin.cardBorder(),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -919,16 +924,16 @@ class _BentoMetricCard extends StatelessWidget {
           const SizedBox(height: 12),
           Text(
             value,
-            style: const TextStyle(
-              color: Colors.white,
+            style: TextStyle(
+              color: skin.fg,
               fontSize: 24,
               fontWeight: FontWeight.w700,
               letterSpacing: -0.5,
-              fontFeatures: [FontFeature.tabularFigures()],
+              fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
           const SizedBox(height: 2),
-          Text(label, style: const TextStyle(color: VedroTheme.fg3, fontSize: 12)),
+          Text(label, style: TextStyle(color: skin.fg3, fontSize: 12)),
         ],
       ),
     );
@@ -950,25 +955,26 @@ class _ConsolePanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: const Color(0xFF13141A),
+        color: skin.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x1DFFFFFF), width: 0.85),
+        border: skin.cardBorder(),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(icon, size: 17, color: VedroTheme.fg2),
+              Icon(icon, size: 17, color: skin.fg2),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   title,
-                  style: const TextStyle(
-                    color: Colors.white,
+                  style: TextStyle(
+                    color: skin.fg,
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                   ),
@@ -977,7 +983,7 @@ class _ConsolePanel extends StatelessWidget {
               if (trailing != null) trailing!,
             ],
           ),
-          const Divider(height: 24),
+          Divider(height: 24, color: skin.border),
           child,
         ],
       ),
@@ -992,18 +998,19 @@ class _EmptyConsoleState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 24),
       decoration: BoxDecoration(
-        color: const Color(0xFF13141A),
+        color: skin.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x1DFFFFFF), width: 0.85),
+        border: skin.cardBorder(),
       ),
       child: Column(
         children: [
-          Icon(icon, size: 28, color: VedroTheme.fg3),
+          Icon(icon, size: 28, color: skin.fg3),
           const SizedBox(height: 10),
-          Text(message, style: const TextStyle(color: VedroTheme.fg3, fontSize: 13.5)),
+          Text(message, style: TextStyle(color: skin.fg3, fontSize: 13.5)),
         ],
       ),
     );
@@ -1037,15 +1044,16 @@ class _MetaBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(
-        color: const Color(0x15FFFFFF),
+        color: skin.subtleChipBg,
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
         text,
-        style: const TextStyle(color: VedroTheme.fg2, fontSize: 11, fontWeight: FontWeight.w500),
+        style: TextStyle(color: skin.fg2, fontSize: 11, fontWeight: FontWeight.w500),
       ),
     );
   }
@@ -1070,7 +1078,9 @@ class _CompactActionBtn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bg = primary ? (accent ?? VedroTheme.accentFill) : const Color(0xFF1D1E26);
+    final skin = VedroSkin.of(context);
+    final bg = primary ? (accent ?? skin.accent) : skin.surface2;
+    final fg = primary ? VedroTheme.highContrastOn(bg) : skin.fg;
     return PressableScale(
       onTap: loading ? null : onTap,
       hoverScale: 1.03,
@@ -1079,26 +1089,26 @@ class _CompactActionBtn extends StatelessWidget {
         height: 32,
         padding: const EdgeInsets.symmetric(horizontal: 11),
         decoration: BoxDecoration(
-          color: onTap == null ? const Color(0xFF1A1B22) : bg,
+          color: onTap == null ? skin.subtleChipBg : bg,
           borderRadius: BorderRadius.circular(9),
-          border: primary ? null : Border.all(color: const Color(0x22FFFFFF), width: 0.7),
+          border: primary ? null : Border.all(color: skin.border, width: 0.7),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (loading)
-              const SizedBox(
+              SizedBox(
                 width: 13,
                 height: 13,
-                child: CircularProgressIndicator(strokeWidth: 1.7, color: Colors.white),
+                child: CircularProgressIndicator(strokeWidth: 1.7, color: fg),
               )
             else
-              Icon(icon, size: 15, color: onTap == null ? VedroTheme.fg3 : Colors.white),
+              Icon(icon, size: 15, color: onTap == null ? skin.fg3 : fg),
             const SizedBox(width: 5),
             Text(
               label,
               style: TextStyle(
-                color: onTap == null ? VedroTheme.fg3 : Colors.white,
+                color: onTap == null ? skin.fg3 : fg,
                 fontSize: 12.5,
                 fontWeight: FontWeight.w500,
               ),
@@ -1249,12 +1259,13 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final dq = _quota;
     return Dialog(
-      backgroundColor: const Color(0xFF151720),
+      backgroundColor: skin.surface2,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
-        side: const BorderSide(color: Color(0x28FFFFFF), width: 0.9),
+        side: BorderSide(color: skin.borderStrong, width: 0.9),
       ),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 520, maxHeight: 680),
@@ -1272,11 +1283,11 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                       '下载权限与流量包 · ${widget.userName}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white, fontSize: 15.5, fontWeight: FontWeight.w600),
+                      style: TextStyle(color: skin.fg, fontSize: 15.5, fontWeight: FontWeight.w600),
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.close_rounded, color: VedroTheme.fg2),
+                    icon: Icon(Icons.close_rounded, color: skin.fg2),
                     onPressed: () => Navigator.pop(context),
                   ),
                 ],
@@ -1285,9 +1296,9 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
             const Divider(height: 1),
             Flexible(
               child: _loading
-                  ? const Padding(
-                      padding: EdgeInsets.all(42),
-                      child: CircularProgressIndicator(strokeWidth: 2, color: VedroTheme.fg2),
+                  ? Padding(
+                      padding: const EdgeInsets.all(42),
+                      child: CircularProgressIndicator(strokeWidth: 2, color: skin.fg2),
                     )
                   : SingleChildScrollView(
                       padding: const EdgeInsets.all(20),
@@ -1302,18 +1313,18 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                                 color: const Color(0x28EF4444),
                                 borderRadius: BorderRadius.circular(10),
                               ),
-                              child: Text(_error!, style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 12.5)),
+                              child: Text(_error!, style: const TextStyle(color: Color(0xFFEF4444), fontSize: 12.5)),
                             ),
                           ],
                           Row(
                             children: [
-                              const Expanded(
+                              Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text('允许原文件下载', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500)),
-                                    SizedBox(height: 2),
-                                    Text('User.Policy.EnableContentDownloading', style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5)),
+                                    Text('允许原文件下载', style: TextStyle(color: skin.fg, fontSize: 14, fontWeight: FontWeight.w500)),
+                                    const SizedBox(height: 2),
+                                    Text('User.Policy.EnableContentDownloading', style: TextStyle(color: skin.fg3, fontSize: 11.5)),
                                   ],
                                 ),
                               ),
@@ -1341,9 +1352,9 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                               ],
                             ),
                             const SizedBox(height: 16),
-                            const Text(
+                            Text(
                               '一次性永久下载流量包（永不过期 · 用完即止）',
-                              style: TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w600),
+                              style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600),
                             ),
                             const SizedBox(height: 8),
                             Wrap(
@@ -1396,9 +1407,9 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                               ],
                             ),
                             const SizedBox(height: 16),
-                            const Text(
+                            Text(
                               '30 天周期免费下载额度覆写',
-                              style: TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w600),
+                              style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600),
                             ),
                             const SizedBox(height: 8),
                             Row(
@@ -1432,9 +1443,9 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                           ],
                           if (_events.isNotEmpty) ...[
                             const Divider(height: 24),
-                            const Text(
+                            Text(
                               '最近下载额度流水',
-                              style: TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.w600),
+                              style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600),
                             ),
                             const SizedBox(height: 8),
                             ..._events.map((ev) {
@@ -1452,12 +1463,12 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                                             '${ev.kindLabel}${ev.note.isNotEmpty ? ' · ${ev.note}' : ''}',
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(color: VedroTheme.fg, fontSize: 12.5),
+                                            style: TextStyle(color: skin.fg, fontSize: 12.5),
                                           ),
                                           if (ev.createdAt.isNotEmpty)
                                             Text(
                                               ev.createdAt.replaceFirst('T', ' ').split('.').first,
-                                              style: const TextStyle(color: VedroTheme.fg3, fontSize: 11),
+                                              style: TextStyle(color: skin.fg3, fontSize: 11),
                                             ),
                                         ],
                                       ),
@@ -1466,7 +1477,7 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                                     Text(
                                       '$sign${fmtQuotaBytes(ev.bytesDelta.abs())}',
                                       style: TextStyle(
-                                        color: positive ? const Color(0xFF34D399) : const Color(0xFFFCA5A5),
+                                        color: positive ? const Color(0xFF10B981) : const Color(0xFFEF4444),
                                         fontSize: 12.5,
                                         fontWeight: FontWeight.w600,
                                         fontFeatures: const [FontFeature.tabularFigures()],

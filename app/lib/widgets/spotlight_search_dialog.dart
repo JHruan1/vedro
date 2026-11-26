@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
 import '../core/theme/vedro_skin.dart';
-import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'vedro_artwork.dart';
 
@@ -243,13 +242,13 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
                               child: Row(
                                 children: [
-                                  Container(
-                                    width: 40,
-                                    height: 58,
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(7),
-                                      border: Border.all(color: VedroTheme.line, width: 0.6),
-                                    ),
+                                    Container(
+                                      width: 40,
+                                      height: 58,
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(7),
+                                        border: Border.all(color: skin.border, width: 0.6),
+                                      ),
                                     clipBehavior: Clip.antiAlias,
                                     child: Stack(
                                       fit: StackFit.expand,
@@ -369,19 +368,20 @@ class _SrvFilterChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: selected ? VedroTheme.fg : const Color(0x14FFFFFF),
+          color: selected ? skin.activePillBg : skin.subtleChipBg,
           borderRadius: BorderRadius.circular(8),
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: selected ? VedroTheme.canvas : VedroTheme.fg2,
+            color: selected ? skin.activePillFg : skin.fg2,
             fontSize: 12,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
           ),

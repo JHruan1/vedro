@@ -898,27 +898,28 @@ class _DetailScreenState extends State<DetailScreen> {
     showGlassSheet<void>(
       context: context,
       builder: (ctx) {
+        final sheetSkin = VedroSkin.of(ctx);
         final lists = widget.appState.playlists;
         return ListView(
           shrinkWrap: true,
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
           children: [
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               child: Text(
                 '加入片单',
-                style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600),
+                style: TextStyle(color: sheetSkin.fg, fontSize: 16, fontWeight: FontWeight.w600),
               ),
             ),
             if (lists.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text('暂无片单，请先在片单页新建', style: TextStyle(color: VedroTheme.fg3, fontSize: 13)),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text('暂无片单，请先在片单页新建', style: TextStyle(color: sheetSkin.fg3, fontSize: 13)),
               )
             else
               ...lists.map((pl) => ListTile(
-                    leading: const Icon(Icons.bookmark_outline_rounded, color: VedroTheme.fg2),
-                    title: Text(pl.name, style: const TextStyle(color: VedroTheme.fg, fontSize: 14)),
+                    leading: Icon(Icons.bookmark_outline_rounded, color: sheetSkin.fg2),
+                    title: Text(pl.name, style: TextStyle(color: sheetSkin.fg, fontSize: 14)),
                     onTap: () async {
                       Navigator.pop(ctx);
                       await widget.appState.core.invoke('add_to_playlist', {
@@ -4271,7 +4272,6 @@ class _TracksPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    final prefs = appState.prefs;
     final safeVerIdx = versions.isEmpty
         ? 0
         : selectedVersionIndex.clamp(0, versions.length - 1);
@@ -4280,27 +4280,17 @@ class _TracksPanel extends StatelessWidget {
     final audios = streamSrc?.audioStreams ?? const <MediaStreamModel>[];
     final subs = streamSrc?.subtitleStreams ?? const <MediaStreamModel>[];
     final passiveTraits = _inferPassiveVersionTraits(streamSrc, activeVer);
-    final effAudioLang = preferredAudioLangOverride ?? prefs.preferredAudioLang;
-    final effSubLang = preferredSubLangOverride ?? prefs.preferredSubLang;
     final extFileName = localExternalSubPath?.trim().isNotEmpty == true
         ? localExternalSubPath!.replaceAll('\\', '/').split('/').last
         : null;
+    final hasAnyRealTracks =
+        audios.isNotEmpty || subs.isNotEmpty || hasKnownEmbeddedStreams || extFileName != null;
 
-    const audioLangOptions = <(String code, String label)>[
-      ('auto', '原声自动'),
-      ('zh', '中文 / 国语'),
-      ('ja', '日语'),
-      ('yue', '粤语'),
-      ('en', '英语'),
-    ];
-
-    const subLangOptions = <(String code, String label)>[
-      ('zh', '简体中文'),
-      ('zh-Hant', '繁体中文'),
-      ('en', '英语 / 双语'),
-      ('ja', '日语'),
-      ('off', '关闭字幕'),
-    ];
+    // If this is a single-version TV Series with zero cached/external tracks yet,
+    // render nothing here — global Preferred Audio/Subtitle belongs in Settings, not DetailScreen!
+    if (versions.length <= 1 && isSeries && !hasAnyRealTracks) {
+      return const SizedBox.shrink();
+    }
 
     return Column(
       key: const ValueKey('detail-version-selector'),
@@ -4358,286 +4348,276 @@ class _TracksPanel extends StatelessWidget {
               );
             },
           ),
-          const SizedBox(height: 20),
+          if (hasAnyRealTracks || !isSeries) const SizedBox(height: 14),
         ],
 
-        // Harmonized Glass / Acrylic / Solid Audio & Subtitle Selector (100% passive — 0 cloud API calls!)
-        VedroAdaptiveSurface(
-          key: const ValueKey('detail-audio-subtitle-panel'),
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 15),
-          borderRadius: skin.cardRadius.clamp(8.0, 18.0),
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 200),
-            switchInCurve: Curves.easeOutCubic,
-            child: Column(
-              key: ValueKey(
-                'tracks_ver_${safeVerIdx}_${streamSrc?.id ?? ''}_${audios.length}_${subs.length}_$hasKnownEmbeddedStreams',
-              ),
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 6,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  alignment: WrapAlignment.spaceBetween,
-                  children: [
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.subtitles_outlined, size: 15.5, color: skin.accent),
-                        const SizedBox(width: 6),
-                        Text(
-                          '音轨与字幕',
-                          style: TextStyle(
-                            color: skin.fg,
-                            fontSize: 13.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        if (activeVer != null && versions.length > 1) ...[
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
-                              decoration: BoxDecoration(
-                                color: skin.accent.withValues(alpha: skin.isLight ? 0.12 : 0.16),
-                                borderRadius: BorderRadius.circular(skin.radiusForPill(20)),
-                              ),
-                              child: Text(
-                                '跟随版本 ${safeVerIdx + 1}：${activeVer.displayTitle}',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: skin.isLight ? skin.accent : skin.fg,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
+        // Clean Audio & Subtitle Selector:
+        // - Global Preferred Audio/Subtitle lives in Settings (zero clutter on DetailScreen!)
+        // - When real streams or sidecar/local subs exist: shows this version's actual tracks
+        // - When unplayed Movie/Episode: sleek single-line passive summary + "+ 本地字幕" button
+        if (hasAnyRealTracks)
+          VedroAdaptiveSurface(
+            key: const ValueKey('detail-audio-subtitle-panel'),
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 15),
+            borderRadius: skin.cardRadius.clamp(8.0, 18.0),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              switchInCurve: Curves.easeOutCubic,
+              child: Column(
+                key: ValueKey(
+                  'tracks_ver_${safeVerIdx}_${streamSrc?.id ?? ''}_${audios.length}_${subs.length}_$hasKnownEmbeddedStreams',
+                ),
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.subtitles_outlined, size: 15.5, color: skin.accent),
+                          const SizedBox(width: 6),
+                          Text(
+                            '音轨与字幕',
+                            style: TextStyle(
+                              color: skin.fg,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                         ],
-                      ],
-                    ),
-                    if (!hasKnownEmbeddedStreams && audios.isEmpty)
-                      Text(
-                        '网盘尚未缓存该版本内封轨道 · 首次播放后自动展示',
-                        style: TextStyle(color: skin.fg3, fontSize: 11.5),
                       ),
-                  ],
-                ),
-                if (!hasKnownEmbeddedStreams && passiveTraits.isNotEmpty) ...[
-                  const SizedBox(height: 9),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 5,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Text(
-                        '当前片源特征：',
-                        style: TextStyle(color: skin.fg3, fontSize: 11.5, fontWeight: FontWeight.w500),
-                      ),
-                      for (final t in passiveTraits)
+                      if (activeVer != null && versions.length > 1)
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
                           decoration: BoxDecoration(
-                            color: skin.subtleChipBg,
-                            borderRadius: BorderRadius.circular(5),
+                            color: skin.accent.withValues(alpha: skin.isLight ? 0.12 : 0.16),
+                            borderRadius: BorderRadius.circular(skin.radiusForPill(20)),
                           ),
                           child: Text(
-                            t,
+                            '跟随版本 ${safeVerIdx + 1}：${activeVer.displayTitle}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              color: skin.fg2,
+                              color: skin.isLight ? skin.accent : skin.fg,
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
-                              fontFeatures: const [FontFeature.tabularFigures()],
                             ),
                           ),
                         ),
                     ],
                   ),
-                ],
-                const SizedBox(height: 12),
-
-                // 1. Audio Track (when played/cached) OR Per-Version Pre-Play Audio Language Preference
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6, right: 10),
-                      child: SizedBox(
-                        width: 58,
-                        child: Text(
-                          audios.isNotEmpty ? '音轨' : '首选配音',
-                          style: TextStyle(
-                            color: skin.fg3,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
+                  if (audios.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6, right: 10),
+                          child: SizedBox(
+                            width: 44,
+                            child: Text(
+                              '音轨',
+                              style: TextStyle(
+                                color: skin.fg3,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Wrap(
+                            spacing: 7,
+                            runSpacing: 7,
+                            children: [
+                              _TrackChoiceChip(
+                                label: '默认',
+                                selected: selectedAudioIndex == null,
+                                onTap: () => onSelectAudio(null),
+                              ),
+                              ...audios.take(6).map((a) {
+                                final on = selectedAudioIndex == a.index;
+                                return _TrackChoiceChip(
+                                  label: a.label,
+                                  selected: on,
+                                  onTap: () => onSelectAudio(on ? null : a.index),
+                                );
+                              }),
+                              if (audios.length > 6)
+                                _TrackChoiceChip(
+                                  label: '全部 ${audios.length} 条音轨 ▾',
+                                  selected: selectedAudioIndex != null &&
+                                      !audios.take(6).any((a) => a.index == selectedAudioIndex),
+                                  onTap: () => _openAllTracksSheet(
+                                    context: context,
+                                    title: '选择音轨',
+                                    tracks: audios,
+                                    selectedIndex: selectedAudioIndex,
+                                    onSelect: onSelectAudio,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6, right: 10),
+                        child: SizedBox(
+                          width: 44,
+                          child: Text(
+                            '字幕',
+                            style: TextStyle(
+                              color: skin.fg3,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    Expanded(
-                      child: Wrap(
-                        spacing: 7,
-                        runSpacing: 7,
-                        children: audios.isNotEmpty
-                            ? [
-                                _TrackChoiceChip(
-                                  label: '默认',
-                                  selected: selectedAudioIndex == null,
-                                  onTap: () => onSelectAudio(null),
-                                ),
-                                ...audios.take(6).map((a) {
-                                  final on = selectedAudioIndex == a.index;
-                                  return _TrackChoiceChip(
-                                    label: a.label,
-                                    selected: on,
-                                    onTap: () => onSelectAudio(on ? null : a.index),
-                                  );
-                                }),
-                                if (audios.length > 6)
-                                  _TrackChoiceChip(
-                                    label: '全部 ${audios.length} 条音轨 ▾',
-                                    selected: selectedAudioIndex != null &&
-                                        !audios.take(6).any((a) => a.index == selectedAudioIndex),
-                                    onTap: () => _openAllTracksSheet(
-                                      context: context,
-                                      title: '选择音轨',
-                                      tracks: audios,
-                                      selectedIndex: selectedAudioIndex,
-                                      onSelect: onSelectAudio,
-                                    ),
-                                  ),
-                              ]
-                            : audioLangOptions.map((opt) {
-                                final on = effAudioLang == opt.$1;
+                      Expanded(
+                        child: Wrap(
+                          spacing: 7,
+                          runSpacing: 7,
+                          children: [
+                            if (subs.isNotEmpty) ...[
+                              _TrackChoiceChip(
+                                label: '默认',
+                                selected: selectedSubtitleIndex == null && extFileName == null,
+                                onTap: () => onSelectSubtitle(null),
+                              ),
+                              _TrackChoiceChip(
+                                label: '关闭字幕',
+                                selected: selectedSubtitleIndex == -1 && extFileName == null,
+                                onTap: () => onSelectSubtitle(-1),
+                              ),
+                              ...subs.take(8).map((s) {
+                                final on = selectedSubtitleIndex == s.index && extFileName == null;
                                 return _TrackChoiceChip(
-                                  label: opt.$2,
+                                  label: s.label,
                                   selected: on,
-                                  onTap: () => onSelectVersionAudioLang(opt.$1),
+                                  onTap: () => onSelectSubtitle(on ? null : s.index),
                                 );
-                              }).toList(),
+                              }),
+                              if (subs.length > 8)
+                                _TrackChoiceChip(
+                                  label: '全部 ${subs.length} 条字幕 ▾',
+                                  selected: extFileName == null &&
+                                      selectedSubtitleIndex != null &&
+                                      selectedSubtitleIndex != -1 &&
+                                      !subs.take(8).any((s) => s.index == selectedSubtitleIndex),
+                                  onTap: () => _openAllTracksSheet(
+                                    context: context,
+                                    title: '选择字幕轨道',
+                                    tracks: subs,
+                                    selectedIndex: selectedSubtitleIndex,
+                                    onSelect: onSelectSubtitle,
+                                    allowOff: true,
+                                  ),
+                                ),
+                            ] else if (hasKnownEmbeddedStreams) ...[
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: skin.subtleChipBg,
+                                  borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
+                                ),
+                                child: Text(
+                                  '该版本无内封或服务端外挂字幕',
+                                  style: TextStyle(color: skin.fg3, fontSize: 12),
+                                ),
+                              ),
+                            ],
+                            if (extFileName != null)
+                              _TrackChoiceChip(
+                                label: '外挂: $extFileName ×',
+                                selected: true,
+                                onTap: onClearExternalSubtitle,
+                              ),
+                            if (!isSeries)
+                              _TrackChoiceChip(
+                                key: const ValueKey('detail-mount-local-sub-btn'),
+                                label: '+ 本地字幕',
+                                icon: Icons.upload_file_rounded,
+                                selected: false,
+                                onTap: onPickExternalSubtitle,
+                              ),
+                          ],
+                        ),
                       ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          )
+        else if (!isSeries)
+          VedroAdaptiveSurface(
+            key: const ValueKey('detail-audio-subtitle-panel'),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            borderRadius: skin.cardRadius.clamp(8.0, 16.0),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 5,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Icon(Icons.subtitles_outlined, size: 15, color: skin.fg3),
+                    if (activeVer != null && versions.length > 1)
+                      Text(
+                        '跟随版本 ${safeVerIdx + 1}',
+                        style: TextStyle(
+                          color: skin.fg2,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    for (final t in passiveTraits.take(4))
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: skin.subtleChipBg,
+                          borderRadius: BorderRadius.circular(5),
+                        ),
+                        child: Text(
+                          t,
+                          style: TextStyle(
+                            color: skin.fg2,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ),
+                    Text(
+                      '网盘尚未缓存该版本内封轨道 · 播放后自动展示',
+                      style: TextStyle(color: skin.fg3, fontSize: 12),
                     ),
                   ],
                 ),
-
-                const SizedBox(height: 10),
-
-                // 2. Subtitle Stream (when played/sidecar) OR Per-Version Pre-Play Subtitle Preference + Local Mount
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6, right: 10),
-                      child: SizedBox(
-                        width: 58,
-                        child: Text(
-                          subs.isNotEmpty || hasKnownEmbeddedStreams ? '字幕' : '首选字幕',
-                          style: TextStyle(
-                            color: skin.fg3,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: Wrap(
-                        spacing: 7,
-                        runSpacing: 7,
-                        children: [
-                          if (subs.isNotEmpty) ...[
-                            _TrackChoiceChip(
-                              label: '默认',
-                              selected: selectedSubtitleIndex == null && extFileName == null,
-                              onTap: () => onSelectSubtitle(null),
-                            ),
-                            _TrackChoiceChip(
-                              label: '关闭字幕',
-                              selected: selectedSubtitleIndex == -1 && extFileName == null,
-                              onTap: () => onSelectSubtitle(-1),
-                            ),
-                            ...subs.take(8).map((s) {
-                              final on = selectedSubtitleIndex == s.index && extFileName == null;
-                              return _TrackChoiceChip(
-                                label: s.label,
-                                selected: on,
-                                onTap: () => onSelectSubtitle(on ? null : s.index),
-                              );
-                            }),
-                            if (subs.length > 8)
-                              _TrackChoiceChip(
-                                label: '全部 ${subs.length} 条字幕 ▾',
-                                selected: extFileName == null &&
-                                    selectedSubtitleIndex != null &&
-                                    selectedSubtitleIndex != -1 &&
-                                    !subs.take(8).any((s) => s.index == selectedSubtitleIndex),
-                                onTap: () => _openAllTracksSheet(
-                                  context: context,
-                                  title: '选择字幕轨道',
-                                  tracks: subs,
-                                  selectedIndex: selectedSubtitleIndex,
-                                  onSelect: onSelectSubtitle,
-                                  allowOff: true,
-                                ),
-                              ),
-                          ] else if (hasKnownEmbeddedStreams) ...[
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: skin.subtleChipBg,
-                                borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
-                              ),
-                              child: Text(
-                                '该版本无内封或服务端外挂字幕',
-                                style: TextStyle(color: skin.fg3, fontSize: 12),
-                              ),
-                            ),
-                          ] else ...[
-                            for (final opt in subLangOptions)
-                              Builder(
-                                builder: (_) {
-                                  final isSel = extFileName == null &&
-                                      ((opt.$1 == 'off' &&
-                                              (selectedSubtitleIndex == -1 ||
-                                                  effSubLang == 'off')) ||
-                                          (opt.$1 != 'off' &&
-                                              selectedSubtitleIndex != -1 &&
-                                              effSubLang == opt.$1));
-                                  return _TrackChoiceChip(
-                                    key: ValueKey('preplay-sub-${opt.$1}-${isSel ? 'on' : 'off'}'),
-                                    label: opt.$2,
-                                    selected: isSel,
-                                    onTap: () => onSelectVersionSubLang(opt.$1),
-                                  );
-                                },
-                              ),
-                          ],
-
-                          if (extFileName != null)
-                            _TrackChoiceChip(
-                              label: '外挂: $extFileName ×',
-                              selected: true,
-                              onTap: onClearExternalSubtitle,
-                            ),
-
-                          _TrackChoiceChip(
-                            key: const ValueKey('detail-mount-local-sub-btn'),
-                            label: '+ 本地字幕',
-                            icon: Icons.upload_file_rounded,
-                            selected: false,
-                            onTap: onPickExternalSubtitle,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+                _TrackChoiceChip(
+                  key: const ValueKey('detail-mount-local-sub-btn'),
+                  label: '+ 本地字幕',
+                  icon: Icons.upload_file_rounded,
+                  selected: false,
+                  onTap: onPickExternalSubtitle,
                 ),
               ],
             ),
           ),
-        ),
       ],
     );
   }

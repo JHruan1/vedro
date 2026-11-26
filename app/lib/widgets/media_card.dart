@@ -493,7 +493,7 @@ class _ResumeCardState extends State<ResumeCard> {
                       landscape: true,
                       width: 680,
                     ),
-                    const Positioned(
+                    Positioned(
                       left: 0,
                       right: 0,
                       bottom: 0,
@@ -503,7 +503,9 @@ class _ResumeCardState extends State<ResumeCard> {
                           gradient: LinearGradient(
                             begin: Alignment.topCenter,
                             end: Alignment.bottomCenter,
-                            colors: [Colors.transparent, Color(0xBD000000)],
+                            colors: skin.isLight && widget.appState.backdropArt(item) == null
+                                ? [Colors.transparent, Colors.white.withValues(alpha: 0.72)]
+                                : const [Colors.transparent, Color(0xBD000000)],
                           ),
                         ),
                       ),
@@ -519,19 +521,28 @@ class _ResumeCardState extends State<ResumeCard> {
                           height: 44,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: _hovered ? const Color(0x66000000) : const Color(0x42000000),
+                            color: skin.isLight && widget.appState.backdropArt(item) == null
+                                ? Colors.white.withValues(alpha: _hovered ? 0.96 : 0.86)
+                                : (_hovered ? const Color(0x66000000) : const Color(0x42000000)),
                             border: Border.all(
-                              color: _hovered ? Colors.white : const Color(0xD9FFFFFF),
+                              color: skin.isLight && widget.appState.backdropArt(item) == null
+                                  ? skin.accent.withValues(alpha: 0.35)
+                                  : (_hovered ? Colors.white : const Color(0xD9FFFFFF)),
                               width: 2.0,
                             ),
-                            boxShadow: const [
-                              BoxShadow(color: Color(0x55000000), blurRadius: 12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: skin.isLight ? 0.12 : 0.34),
+                                blurRadius: 12,
+                              ),
                             ],
                           ),
-                          child: const Icon(
+                          child: Icon(
                             Icons.play_arrow_rounded,
                             size: 26,
-                            color: Colors.white,
+                            color: skin.isLight && widget.appState.backdropArt(item) == null
+                                ? skin.accent
+                                : Colors.white,
                           ),
                         ),
                       ),
@@ -545,7 +556,9 @@ class _ResumeCardState extends State<ResumeCard> {
                         child: LinearProgressIndicator(
                           value: item.resumeProgress.clamp(0.02, 1.0),
                           minHeight: 3.5,
-                          backgroundColor: const Color(0x45FFFFFF),
+                          backgroundColor: skin.isLight && widget.appState.backdropArt(item) == null
+                              ? Colors.black.withValues(alpha: 0.12)
+                              : const Color(0x45FFFFFF),
                           color: skin.ctaStyle == 'contrast' ? Colors.white : skin.accent,
                         ),
                       ),
@@ -666,16 +679,21 @@ class _LibraryCardState extends State<LibraryCard> {
                         fit: BoxFit.cover,
                       ),
                     if (!hasServerCover)
-                      const DecoratedBox(
+                      DecoratedBox(
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
                             begin: Alignment.topCenter,
                             end: Alignment.bottomCenter,
-                            stops: [0.35, 1.0],
-                            colors: [
-                              Colors.transparent,
-                              Color(0xB8000000),
-                            ],
+                            stops: const [0.35, 1.0],
+                            colors: skin.isLight && widget.coverItem == null
+                                ? [
+                                    Colors.transparent,
+                                    Colors.white.withValues(alpha: 0.88),
+                                  ]
+                                : const [
+                                    Colors.transparent,
+                                    Color(0xB8000000),
+                                  ],
                           ),
                         ),
                       ),
@@ -689,8 +707,10 @@ class _LibraryCardState extends State<LibraryCard> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: skin.applyHeadlineMood(
-                            const TextStyle(
-                              color: Colors.white,
+                            TextStyle(
+                              color: skin.isLight && widget.coverItem == null
+                                  ? skin.fg
+                                  : Colors.white,
                               fontSize: 17,
                               fontWeight: FontWeight.w600,
                               letterSpacing: -0.3,

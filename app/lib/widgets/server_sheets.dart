@@ -199,9 +199,9 @@ class _AddServerFormState extends State<_AddServerForm> {
                   padding: const EdgeInsets.symmetric(vertical: 6),
                   child: Row(
                     children: [
-                      const Text(
+                      Text(
                         '网络与代理',
-                        style: TextStyle(color: VedroTheme.fg3, fontSize: 12.5),
+                        style: TextStyle(color: skin.fg3, fontSize: 12.5),
                       ),
                       const SizedBox(width: 4),
                       Icon(
@@ -209,7 +209,7 @@ class _AddServerFormState extends State<_AddServerForm> {
                             ? Icons.keyboard_arrow_up_rounded
                             : Icons.keyboard_arrow_down_rounded,
                         size: 16,
-                        color: VedroTheme.fg3,
+                        color: skin.fg3,
                       ),
                     ],
                   ),
@@ -226,21 +226,21 @@ class _AddServerFormState extends State<_AddServerForm> {
                             TextField(
                               controller: _proxyCtrl,
                               enabled: !busy,
-                              style: const TextStyle(color: VedroTheme.fg, fontSize: 13.5),
+                              style: TextStyle(color: skin.fg, fontSize: 13.5),
                               decoration: InputDecoration(
-                                labelText: '代理地址（留空自动跟随系统）',
+                                labelText: '代理地址（留空自动跟随应用内代理或系统）',
                                 hintText: widget.appState.systemProxyUrl.isNotEmpty
                                     ? '系统代理: ${widget.appState.systemProxyUrl}'
-                                    : 'http://127.0.0.1:7890',
+                                    : 'socks5h://127.0.0.1:7890',
                               ),
                             ),
                             const SizedBox(height: 6),
                             Row(
                               children: [
-                                const Expanded(
+                                Expanded(
                                   child: Text(
                                     '允许自签名证书',
-                                    style: TextStyle(color: VedroTheme.fg2, fontSize: 13),
+                                    style: TextStyle(color: skin.fg2, fontSize: 13),
                                   ),
                                 ),
                                 Transform.scale(

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
 import '../core/models/preferences.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'vedro_ui.dart';
@@ -90,6 +91,7 @@ class _ServerCardGridState extends State<ServerCardGrid> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final app = widget.appState;
     final servers = app.savedServers;
     final isList = app.prefs.serverCardLayout == 'list';
@@ -104,8 +106,8 @@ class _ServerCardGridState extends State<ServerCardGrid> {
               children: [
                 Text(
                   '已保存服务器 (${servers.length})',
-                  style: const TextStyle(
-                    color: VedroTheme.fg2,
+                  style: TextStyle(
+                    color: skin.fg2,
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
                   ),
@@ -121,9 +123,9 @@ class _ServerCardGridState extends State<ServerCardGrid> {
                 Container(
                   padding: const EdgeInsets.all(2.5),
                   decoration: BoxDecoration(
-                    color: VedroTheme.surface,
+                    color: skin.surface,
                     borderRadius: BorderRadius.circular(9),
-                    border: Border.all(color: VedroTheme.line, width: 0.7),
+                    border: Border.all(color: skin.border, width: 0.7),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -245,9 +247,11 @@ class _ServerRichCardState extends State<_ServerRichCard> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final srv = widget.server;
     final style = widget.appState.serverCardStyleFor(srv.id);
     final theme = style.resolveTheme(srv.id);
+    final cardAccent = theme.cardAccent(skin);
     final displayName = style.customName.trim().isNotEmpty ? style.customName.trim() : srv.name;
     final activeRoute = srv.activeRoute;
     final activePing = activeRoute != null ? widget.pings[activeRoute.id] : null;
@@ -269,22 +273,22 @@ class _ServerRichCardState extends State<_ServerRichCard> {
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [theme.bgTop, theme.bgBottom],
+            colors: [theme.cardBgTop(skin), theme.cardBgBottom(skin)],
           ),
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 20.0)),
           border: Border.all(
             color: widget.isActive
-                ? theme.accent.withValues(alpha: 0.78)
-                : (_hovered ? const Color(0x40FFFFFF) : const Color(0x1EFFFFFF)),
+                ? cardAccent.withValues(alpha: 0.78)
+                : (_hovered ? skin.borderStrong : skin.border),
             width: widget.isActive ? 1.35 : 0.85,
           ),
           boxShadow: [
             BoxShadow(
               color: widget.isActive
-                  ? theme.accent.withValues(alpha: 0.14)
-                  : const Color(0x36000000),
+                  ? cardAccent.withValues(alpha: 0.14)
+                  : Colors.black.withValues(alpha: skin.isLight ? 0.06 : 0.22),
               blurRadius: widget.isActive ? 22 : 12,
-              offset: const Offset(0, 8),
+              offset: const Offset(0, 6),
             ),
           ],
         ),
@@ -299,11 +303,11 @@ class _ServerRichCardState extends State<_ServerRichCard> {
                   width: 40,
                   height: 40,
                   decoration: BoxDecoration(
-                    color: theme.accent.withValues(alpha: 0.18),
+                    color: cardAccent.withValues(alpha: skin.isLight ? 0.13 : 0.18),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: theme.accent.withValues(alpha: 0.35), width: 0.8),
+                    border: Border.all(color: cardAccent.withValues(alpha: 0.32), width: 0.8),
                   ),
-                  child: Icon(style.iconData, size: 20, color: theme.accent),
+                  child: Icon(style.iconData, size: 20, color: cardAccent),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -317,8 +321,8 @@ class _ServerRichCardState extends State<_ServerRichCard> {
                               displayName,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
+                              style: TextStyle(
+                                color: skin.fg,
                                 fontSize: 15.5,
                                 fontWeight: FontWeight.w600,
                                 letterSpacing: -0.2,
@@ -334,10 +338,12 @@ class _ServerRichCardState extends State<_ServerRichCard> {
                                 borderRadius: BorderRadius.circular(6),
                                 border: Border.all(color: const Color(0x5534D399), width: 0.6),
                               ),
-                              child: const Text(
+                              child: Text(
                                 '已连接',
                                 style: TextStyle(
-                                  color: Color(0xFF34D399),
+                                  color: skin.isLight
+                                      ? const Color(0xFF059669)
+                                      : const Color(0xFF34D399),
                                   fontSize: 10,
                                   fontWeight: FontWeight.w600,
                                 ),
@@ -356,7 +362,7 @@ class _ServerRichCardState extends State<_ServerRichCard> {
                               ].join(' · '),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Color(0xA8FFFFFF), fontSize: 12),
+                        style: TextStyle(color: skin.fg2, fontSize: 12),
                       ),
                     ],
                   ),
@@ -371,11 +377,11 @@ class _ServerRichCardState extends State<_ServerRichCard> {
                       width: 30,
                       height: 30,
                       decoration: BoxDecoration(
-                        color: const Color(0x18FFFFFF),
+                        color: skin.subtleChipBg,
                         borderRadius: BorderRadius.circular(9),
-                        border: Border.all(color: const Color(0x1CFFFFFF), width: 0.6),
+                        border: Border.all(color: skin.border, width: 0.6),
                       ),
-                      child: const Icon(Icons.tune_rounded, size: 15, color: Color(0xD8FFFFFF)),
+                      child: Icon(Icons.tune_rounded, size: 15, color: skin.fg2),
                     ),
                   ),
                 ),
@@ -423,14 +429,14 @@ class _ServerRichCardState extends State<_ServerRichCard> {
               children: [
                 _MiniCardChip(
                   label: srv.dialect.isEmpty ? 'Emby' : srv.dialect.toUpperCase(),
-                  color: theme.accent,
+                  color: cardAccent,
                 ),
                 const SizedBox(width: 6),
                 Flexible(
                   child: _MiniCardChip(
                     label:
                         '${activeRoute?.name ?? '默认线路'}${srv.routes.length > 1 ? ' (${srv.routes.length})' : ''}',
-                    color: const Color(0xCCFFFFFF),
+                    color: skin.fg2,
                   ),
                 ),
                 const Spacer(),
@@ -440,20 +446,20 @@ class _ServerRichCardState extends State<_ServerRichCard> {
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                     child: isProbing
-                        ? const SizedBox(
+                        ? SizedBox(
                             width: 12,
                             height: 12,
                             child: CircularProgressIndicator(
                               strokeWidth: 1.6,
-                              color: Color(0xB8FFFFFF),
+                              color: skin.fg2,
                             ),
                           )
-                        : const Row(
+                        : Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.speed_rounded, size: 13, color: Color(0x99FFFFFF)),
-                              SizedBox(width: 3),
-                              Text('测速', style: TextStyle(color: Color(0x99FFFFFF), fontSize: 11)),
+                              Icon(Icons.speed_rounded, size: 13, color: skin.fg2),
+                              const SizedBox(width: 3),
+                              Text('测速', style: TextStyle(color: skin.fg2, fontSize: 11)),
                             ],
                           ),
                   ),
@@ -490,8 +496,10 @@ class _ServerCompactRowCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final style = appState.serverCardStyleFor(server.id);
     final theme = style.resolveTheme(server.id);
+    final cardAccent = theme.cardAccent(skin);
     final displayName = style.customName.trim().isNotEmpty ? style.customName.trim() : server.name;
     final activeRoute = server.activeRoute;
     final activePing = activeRoute != null ? pings[activeRoute.id] : null;
@@ -508,11 +516,11 @@ class _ServerCompactRowCard extends StatelessWidget {
           gradient: LinearGradient(
             begin: Alignment.centerLeft,
             end: Alignment.centerRight,
-            colors: [theme.bgTop, theme.bgBottom],
+            colors: [theme.cardBgTop(skin), theme.cardBgBottom(skin)],
           ),
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: isActive ? theme.accent.withValues(alpha: 0.72) : const Color(0x1CFFFFFF),
+            color: isActive ? cardAccent.withValues(alpha: 0.72) : skin.border,
             width: isActive ? 1.2 : 0.8,
           ),
         ),
@@ -522,10 +530,10 @@ class _ServerCompactRowCard extends StatelessWidget {
               width: 36,
               height: 36,
               decoration: BoxDecoration(
-                color: theme.accent.withValues(alpha: 0.18),
+                color: cardAccent.withValues(alpha: skin.isLight ? 0.14 : 0.18),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(style.iconData, size: 18, color: theme.accent),
+              child: Icon(style.iconData, size: 18, color: cardAccent),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -539,8 +547,8 @@ class _ServerCompactRowCard extends StatelessWidget {
                           displayName,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: skin.fg,
                             fontSize: 14.5,
                             fontWeight: FontWeight.w600,
                           ),
@@ -569,7 +577,7 @@ class _ServerCompactRowCard extends StatelessWidget {
                     ].join(' · '),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Color(0xB3FFFFFF), fontSize: 12),
+                    style: TextStyle(color: skin.fg2, fontSize: 12),
                   ),
                 ],
               ),
@@ -579,18 +587,18 @@ class _ServerCompactRowCard extends StatelessWidget {
               tooltip: '测速与刷新状态',
               visualDensity: VisualDensity.compact,
               icon: isProbing
-                  ? const SizedBox(
+                  ? SizedBox(
                       width: 14,
                       height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 1.7, color: VedroTheme.fg2),
+                      child: CircularProgressIndicator(strokeWidth: 1.7, color: skin.fg2),
                     )
-                  : const Icon(Icons.speed_rounded, size: 17, color: VedroTheme.fg2),
+                  : Icon(Icons.speed_rounded, size: 17, color: skin.fg2),
               onPressed: isProbing ? null : onPing,
             ),
             IconButton(
               tooltip: '卡片与线路设置',
               visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.tune_rounded, size: 17, color: VedroTheme.fg2),
+              icon: Icon(Icons.tune_rounded, size: 17, color: skin.fg2),
               onPressed: onOpenSettings,
             ),
           ],
@@ -607,6 +615,7 @@ class _AddServerDashedTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return PressableScale(
       onTap: onTap,
       hoverScale: 1.01,
@@ -614,9 +623,9 @@ class _AddServerDashedTile extends StatelessWidget {
       child: Container(
         height: compact ? 54 : 118,
         decoration: BoxDecoration(
-          color: const Color(0x0AFFFFFF),
+          color: skin.unifiedTileColor(),
           borderRadius: BorderRadius.circular(compact ? 14 : 18),
-          border: Border.all(color: const Color(0x26FFFFFF), width: 1),
+          border: Border.all(color: skin.borderStrong, width: 1),
         ),
         child: Center(
           child: Row(
@@ -626,16 +635,16 @@ class _AddServerDashedTile extends StatelessWidget {
                 width: 28,
                 height: 28,
                 decoration: BoxDecoration(
-                  color: const Color(0x16FFFFFF),
+                  color: skin.subtleChipBg,
                   borderRadius: BorderRadius.circular(9),
                 ),
-                child: const Icon(Icons.add_rounded, size: 18, color: VedroTheme.fg),
+                child: Icon(Icons.add_rounded, size: 18, color: skin.fg),
               ),
               const SizedBox(width: 9),
-              const Text(
+              Text(
                 '添加媒体服务器',
                 style: TextStyle(
-                  color: VedroTheme.fg2,
+                  color: skin.fg2,
                   fontSize: 13.5,
                   fontWeight: FontWeight.w500,
                 ),
@@ -735,24 +744,25 @@ class _InventoryChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
       decoration: BoxDecoration(
-        color: const Color(0x1EFFFFFF),
+        color: skin.subtleChipBg,
         borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 11.5, color: const Color(0xCCFFFFFF)),
+          Icon(icon, size: 11.5, color: skin.fg2),
           const SizedBox(width: 4),
           Text(
             label,
-            style: const TextStyle(
-              color: Color(0xE8FFFFFF),
+            style: TextStyle(
+              color: skin.fg,
               fontSize: 11,
               fontWeight: FontWeight.w500,
-              fontFeatures: [FontFeature.tabularFigures()],
+              fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
         ],
@@ -768,10 +778,11 @@ class _MiniCardChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
       decoration: BoxDecoration(
-        color: const Color(0x18FFFFFF),
+        color: skin.subtleChipBg,
         borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
@@ -838,22 +849,23 @@ class _SmallGhostButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return PressableScale(
       onTap: onTap,
       child: Container(
         height: 30,
         padding: const EdgeInsets.symmetric(horizontal: 10),
         decoration: BoxDecoration(
-          color: VedroTheme.surface,
+          color: skin.surface,
           borderRadius: BorderRadius.circular(9),
-          border: Border.all(color: VedroTheme.line, width: 0.7),
+          border: Border.all(color: skin.border, width: 0.7),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 14, color: VedroTheme.fg2),
+            Icon(icon, size: 14, color: skin.fg2),
             const SizedBox(width: 5),
-            Text(label, style: const TextStyle(color: VedroTheme.fg2, fontSize: 12)),
+            Text(label, style: TextStyle(color: skin.fg2, fontSize: 12)),
           ],
         ),
       ),
@@ -875,6 +887,7 @@ class _LayoutToggleBtn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return Tooltip(
       message: tooltip,
       child: GestureDetector(
@@ -883,10 +896,10 @@ class _LayoutToggleBtn extends StatelessWidget {
           width: 26,
           height: 24,
           decoration: BoxDecoration(
-            color: active ? VedroTheme.surface3 : Colors.transparent,
+            color: active ? skin.activePillBg : Colors.transparent,
             borderRadius: BorderRadius.circular(6),
           ),
-          child: Icon(icon, size: 15, color: active ? Colors.white : VedroTheme.fg3),
+          child: Icon(icon, size: 15, color: active ? skin.activePillFg : skin.fg3),
         ),
       ),
     );
@@ -1011,8 +1024,8 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    const Expanded(
-                      child: Text('允许自签名证书', style: TextStyle(color: VedroTheme.fg2, fontSize: 13)),
+                    Expanded(
+                      child: Text('允许自签名证书', style: TextStyle(color: VedroSkin.of(ctx).fg2, fontSize: 13)),
                     ),
                     Transform.scale(
                       scale: 0.8,
@@ -1068,6 +1081,7 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return ListenableBuilder(
       listenable: widget.appState,
       builder: (context, _) {
@@ -1075,6 +1089,7 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
         final previewTheme = _themeId.isNotEmpty
             ? ServerCardTheme.byId(_themeId)
             : ServerCardTheme.forSeed(srv.id);
+        final cardAccent = previewTheme.cardAccent(skin);
         final previewIcon = ServerCardStyle.icons[_iconId]?.$2 ?? Icons.dns_rounded;
         final previewName = _nameCtrl.text.trim().isNotEmpty ? _nameCtrl.text.trim() : srv.name;
         final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
@@ -1087,10 +1102,10 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
             children: [
               Row(
                 children: [
-                  const Text(
+                  Text(
                     '服务器卡片与线路设置',
                     style: TextStyle(
-                      color: VedroTheme.fg,
+                      color: skin.fg,
                       fontSize: 17,
                       fontWeight: FontWeight.w600,
                     ),
@@ -1114,11 +1129,11 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                   gradient: LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
-                    colors: [previewTheme.bgTop, previewTheme.bgBottom],
+                    colors: [previewTheme.cardBgTop(skin), previewTheme.cardBgBottom(skin)],
                   ),
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(
-                    color: previewTheme.accent.withValues(alpha: 0.6),
+                    color: cardAccent.withValues(alpha: 0.6),
                     width: 1.1,
                   ),
                 ),
@@ -1128,10 +1143,10 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                       width: 40,
                       height: 40,
                       decoration: BoxDecoration(
-                        color: previewTheme.accent.withValues(alpha: 0.18),
+                        color: cardAccent.withValues(alpha: skin.isLight ? 0.14 : 0.18),
                         borderRadius: BorderRadius.circular(11),
                       ),
-                      child: Icon(previewIcon, size: 20, color: previewTheme.accent),
+                      child: Icon(previewIcon, size: 20, color: cardAccent),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -1142,8 +1157,8 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                             previewName,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
+                            style: TextStyle(
+                              color: skin.fg,
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
                             ),
@@ -1155,14 +1170,14 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                                 : (_hideAddress ? '地址已隐藏' : srv.url),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: Color(0xA6FFFFFF), fontSize: 12),
+                            style: TextStyle(color: skin.fg2, fontSize: 12),
                           ),
                         ],
                       ),
                     ),
                     _MiniCardChip(
                       label: srv.dialect.toUpperCase(),
-                      color: previewTheme.accent,
+                      color: cardAccent,
                     ),
                   ],
                 ),
@@ -1198,7 +1213,7 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
               const SizedBox(height: 14),
 
               // Card Color Theme Picker
-              const Text('卡片配色', style: TextStyle(color: VedroTheme.fg2, fontSize: 12.5, fontWeight: FontWeight.w600)),
+              Text('卡片配色', style: TextStyle(color: skin.fg2, fontSize: 12.5, fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -1210,10 +1225,10 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
-                        color: on ? t.accent.withValues(alpha: 0.18) : VedroTheme.surface2,
+                        color: on ? t.cardAccent(skin).withValues(alpha: 0.16) : skin.surface2,
                         borderRadius: BorderRadius.circular(9),
                         border: Border.all(
-                          color: on ? t.accent : VedroTheme.line,
+                          color: on ? t.cardAccent(skin) : skin.border,
                           width: on ? 1.1 : 0.7,
                         ),
                       ),
@@ -1223,13 +1238,13 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                           Container(
                             width: 11,
                             height: 11,
-                            decoration: BoxDecoration(color: t.accent, shape: BoxShape.circle),
+                            decoration: BoxDecoration(color: t.cardAccent(skin), shape: BoxShape.circle),
                           ),
                           const SizedBox(width: 6),
                           Text(
                             t.label,
                             style: TextStyle(
-                              color: on ? Colors.white : VedroTheme.fg2,
+                              color: on ? skin.fg : skin.fg2,
                               fontSize: 12,
                               fontWeight: on ? FontWeight.w600 : FontWeight.w400,
                             ),
@@ -1243,7 +1258,7 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
               const SizedBox(height: 14),
 
               // Card Icon Picker
-              const Text('卡片图标', style: TextStyle(color: VedroTheme.fg2, fontSize: 12.5, fontWeight: FontWeight.w600)),
+              Text('卡片图标', style: TextStyle(color: skin.fg2, fontSize: 12.5, fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -1255,22 +1270,22 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
-                        color: on ? previewTheme.accent.withValues(alpha: 0.18) : VedroTheme.surface2,
+                        color: on ? cardAccent.withValues(alpha: 0.16) : skin.surface2,
                         borderRadius: BorderRadius.circular(9),
                         border: Border.all(
-                          color: on ? previewTheme.accent : VedroTheme.line,
+                          color: on ? cardAccent : skin.border,
                           width: on ? 1.1 : 0.7,
                         ),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(entry.value.$2, size: 15, color: on ? previewTheme.accent : VedroTheme.fg2),
+                          Icon(entry.value.$2, size: 15, color: on ? cardAccent : skin.fg2),
                           const SizedBox(width: 5),
                           Text(
                             entry.value.$1,
                             style: TextStyle(
-                              color: on ? Colors.white : VedroTheme.fg2,
+                              color: on ? skin.fg : skin.fg2,
                               fontSize: 12,
                             ),
                           ),
@@ -1285,12 +1300,12 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
               // Hide URL privacy switch
               Row(
                 children: [
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('卡片隐藏服务器域名', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
-                        Text('截屏或分享时隐藏真实域名地址', style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5)),
+                        Text('卡片隐藏服务器域名', style: TextStyle(color: skin.fg, fontSize: 13.5)),
+                        Text('截屏或分享时隐藏真实域名地址', style: TextStyle(color: skin.fg3, fontSize: 11.5)),
                       ],
                     ),
                   ),
@@ -1311,7 +1326,7 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                 children: [
                   Text(
                     '多线路管理 (${srv.routes.length})',
-                    style: const TextStyle(color: VedroTheme.fg2, fontSize: 13, fontWeight: FontWeight.w600),
+                    style: TextStyle(color: skin.fg2, fontSize: 13, fontWeight: FontWeight.w600),
                   ),
                   const Spacer(),
                   _SmallGhostButton(
@@ -1343,10 +1358,10 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                     margin: const EdgeInsets.only(bottom: 7),
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                     decoration: BoxDecoration(
-                      color: activeRoute ? previewTheme.accent.withValues(alpha: 0.14) : VedroTheme.surface2,
+                      color: activeRoute ? cardAccent.withValues(alpha: 0.14) : skin.surface2,
                       borderRadius: BorderRadius.circular(11),
                       border: Border.all(
-                        color: activeRoute ? previewTheme.accent.withValues(alpha: 0.6) : VedroTheme.line,
+                        color: activeRoute ? cardAccent.withValues(alpha: 0.6) : skin.border,
                         width: 0.8,
                       ),
                     ),
@@ -1359,7 +1374,7 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                               Text(
                                 route.name,
                                 style: TextStyle(
-                                  color: activeRoute ? Colors.white : VedroTheme.fg,
+                                  color: skin.fg,
                                   fontSize: 13.5,
                                   fontWeight: activeRoute ? FontWeight.w600 : FontWeight.w500,
                                 ),
@@ -1369,7 +1384,7 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                                   route.url,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                                  style: TextStyle(color: skin.fg3, fontSize: 11.5),
                                 ),
                             ],
                           ),
@@ -1378,7 +1393,7 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                         if (srv.routes.length > 1)
                           IconButton(
                             visualDensity: VisualDensity.compact,
-                            icon: const Icon(Icons.close_rounded, size: 15, color: VedroTheme.fg3),
+                            icon: Icon(Icons.close_rounded, size: 15, color: skin.fg3),
                             onPressed: () async {
                               final next = srv.routes.where((r) => r.id != route.id).toList();
                               await widget.appState.saveServerRoutes(srv.id, next);

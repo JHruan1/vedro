@@ -403,8 +403,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       ),
                     )
                   : _items.isEmpty
-                      ? const Center(
-                          child: Text('没有符合筛选条件的内容', style: TextStyle(color: VedroTheme.fg3, fontSize: 14)),
+                      ? Center(
+                          child: Text('没有符合筛选条件的内容', style: TextStyle(color: skin.fg3, fontSize: 14)),
                         )
                       : _listViewMode
                           ? ListView.separated(
@@ -445,13 +445,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                   itemCount: _items.length + (_loading ? 1 : 0),
                                   itemBuilder: (context, idx) {
                                     if (idx >= _items.length) {
-                                      return const Center(
+                                      return Center(
                                         child: SizedBox(
                                           width: 20,
                                           height: 20,
                                           child: CircularProgressIndicator(
                                             strokeWidth: 2,
-                                            color: VedroTheme.fg2,
+                                            color: skin.fg2,
                                           ),
                                         ),
                                       );

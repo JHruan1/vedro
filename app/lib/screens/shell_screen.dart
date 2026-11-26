@@ -341,12 +341,13 @@ class _ShellScreenState extends State<ShellScreen> {
       bottomNavigationBar: SafeArea(
         top: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
           child: GlassSurface(
-            borderRadius: 24,
-            blur: 32,
-            color: const Color(0xD4141417),
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+            borderRadius: 28,
+            blur: 36,
+            color: const Color(0xC4161619),
+            borderColor: const Color(0x16FFFFFF),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
@@ -741,12 +742,8 @@ class _BottomTabButton extends StatelessWidget {
           curve: VedroTheme.easeOut,
           padding: const EdgeInsets.symmetric(vertical: 7),
           decoration: BoxDecoration(
-            color: selected ? const Color(0x22FFFFFF) : Colors.transparent,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: selected ? const Color(0x1EFFFFFF) : Colors.transparent,
-              width: 0.6,
-            ),
+            color: selected ? const Color(0x20FFFFFF) : Colors.transparent,
+            borderRadius: BorderRadius.circular(22),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,

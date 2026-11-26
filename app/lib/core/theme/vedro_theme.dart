@@ -8,27 +8,27 @@ import 'package:flutter/material.dart';
 /// depth from 1px hairlines and layered soft shadows, frosted glass reserved
 /// strictly for floating chrome over full-bleed artwork.
 class VedroTheme {
-  static const Color canvas = Color(0xFF0B0B0D);
-  static const Color surface = Color(0xFF141417);
-  static const Color surface2 = Color(0xFF1B1C20);
-  static const Color surface3 = Color(0xFF25262B);
-  static const Color field = Color(0xFF101013);
+  static const Color canvas = Color(0xFF09090B);
+  static const Color surface = Color(0xFF141416);
+  static const Color surface2 = Color(0xFF1C1C1F);
+  static const Color surface3 = Color(0xFF28282D);
+  static const Color field = Color(0xFF121215);
 
-  static const Color line = Color(0x13FFFFFF); // ~7.5% hairline
-  static const Color lineStrong = Color(0x22FFFFFF); // ~13% hairline
-  static const Color hi = Color(0x0FFFFFFF); // top specular highlight
+  static const Color line = Color(0x0FFFFFFF); // whisper-soft 6% hairline
+  static const Color lineStrong = Color(0x1CFFFFFF); // 11% specular edge
+  static const Color hi = Color(0x0DFFFFFF);
 
-  static const Color fg = Color(0xFFF2F2F4);
-  static const Color fg2 = Color(0xFFA8AAB1);
-  static const Color fg3 = Color(0xFF85878F);
+  static const Color fg = Color(0xFFF5F5F7);
+  static const Color fg2 = Color(0xFFA1A1AA);
+  static const Color fg3 = Color(0xFF71717A);
 
-  static const Color accent = Color(0xFF5B9BFF);
-  static const Color accentFill = Color(0xFF2F6FE6);
-  static const Color accentSoft = Color(0x245B9BFF);
-  static const Color danger = Color(0xFFFF6B6F);
+  static const Color accent = Color(0xFF5E9EFF);
+  static const Color accentFill = Color(0xFF0A84FF);
+  static const Color accentSoft = Color(0x220A84FF);
+  static const Color danger = Color(0xFFFF453A);
 
-  static const Color glass = Color(0xCC141417);
-  static const Color glassStrong = Color(0xF018181C);
+  static const Color glass = Color(0xBF161619);
+  static const Color glassStrong = Color(0xEB1A1A1E);
 
   static const Duration fast = Duration(milliseconds: 160);
   static const Duration normal = Duration(milliseconds: 260);
@@ -69,6 +69,11 @@ class VedroTheme {
         displayColor: fg,
       ),
       dividerColor: line,
+      dividerTheme: const DividerThemeData(
+        color: Color(0x0FFFFFFF),
+        thickness: 0.5,
+        space: 1,
+      ),
       appBarTheme: const AppBarTheme(
         backgroundColor: Colors.transparent,
         elevation: 0,

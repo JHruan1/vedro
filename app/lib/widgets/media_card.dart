@@ -89,8 +89,8 @@ class _MediaCardState extends State<MediaCard> {
                 foregroundDecoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(radius),
                   border: Border.all(
-                    color: _hovered ? const Color(0x99FFFFFF) : VedroTheme.line,
-                    width: _hovered ? 1.5 : 0.8,
+                    color: _hovered ? const Color(0x99FFFFFF) : const Color(0x10FFFFFF),
+                    width: _hovered ? 1.4 : 0.5,
                   ),
                 ),
                 clipBehavior: Clip.antiAlias,

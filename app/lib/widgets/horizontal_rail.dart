@@ -332,58 +332,10 @@ class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
                 ),
               ),
 
-              // Subtle left edge fade dissolve when scrolled right
-              if (!_atStart)
-                Positioned(
-                  left: 0,
-                  top: 0,
-                  bottom: 0,
-                  width: wide ? 44 : 24,
-                  child: const IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                          colors: [
-                            VedroTheme.canvas,
-                            Color(0xB80B0B0D),
-                            Colors.transparent,
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
-              // Subtle right edge fade dissolve when more items exist off-screen
-              if (!_atEnd)
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  width: wide ? 48 : 26,
-                  child: const IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.centerRight,
-                          end: Alignment.centerLeft,
-                          colors: [
-                            VedroTheme.canvas,
-                            Color(0xB80B0B0D),
-                            Colors.transparent,
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
-              // Hover-revealed desktop edge paddles (Apple TV+ / Infuse style)
+              // Hover-revealed desktop edge paddles (Apple TV+ / Infuse style — zero black smudge walls!)
               if (wide && !_atStart)
                 Positioned(
-                  left: 10,
+                  left: 12,
                   top: paddleTop,
                   child: _EdgePaddleButton(
                     visible: _hovered,
@@ -393,7 +345,7 @@ class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
                 ),
               if (wide && !_atEnd)
                 Positioned(
-                  right: 10,
+                  right: 12,
                   top: paddleTop,
                   child: _EdgePaddleButton(
                     visible: _hovered,
@@ -426,22 +378,20 @@ class _EdgePaddleButton extends StatelessWidget {
       ignoring: !visible,
       child: AnimatedOpacity(
         opacity: visible ? 1.0 : 0.0,
-        duration: const Duration(milliseconds: 170),
-        curve: Curves.easeOut,
+        duration: const Duration(milliseconds: 180),
+        curve: VedroTheme.easeOut,
         child: Material(
-          color: const Color(0xE8161821),
-          shape: const CircleBorder(
-            side: BorderSide(color: Color(0x40FFFFFF), width: 0.9),
-          ),
-          elevation: 6,
+          color: const Color(0xD91C1C20),
+          shape: const CircleBorder(),
+          elevation: 8,
           shadowColor: const Color(0x99000000),
           child: InkWell(
             customBorder: const CircleBorder(),
             onTap: onTap,
             child: SizedBox(
-              width: 40,
-              height: 40,
-              child: Icon(icon, size: 24, color: Colors.white),
+              width: 38,
+              height: 38,
+              child: Icon(icon, size: 22, color: Colors.white),
             ),
           ),
         ),

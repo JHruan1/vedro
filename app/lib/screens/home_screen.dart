@@ -985,13 +985,10 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                                     : MouseCursor.defer,
                                 child: Text(
                                   g,
-                                  style: TextStyle(
-                                    color: const Color(0xE0FFFFFF),
+                                  style: const TextStyle(
+                                    color: Color(0xD9FFFFFF),
                                     fontSize: 13.5,
-                                    decoration: widget.onGenreTap != null
-                                        ? TextDecoration.underline
-                                        : TextDecoration.none,
-                                    decorationColor: const Color(0x88FFFFFF),
+                                    fontWeight: FontWeight.w500,
                                   ),
                                 ),
                               ),
@@ -1024,14 +1021,14 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                           pressScale: 0.96,
                           child: Container(
                             height: 44,
-                            padding: const EdgeInsets.symmetric(horizontal: 24),
+                            padding: const EdgeInsets.symmetric(horizontal: 26),
                             decoration: BoxDecoration(
                               color: Colors.white,
-                              borderRadius: BorderRadius.circular(12),
+                              borderRadius: BorderRadius.circular(22),
                               boxShadow: const [
                                 BoxShadow(
-                                  color: Color(0x45000000),
-                                  blurRadius: 16,
+                                  color: Color(0x48000000),
+                                  blurRadius: 18,
                                   offset: Offset(0, 6),
                                 ),
                               ],
@@ -1059,22 +1056,20 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                           hoverScale: 1.03,
                           pressScale: 0.96,
                           child: GlassSurface(
-                            borderRadius: 12,
-                            blur: 22,
-                            color: const Color(0x5222232A),
-                            borderColor: const Color(0x36FFFFFF),
-                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
+                            borderRadius: 22,
+                            blur: 24,
+                            color: const Color(0x45FFFFFF),
+                            borderColor: Colors.transparent,
+                            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 11),
                             child: const Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.info_outline_rounded, size: 17, color: Colors.white),
-                                SizedBox(width: 6),
                                 Text(
                                   '详情',
                                   style: TextStyle(
                                     color: Colors.white,
                                     fontSize: 14.5,
-                                    fontWeight: FontWeight.w500,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
                               ],

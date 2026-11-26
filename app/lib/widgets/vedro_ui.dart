@@ -213,34 +213,43 @@ class _PressableScaleState extends State<PressableScale> {
   }
 }
 
-/// Apple TV+ style monochrome hairline technical spec marks (`4K`, `DOLBY VISION`, `DOLBY ATMOS`).
-/// Quiet and restrained — used only on Detail & Player HUD, never cluttering posters.
+/// Apple TV+ style borderless monochrome technical spec micro-badges (`4K`, `杜比视界`, `杜比全景声`).
 class SpecGlyphRow extends StatelessWidget {
   const SpecGlyphRow({super.key, required this.specs});
   final List<String> specs;
 
   @override
   Widget build(BuildContext context) {
-    if (specs.isEmpty) return const SizedBox.shrink();
+    final normalized = <String>[];
+    final seen = <String>{};
+    for (final raw in specs) {
+      final clean = _compactLabel(raw);
+      if (clean.isEmpty) continue;
+      if (seen.add(clean)) {
+        normalized.add(clean);
+      }
+      if (normalized.length >= 5) break;
+    }
+    if (normalized.isEmpty) return const SizedBox.shrink();
+
     return Wrap(
       spacing: 6,
       runSpacing: 6,
       crossAxisAlignment: WrapCrossAlignment.center,
-      children: specs.map((s) {
+      children: normalized.map((label) {
         return Container(
           padding: const EdgeInsets.symmetric(horizontal: 6.5, vertical: 2.5),
           decoration: BoxDecoration(
-            color: const Color(0x14FFFFFF),
-            borderRadius: BorderRadius.circular(5),
-            border: Border.all(color: const Color(0x36FFFFFF), width: 0.7),
+            color: const Color(0x18FFFFFF),
+            borderRadius: BorderRadius.circular(4.5),
           ),
           child: Text(
-            _compactLabel(s),
+            label,
             style: const TextStyle(
-              color: Color(0xD9FFFFFF),
+              color: Color(0xE0FFFFFF),
               fontSize: 10.5,
               fontWeight: FontWeight.w600,
-              letterSpacing: 0.35,
+              letterSpacing: 0.25,
               fontFeatures: [FontFeature.tabularFigures()],
             ),
           ),
@@ -250,14 +259,28 @@ class SpecGlyphRow extends StatelessWidget {
   }
 
   String _compactLabel(String raw) {
-    final lower = raw.toLowerCase();
-    if (lower.contains('dolby vision') || lower == 'dovi') return 'DOLBY VISION';
-    if (lower.contains('atmos')) return 'DOLBY ATMOS';
-    return raw.toUpperCase();
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return '';
+    final lower = trimmed.toLowerCase();
+    if (lower.contains('dolby vision') || lower == 'dovi' || lower.contains('杜比视界')) {
+      return '杜比视界';
+    }
+    if (lower.contains('atmos') || lower.contains('全景声')) {
+      return '杜比全景声';
+    }
+    if (lower == 'hdr10+' || lower.contains('hdr10+')) return 'HDR10+';
+    if (lower == 'hdr' || lower == 'hdr10') return 'HDR10';
+    if (lower == '4k' || lower == '2160p' || lower == 'uhd') return '4K';
+    if (lower == 'remux') return 'REMUX';
+    if (trimmed.length > 14 &&
+        (lower.contains('4k') || lower.contains('blu-ray') || lower.contains('remux'))) {
+      return '';
+    }
+    return trimmed.toUpperCase();
   }
 }
 
-/// Apple-style horizontal segmented pill control (for Seasons / Filters).
+/// Apple-style borderless horizontal segmented pill control (for Seasons / Filters).
 class VedroSegmentedControl<T> extends StatelessWidget {
   const VedroSegmentedControl({
     super.key,
@@ -277,9 +300,8 @@ class VedroSegmentedControl<T> extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
-          color: VedroTheme.surface,
-          borderRadius: BorderRadius.circular(11),
-          border: Border.all(color: VedroTheme.line, width: 0.8),
+          color: const Color(0x14FFFFFF),
+          borderRadius: BorderRadius.circular(20),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -292,19 +314,15 @@ class VedroSegmentedControl<T> extends StatelessWidget {
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
                 curve: VedroTheme.easeOut,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6.5),
                 decoration: BoxDecoration(
-                  color: active ? VedroTheme.surface3 : Colors.transparent,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: active ? VedroTheme.lineStrong : Colors.transparent,
-                    width: 0.6,
-                  ),
+                  color: active ? Colors.white : Colors.transparent,
+                  borderRadius: BorderRadius.circular(17),
                 ),
                 child: Text(
                   label,
                   style: TextStyle(
-                    color: active ? VedroTheme.fg : VedroTheme.fg2,
+                    color: active ? VedroTheme.canvas : VedroTheme.fg2,
                     fontSize: 13,
                     fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                   ),

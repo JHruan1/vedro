@@ -22,24 +22,36 @@ class GeneratedArt extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (h1, h2) = deterministicHues(seed);
-    final c1 = HSLColor.fromAHSL(1.0, h1, 0.22, 0.23).toColor();
-    final c2 = HSLColor.fromAHSL(1.0, h2, 0.26, 0.11).toColor();
+    final c1 = HSLColor.fromAHSL(1.0, h1, 0.28, 0.20).toColor();
+    final c2 = HSLColor.fromAHSL(1.0, h2, 0.24, 0.09).toColor();
+    final glow = HSLColor.fromAHSL(0.38, h1, 0.45, 0.34).toColor();
     final text = label == null ? '' : artworkInitials(label);
 
     return DecoratedBox(
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          begin: const Alignment(-0.85, -1.0),
-          end: const Alignment(0.85, 1.0),
+          begin: const Alignment(-0.9, -1.0),
+          end: const Alignment(0.9, 1.0),
           colors: [c1, c2],
         ),
       ),
-      child: label == null
-          ? const SizedBox.expand()
-          : LayoutBuilder(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: RadialGradient(
+                center: const Alignment(-0.45, -0.55),
+                radius: 1.15,
+                colors: [glow, Colors.transparent],
+              ),
+            ),
+          ),
+          if (label != null)
+            LayoutBuilder(
               builder: (context, constraints) {
                 final w = constraints.maxWidth.isFinite ? constraints.maxWidth : 160.0;
-                final fontSize = (text.length > 3 ? w * 0.17 : w * 0.25).clamp(14.0, 48.0);
+                final fontSize = (text.length > 3 ? w * 0.16 : w * 0.23).clamp(13.0, 44.0);
                 return Center(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -49,16 +61,18 @@ class GeneratedArt extends StatelessWidget {
                       overflow: TextOverflow.fade,
                       softWrap: false,
                       style: TextStyle(
-                        color: const Color(0x8CFFFFFF),
+                        color: const Color(0x78FFFFFF),
                         fontSize: fontSize,
                         fontWeight: FontWeight.w600,
-                        letterSpacing: -0.6,
+                        letterSpacing: -0.5,
                       ),
                     ),
                   ),
                 );
               },
             ),
+        ],
+      ),
     );
   }
 }

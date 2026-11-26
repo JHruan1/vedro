@@ -193,80 +193,77 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
     return Scaffold(
       backgroundColor: VedroTheme.canvas,
-      appBar: !wide && !widget.standalone
-          ? AppBar(
-              title: Text(pageTitle),
-              actions: _sortActions(),
-            )
-          : null,
       body: Padding(
-        padding: EdgeInsets.only(top: widget.standalone ? MediaQuery.paddingOf(context).top : widget.topInset),
+        padding: EdgeInsets.only(
+          top: (!wide || widget.standalone) ? MediaQuery.paddingOf(context).top : widget.topInset,
+        ),
         child: Column(
           children: [
-            if (widget.standalone || wide)
-              Padding(
-                padding: EdgeInsets.fromLTRB(
-                  widget.standalone && isMac ? 82 : padX,
-                  widget.standalone ? 12 : 18,
-                  padX,
-                  6,
-                ),
-                child: Row(
-                  children: [
-                    if (widget.standalone) ...[
-                      PressableScale(
-                        onTap: () => Navigator.of(context).pop(),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                          decoration: BoxDecoration(
-                            color: VedroTheme.surface2,
-                            borderRadius: BorderRadius.circular(18),
-                            border: Border.all(color: VedroTheme.line, width: 0.7),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.arrow_back_ios_new_rounded, size: 14, color: VedroTheme.fg),
-                              SizedBox(width: 5),
-                              Text('返回', style: TextStyle(color: VedroTheme.fg, fontSize: 13)),
-                            ],
-                          ),
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                widget.standalone && isMac ? 82 : padX,
+                widget.standalone ? 12 : (wide ? 18 : 10),
+                padX - 6,
+                6,
+              ),
+              child: Row(
+                children: [
+                  if (widget.standalone) ...[
+                    PressableScale(
+                      onTap: () => Navigator.of(context).pop(),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+                        decoration: BoxDecoration(
+                          color: const Color(0x16FFFFFF),
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.arrow_back_ios_new_rounded, size: 13.5, color: Colors.white),
+                            SizedBox(width: 4),
+                            Text('返回', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500)),
+                          ],
                         ),
                       ),
-                      const SizedBox(width: 14),
-                    ],
-                    Expanded(
-                      child: Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              pageTitle,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: VedroTheme.fg,
-                                fontSize: wide ? 24 : 19,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: -0.4,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Text(
-                            '$_total 项',
-                            style: const TextStyle(
-                              color: VedroTheme.fg3,
-                              fontSize: 13,
-                              fontFeatures: [FontFeature.tabularFigures()],
-                            ),
-                          ),
-                        ],
-                      ),
                     ),
-                    ..._sortActions(),
+                    const SizedBox(width: 14),
                   ],
-                ),
+                  Expanded(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.baseline,
+                      textBaseline: TextBaseline.alphabetic,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            pageTitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: VedroTheme.fg,
+                              fontSize: wide ? 26 : 24,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -0.6,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          '$_total',
+                          style: const TextStyle(
+                            color: VedroTheme.fg3,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w500,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  ..._sortActions(),
+                ],
               ),
+            ),
             // Filter strip: Libraries, Type, Unplayed, Favorite, Genre, Year
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -640,14 +637,10 @@ class _MiniDropdown<T> extends StatelessWidget {
       }),
       child: Container(
         height: 32,
-        padding: const EdgeInsets.symmetric(horizontal: 11),
+        padding: const EdgeInsets.symmetric(horizontal: 13),
         decoration: BoxDecoration(
-          color: active ? accent.withValues(alpha: 0.18) : const Color(0xFF1B1C24),
-          borderRadius: BorderRadius.circular(9),
-          border: Border.all(
-            color: active ? accent.withValues(alpha: 0.65) : const Color(0x22FFFFFF),
-            width: 0.8,
-          ),
+          color: active ? Colors.white : const Color(0xFF18181C),
+          borderRadius: BorderRadius.circular(16),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -655,13 +648,17 @@ class _MiniDropdown<T> extends StatelessWidget {
             Text(
               currentLabel,
               style: TextStyle(
-                color: active ? Colors.white : VedroTheme.fg2,
+                color: active ? VedroTheme.canvas : VedroTheme.fg2,
                 fontSize: 12.5,
                 fontWeight: active ? FontWeight.w600 : FontWeight.w500,
               ),
             ),
             const SizedBox(width: 4),
-            Icon(Icons.unfold_more_rounded, size: 14, color: active ? accent : VedroTheme.fg3),
+            Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 15,
+              color: active ? VedroTheme.canvas : VedroTheme.fg3,
+            ),
           ],
         ),
       ),
@@ -681,16 +678,13 @@ class _FilterPill extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),
+        curve: VedroTheme.easeOut,
         height: 32,
-        padding: const EdgeInsets.symmetric(horizontal: 13),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: selected ? VedroTheme.fg : VedroTheme.surface2,
-          borderRadius: BorderRadius.circular(9),
-          border: Border.all(
-            color: selected ? VedroTheme.fg : VedroTheme.line,
-            width: 0.7,
-          ),
+          color: selected ? Colors.white : const Color(0xFF18181C),
+          borderRadius: BorderRadius.circular(16),
         ),
         child: Text(
           label,

@@ -82,48 +82,56 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
 
     return Scaffold(
       backgroundColor: VedroTheme.canvas,
-      appBar: !wide
-          ? AppBar(
-              title: const Text('片单'),
-              actions: [
-                IconButton(
-                  icon: const Icon(Icons.add_rounded, size: 22, color: VedroTheme.fg),
-                  tooltip: '新建片单',
-                  onPressed: _createDialog,
-                ),
-              ],
-            )
-          : null,
       body: Padding(
-        padding: EdgeInsets.only(top: widget.topInset),
+        padding: EdgeInsets.only(top: wide ? widget.topInset : MediaQuery.paddingOf(context).top),
         child: Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 760),
+            constraints: const BoxConstraints(maxWidth: 780),
             child: Column(
               children: [
-                if (wide)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(24, 20, 24, 14),
-                    child: Row(
-                      children: [
-                        const Text(
-                          '片单',
-                          style: TextStyle(
-                            color: VedroTheme.fg,
-                            fontSize: 26,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: -0.5,
+                Padding(
+                  padding: EdgeInsets.fromLTRB(wide ? 24 : 20, wide ? 20 : 10, wide ? 24 : 16, 14),
+                  child: Row(
+                    children: [
+                      const Text(
+                        '片单',
+                        style: TextStyle(
+                          color: VedroTheme.fg,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.6,
+                        ),
+                      ),
+                      const Spacer(),
+                      PressableScale(
+                        onTap: widget.appState.isSignedIn ? _createDialog : null,
+                        child: Container(
+                          height: 36,
+                          padding: const EdgeInsets.symmetric(horizontal: 15),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.add_rounded, size: 17, color: VedroTheme.canvas),
+                              SizedBox(width: 4),
+                              Text(
+                                '新建片单',
+                                style: TextStyle(
+                                  color: VedroTheme.canvas,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        const Spacer(),
-                        FilledButton.icon(
-                          onPressed: widget.appState.isSignedIn ? _createDialog : null,
-                          icon: const Icon(Icons.add_rounded, size: 17),
-                          label: const Text('新建片单'),
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
+                ),
                 Expanded(
                   child: list.isEmpty
                       ? Center(

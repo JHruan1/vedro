@@ -98,73 +98,96 @@ class _SearchScreenState extends State<SearchScreen> {
 
     return Scaffold(
       backgroundColor: VedroTheme.canvas,
-      appBar: AppBar(
-        title: Text(widget.appState.savedServers.length > 1 ? '聚合搜索' : '搜索'),
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: EdgeInsets.fromLTRB(padX, 4, padX, 10),
-            child: TextField(
-              controller: _ctrl,
-              onChanged: _onChanged,
-              onSubmitted: (v) {
-                if (v.trim().isNotEmpty) _runSearch(v.trim(), saveHistory: true);
-              },
-              style: const TextStyle(color: VedroTheme.fg, fontSize: 14.5),
-              decoration: InputDecoration(
-                hintText: widget.appState.savedServers.length > 1
-                    ? '跨 ${widget.appState.savedServers.length} 个服务器聚合搜索…'
-                    : '输入片名、原名或演职员',
-                prefixIcon: const Icon(Icons.search_rounded, size: 19, color: VedroTheme.fg3),
-                suffixIcon: _ctrl.text.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(Icons.close_rounded, size: 17, color: VedroTheme.fg3),
-                        onPressed: () {
-                          _ctrl.clear();
-                          setState(() {
-                            _hits = [];
-                            _servers = [];
-                            _filterServerId = null;
-                          });
-                        },
-                      )
-                    : null,
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: EdgeInsets.fromLTRB(padX, wide ? 72 : 10, padX, 10),
+              child: Text(
+                widget.appState.savedServers.length > 1 ? '聚合搜索' : '搜索',
+                style: TextStyle(
+                  color: VedroTheme.fg,
+                  fontSize: wide ? 28 : 26,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.7,
+                ),
               ),
             ),
-          ),
-
-          // Server underline tabs (AfuseKt style)
-          if (_servers.length > 1)
-            Container(
-              height: 38,
-              decoration: const BoxDecoration(
-                border: Border(bottom: BorderSide(color: VedroTheme.line, width: 0.7)),
-              ),
-              child: ListView(
-                padding: EdgeInsets.symmetric(horizontal: padX),
-                scrollDirection: Axis.horizontal,
-                children: [
-                  _ServerTab(
-                    label: '所有 (${_hits.length})',
-                    selected: _filterServerId == null,
-                    accent: accent,
-                    onTap: () => setState(() => _filterServerId = null),
+            Padding(
+              padding: EdgeInsets.fromLTRB(padX, 0, padX, 10),
+              child: TextField(
+                controller: _ctrl,
+                onChanged: _onChanged,
+                onSubmitted: (v) {
+                  if (v.trim().isNotEmpty) _runSearch(v.trim(), saveHistory: true);
+                },
+                style: const TextStyle(color: VedroTheme.fg, fontSize: 14.5),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: const Color(0xFF17171B),
+                  hintText: widget.appState.savedServers.length > 1
+                      ? '跨 ${widget.appState.savedServers.length} 个服务器搜索片名、演员…'
+                      : '片名、原名或演职员',
+                  prefixIcon: const Icon(Icons.search_rounded, size: 19, color: VedroTheme.fg3),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(13),
+                    borderSide: BorderSide.none,
                   ),
-                  ..._servers.map((s) {
-                    final sid = s['server_id']?.toString() ?? '';
-                    final sname = s['server_name']?.toString() ?? sid;
-                    final cnt = (s['count'] as num?)?.toInt() ?? 0;
-                    return _ServerTab(
-                      label: '$sname ($cnt)',
-                      selected: _filterServerId == sid,
-                      accent: accent,
-                      onTap: () => setState(() => _filterServerId = sid),
-                    );
-                  }),
-                ],
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(13),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(13),
+                    borderSide: const BorderSide(color: Color(0x28FFFFFF), width: 1),
+                  ),
+                  suffixIcon: _ctrl.text.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.cancel_rounded, size: 17, color: VedroTheme.fg3),
+                          onPressed: () {
+                            _ctrl.clear();
+                            setState(() {
+                              _hits = [];
+                              _servers = [];
+                              _filterServerId = null;
+                            });
+                          },
+                        )
+                      : null,
+                ),
               ),
             ),
+
+            // Server capsule tabs (Apple Music / TV+ borderless pills)
+            if (_servers.length > 1)
+              SizedBox(
+                height: 36,
+                child: ListView(
+                  padding: EdgeInsets.symmetric(horizontal: padX),
+                  scrollDirection: Axis.horizontal,
+                  children: [
+                    _ServerTab(
+                      label: '所有 (${_hits.length})',
+                      selected: _filterServerId == null,
+                      accent: accent,
+                      onTap: () => setState(() => _filterServerId = null),
+                    ),
+                    ..._servers.map((s) {
+                      final sid = s['server_id']?.toString() ?? '';
+                      final sname = s['server_name']?.toString() ?? sid;
+                      final cnt = (s['count'] as num?)?.toInt() ?? 0;
+                      return _ServerTab(
+                        label: '$sname ($cnt)',
+                        selected: _filterServerId == sid,
+                        accent: accent,
+                        onTap: () => setState(() => _filterServerId = sid),
+                      );
+                    }),
+                  ],
+                ),
+              ),
 
           // Type filter pills
           if (_hits.isNotEmpty)
@@ -322,6 +345,7 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
         ],
       ),
+      ),
     );
   }
 
@@ -363,11 +387,10 @@ class _SearchScreenState extends State<SearchScreen> {
                 _runSearch(term);
               },
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
                 decoration: BoxDecoration(
-                  color: VedroTheme.surface,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: VedroTheme.line, width: 0.8),
+                  color: const Color(0xFF17171B),
+                  borderRadius: BorderRadius.circular(18),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -405,21 +428,18 @@ class _ServerTab extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
       child: Container(
-        margin: const EdgeInsets.only(right: 18),
+        margin: const EdgeInsets.only(right: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 13),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          border: Border(
-            bottom: BorderSide(
-              color: selected ? accent : Colors.transparent,
-              width: 2.2,
-            ),
-          ),
+          color: selected ? Colors.white : const Color(0xFF17171B),
+          borderRadius: BorderRadius.circular(16),
         ),
         child: Text(
           label,
           style: TextStyle(
-            color: selected ? Colors.white : VedroTheme.fg3,
-            fontSize: 13.5,
+            color: selected ? VedroTheme.canvas : VedroTheme.fg2,
+            fontSize: 12.5,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
           ),
         ),
@@ -439,28 +459,19 @@ class _TypePill extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: selected ? VedroTheme.fg : VedroTheme.surface2,
-          borderRadius: BorderRadius.circular(9),
-          border: Border.all(color: selected ? VedroTheme.fg : VedroTheme.line, width: 0.7),
+          color: selected ? Colors.white : const Color(0xFF17171B),
+          borderRadius: BorderRadius.circular(16),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (selected) ...[
-              const Icon(Icons.check_rounded, size: 13, color: VedroTheme.canvas),
-              const SizedBox(width: 4),
-            ],
-            Text(
-              label,
-              style: TextStyle(
-                color: selected ? VedroTheme.canvas : VedroTheme.fg2,
-                fontSize: 12.5,
-                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-              ),
-            ),
-          ],
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? VedroTheme.canvas : VedroTheme.fg2,
+            fontSize: 12.5,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+          ),
         ),
       ),
     );

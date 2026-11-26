@@ -1,6 +1,8 @@
 import AVFoundation
+import CFNetwork
 import Flutter
 import UIKit
+import UniformTypeIdentifiers
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -17,16 +19,19 @@ import UIKit
   }
 }
 
-/// Native iOS hardware bridge for Vedro:
-/// - Detects EDR headroom, Dolby Vision / HDR10 / HLG display support, and ProMotion 120Hz
+/// Native iOS hardware & file picker bridge for Vedro:
+/// - Detects EDR headroom, Dolby Vision / HDR10 / HLG display support, ProMotion 120Hz & system proxy
 /// - Configures AVAudioSession for multichannel Apple Spatial Audio & Dolby Atmos E-AC-3 JOC
-/// - Manages idle timer during playback
-final class VedroHardwarePlugin: NSObject {
+/// - Native UIDocumentPickerViewController (`pickFiles`) for local videos, subtitles, danmaku XML & fonts
+final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
   static let channelName = "com.vedro.player/hardware"
+  private static var retainedInstance: VedroHardwarePlugin?
+  private var pendingPickResult: FlutterResult?
 
   static func register(with messenger: FlutterBinaryMessenger) {
     let channel = FlutterMethodChannel(name: channelName, binaryMessenger: messenger)
     let instance = VedroHardwarePlugin()
+    retainedInstance = instance
     instance.configureSpatialAudioSession()
     channel.setMethodCallHandler(instance.handle)
   }
@@ -44,6 +49,19 @@ final class VedroHardwarePlugin: NSObject {
     }
   }
 
+  private func topViewController() -> UIViewController? {
+    let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+    guard let root = scenes.flatMap({ $0.windows }).first(where: { $0.isKeyWindow })?.rootViewController
+      ?? scenes.first?.windows.first?.rootViewController else {
+      return nil
+    }
+    var top = root
+    while let presented = top.presentedViewController {
+      top = presented
+    }
+    return top
+  }
+
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "queryCapabilities":
@@ -55,11 +73,53 @@ final class VedroHardwarePlugin: NSObject {
         UIApplication.shared.isIdleTimerDisabled = enabled
       }
       result(nil)
+    case "pickFiles":
+      let args = call.arguments as? [String: Any]
+      let extensions = (args?["extensions"] as? [String]) ?? []
+      let allowMultiple = (args?["allow_multiple"] as? Bool) ?? false
+      DispatchQueue.main.async {
+        guard let presenter = self.topViewController() else {
+          result([String]())
+          return
+        }
+        var types: [UTType] = extensions.compactMap { UTType(filenameExtension: $0) }
+        if types.isEmpty {
+          types = [.item, .movie, .data]
+        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+        picker.allowsMultipleSelection = allowMultiple
+        picker.delegate = self
+        self.pendingPickResult = result
+        presenter.present(picker, animated: true)
+      }
     case "enterPiP", "createVideoSurface":
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+    let paths = urls.map { $0.path }.filter { !$0.isEmpty }
+    pendingPickResult?(paths)
+    pendingPickResult = nil
+  }
+
+  func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+    pendingPickResult?([String]())
+    pendingPickResult = nil
+  }
+
+  private func detectSystemProxyUrl() -> String {
+    guard let dict = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else {
+      return ""
+    }
+    if let enabled = dict["HTTPEnable"] as? Int, enabled == 1,
+       let host = dict["HTTPProxy"] as? String, !host.isEmpty {
+      let port = (dict["HTTPPort"] as? Int) ?? 80
+      return "http://\(host):\(port)"
+    }
+    return ""
   }
 
   private func queryCapabilities() -> [String: Any] {
@@ -99,6 +159,7 @@ final class VedroHardwarePlugin: NSObject {
       "supports_spatial_audio": spatialAvailable,
       "max_luminance_nits": maxNits,
       "refresh_rate_hz": refreshHz,
+      "system_proxy_url": detectSystemProxyUrl(),
     ]
   }
 }

@@ -37,3 +37,9 @@ app/android/app/src/main/jniLibs/
 *.db-shm
 .tmp/
 .DS_Store
+
+# Signing keys & credentials
+*.jks
+*.keystore
+*.p12
+app/android/key.properties

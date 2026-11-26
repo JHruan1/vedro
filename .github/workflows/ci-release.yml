@@ -40,7 +40,46 @@ jobs:
           distribution: temurin
           java-version: '17'
       - run: cargo install cargo-ndk --locked
-      - run: bash scripts/build-android.sh
+      - name: Decode Android release keystore
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "${{ runner.temp }}/vedro-release.jks"
+          chmod 600 "${{ runner.temp }}/vedro-release.jks"
+      - name: Build Android release APKs
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && format('{0}/vedro-release.jks', runner.temp) || '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          REQUIRE_RELEASE_SIGNING: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
+        run: bash scripts/build-android.sh
+      - name: Verify Android APK signing certificate and versionCode
+        env:
+          REQUIRE_RELEASE_SIGNING: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
+        run: |
+          APKSIGNER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner 2>/dev/null | sort -V | tail -n 1 || true)"
+          AAPT2="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name aapt2 2>/dev/null | sort -V | tail -n 1 || true)"
+          for apk in dist/vedro-v*-android-*.apk; do
+            echo "==> Verifying $apk"
+            if [ -n "$AAPT2" ]; then
+              "$AAPT2" dump badging "$apk" | head -n 1
+            fi
+            if [ -n "$APKSIGNER" ]; then
+              CERT_OUT="$("$APKSIGNER" verify --print-certs "$apk")"
+            else
+              CERT_OUT="$(keytool -printcert -jarfile "$apk")"
+            fi
+            echo "$CERT_OUT"
+            if [ "$REQUIRE_RELEASE_SIGNING" = "true" ] && echo "$CERT_OUT" | grep -qi "Android Debug"; then
+              echo "ERROR: $apk was signed with ephemeral debug key!" >&2
+              exit 1
+            fi
+          done
+      - name: Clean up Android release keystore
+        if: always()
+        run: rm -f "${{ runner.temp }}/vedro-release.jks"
       - uses: actions/upload-artifact@v4
         with:
           name: vedro-android-apks

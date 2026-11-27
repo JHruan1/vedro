@@ -41,7 +41,7 @@ SolidCompression=yes
 LZMAUseSeparateProcess=yes
 WizardStyle=modern
 CloseApplications=yes
-RestartApplications=yes
+RestartApplications=no
 
 [Languages]
 #ifdef HasChineseSimplified

@@ -641,8 +641,8 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
             result->Success(flutter::EncodableValue(err));
           } else {
             const wchar_t* params = silent
-                                        ? L"/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS"
-                                        : L"/CLOSEAPPLICATIONS /RESTARTAPPLICATIONS";
+                                        ? L"/SILENT /CLOSEAPPLICATIONS /NORESTART"
+                                        : L"/CLOSEAPPLICATIONS /NORESTART";
             HINSTANCE inst = ShellExecuteW(hwnd, L"open", wpath.c_str(), params, nullptr, SW_SHOWNORMAL);
             bool ok = reinterpret_cast<INT_PTR>(inst) > 32;
             flutter::EncodableMap resp = {

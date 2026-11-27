@@ -278,7 +278,7 @@ Win32Window::MessageHandler(HWND hwnd,
         GetWindowRect(hwnd, &rc);
         HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
-        const LONG border = static_cast<LONG>(6.0 * (dpi / 96.0));
+        const LONG border = static_cast<LONG>(4.0 * (dpi / 96.0));
         const bool left = pt.x >= rc.left && pt.x < rc.left + border;
         const bool right = pt.x <= rc.right && pt.x > rc.right - border;
         const bool top = pt.y >= rc.top && pt.y < rc.top + border;

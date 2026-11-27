@@ -379,10 +379,11 @@ final class VedroHardwarePlugin: NSObject {
       }
       DispatchQueue.main.async {
         let ok = NSWorkspace.shared.open(URL(fileURLWithPath: rawPath))
-        result([
-          "ok": ok,
-          "message": ok ? nil : "无法打开安装包镜像，请前往访达手动双击安装"
-        ] as [String: Any?])
+        var payload: [String: Any] = ["ok": ok]
+        if !ok {
+          payload["message"] = "无法打开安装包镜像，请前往访达手动双击安装"
+        }
+        result(payload)
       }
     default:
       result(FlutterMethodNotImplemented)

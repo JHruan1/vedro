@@ -23,6 +23,7 @@ import '../widgets/local_asr_engine.dart';
 import '../widgets/nerd_stats_hud.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
+import '../widgets/windows_immersive_frame.dart';
 
 /// IINA / Infuse / SenPlayer caliber native GPU cinema player:
 /// - Zero-transcode DirectPlay of 4K Remux, Dolby Vision, Dolby Atmos, PGS/ASS subtitles
@@ -4068,6 +4069,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         ),
                       ),
 
+                    // Windowed Windows top drag zone even when player HUD is auto-hidden
+                    if (!kIsWeb && Platform.isWindows && !_isFullscreen && !osdInteractive)
+                      const Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 138,
+                        height: 36,
+                        child: WindowsWindowDragArea(),
+                      ),
+
                     // Auto-hiding IINA / Apple TV+ chrome (ExcludeFocus when hidden so D-Pad never lands on invisible buttons!)
                     ExcludeFocus(
                       excluding: !osdInteractive,
@@ -4097,17 +4108,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                       _hoveringChrome = false;
                                       _scheduleHideControls();
                                     },
-                                    child: Container(
-                                      padding: EdgeInsets.fromLTRB(
-                                        (isMac && !_isFullscreen)
-                                            ? (MediaQuery.sizeOf(context).width < 560 ? 20 : 82)
-                                            : 20,
-                                        topPad + 12,
-                                        (!kIsWeb && Platform.isWindows && !_isFullscreen)
-                                            ? (MediaQuery.sizeOf(context).width < 560 ? 20 : 148)
-                                            : 20,
-                                        28,
-                                      ),
+                                    child: DecoratedBox(
                                       decoration: const BoxDecoration(
                                         gradient: LinearGradient(
                                           begin: Alignment.topCenter,
@@ -4115,7 +4116,23 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                           colors: [Color(0xC4000000), Colors.transparent],
                                         ),
                                       ),
-                                      child: Row(
+                                      child: Stack(
+                                        children: [
+                                          Positioned.fill(
+                                            child: WindowsWindowDragArea(enabled: !_isFullscreen),
+                                          ),
+                                          Padding(
+                                            padding: EdgeInsets.fromLTRB(
+                                              (isMac && !_isFullscreen)
+                                                  ? (MediaQuery.sizeOf(context).width < 560 ? 20 : 82)
+                                                  : 20,
+                                              topPad + 12,
+                                              (!kIsWeb && Platform.isWindows && !_isFullscreen)
+                                                  ? (MediaQuery.sizeOf(context).width < 560 ? 20 : 148)
+                                                  : 20,
+                                              28,
+                                            ),
+                                            child: Row(
                                         children: [
                                           _CircleHudButton(
                                             icon: Icons.arrow_back_ios_new_rounded,
@@ -4316,6 +4333,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                             icon: Icons.more_horiz_rounded,
                                             tooltip: '更多工具（定时 / A-B循环 / 色彩 / 快捷键）',
                                             onTap: _openMoreToolsSheet,
+                                          ),
+                                        ],
+                                      ),
                                           ),
                                         ],
                                       ),

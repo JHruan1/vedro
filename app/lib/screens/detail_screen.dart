@@ -18,6 +18,7 @@ import '../widgets/horizontal_rail.dart';
 import '../widgets/media_card.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
+import '../widgets/windows_immersive_frame.dart';
 import 'home_screen.dart' show showMediaItemContextSheet;
 import 'library_screen.dart';
 import 'player_screen.dart';
@@ -2696,6 +2697,15 @@ class _DetailScreenState extends State<DetailScreen> {
                   ),
                 ),
               ),
+            ),
+
+            // Full-width top drag bar on Windows (sits behind the floating Back button)
+            const Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 58,
+              child: WindowsWindowDragArea(),
             ),
 
             // Floating iOS Glass Top Chrome (Back + Mobile Quick More)

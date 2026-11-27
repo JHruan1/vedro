@@ -10,6 +10,7 @@ import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/media_card.dart';
 import '../widgets/vedro_ui.dart';
+import '../widgets/windows_immersive_frame.dart';
 
 class PlaylistsScreen extends StatefulWidget {
   const PlaylistsScreen({
@@ -401,9 +402,17 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
         child: SafeArea(
           child: Column(
             children: [
-              Padding(
-                padding: EdgeInsets.fromLTRB(isMac ? 82 : padX, 10, padX, 12),
-                child: Row(
+              Stack(
+                children: [
+                  const Positioned.fill(child: WindowsWindowDragArea()),
+                  Padding(
+                    padding: EdgeInsets.fromLTRB(
+                      isMac ? 82 : padX,
+                      10,
+                      (!kIsWeb && Platform.isWindows) ? 148 : padX,
+                      12,
+                    ),
+                    child: Row(
                   children: [
                     PressableScale(
                       onTap: () => Navigator.of(context).pop(),
@@ -491,6 +500,8 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
                     ),
                   ],
                 ),
+                  ),
+                ],
               ),
               Expanded(
                 child: _loading

@@ -1,9 +1,108 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../core/platform/native_playback_channel.dart';
+
+/// Instant-response native Windows titlebar drag, double-click maximize/restore,
+/// and right-click system menu surface.
+///
+/// Place as the background sibling (`Positioned.fill(child: WindowsWindowDragArea())`)
+/// behind interactive header buttons in a `Stack`: buttons on top intercept clicks
+/// normally, while pressing and dragging ANY empty header region starts native Win32
+/// Aero Snap movement immediately with zero pan-slop delay or ScrollView conflict.
+class WindowsWindowDragArea extends StatefulWidget {
+  const WindowsWindowDragArea({
+    super.key,
+    this.enabled = true,
+    this.forceEnableForTest = false,
+    this.onStartDrag,
+    this.onToggleZoom,
+    this.onSystemMenu,
+    this.child,
+  });
+
+  final bool enabled;
+  final bool forceEnableForTest;
+  final VoidCallback? onStartDrag;
+  final VoidCallback? onToggleZoom;
+  final VoidCallback? onSystemMenu;
+  final Widget? child;
+
+  @override
+  State<WindowsWindowDragArea> createState() => _WindowsWindowDragAreaState();
+}
+
+class _WindowsWindowDragAreaState extends State<WindowsWindowDragArea> {
+  DateTime? _lastPrimaryDownAt;
+  Offset? _lastPrimaryDownPos;
+  Offset? _secondaryDownPos;
+
+  bool get _active =>
+      widget.enabled && (widget.forceEnableForTest || (!kIsWeb && Platform.isWindows));
+
+  void _onPointerDown(PointerDownEvent event) {
+    final isPrimary =
+        (event.buttons & kPrimaryMouseButton) != 0 || event.kind == PointerDeviceKind.touch;
+    if (isPrimary) {
+      _secondaryDownPos = null;
+      final now = DateTime.now();
+      final isDoubleClick = _lastPrimaryDownAt != null &&
+          _lastPrimaryDownPos != null &&
+          now.difference(_lastPrimaryDownAt!) <= const Duration(milliseconds: 360) &&
+          (event.position - _lastPrimaryDownPos!).distance <= 6.0;
+      if (isDoubleClick) {
+        _lastPrimaryDownAt = null;
+        _lastPrimaryDownPos = null;
+        (widget.onToggleZoom ?? NativePlaybackChannel.toggleZoom)();
+      } else {
+        _lastPrimaryDownAt = now;
+        _lastPrimaryDownPos = event.position;
+        (widget.onStartDrag ?? NativePlaybackChannel.startWindowDrag)();
+      }
+      return;
+    }
+    if ((event.buttons & kSecondaryMouseButton) != 0) {
+      _secondaryDownPos = event.position;
+    }
+  }
+
+  void _onPointerUp(PointerUpEvent event) {
+    final secStart = _secondaryDownPos;
+    _secondaryDownPos = null;
+    if (secStart != null && (event.position - secStart).distance <= 8.0) {
+      (widget.onSystemMenu ?? NativePlaybackChannel.showWindowSystemMenu)();
+    }
+  }
+
+  void _onPointerCancel(PointerCancelEvent _) {
+    _secondaryDownPos = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_active) {
+      return widget.child ?? const SizedBox.shrink();
+    }
+    return ValueListenableBuilder<bool>(
+      valueListenable: NativePlaybackChannel.fullscreenNotifier,
+      builder: (context, isFullscreen, _) {
+        if (isFullscreen) {
+          return widget.child ?? const SizedBox.shrink();
+        }
+        return Listener(
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: _onPointerDown,
+          onPointerUp: _onPointerUp,
+          onPointerCancel: _onPointerCancel,
+          child: widget.child ?? const SizedBox.expand(),
+        );
+      },
+    );
+  }
+}
 
 /// Native Windows 10/11 full-bleed immersive window frame overlay:
 /// - Pairs with `WM_NCCALCSIZE` + `DwmExtendFrameIntoClientArea` in `win32_window.cpp`
@@ -76,9 +175,13 @@ class _WindowsImmersiveFrameState extends State<WindowsImmersiveFrame>
       height: height,
       child: MouseRegion(
         cursor: cursor,
-        child: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onPanStart: (_) => NativePlaybackChannel.startWindowResize(edge),
+        child: Listener(
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: (ev) {
+            if ((ev.buttons & kPrimaryMouseButton) != 0 || ev.kind == PointerDeviceKind.touch) {
+              NativePlaybackChannel.startWindowResize(edge);
+            }
+          },
         ),
       ),
     );
@@ -111,17 +214,16 @@ class _WindowsImmersiveFrameState extends State<WindowsImmersiveFrame>
                   children: [
                     widget.child,
 
-                    // Top 10px edge drag & Aero Snap strip across all pages (sits cleanly above y=11+ buttons)
+                    // Top fallback drag & Aero Snap strip cleanly above y=11+ buttons
+                    // (seamlessly joins each page's full-height WindowsWindowDragArea below it)
                     Positioned(
-                      top: 0,
-                      left: isMaximized ? 0 : 8,
+                      top: isMaximized ? 0 : 4,
+                      left: isMaximized ? 0 : 10,
                       right: 138,
-                      height: 10,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.translucent,
-                        onPanStart: (_) => NativePlaybackChannel.startWindowDrag(),
-                        onDoubleTap: NativePlaybackChannel.toggleZoom,
-                        onSecondaryTapUp: (_) => NativePlaybackChannel.showWindowSystemMenu(),
+                      height: isMaximized ? 11 : 7,
+                      child: WindowsWindowDragArea(
+                        key: const ValueKey('win-top-fallback-drag-strip'),
+                        forceEnableForTest: widget.forceEnableForTest,
                       ),
                     ),
 

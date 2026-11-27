@@ -16,6 +16,7 @@ import '../widgets/server_sheets.dart';
 import '../widgets/spotlight_search_dialog.dart';
 import '../widgets/update_checker.dart';
 import '../widgets/vedro_ui.dart';
+import '../widgets/windows_immersive_frame.dart';
 import 'detail_screen.dart';
 import 'home_screen.dart';
 import 'library_screen.dart';
@@ -493,9 +494,9 @@ class _ShellScreenState extends State<ShellScreen> {
     final isTv = PlatformPerfProfile.isTv;
     final childTopInset = wide
         ? (isLeftRail
-            ? ((!kIsWeb && Platform.isWindows) ? 26.0 : 16.0)
+            ? ((!kIsWeb && Platform.isWindows) ? 36.0 : 16.0)
             : (isMinimalAutoHide ? 52.0 : 68.0))
-        : 0.0;
+        : ((!kIsWeb && Platform.isWindows) ? 36.0 : 0.0);
 
     _visitedTabs.add(_index);
 
@@ -637,26 +638,46 @@ class _ShellScreenState extends State<ShellScreen> {
                         child: Stack(
                           children: [
                             Positioned.fill(child: keyedStage),
+                            if (isLeftRail && !kIsWeb && Platform.isWindows)
+                              const Positioned(
+                                top: 0,
+                                left: 0,
+                                right: 138,
+                                height: 36,
+                                child: WindowsWindowDragArea(),
+                              ),
                             if (!isLeftRail && isCenteredCapsule)
                               Positioned(
-                                top: 12,
-                                left: 20,
-                                right: 20,
-                                child: FocusScope(
-                                  node: _navFocusScope,
-                                  child: _CenteredCapsuleNavIsland(
-                                    key: const ValueKey('shell-centered-capsule-nav'),
-                                    appState: widget.appState,
-                                    activeIndex: _index,
-                                    navItems: _desktopNav,
-                                    onSelectIndex: _selectTab,
-                                    onOpenServerHub: _openServerHub,
-                                    onOpenSearch: _openSpotlight,
-                                    onOpenLocalMedia: _openLocalMediaPicker,
-                                    onOpenNetworkUrl: _openNetworkUrlDialog,
-                                    onOpenFavorites: _openFavorites,
-                                    onRefresh: widget.appState.refreshHome,
-                                  ),
+                                top: 0,
+                                left: 0,
+                                right: 0,
+                                height: 64,
+                                child: Stack(
+                                  children: [
+                                    const Positioned.fill(child: WindowsWindowDragArea()),
+                                    Align(
+                                      alignment: Alignment.topCenter,
+                                      child: Padding(
+                                        padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+                                        child: FocusScope(
+                                          node: _navFocusScope,
+                                          child: _CenteredCapsuleNavIsland(
+                                            key: const ValueKey('shell-centered-capsule-nav'),
+                                            appState: widget.appState,
+                                            activeIndex: _index,
+                                            navItems: _desktopNav,
+                                            onSelectIndex: _selectTab,
+                                            onOpenServerHub: _openServerHub,
+                                            onOpenSearch: _openSpotlight,
+                                            onOpenLocalMedia: _openLocalMediaPicker,
+                                            onOpenNetworkUrl: _openNetworkUrlDialog,
+                                            onOpenFavorites: _openFavorites,
+                                            onRefresh: widget.appState.refreshHome,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               )
                             else if (!isLeftRail && isMinimalAutoHide)
@@ -859,6 +880,7 @@ class _ShellScreenState extends State<ShellScreen> {
       },
     );
 
+    final narrowWinBar = !kIsWeb && Platform.isWindows;
     return PopScope(
       canPop: !widget.appState.prefs.confirmExitApp && _index == 0,
       onPopInvokedWithResult: (didPop, _) => _handleRootBackPop(didPop),
@@ -868,7 +890,23 @@ class _ShellScreenState extends State<ShellScreen> {
         body: VedroSkinCanvas(
           backdropImageUrl: fanartUrl,
           suppressTopOrb: homeHasHeroBackdrop,
-          child: keyedStage,
+          child: narrowWinBar
+              ? Stack(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 36),
+                      child: keyedStage,
+                    ),
+                    const Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 138,
+                      height: 36,
+                      child: WindowsWindowDragArea(),
+                    ),
+                  ],
+                )
+              : keyedStage,
         ),
         bottomNavigationBar: bottomBar,
       ),
@@ -915,7 +953,7 @@ class _VerticalSidebarRail extends StatelessWidget {
       builder: (context, isFullscreen, _) {
         final topPad = (!kIsWeb && Platform.isMacOS && !isFullscreen)
             ? 44.0
-            : ((!kIsWeb && Platform.isWindows && !isFullscreen) ? 24.0 : 18.0);
+            : ((!kIsWeb && Platform.isWindows && !isFullscreen) ? 36.0 : 18.0);
         final w = compact ? 76.0 : 216.0;
         final serverLabel = appState.isSignedIn ? appState.activeServerDisplayName : '选择服务器';
         final routeName = appState.activeRouteDisplayName;
@@ -996,129 +1034,143 @@ class _VerticalSidebarRail extends StatelessWidget {
             color: skin.panelSurface,
             border: Border(right: BorderSide(color: skin.border, width: 0.8)),
           ),
-          padding: EdgeInsets.fromLTRB(12, topPad, 12, 16),
-          child: LayoutBuilder(
-            builder: (context, constraints) => SingleChildScrollView(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(minHeight: constraints.maxHeight),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        PressableScale(
-                          onTap: onOpenServerHub,
-                          child: Container(
-                            padding: EdgeInsets.symmetric(
-                              horizontal: compact ? 6 : 10,
-                              vertical: 9,
-                            ),
-                            decoration: BoxDecoration(
-                              color: skin.surface2,
-                              borderRadius: BorderRadius.circular(itemR),
-                              border: Border.all(color: skin.border, width: 0.8),
-                            ),
-                            child: compact
-                                ? const Center(child: VedroBrandMark(size: 26))
-                                : Row(
-                                    children: [
-                                      const VedroBrandMark(size: 26),
-                                      const SizedBox(width: 9),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
+          child: Stack(
+            children: [
+              Padding(
+                padding: EdgeInsets.fromLTRB(12, topPad, 12, 16),
+                child: LayoutBuilder(
+                  builder: (context, constraints) => SingleChildScrollView(
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              PressableScale(
+                                onTap: onOpenServerHub,
+                                child: Container(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: compact ? 6 : 10,
+                                    vertical: 9,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: skin.surface2,
+                                    borderRadius: BorderRadius.circular(itemR),
+                                    border: Border.all(color: skin.border, width: 0.8),
+                                  ),
+                                  child: compact
+                                      ? const Center(child: VedroBrandMark(size: 26))
+                                      : Row(
                                           children: [
-                                            Text(
-                                              serverLabel,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: TextStyle(
-                                                color: skin.fg,
-                                                fontSize: 13,
-                                                fontWeight: FontWeight.w600,
+                                            const VedroBrandMark(size: 26),
+                                            const SizedBox(width: 9),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    serverLabel,
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
+                                                    style: TextStyle(
+                                                      color: skin.fg,
+                                                      fontSize: 13,
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                  if (routeName != null && routeName.isNotEmpty)
+                                                    Text(
+                                                      routeName,
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                      style: TextStyle(color: skin.fg3, fontSize: 11),
+                                                    ),
+                                                ],
                                               ),
                                             ),
-                                            if (routeName != null && routeName.isNotEmpty)
-                                              Text(
-                                                routeName,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(color: skin.fg3, fontSize: 11),
-                                              ),
+                                            Icon(Icons.unfold_more_rounded, size: 15, color: skin.fg3),
                                           ],
                                         ),
-                                      ),
-                                      Icon(Icons.unfold_more_rounded, size: 15, color: skin.fg3),
-                                    ],
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              railEntry(
+                                icon: Icons.search_rounded,
+                                label: appState.savedServers.length > 1 ? '聚合搜索' : '搜索',
+                                selected: activeIndex == 2,
+                                trailingHint: (!kIsWeb && Platform.isMacOS) ? '⌘K' : 'Ctrl+K',
+                                onTap: onOpenSearch,
+                              ),
+                              const SizedBox(height: 6),
+                              for (final (idx, label, icon) in navItems)
+                                railEntry(
+                                  icon: icon,
+                                  label: label,
+                                  selected: activeIndex == idx,
+                                  onTap: () => onSelectIndex(idx),
+                                ),
+                            ],
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                railEntry(
+                                  icon: Icons.folder_open_rounded,
+                                  label: '本地播放',
+                                  selected: false,
+                                  onTap: onOpenLocalMedia,
+                                ),
+                                railEntry(
+                                  icon: Icons.link_rounded,
+                                  label: '网络链接',
+                                  selected: false,
+                                  onTap: onOpenNetworkUrl,
+                                ),
+                                if (appState.isSignedIn) ...[
+                                  railEntry(
+                                    icon: Icons.favorite_border_rounded,
+                                    label: '我的收藏',
+                                    selected: false,
+                                    onTap: onOpenFavorites,
                                   ),
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                        railEntry(
-                          icon: Icons.search_rounded,
-                          label: appState.savedServers.length > 1 ? '聚合搜索' : '搜索',
-                          selected: activeIndex == 2,
-                          trailingHint: (!kIsWeb && Platform.isMacOS) ? '⌘K' : 'Ctrl+K',
-                          onTap: onOpenSearch,
-                        ),
-                        const SizedBox(height: 6),
-                        for (final (idx, label, icon) in navItems)
-                          railEntry(
-                            icon: icon,
-                            label: label,
-                            selected: activeIndex == idx,
-                            onTap: () => onSelectIndex(idx),
-                          ),
-                      ],
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.only(top: 16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          railEntry(
-                            icon: Icons.folder_open_rounded,
-                            label: '本地播放',
-                            selected: false,
-                            onTap: onOpenLocalMedia,
-                          ),
-                          railEntry(
-                            icon: Icons.link_rounded,
-                            label: '网络链接',
-                            selected: false,
-                            onTap: onOpenNetworkUrl,
-                          ),
-                          if (appState.isSignedIn) ...[
-                            railEntry(
-                              icon: Icons.favorite_border_rounded,
-                              label: '我的收藏',
-                              selected: false,
-                              onTap: onOpenFavorites,
+                                  railEntry(
+                                    icon: Icons.dashboard_customize_outlined,
+                                    label: '首页布局',
+                                    selected: false,
+                                    onTap: onOpenLayout,
+                                  ),
+                                  railEntry(
+                                    icon: Icons.refresh_rounded,
+                                    label: '刷新数据',
+                                    selected: false,
+                                    onTap: onRefresh,
+                                  ),
+                                ],
+                              ],
                             ),
-                            railEntry(
-                              icon: Icons.dashboard_customize_outlined,
-                              label: '首页布局',
-                              selected: false,
-                              onTap: onOpenLayout,
-                            ),
-                            railEntry(
-                              icon: Icons.refresh_rounded,
-                              label: '刷新数据',
-                              selected: false,
-                              onTap: onRefresh,
-                            ),
-                          ],
+                          ),
                         ],
                       ),
                     ),
-                  ],
+                  ),
                 ),
               ),
-            ),
+              if (!kIsWeb && Platform.isWindows && !isFullscreen)
+                const Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: 36,
+                  child: WindowsWindowDragArea(),
+                ),
+            ],
           ),
         );
       },
@@ -1384,11 +1436,15 @@ class _FloatingDesktopHeader extends StatelessWidget {
               final searchWidth = availW >= 1040 ? 224.0 : (availW >= 860 ? 154.0 : 0.0);
               final btnGap = narrowHeader ? 6.0 : 8.0;
               final navPadH = compactHeader ? 10.0 : 14.0;
-              return Container(
+              return SizedBox(
                 height: 58,
-                padding: EdgeInsets.fromLTRB(macTrafficClearance, 0, winCaptionClearance, 0),
-                child: Row(
+                child: Stack(
                   children: [
+                    const Positioned.fill(child: WindowsWindowDragArea()),
+                    Padding(
+                      padding: EdgeInsets.fromLTRB(macTrafficClearance, 0, winCaptionClearance, 0),
+                      child: Row(
+                        children: [
                     PressableScale(
                       onTap: onOpenServerHub,
                       hoverScale: 1.02,
@@ -1507,15 +1563,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
                           ),
                         ),
                       ),
-                    Expanded(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onPanStart: (_) => NativePlaybackChannel.startWindowDrag(),
-                        onDoubleTap: NativePlaybackChannel.toggleZoom,
-                        onSecondaryTapUp: (_) => NativePlaybackChannel.showWindowSystemMenu(),
-                        child: const SizedBox.expand(),
-                      ),
-                    ),
+                    const Spacer(),
                     if (searchWidth > 0)
                       PressableScale(
                         onTap: onOpenSearch,
@@ -1610,6 +1658,9 @@ class _FloatingDesktopHeader extends StatelessWidget {
                         onTap: onRefresh,
                       ),
                     ],
+                  ],
+                ),
+              ),
                   ],
                 ),
               );

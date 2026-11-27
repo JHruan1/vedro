@@ -12,6 +12,7 @@ import '../state/app_state.dart';
 import '../widgets/media_card.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
+import '../widgets/windows_immersive_frame.dart';
 import 'home_screen.dart' show showMediaItemContextSheet;
 
 /// Infinite-paging library & facet browser (supports Library, Genre, Studio, Year, Favorites, Folders, Grid/List).
@@ -330,14 +331,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ),
           child: Column(
             children: [
-              Padding(
-                padding: EdgeInsets.fromLTRB(
-                  widget.standalone && isMac ? 82 : padX,
-                  widget.standalone ? 12 : (wide ? 18 : 10),
-                  padX - 6,
-                  6,
-                ),
-                child: LayoutBuilder(
+              Stack(
+                children: [
+                  if (widget.standalone)
+                    const Positioned.fill(child: WindowsWindowDragArea()),
+                  Padding(
+                    padding: EdgeInsets.fromLTRB(
+                      widget.standalone && isMac ? 82 : padX,
+                      widget.standalone ? 12 : (wide ? 18 : 10),
+                      (widget.standalone && !kIsWeb && Platform.isWindows) ? 148 : (padX - 6),
+                      6,
+                    ),
+                    child: LayoutBuilder(
                   builder: (context, headerConstraints) {
                     final compactHeader =
                         widget.standalone && headerConstraints.maxWidth < 430;
@@ -416,6 +421,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     );
                   },
                 ),
+                  ),
+                ],
               ),
             // Filter strip: Libraries, Type, Unplayed, Favorite, Genre, Year
             SingleChildScrollView(

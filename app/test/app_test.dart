@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -2620,6 +2621,71 @@ void main() {
     final animOpacity = tester.widget<AnimatedOpacity>(find.byType(AnimatedOpacity).first);
     expect(animOpacity.opacity, equals(0.0));
     NativePlaybackChannel.playerHudAutoHideNotifier.value = false;
+
+    // 3. WindowsWindowDragArea starts drag immediately on empty header area without stealing button taps
+    var dragCount = 0;
+    var zoomCount = 0;
+    var menuCount = 0;
+    var btnTaps = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 400,
+            height: 58,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: WindowsWindowDragArea(
+                    key: const ValueKey('test-win-drag-area'),
+                    forceEnableForTest: true,
+                    onStartDrag: () => dragCount++,
+                    onToggleZoom: () => zoomCount++,
+                    onSystemMenu: () => menuCount++,
+                  ),
+                ),
+                Positioned(
+                  left: 16,
+                  top: 11,
+                  child: ElevatedButton(
+                    key: const ValueKey('test-header-btn'),
+                    onPressed: () => btnTaps++,
+                    child: const Text('Click'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // Tapping a button above WindowsWindowDragArea must click the button, NOT drag the window
+    await tester.tap(find.byKey(const ValueKey('test-header-btn')));
+    await tester.pump();
+    expect(btnTaps, equals(1));
+    expect(dragCount, equals(0));
+
+    // Clicking empty header space at y=29 (center of 58px titlebar) triggers instant drag; rapid 2nd click triggers zoom
+    final emptySpot = const Offset(280, 29);
+    final g1 = await tester.startGesture(emptySpot, kind: PointerDeviceKind.mouse, buttons: kPrimaryMouseButton);
+    await g1.up();
+    await tester.pump(const Duration(milliseconds: 80));
+    expect(dragCount, equals(1));
+    expect(zoomCount, equals(0));
+
+    final g2 = await tester.startGesture(emptySpot, kind: PointerDeviceKind.mouse, buttons: kPrimaryMouseButton);
+    await g2.up();
+    await tester.pump();
+    expect(dragCount, equals(1));
+    expect(zoomCount, equals(1));
+
+    // Right-clicking empty header space opens native system menu
+    final sec = await tester.startGesture(emptySpot, kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
+    await sec.up();
+    await tester.pump();
+    expect(menuCount, equals(1));
   });
 
   testWidgets(

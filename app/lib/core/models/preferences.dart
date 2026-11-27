@@ -422,6 +422,8 @@ class VedroPreferences {
     this.aiCachedModels = const [],
     // AI 语音识别 (ASR · 无字幕视频听音转双语字幕)
     this.asrEnabled = false,
+    this.asrEngine = 'local', // local (内置 sherpa-onnx SenseVoice) | cloud (OpenAI/Groq/硅基流动)
+    this.asrUseChinaMirror = true,
     this.asrBaseUrl = 'https://api.groq.com/openai/v1',
     this.asrApiKey = '',
     this.asrModel = 'whisper-large-v3-turbo',
@@ -546,6 +548,8 @@ class VedroPreferences {
   final List<String> aiCachedModels;
 
   final bool asrEnabled;
+  final String asrEngine;
+  final bool asrUseChinaMirror;
   final String asrBaseUrl;
   final String asrApiKey;
   final String asrModel;
@@ -814,6 +818,8 @@ class VedroPreferences {
     bool? aiDirectClientIp,
     List<String>? aiCachedModels,
     bool? asrEnabled,
+    String? asrEngine,
+    bool? asrUseChinaMirror,
     String? asrBaseUrl,
     String? asrApiKey,
     String? asrModel,
@@ -925,6 +931,8 @@ class VedroPreferences {
         aiDirectClientIp: aiDirectClientIp ?? this.aiDirectClientIp,
         aiCachedModels: aiCachedModels ?? this.aiCachedModels,
         asrEnabled: asrEnabled ?? this.asrEnabled,
+        asrEngine: asrEngine ?? this.asrEngine,
+        asrUseChinaMirror: asrUseChinaMirror ?? this.asrUseChinaMirror,
         asrBaseUrl: asrBaseUrl ?? this.asrBaseUrl,
         asrApiKey: asrApiKey ?? this.asrApiKey,
         asrModel: asrModel ?? this.asrModel,
@@ -1037,6 +1045,8 @@ class VedroPreferences {
         'ai_direct_client_ip': aiDirectClientIp,
         'ai_cached_models': aiCachedModels,
         'asr_enabled': asrEnabled,
+        'asr_engine': asrEngine,
+        'asr_use_china_mirror': asrUseChinaMirror,
         'asr_base_url': asrBaseUrl,
         'asr_api_key': asrApiKey,
         'asr_model': asrModel,
@@ -1163,6 +1173,8 @@ class VedroPreferences {
             .where((s) => s.isNotEmpty)
             .toList(),
         asrEnabled: j['asr_enabled'] == true,
+        asrEngine: (j['asr_engine'] ?? 'local').toString(),
+        asrUseChinaMirror: j['asr_use_china_mirror'] != false,
         asrBaseUrl: (j['asr_base_url'] ?? 'https://api.groq.com/openai/v1').toString(),
         asrApiKey: (j['asr_api_key'] ?? '').toString(),
         asrModel: (j['asr_model'] ?? 'whisper-large-v3-turbo').toString(),

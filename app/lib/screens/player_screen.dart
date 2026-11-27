@@ -17,6 +17,7 @@ import '../state/app_state.dart';
 import '../widgets/ai_bilingual_subtitle.dart';
 import '../widgets/beauty_filter.dart';
 import '../widgets/danmaku_engine.dart';
+import '../widgets/local_asr_engine.dart';
 import '../widgets/nerd_stats_hud.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
@@ -995,6 +996,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _activeSegmentNotifier.dispose();
     _networkSpeedBpsNotifier.dispose();
     _aiSubCtrl.dispose();
+    unawaited(LocalAsrManager.instance.unloadEngine());
     _persistRememberedPlayerPrefs();
     if (_isDesktop) {
       NativePlaybackChannel.playerHudAutoHideNotifier.value = false;
@@ -1366,8 +1368,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _enableAiAsrSubtitle() async {
-    if (!widget.appState.prefs.isAsrReady) {
-      _flashGestureHud('seek_feedback', text: '请先在「设置 → AI 翻译」配置语音识别 (ASR)');
+    if (widget.appState.prefs.asrEngine == 'local') {
+      await LocalAsrManager.instance.refreshStatus();
+    }
+    if (!widget.appState.isAsrReadyForPlayback) {
+      _flashGestureHud(
+        'seek_feedback',
+        text: widget.appState.prefs.asrEngine == 'local'
+            ? '请先在「设置 → AI 翻译」下载本地离线语音模型 (~229 MB)'
+            : '请先在「设置 → AI 翻译」配置云端语音识别 (ASR)',
+      );
       return;
     }
     await _applyMpvProperty('sub-visibility', 'no');
@@ -1381,12 +1391,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
       displayMode: widget.appState.prefs.aiSubtitleMode,
     );
     if (mounted) {
-      _flashGestureHud('seek_feedback', text: 'AI 听音识字已开启，正在预读识别…');
+      _flashGestureHud(
+        'seek_feedback',
+        text: widget.appState.prefs.asrEngine == 'local'
+            ? '本地离线 SenseVoice 听音识字已开启…'
+            : 'AI 听音识字已开启，正在预读识别…',
+      );
     }
   }
 
   Future<void> _disableAiSubtitle() async {
     _aiSubCtrl.disable();
+    unawaited(LocalAsrManager.instance.unloadEngine());
     await _applyMpvProperty('sub-visibility', 'yes');
     if (mounted) {
       _flashGestureHud('seek_feedback', text: '已关闭 AI 字幕翻译');
@@ -2833,6 +2849,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                                         ),
                                                         const SizedBox(width: 6),
                                                         _DeckPillButton(
+                                                          key: const ValueKey('player-beauty-pill'),
+                                                          label: _beautyPreset == 'off'
+                                                              ? '美颜'
+                                                              : '美颜·${BeautyFilterPreset.byId(_beautyPreset).label}',
+                                                          active: _beautyPreset != 'off',
+                                                          onTap: _openBeautyFilterSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
                                                           label: '画面',
                                                           onTap: _openHdrSheet,
                                                         ),
@@ -2883,6 +2908,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                                         _DeckPillButton(
                                                           label: '音轨',
                                                           onTap: _openAudioSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          key: const ValueKey('player-beauty-pill-compact'),
+                                                          label: _beautyPreset == 'off'
+                                                              ? '美颜'
+                                                              : '美颜·${BeautyFilterPreset.byId(_beautyPreset).label}',
+                                                          active: _beautyPreset != 'off',
+                                                          onTap: _openBeautyFilterSheet,
                                                         ),
                                                         const SizedBox(width: 6),
                                                         _DeckPillButton(
@@ -3931,6 +3965,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _openSubtitleSheet() {
+    unawaited(LocalAsrManager.instance.refreshStatus());
     final extSubs = _prepared?.externalSubtitles ?? const [];
     final embeddedSubs = _player.state.tracks.subtitle
         .where((t) => t.id != 'auto' && t.id != 'no')
@@ -3949,11 +3984,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
             // YouTube-style AI Auto-Translate Bilingual Subtitle & ASR Speech-to-Subtitle Card
             ListenableBuilder(
-              listenable: _aiSubCtrl,
+              listenable: Listenable.merge([_aiSubCtrl, LocalAsrManager.instance]),
               builder: (context, _) {
                 final prefs = widget.appState.prefs;
                 final aiReady = prefs.isAiReady;
-                final asrReady = prefs.isAsrReady;
+                final isLocalAsr = prefs.asrEngine == 'local';
+                final asrReady = widget.appState.isAsrReadyForPlayback;
                 final aiTransActive = _aiSubCtrl.enabled && !_aiSubCtrl.asrMode;
                 final asrActive = _aiSubCtrl.enabled && _aiSubCtrl.asrMode;
                 final accent = Theme.of(context).colorScheme.secondary;
@@ -4100,8 +4136,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 ),
                                 Text(
                                   asrReady
-                                      ? '自动切片识别音频${aiReady ? '并翻译为双语' : ''}（${prefs.asrModel}）'
-                                      : '请先在「设置 → AI 翻译」配置 Groq / 硅基流动 / 本地 Whisper',
+                                      ? (isLocalAsr
+                                          ? '本地离线 SenseVoice 识别${aiReady ? ' + 自动双语翻译' : ''}（免 Key · 无录屏弹窗）'
+                                          : '云端自动切片识别音频${aiReady ? '并翻译为双语' : ''}（${prefs.asrModel}）')
+                                      : (isLocalAsr
+                                          ? '请先在「设置 → AI 翻译」一键下载本地离线模型 (~229 MB，免 Key)'
+                                          : '请先在「设置 → AI 翻译」配置 Groq / 硅基流动 / 本地 Whisper'),
                                   style: const TextStyle(color: VedroTheme.fg3, fontSize: 11),
                                 ),
                               ],
@@ -4337,6 +4377,94 @@ class _PlayerScreenState extends State<PlayerScreen> {
               },
             ),
         ],
+      ),
+    );
+  }
+
+  void _openBeautyFilterSheet() {
+    showGlassSheet<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) => ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 22),
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Text(
+                '美颜滤镜（低功耗 GPU）',
+                style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    BeautyFilterPreset.byId(_beautyPreset).subtitle,
+                    style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: BeautyFilterPreset.all.map((preset) {
+                      return _DeckPillButton(
+                        label: preset.label,
+                        active: _beautyPreset == preset.id,
+                        onTap: () async {
+                          await _applyBeautyFilter(preset.id, _beautyStrength);
+                          setModal(() {});
+                        },
+                      );
+                    }).toList(),
+                  ),
+                  if (_beautyPreset != 'off') ...[
+                    const SizedBox(height: 12),
+                    VedroPrecisionSlider(
+                      label: '美颜强度',
+                      value: _beautyStrength,
+                      min: 0.15,
+                      max: 1.0,
+                      step: 0.05,
+                      defaultValue: 0.55,
+                      snapValues: const [0.35, 0.55, 0.80],
+                      valueText: '${(_beautyStrength * 100).round()}%',
+                      onChanged: (v) async {
+                        setModal(() => _beautyStrength = v);
+                        await _applyBeautyFilter(_beautyPreset, v, showHud: false);
+                      },
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0x1CF59E0B),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0x40F59E0B), width: 0.7),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.local_fire_department_outlined, size: 15, color: Color(0xFFFBBF24)),
+                        SizedBox(width: 7),
+                        Expanded(
+                          child: Text(
+                            BeautyFilterEngine.thermalNotice,
+                            style: TextStyle(color: Color(0xFFFDE68A), fontSize: 11.5, height: 1.4),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

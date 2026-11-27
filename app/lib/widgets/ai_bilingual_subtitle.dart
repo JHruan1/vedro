@@ -114,8 +114,8 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   final Set<String> _inFlightBatchKeys = {};
   final Set<String> _inFlightLiveKeys = {};
 
-  // ASR audio slicing state (fixed 25s slice windows keyed by slice index)
-  static const double asrSliceSecs = 25.0;
+  // ASR audio slicing state (fixed 20s slice windows keyed by slice index)
+  static const double asrSliceSecs = 20.0;
   String? _asrSourceUrl;
   String? _asrLocalPath;
   String? _asrSourceLang;
@@ -615,7 +615,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   }
 
   void _scheduleAsrSlices(double positionSecs) {
-    if (!_enabled || !_asrMode || !appState.prefs.isAsrReady) return;
+    if (!_enabled || !_asrMode || !appState.isAsrReadyForPlayback) return;
     // Keep at most 1 ASR slice in-flight to keep mobile CPU/network super cool & ordered
     if (_asrInFlightSlices.isNotEmpty) return;
 

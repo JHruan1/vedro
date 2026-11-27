@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -24,6 +25,7 @@ import 'package:vedro/widgets/ai_bilingual_subtitle.dart';
 import 'package:vedro/widgets/app_lock_gate.dart';
 import 'package:vedro/widgets/beauty_filter.dart';
 import 'package:vedro/widgets/danmaku_engine.dart';
+import 'package:vedro/widgets/local_asr_engine.dart';
 import 'package:vedro/widgets/media_card.dart';
 import 'package:vedro/widgets/server_card_grid.dart';
 import 'package:vedro/widgets/skin_studio_pane.dart';
@@ -2774,6 +2776,7 @@ void main() {
       aiSubtitleMode: 'bilingual_orig_top',
       aiSubtitleBatchSize: 24,
       asrEnabled: true,
+      asrEngine: 'cloud',
       asrBaseUrl: 'https://api.siliconflow.cn/v1',
       asrModel: 'FunAudioLLM/SenseVoiceSmall',
       asrSourceLang: 'ja',
@@ -2951,5 +2954,73 @@ void main() {
     expect(find.byKey(const ValueKey('settings-asr-card')), findsOneWidget);
     expect(find.byKey(const ValueKey('asr-preset-groq')), findsOneWidget);
     expect(find.byKey(const ValueKey('asr-preset-siliconflow')), findsOneWidget);
+  });
+
+  testWidgets(
+      'v0.3.12: Built-in local offline ASR (sherpa-onnx SenseVoice-Small INT8 + Silero VAD) panel, WAV PCM decoder & energy VAD splitter',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    // 1. Default ASR engine is built-in local offline model with China mirror acceleration
+    const defaults = VedroPreferences();
+    expect(defaults.asrEngine, equals('local'));
+    expect(defaults.asrUseChinaMirror, isTrue);
+    expect(
+      LocalAsrModelSpec.modelUrls(preferChinaMirror: true).first,
+      contains('hf-mirror.com'),
+    );
+    expect(
+      LocalAsrModelSpec.modelUrls(preferChinaMirror: false).first,
+      contains('huggingface.co'),
+    );
+
+    // 2. WAV PCM16 decoder, RMS energy VAD splitter & SenseVoice tag cleaner
+    final wav = Uint8List(44 + 16000 * 2);
+    wav.setRange(0, 4, 'RIFF'.codeUnits);
+    wav.setRange(8, 12, 'WAVE'.codeUnits);
+    wav.setRange(36, 40, 'data'.codeUnits);
+    final bd = ByteData.sublistView(wav);
+    bd.setUint32(40, 16000 * 2, Endian.little);
+    // Write 0.5s of strong voiced signal in the middle (samples 4000..12000)
+    for (var i = 4000; i < 12000; i++) {
+      bd.setInt16(44 + i * 2, (i.isEven ? 12000 : -12000), Endian.little);
+    }
+    final pcm = decodePcm16WavToFloat32(wav);
+    expect(pcm.length, equals(16000));
+    final segments = splitSpeechByEnergy(pcm);
+    expect(segments.length, equals(1));
+    expect(segments.first.startSample, inInclusiveRange(3500, 4500));
+    expect(
+      cleanSenseVoiceText('<|ja|><|NEUTRAL|><|Speech|><|woitn|>おはようございます！'),
+      equals('おはようございます！'),
+    );
+
+    // 3. Settings -> AI 翻译 defaults to built-in local offline model panel with download button
+    final app = VedroAppState(_MockVedroCore());
+    app.activeSettingsSection = 'ai';
+    addTearDown(app.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+        home: SettingsScreen(
+          appState: app,
+          onOpenServerHub: () {},
+          onOpenAddServer: ([_]) {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings-local-asr-panel')), findsOneWidget);
+    expect(find.byKey(const ValueKey('download-local-asr-btn')), findsOneWidget);
+
+    // 4. Settings -> 视频设置 also directly surfaces Beauty Filter card with thermal reminder
+    await tester.tap(find.text('视频设置'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings-beauty-filter-card')), findsOneWidget);
+    expect(find.text('自然清透'), findsOneWidget);
+    expect(find.text('粉嫩气色'), findsOneWidget);
   });
 }

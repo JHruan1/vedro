@@ -15,6 +15,7 @@ import '../core/platform/native_playback_channel.dart';
 import '../core/theme/display_profile.dart';
 import '../core/theme/dynamic_color_engine.dart';
 import '../widgets/danmaku_engine.dart';
+import '../widgets/local_asr_engine.dart';
 
 /// Central reactive application state backed directly by the compiled Rust core (`VedroCoreClient`).
 ///
@@ -1710,16 +1711,48 @@ class VedroAppState extends ChangeNotifier {
     return out;
   }
 
+  /// True when either the built-in local offline SenseVoice model is downloaded
+  /// (when `prefs.asrEngine == 'local'`) OR a cloud/self-hosted ASR API is configured.
+  bool get isAsrReadyForPlayback {
+    if (prefs.asrEngine == 'local') {
+      return LocalAsrManager.instance.isModelDownloaded;
+    }
+    return prefs.isAsrReady;
+  }
+
   /// Extract a `[startSecs, startSecs + durationSecs]` audio slice in pure Rust and transcribe
-  /// it via an OpenAI-compatible Whisper / SenseVoice `/audio/transcriptions` endpoint.
+  /// it either locally on-device (`sherpa_onnx` SenseVoice-Small INT8 + Silero VAD) or via
+  /// an OpenAI-compatible Whisper / SenseVoice `/audio/transcriptions` endpoint.
   Future<List<Map<String, dynamic>>> transcribeAudioSlice({
     String? sourceUrl,
     String? localPath,
     required double startSecs,
-    double durationSecs = 25.0,
+    double durationSecs = 20.0,
     String? sourceLang,
     String? prompt,
   }) async {
+    final effectiveLang = (sourceLang != null && sourceLang.trim().isNotEmpty)
+        ? sourceLang.trim()
+        : prefs.asrSourceLang;
+
+    if (prefs.asrEngine == 'local') {
+      final extracted = await core.invoke('extract_audio_slice_file', {
+        if (sourceUrl != null && sourceUrl.trim().isNotEmpty) 'source_url': sourceUrl.trim(),
+        if (localPath != null && localPath.trim().isNotEmpty) 'local_path': localPath.trim(),
+        'start_secs': startSecs,
+        'duration_secs': durationSecs,
+      }) as Map<String, dynamic>;
+      final wavPath = (extracted['wav_path'] ?? '').toString();
+      if (wavPath.isEmpty) {
+        throw Exception('未能提取到有效音频切片');
+      }
+      return LocalAsrManager.instance.transcribeWavSlice(
+        wavPath: wavPath,
+        sliceStartSecs: startSecs,
+        language: effectiveLang,
+      );
+    }
+
     if (!prefs.isAsrReady) {
       throw Exception('请先在「设置 → AI 翻译」开启并配置 AI 语音识别 (ASR)');
     }
@@ -1731,9 +1764,7 @@ class VedroAppState extends ChangeNotifier {
       'asr_base_url': prefs.asrBaseUrl.trim(),
       'asr_api_key': prefs.asrApiKey.trim(),
       'asr_model': prefs.asrModel.trim(),
-      'asr_language': (sourceLang != null && sourceLang.trim().isNotEmpty)
-          ? sourceLang.trim()
-          : prefs.asrSourceLang,
+      'asr_language': effectiveLang,
       'direct_ip': prefs.asrDirectClientIp,
       if (prompt != null && prompt.trim().isNotEmpty) 'prompt': prompt.trim(),
     }) as Map<String, dynamic>;

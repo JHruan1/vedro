@@ -3113,6 +3113,79 @@ impl VedroRuntime {
                 }))
             }
 
+            "extract_audio_slice_file" => {
+                let start_secs = params
+                    .get("start_secs")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+                    .max(0.0);
+                let duration_secs = params
+                    .get("duration_secs")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(20.0)
+                    .clamp(4.0, 45.0);
+                let local_path = params
+                    .get("local_path")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let source_url = params
+                    .get("source_url")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+
+                let audio_source = if let Some(p) = local_path {
+                    vedro_stream::AudioSliceSource::LocalFile(std::path::PathBuf::from(p))
+                } else if let Some(u) = source_url {
+                    let hdrs = if u.starts_with("http://127.0.0.1:") {
+                        reqwest::header::HeaderMap::new()
+                    } else {
+                        self.client
+                            .lock()
+                            .as_ref()
+                            .map(|c| c.auth_headers())
+                            .unwrap_or_default()
+                    };
+                    vedro_stream::AudioSliceSource::HttpUrl {
+                        url: u.to_string(),
+                        headers: hdrs,
+                    }
+                } else {
+                    return Err("缺少音频源（source_url 或 local_path）".to_string());
+                };
+
+                let media_http = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(25))
+                    .no_proxy()
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                let handle = tokio::runtime::Handle::current();
+                let wav_bytes = tokio::task::spawn_blocking(move || {
+                    vedro_stream::extract_audio_slice_wav(
+                        &audio_source,
+                        start_secs,
+                        duration_secs,
+                        handle,
+                        media_http,
+                    )
+                })
+                .await
+                .map_err(|e| format!("音频提取任务异常: {e}"))??;
+
+                let wav_path = std::env::temp_dir()
+                    .join(format!("vedro_asr_{}.wav", uuid::Uuid::new_v4().simple()));
+                tokio::fs::write(&wav_path, &wav_bytes)
+                    .await
+                    .map_err(|e| format!("写入临时音频切片失败: {e}"))?;
+
+                Ok(json!({
+                    "wav_path": wav_path.to_string_lossy().to_string(),
+                    "wav_bytes": wav_bytes.len(),
+                    "sample_rate": 16000,
+                }))
+            }
+
             "ai_list_models" => {
                 let base_url = str_param(&params, "base_url")?;
                 let api_key = params.get("api_key").and_then(Value::as_str).unwrap_or("");

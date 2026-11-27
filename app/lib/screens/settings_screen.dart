@@ -12,6 +12,8 @@ import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/admin_console_pane.dart';
+import '../widgets/beauty_filter.dart';
+import '../widgets/local_asr_engine.dart';
 import '../widgets/server_card_grid.dart';
 import '../widgets/skin_studio_pane.dart';
 import '../widgets/update_checker.dart';
@@ -207,7 +209,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       tintTop: Color(0xFFFB923C),
       tintBottom: Color(0xFFEA580C),
       group: '播放与视听',
-      keywords: 'hdr dolby vision anime4k mpv.conf 硬解 杜比视界',
+      keywords: 'hdr dolby vision anime4k mpv.conf beauty 硬解 杜比视界 美颜 磨皮 滤镜',
     ),
     _NavItemMeta(
       section: _SettingsSection.audio,
@@ -874,6 +876,11 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         unawaited(widget.appState.loadImageCacheStats());
+      });
+    } else if (widget.section == _SettingsSection.ai) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        unawaited(LocalAsrManager.instance.refreshStatus());
       });
     }
   }
@@ -2941,6 +2948,84 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           ],
         ),
         const SizedBox(height: 16),
+        const _GroupHeader('美颜滤镜（低功耗 GPU）'),
+        KeyedSubtree(
+          key: const ValueKey('settings-beauty-filter-card'),
+          child: _GroupedCard(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '当前效果：${BeautyFilterPreset.byId(p.beautyFilterPreset).label} · ${BeautyFilterPreset.byId(p.beautyFilterPreset).subtitle}',
+                      style: TextStyle(color: VedroSkin.of(context).fg2, fontSize: 12.5),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: BeautyFilterPreset.all.map((preset) {
+                        return ChoiceChip(
+                          selected: p.beautyFilterPreset == preset.id,
+                          label: Text(preset.label, style: const TextStyle(fontSize: 12.5)),
+                          onSelected: (_) =>
+                              _updatePrefs(p.copyWith(beautyFilterPreset: preset.id)),
+                        );
+                      }).toList(),
+                    ),
+                    if (p.beautyFilterPreset != 'off') ...[
+                      const SizedBox(height: 10),
+                      VedroPrecisionSlider(
+                        label: '默认美颜强度',
+                        value: p.beautyFilterStrength,
+                        min: 0.15,
+                        max: 1.0,
+                        step: 0.05,
+                        defaultValue: 0.55,
+                        snapValues: const [0.35, 0.55, 0.80],
+                        valueText: '${(p.beautyFilterStrength * 100).round()}%',
+                        onChanged: (v) => _updatePrefs(p.copyWith(beautyFilterStrength: v)),
+                      ),
+                    ],
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0x1CF59E0B),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0x45F59E0B), width: 0.7),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(
+                            Icons.local_fire_department_outlined,
+                            size: 15,
+                            color: Color(0xFFD97706),
+                          ),
+                          const SizedBox(width: 7),
+                          Expanded(
+                            child: Text(
+                              '${BeautyFilterEngine.thermalNotice}（播放时也可直接点击底栏「美颜」按钮实时切换）',
+                              style: TextStyle(
+                                color: VedroSkin.of(context).fg2,
+                                fontSize: 11.5,
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
         const _GroupHeader('Anime4K 超分与高级 MPV 参数'),
         _GroupedCard(
           children: [
@@ -3605,61 +3690,15 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           key: const ValueKey('settings-asr-card'),
           child: _GroupedCard(
             children: [
-              _SwitchRow(
-                key: const ValueKey('pref-asr-enabled'),
-                title: '启用语音识别转字幕 (ASR)',
-                subtitle: '无字幕视频可在播放器「字幕」菜单中一键实时切片识别音频并生成双语字幕',
-                value: p.asrEnabled,
-                onChanged: (v) => _updatePrefs(p.copyWith(asrEnabled: v)),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    ChoiceChip(
-                      key: const ValueKey('asr-preset-groq'),
-                      selected: p.asrBaseUrl.contains('groq.com'),
-                      label: const Text('Groq Whisper（极速）'),
-                      onSelected: (_) => applyAsrPreset(
-                        baseUrl: 'https://api.groq.com/openai/v1',
-                        model: 'whisper-large-v3-turbo',
-                        directIp: false,
-                      ),
-                    ),
-                    ChoiceChip(
-                      key: const ValueKey('asr-preset-siliconflow'),
-                      selected: p.asrBaseUrl.contains('siliconflow.cn'),
-                      label: const Text('硅基流动 SenseVoice'),
-                      onSelected: (_) => applyAsrPreset(
-                        baseUrl: 'https://api.siliconflow.cn/v1',
-                        model: 'FunAudioLLM/SenseVoiceSmall',
-                        directIp: true,
-                      ),
-                    ),
-                    ChoiceChip(
-                      selected: p.asrBaseUrl.contains('openai.com'),
-                      label: const Text('OpenAI Whisper'),
-                      onSelected: (_) => applyAsrPreset(
-                        baseUrl: 'https://api.openai.com/v1',
-                        model: 'whisper-1',
-                        directIp: false,
-                      ),
-                    ),
-                    ChoiceChip(
-                      selected: p.asrBaseUrl.contains('127.0.0.1') ||
-                          p.asrBaseUrl.contains('localhost'),
-                      label: const Text('本地 / NAS Whisper'),
-                      onSelected: (_) => applyAsrPreset(
-                        baseUrl: 'http://127.0.0.1:8000/v1',
-                        model: 'whisper-large-v3-turbo',
-                        directIp: true,
-                        clearKey: true,
-                      ),
-                    ),
-                  ],
-                ),
+              _InlineSegmentedRow<String>(
+                title: '语音识别引擎',
+                keyPrefix: 'asr-engine',
+                value: p.asrEngine,
+                items: const [
+                  ('local', '本地离线模型（推荐）'),
+                  ('cloud', '云端 / 自建 API'),
+                ],
+                onChanged: (v) => _updatePrefs(p.copyWith(asrEngine: v)),
               ),
               _InlineSegmentedRow<String>(
                 title: '视频原声语言',
@@ -3674,68 +3713,303 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 ],
                 onChanged: (v) => _updatePrefs(p.copyWith(asrSourceLang: v)),
               ),
-              _InlineSegmentedRow<bool>(
-                title: 'ASR 网络出口',
-                value: p.asrDirectClientIp,
-                items: const [
-                  (true, '本机直连'),
-                  (false, '跟随系统'),
-                ],
-                onChanged: (v) => _updatePrefs(p.copyWith(asrDirectClientIp: v)),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    TextField(
-                      controller: _asrUrlCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'ASR API Base URL（OpenAI /audio/transcriptions 兼容）',
-                        hintText: 'https://api.groq.com/openai/v1',
+              if (p.asrEngine == 'local')
+                ListenableBuilder(
+                  listenable: LocalAsrManager.instance,
+                  builder: (context, _) {
+                    final mgr = LocalAsrManager.instance;
+                    final skin = VedroSkin.of(context);
+                    final accent = Theme.of(context).colorScheme.secondary;
+                    final sizeStr = mgr.downloadedBytes > 0
+                        ? fmtFileSize(mgr.downloadedBytes)
+                        : '约 229 MB';
+                    return Padding(
+                      key: const ValueKey('settings-local-asr-panel'),
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                width: 34,
+                                height: 34,
+                                decoration: BoxDecoration(
+                                  color: (mgr.isModelDownloaded
+                                          ? const Color(0xFF10B981)
+                                          : accent)
+                                      .withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Icon(
+                                  mgr.isModelDownloaded
+                                      ? Icons.check_circle_outline_rounded
+                                      : Icons.downloading_rounded,
+                                  size: 18,
+                                  color: mgr.isModelDownloaded
+                                      ? const Color(0xFF10B981)
+                                      : accent,
+                                ),
+                              ),
+                              const SizedBox(width: 11),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Flexible(
+                                          child: Text(
+                                            LocalAsrModelSpec.displayName,
+                                            style: TextStyle(
+                                              color: skin.fg,
+                                              fontSize: 13.5,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          mgr.isModelDownloaded ? '已就绪 · $sizeStr' : sizeStr,
+                                          style: TextStyle(
+                                            color: mgr.isModelDownloaded
+                                                ? const Color(0xFF10B981)
+                                                : skin.fg3,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      LocalAsrModelSpec.languagesLabel,
+                                      style: TextStyle(color: skin.fg3, fontSize: 11.5),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Text('下载源：', style: TextStyle(color: skin.fg2, fontSize: 12)),
+                              ChoiceChip(
+                                selected: p.asrUseChinaMirror,
+                                label: const Text('国内镜像加速', style: TextStyle(fontSize: 12)),
+                                onSelected: (_) =>
+                                    _updatePrefs(p.copyWith(asrUseChinaMirror: true)),
+                              ),
+                              const SizedBox(width: 8),
+                              ChoiceChip(
+                                selected: !p.asrUseChinaMirror,
+                                label: const Text('HuggingFace 官方', style: TextStyle(fontSize: 12)),
+                                onSelected: (_) =>
+                                    _updatePrefs(p.copyWith(asrUseChinaMirror: false)),
+                              ),
+                            ],
+                          ),
+                          if (mgr.isDownloading) ...[
+                            const SizedBox(height: 12),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: LinearProgressIndicator(
+                                value: mgr.downloadProgress > 0 ? mgr.downloadProgress : null,
+                                minHeight: 5,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    mgr.downloadStage,
+                                    style: TextStyle(color: skin.fg2, fontSize: 12),
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: mgr.cancelDownload,
+                                  child: const Text('取消', style: TextStyle(fontSize: 12)),
+                                ),
+                              ],
+                            ),
+                          ],
+                          if (mgr.downloadError != null && mgr.downloadError!.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              mgr.downloadError!,
+                              style: const TextStyle(color: VedroTheme.danger, fontSize: 12),
+                            ),
+                          ],
+                          const SizedBox(height: 12),
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 8,
+                            children: [
+                              if (!mgr.isModelDownloaded)
+                                FilledButton.icon(
+                                  key: const ValueKey('download-local-asr-btn'),
+                                  onPressed: mgr.isDownloading
+                                      ? null
+                                      : () => mgr.downloadModel(
+                                            useChinaMirror: p.asrUseChinaMirror,
+                                          ),
+                                  icon: const Icon(Icons.download_rounded, size: 16),
+                                  label: Text(
+                                    mgr.isDownloading ? '正在下载…' : '一键下载离线模型 (~229 MB)',
+                                    style: const TextStyle(fontSize: 13),
+                                  ),
+                                )
+                              else
+                                OutlinedButton.icon(
+                                  key: const ValueKey('delete-local-asr-btn'),
+                                  onPressed: mgr.isDownloading
+                                      ? null
+                                      : () async {
+                                          final messenger = ScaffoldMessenger.of(context);
+                                          await mgr.deleteModel();
+                                          if (mounted) {
+                                            messenger.showSnackBar(
+                                              const SnackBar(content: Text('已删除本地离线语音模型')),
+                                            );
+                                          }
+                                        },
+                                  icon: const Icon(Icons.delete_outline_rounded, size: 16),
+                                  label: const Text('删除模型释放空间', style: TextStyle(fontSize: 12.5)),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            '内置 sherpa-onnx + Silero VAD 直接从视频流提取音轨，无需录屏/麦克风权限弹窗；完全本地离线免费识别，中高端手机可流畅运行（长时间识别会有轻微功耗与温热，建议搭配上方 AI 翻译生成双语字幕）。',
+                            style: TextStyle(color: skin.fg3, fontSize: 11.5, height: 1.45),
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _asrKeyCtrl,
-                      obscureText: true,
-                      decoration: const InputDecoration(
-                        labelText: 'ASR API Key',
-                        hintText: 'gsk_... / sk-...（本地自建可留空）',
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _asrModelCtrl,
-                      decoration: const InputDecoration(
-                        labelText: '语音识别模型',
-                        hintText: 'whisper-large-v3-turbo',
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Row(
-                      children: [
-                        FilledButton(
-                          onPressed: () async {
-                            await _updatePrefs(p.copyWith(
-                              asrEnabled: true,
-                              asrBaseUrl: _asrUrlCtrl.text.trim(),
-                              asrApiKey: _asrKeyCtrl.text.trim(),
-                              asrModel: _asrModelCtrl.text.trim(),
-                            ));
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('语音识别 (ASR) 配置已保存')),
-                              );
-                            }
-                          },
-                          child: const Text('保存语音识别配置', style: TextStyle(fontSize: 13)),
-                        ),
-                      ],
-                    ),
-                  ],
+                    );
+                  },
+                )
+              else ...[
+                _SwitchRow(
+                  key: const ValueKey('pref-asr-enabled'),
+                  title: '启用云端 / 自建语音识别',
+                  subtitle: '零本地模型占用，通过 OpenAI 兼容接口切片识别音频并生成双语字幕',
+                  value: p.asrEnabled,
+                  onChanged: (v) => _updatePrefs(p.copyWith(asrEnabled: v)),
                 ),
-              ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ChoiceChip(
+                        key: const ValueKey('asr-preset-groq'),
+                        selected: p.asrBaseUrl.contains('groq.com'),
+                        label: const Text('Groq Whisper（极速）'),
+                        onSelected: (_) => applyAsrPreset(
+                          baseUrl: 'https://api.groq.com/openai/v1',
+                          model: 'whisper-large-v3-turbo',
+                          directIp: false,
+                        ),
+                      ),
+                      ChoiceChip(
+                        key: const ValueKey('asr-preset-siliconflow'),
+                        selected: p.asrBaseUrl.contains('siliconflow.cn'),
+                        label: const Text('硅基流动 SenseVoice'),
+                        onSelected: (_) => applyAsrPreset(
+                          baseUrl: 'https://api.siliconflow.cn/v1',
+                          model: 'FunAudioLLM/SenseVoiceSmall',
+                          directIp: true,
+                        ),
+                      ),
+                      ChoiceChip(
+                        selected: p.asrBaseUrl.contains('openai.com'),
+                        label: const Text('OpenAI Whisper'),
+                        onSelected: (_) => applyAsrPreset(
+                          baseUrl: 'https://api.openai.com/v1',
+                          model: 'whisper-1',
+                          directIp: false,
+                        ),
+                      ),
+                      ChoiceChip(
+                        selected: p.asrBaseUrl.contains('127.0.0.1') ||
+                            p.asrBaseUrl.contains('localhost'),
+                        label: const Text('本地 / NAS Whisper'),
+                        onSelected: (_) => applyAsrPreset(
+                          baseUrl: 'http://127.0.0.1:8000/v1',
+                          model: 'whisper-large-v3-turbo',
+                          directIp: true,
+                          clearKey: true,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                _InlineSegmentedRow<bool>(
+                  title: 'ASR 网络出口',
+                  value: p.asrDirectClientIp,
+                  items: const [
+                    (true, '本机直连'),
+                    (false, '跟随系统'),
+                  ],
+                  onChanged: (v) => _updatePrefs(p.copyWith(asrDirectClientIp: v)),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextField(
+                        controller: _asrUrlCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'ASR API Base URL（OpenAI /audio/transcriptions 兼容）',
+                          hintText: 'https://api.groq.com/openai/v1',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _asrKeyCtrl,
+                        obscureText: true,
+                        decoration: const InputDecoration(
+                          labelText: 'ASR API Key',
+                          hintText: 'gsk_... / sk-...（本地自建可留空）',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _asrModelCtrl,
+                        decoration: const InputDecoration(
+                          labelText: '语音识别模型',
+                          hintText: 'whisper-large-v3-turbo',
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          FilledButton(
+                            onPressed: () async {
+                              await _updatePrefs(p.copyWith(
+                                asrEnabled: true,
+                                asrBaseUrl: _asrUrlCtrl.text.trim(),
+                                asrApiKey: _asrKeyCtrl.text.trim(),
+                                asrModel: _asrModelCtrl.text.trim(),
+                              ));
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('语音识别 (ASR) 配置已保存')),
+                                );
+                              }
+                            },
+                            child: const Text('保存语音识别配置', style: TextStyle(fontSize: 13)),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ],
           ),
         ),

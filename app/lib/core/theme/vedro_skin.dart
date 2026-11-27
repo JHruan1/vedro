@@ -1842,11 +1842,16 @@ class VedroSkinCanvas extends StatelessWidget {
     required this.child,
     this.backdropImageUrl,
     this.suppressTopOrb = false,
+    this.suppressBottomOrb = false,
   });
 
   final Widget child;
   final String? backdropImageUrl;
   final bool suppressTopOrb;
+
+  /// Hide the screen-fixed bottom-right glow (e.g. under a full-bleed Home hero,
+  /// whose opaque bottom dissolve would otherwise cut the glow with a hard seam).
+  final bool suppressBottomOrb;
 
   @override
   Widget build(BuildContext context) {
@@ -1909,6 +1914,7 @@ class VedroSkinCanvas extends StatelessWidget {
                   ),
                 ),
               ),
+            if (!suppressBottomOrb)
             Positioned.fill(
               child: IgnorePointer(
                 child: DecoratedBox(

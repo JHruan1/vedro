@@ -805,15 +805,15 @@ class VedroPreferences {
   double sectionTopGap(bool wide) {
     if (wide) {
       return switch (sectionSpacing) {
-        'compact' => 18.0,
-        'spacious' => 30.0,
-        _ => 24.0,
+        'compact' => 24.0,
+        'spacious' => 38.0,
+        _ => 30.0,
       };
     }
     return switch (sectionSpacing) {
-      'compact' => 11.0,
-      'spacious' => 20.0,
-      _ => 15.0,
+      'compact' => 18.0,
+      'spacious' => 28.0,
+      _ => 22.0,
     };
   }
 

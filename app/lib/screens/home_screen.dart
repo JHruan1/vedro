@@ -1,11 +1,17 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' show ImageFilter;
 
+import 'package:flutter/cupertino.dart' show CupertinoActivityIndicator;
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/models/models.dart';
 import '../core/platform/platform_perf.dart';
 import '../core/theme/display_profile.dart';
+import '../core/theme/vedro_motion.dart';
+import '../core/theme/vedro_scroll.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -18,6 +24,7 @@ import '../widgets/vedro_peek_menu.dart';
 import '../widgets/vedro_ui.dart';
 import 'player_screen.dart';
 
+part 'home/home_chrome.dart';
 part 'home/home_context_menu.dart';
 part 'home/home_hero_banner.dart';
 part 'home/home_welcome_hub.dart';
@@ -59,8 +66,20 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final _scrollCtrl = ScrollController();
+  final _scrollCtrl = VedroScrollController();
   final ValueNotifier<double> _scrollOffsetNotifier = ValueNotifier<double>(0.0);
+  final ValueNotifier<double> _pullProgress = ValueNotifier<double>(0.0);
+  final ValueNotifier<bool> _refreshing = ValueNotifier<bool>(false);
+  bool _pullArmed = false;
+
+  /// When the current `ready` stage first appeared: sections created shortly
+  /// after get a staggered spring entrance; later lazily-built ones stay static.
+  String? _readyStageKey;
+  DateTime? _readyStageAt;
+  String? _lastStageKey;
+
+  /// Scroll offset at which the pinned mobile bar becomes fully frosted.
+  double _topBarSolidAfter = 8.0;
 
   @override
   void initState() {
@@ -72,14 +91,63 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _scrollCtrl.dispose();
     _scrollOffsetNotifier.dispose();
+    _pullProgress.dispose();
+    _refreshing.dispose();
     super.dispose();
   }
 
   void _onScroll() {
+    if (!_scrollCtrl.hasClients) return;
     final offset = _scrollCtrl.offset;
     widget.onScrollChanged?.call(offset > 24);
-    if (offset < 760) {
-      _scrollOffsetNotifier.value = offset;
+    // Clamp (instead of skipping) so a fast fling past the hero never leaves
+    // scroll-driven chrome stuck at a stale mid-way value.
+    final clamped = math.min(offset, 760.0);
+    if (clamped != _scrollOffsetNotifier.value) {
+      _scrollOffsetNotifier.value = clamped;
+    }
+  }
+
+  /// iOS stretch-to-refresh: rubber-band past [_kPullToRefreshTrigger] arms it
+  /// (with a haptic tick); releasing fires the refresh. Pushing back cancels.
+  bool _onScrollNotification(ScrollNotification n) {
+    if (n.depth != 0 || n.metrics.axis != Axis.vertical || _refreshing.value) return false;
+    if (n is ScrollUpdateNotification || n is OverscrollNotification) {
+      final pull = math.max(0.0, -n.metrics.pixels);
+      final dragging = n is ScrollUpdateNotification
+          ? n.dragDetails != null
+          : (n as OverscrollNotification).dragDetails != null;
+      _pullProgress.value = (pull / _kPullToRefreshTrigger).clamp(0.0, 1.0);
+      if (dragging) {
+        if (!_pullArmed && pull >= _kPullToRefreshTrigger) {
+          _pullArmed = true;
+          HapticFeedback.mediumImpact();
+        } else if (_pullArmed && pull < _kPullToRefreshTrigger * 0.8) {
+          _pullArmed = false;
+        }
+      } else if (_pullArmed) {
+        _triggerPullRefresh();
+      }
+    } else if (n is ScrollEndNotification) {
+      if (_pullArmed) {
+        _triggerPullRefresh();
+      } else {
+        _pullProgress.value = 0.0;
+      }
+    }
+    return false;
+  }
+
+  Future<void> _triggerPullRefresh() async {
+    _pullArmed = false;
+    _pullProgress.value = 0.0;
+    _refreshing.value = true;
+    try {
+      await widget.appState.refreshHome();
+    } catch (_) {
+      // Errors surface through `homeError`; the indicator just settles.
+    } finally {
+      if (mounted) _refreshing.value = false;
     }
   }
 
@@ -234,8 +302,25 @@ class _HomeScreenState extends State<HomeScreen> {
       stageChild = _buildLoadedHomeBody(context, app, skin, wide);
     }
 
-    return AnimatedSwitcher(
-      duration: Duration(milliseconds: reduceMotion ? 0 : 320),
+    if (stageKey.startsWith('ready:') && _readyStageKey != stageKey) {
+      _readyStageKey = stageKey;
+      _readyStageAt = DateTime.now();
+    }
+    if (_lastStageKey != stageKey) {
+      _lastStageKey = stageKey;
+      // A new stage mounts a fresh scroll view at offset 0: reset scroll-driven chrome.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final live = _scrollCtrl.hasClients && _scrollCtrl.positions.length == 1
+            ? math.min(_scrollCtrl.offset, 760.0)
+            : 0.0;
+        _scrollOffsetNotifier.value = live;
+        widget.onScrollChanged?.call(live > 24);
+      });
+    }
+
+    final stage = AnimatedSwitcher(
+      duration: Duration(milliseconds: reduceMotion ? 0 : 420),
       switchInCurve: VedroTheme.easeOut,
       switchOutCurve: Curves.easeInCubic,
       transitionBuilder: (child, anim) {
@@ -252,6 +337,35 @@ class _HomeScreenState extends State<HomeScreen> {
         key: ValueKey(stageKey),
         child: stageChild,
       ),
+    );
+
+    if (!app.isSignedIn) return stage;
+    final safeTop = MediaQuery.paddingOf(context).top;
+    return Stack(
+      children: [
+        Positioned.fill(child: stage),
+        if (!wide)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: _HomeMobileTopBar(
+              appState: app,
+              scrollOffset: _scrollOffsetNotifier,
+              solidAfter: stageKey.startsWith('ready:') ? _topBarSolidAfter : 8.0,
+              onOpenServerHub: widget.onOpenServerHub,
+              onOpenFavorites: widget.onOpenFavorites,
+            ),
+          ),
+        Positioned(
+          top: wide ? widget.topNavClearance + 6 : safeTop + 62,
+          left: 0,
+          right: 0,
+          child: Center(
+            child: _PullRefreshIndicator(progress: _pullProgress, refreshing: _refreshing),
+          ),
+        ),
+      ],
     );
   }
 
@@ -344,6 +458,30 @@ class _HomeScreenState extends State<HomeScreen> {
         ) +
         libStripVPad;
 
+    final size = MediaQuery.sizeOf(context);
+    final safeTop = MediaQuery.paddingOf(context).top;
+    final mobileHeroH = (size.height * 0.49).clamp(328.0, 420.0);
+    _topBarSolidAfter = (featured.isNotEmpty && skin.heroStyle == 'full_bleed')
+        ? math.max(8.0, mobileHeroH - safeTop - 64)
+        : 8.0;
+
+    final readyAt = _readyStageAt;
+    final animateEntrance = !PlatformPerfProfile.shouldReduceMotion(context) &&
+        readyAt != null &&
+        DateTime.now().difference(readyAt) < const Duration(milliseconds: 900);
+    var sectionIndex = 0;
+    Widget sectionSliver({required Widget child}) {
+      final i = sectionIndex++;
+      return SliverToBoxAdapter(
+        child: VedroEntrance(
+          delay: Duration(milliseconds: 70 + i.clamp(0, 6) * 55),
+          offsetY: 26,
+          enabled: animateEntrance && i < 7,
+          child: child,
+        ),
+      );
+    }
+
     final dynamicSectionSlivers = <Widget>[];
     for (final sec in app.homeSections) {
       if (!sec.visible) continue;
@@ -351,7 +489,7 @@ class _HomeScreenState extends State<HomeScreen> {
         case 'libraries':
           if (app.views.isNotEmpty) {
             dynamicSectionSlivers.add(
-              SliverToBoxAdapter(
+              sectionSliver(
                 child: CustomHorizontalRail(
                   title: '媒体库',
                   height: libRailH,
@@ -386,7 +524,7 @@ class _HomeScreenState extends State<HomeScreen> {
         case 'resume':
           if (app.resume.isNotEmpty) {
             dynamicSectionSlivers.add(
-              SliverToBoxAdapter(
+              sectionSliver(
                 child: HorizontalMediaRail(
                   title: '继续播放',
                   items: app.resume,
@@ -412,7 +550,7 @@ class _HomeScreenState extends State<HomeScreen> {
         case 'next_up':
           if (nextItems.isNotEmpty) {
             dynamicSectionSlivers.add(
-              SliverToBoxAdapter(
+              sectionSliver(
                 child: HorizontalMediaRail(
                   title: '接下来播放',
                   items: nextItems,
@@ -437,7 +575,7 @@ class _HomeScreenState extends State<HomeScreen> {
         case 'favorites':
           if (app.favorites.isNotEmpty) {
             dynamicSectionSlivers.add(
-              SliverToBoxAdapter(
+              sectionSliver(
                 child: HorizontalMediaRail(
                   title: '我的收藏',
                   items: app.favorites,
@@ -464,7 +602,7 @@ class _HomeScreenState extends State<HomeScreen> {
             final items = entry.items;
             if (items.isEmpty) continue;
             dynamicSectionSlivers.add(
-              SliverToBoxAdapter(
+              sectionSliver(
                 child: HorizontalMediaRail(
                   title: '最新加入 · ${lib.name}',
                   items: items,
@@ -489,7 +627,7 @@ class _HomeScreenState extends State<HomeScreen> {
         case 'suggestions':
           if (app.suggestions.isNotEmpty) {
             dynamicSectionSlivers.add(
-              SliverToBoxAdapter(
+              sectionSliver(
                 child: HorizontalMediaRail(
                   title: '猜你喜欢',
                   items: app.suggestions,
@@ -513,10 +651,8 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    return RefreshIndicator(
-      color: skin.fg,
-      backgroundColor: skin.surface2,
-      onRefresh: app.refreshHome,
+    return NotificationListener<ScrollNotification>(
+      onNotification: _onScrollNotification,
       child: CustomScrollView(
         controller: _scrollCtrl,
         cacheExtent: PlatformPerfProfile.scrollCacheExtent,
@@ -528,19 +664,15 @@ class _HomeScreenState extends State<HomeScreen> {
                 appState: app,
                 scrollOffsetListenable: _scrollOffsetNotifier,
                 topNavClearance: widget.topNavClearance,
-                showMobileHeader: !wide,
                 onPlay: widget.onQuickPlay,
                 onDetail: (item) => widget.onItemTap(item, heroPrefix: 'hero'),
                 onGenreTap: widget.onGenreTap,
-                onOpenFavorites: widget.onOpenFavorites,
-                onOpenServerHub: widget.onOpenServerHub,
-                onRefresh: app.refreshHome,
               ),
             )
           else
             SliverToBoxAdapter(
               child: SizedBox(
-                height: wide ? widget.topNavClearance : MediaQuery.paddingOf(context).top + 12,
+                height: wide ? widget.topNavClearance : safeTop + 60,
               ),
             ),
 
@@ -577,18 +709,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
           SliverToBoxAdapter(
             child: Padding(
-              padding: EdgeInsets.fromLTRB(padX, wide ? 28 : 18, padX, wide ? 48 : 104),
+              padding: EdgeInsets.fromLTRB(padX, wide ? 40 : 30, padX, wide ? 56 : 112),
               child: Center(
                 child: PressableScale(
                   onTap: () => showHomeLayoutSheet(context: context, appState: app),
                   hoverScale: 1.03,
-                  pressScale: 0.96,
+                  pressScale: 0.94,
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
                     decoration: BoxDecoration(
-                      color: skin.panelSurface,
+                      color: skin.subtleChipBg,
                       borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
-                      border: Border.all(color: skin.border, width: 0.8),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,

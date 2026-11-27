@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
 import '../core/platform/platform_perf.dart';
+import '../core/theme/vedro_motion.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -27,6 +28,7 @@ import 'server_hub_screen.dart';
 import 'settings_screen.dart';
 
 part 'shell/shell_nav_chrome.dart';
+part 'shell/shell_nav_helpers.dart';
 
 /// Multi-architecture cinema shell adapting structurally to `VedroSkin.navLayout`:
 /// - `'top_floating'`: Apple TV+ / ElegantFin full-width floating header
@@ -51,7 +53,7 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
   final FocusScopeNode _navFocusScope = FocusScopeNode(debugLabel: 'vedro-shell-nav-scope');
   late final AnimationController _tabAnimCtrl = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 220),
+    duration: const Duration(milliseconds: 380),
     value: 1.0,
   );
 
@@ -315,7 +317,7 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
   void _handleRootBackPop(bool didPop) {
     if (didPop) return;
     if (_index != 0) {
-      setState(() => _index = 0);
+      _selectTab(0);
       return;
     }
     if (PlatformPerfProfile.isTv && !_navFocusScope.hasFocus && _navFocusScope.canRequestFocus) {
@@ -577,22 +579,30 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
     }
 
     // Lazy-mounted IndexedStack: preserves Home scroll position & decoded textures
-    // while applying a crisp 220ms Apple fade + depth-scale glide on each tab switch.
+    // while each tab switch settles in on a critically damped spring (fade + depth).
+    // The wrapper tree is identical for every tab, so switching never remounts a page.
     final reduceMotion = PlatformPerfProfile.shouldReduceMotion(context);
-    final tabCurve = CurvedAnimation(parent: _tabAnimCtrl, curve: VedroTheme.easeOut);
+    final tabFade = CurvedAnimation(
+      parent: _tabAnimCtrl,
+      curve: const Interval(0.0, 0.55, curve: Curves.easeOut),
+    );
+    final tabDepth = CurvedAnimation(parent: _tabAnimCtrl, curve: VedroSpringCurve.smooth);
+    const settled = AlwaysStoppedAnimation<double>(1.0);
     final pageSwitcher = IndexedStack(
       index: _index,
       children: [
         for (var i = 0; i < 5; i++)
-          (i == _index && !reduceMotion)
-              ? FadeTransition(
-                  opacity: Tween<double>(begin: 0.90, end: 1.0).animate(tabCurve),
-                  child: ScaleTransition(
-                    scale: Tween<double>(begin: 0.988, end: 1.0).animate(tabCurve),
-                    child: buildTab(i),
-                  ),
-                )
-              : buildTab(i),
+          FadeTransition(
+            opacity: (i == _index && !reduceMotion)
+                ? Tween<double>(begin: 0.6, end: 1.0).animate(tabFade)
+                : settled,
+            child: ScaleTransition(
+              scale: (i == _index && !reduceMotion)
+                  ? Tween<double>(begin: 0.982, end: 1.0).animate(tabDepth)
+                  : settled,
+              child: buildTab(i),
+            ),
+          ),
       ],
     );
 
@@ -626,6 +636,7 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
               body: VedroSkinCanvas(
                 backdropImageUrl: fanartUrl,
                 suppressTopOrb: homeHasHeroBackdrop,
+                suppressBottomOrb: homeHasHeroBackdrop && skin.heroStyle == 'full_bleed',
                 // Unified stable Row -> Expanded -> Stack tree so switching `navLayout`
                 // (`left_rail` <-> `top_floating` <-> `centered_capsule` <-> `minimal_auto_hide`)
                 // NEVER unmounts or resets `SettingsScreen` or scroll positions!
@@ -810,6 +821,9 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
     }
 
     final dockR = skin.pillRadius >= 100 ? 30.0 : skin.pillRadius.clamp(12.0, 26.0);
+    final tabLensFill = skin.isLight
+        ? Colors.black.withValues(alpha: 0.07)
+        : Colors.white.withValues(alpha: 0.12);
     final mobileNav = skin.mobileNavStyle;
     final fullTabBar = mobileNav == 'full_tab_bar';
 
@@ -846,8 +860,14 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
                     top: false,
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      child: VedroSlidingPillRow(
+                        expand: true,
+                        selectedIndex: _index,
+                        pillInsets: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                        pillDecoration: BoxDecoration(
+                          color: tabLensFill,
+                          borderRadius: BorderRadius.circular(skin.radiusForPill(46)),
+                        ),
                         children: [
                           for (var i = 0; i < _mobileTabs.length; i++)
                             _BottomTabButton(
@@ -868,8 +888,8 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
         return SafeArea(
           top: false,
           child: AnimatedPadding(
-            duration: const Duration(milliseconds: 240),
-            curve: VedroTheme.easeOut,
+            duration: const Duration(milliseconds: 460),
+            curve: VedroSpringCurve.snappy,
             padding: EdgeInsets.fromLTRB(
               shrunkByScroll ? 56 : (compactIcons ? 42 : 18),
               0,
@@ -886,8 +906,20 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
                 horizontal: compactIcons ? 8 : 6,
                 vertical: compactIcons ? 4.5 : 5.5,
               ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
+              child: VedroSlidingPillRow(
+                expand: true,
+                selectedIndex: _index,
+                pillInsets: const EdgeInsets.symmetric(horizontal: 2),
+                pillDecoration: BoxDecoration(
+                  color: tabLensFill,
+                  borderRadius: BorderRadius.circular(skin.radiusForPill(46)),
+                  border: Border.all(
+                    color: skin.isLight
+                        ? Colors.white.withValues(alpha: 0.7)
+                        : Colors.white.withValues(alpha: 0.08),
+                    width: 0.6,
+                  ),
+                ),
                 children: [
                   for (var i = 0; i < _mobileTabs.length; i++)
                     _BottomTabButton(
@@ -914,6 +946,7 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
         body: VedroSkinCanvas(
           backdropImageUrl: fanartUrl,
           suppressTopOrb: homeHasHeroBackdrop,
+                suppressBottomOrb: homeHasHeroBackdrop && skin.heroStyle == 'full_bleed',
           child: narrowWinBar
               ? Stack(
                   children: [

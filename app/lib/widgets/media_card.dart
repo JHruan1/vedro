@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/models/models.dart';
 import '../core/platform/platform_perf.dart';
 import '../core/theme/display_profile.dart';
+import '../core/theme/vedro_motion.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -71,9 +72,9 @@ class _MediaCardState extends State<MediaCard> {
     }
     if (!touchPrimary && skin.cardHoverEffect == 'zoom_art') {
       artBox = AnimatedScale(
-        scale: _highlighted ? 1.065 : 1.0,
-        duration: const Duration(milliseconds: 220),
-        curve: VedroTheme.easeOut,
+        scale: _highlighted ? 1.06 : 1.0,
+        duration: const Duration(milliseconds: 520),
+        curve: VedroSpringCurve.snappy,
         child: artBox,
       );
     }
@@ -374,7 +375,7 @@ class _MediaCardState extends State<MediaCard> {
                     ),
                   ),
           ),
-        if (!hideBadges && (item.isFavorite || showVersionBadge || showRatingBadge))
+        if (!hideBadges && (showVersionBadge || showRatingBadge))
           Positioned(
             top: 6,
             left: 6,
@@ -404,13 +405,8 @@ class _MediaCardState extends State<MediaCard> {
                       ],
                     ),
                   ),
-                  if (item.isFavorite || showVersionBadge) const SizedBox(width: 4),
+                  if (showVersionBadge) const SizedBox(width: 4),
                 ],
-                if (item.isFavorite)
-                  const _CornerBadge(
-                    child: Icon(Icons.favorite_rounded, size: 11, color: Colors.white),
-                  ),
-                if (item.isFavorite && showVersionBadge) const SizedBox(width: 4),
                 if (showVersionBadge)
                   _CornerBadge(
                     child: Text(
@@ -486,9 +482,9 @@ class _MediaCardState extends State<MediaCard> {
                 duration: const Duration(milliseconds: 180),
                 curve: Curves.easeOut,
                 child: AnimatedScale(
-                  scale: _hovered ? 1.0 : 0.85,
-                  duration: const Duration(milliseconds: 200),
-                  curve: VedroTheme.springCurve,
+                  scale: _hovered ? 1.0 : 0.72,
+                  duration: const Duration(milliseconds: 460),
+                  curve: VedroSpringCurve.playful,
                   child: GestureDetector(
                     onTap: widget.onQuickPlay,
                     child: Container(
@@ -823,10 +819,7 @@ class _LibraryCardState extends State<LibraryCard> {
                           showInitials: false,
                         )
                       else
-                        GeneratedArt(
-                          seed: widget.library.id,
-                          label: hasServerCover ? null : widget.library.name,
-                        ),
+                        GeneratedArt(seed: widget.library.id, label: null),
                     if (hasServerCover)
                       FadeNetworkImage(
                         url: serverCover,
@@ -836,46 +829,8 @@ class _LibraryCardState extends State<LibraryCard> {
                           MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0,
                         ),
                       ),
-                    if (!hasServerCover)
-                      DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            stops: const [0.35, 1.0],
-                            colors: skin.isLight && widget.coverItem == null
-                                ? [
-                                    Colors.transparent,
-                                    Colors.white.withValues(alpha: 0.88),
-                                  ]
-                                : const [
-                                    Colors.transparent,
-                                    Color(0xB8000000),
-                                  ],
-                          ),
-                        ),
-                      ),
-                    if (!hasServerCover)
-                      Positioned(
-                        left: 11,
-                        right: 11,
-                        bottom: 9,
-                        child: Text(
-                          widget.library.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: skin.applyHeadlineMood(
-                            TextStyle(
-                              color: skin.isLight && widget.coverItem == null
-                                  ? skin.fg
-                                  : Colors.white,
-                              fontSize: widget.width < 195 ? 14.5 : 17,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: -0.3,
-                            ),
-                          ),
-                        ),
-                      ),
+                    // The library name lives once, in the caption below — no duplicated
+                    // in-art title + scrim stacked on top of the same label.
                   ],
                 ),
               ),

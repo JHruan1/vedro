@@ -950,6 +950,7 @@ extension _DetailBodyExt on _DetailScreenState {
         child: Stack(
           children: [
             CustomScrollView(
+              controller: _detailScrollCtrl,
               cacheExtent: PlatformPerfProfile.scrollCacheExtent,
               slivers: [
                 // 1. Seamless Full-Stage Hero adapting to `detailLayout` (`apple_immersive` | `jellyfin_glass` | `centered_editorial`)
@@ -958,7 +959,17 @@ extension _DetailBodyExt on _DetailScreenState {
                     clipBehavior: Clip.none,
                     children: [
                       Positioned.fill(
-                        child: RepaintBoundary(
+                        child: LayoutBuilder(
+                          builder: (context, box) => ValueListenableBuilder<double>(
+                            valueListenable: _detailPull,
+                            builder: (context, pull, child) => Transform.scale(
+                              // iOS stretchy header: overscroll grows the backdrop from its
+                              // bottom edge so the canvas never peeks through above it.
+                              scale: 1.0 + pull / box.maxHeight.clamp(1.0, double.infinity),
+                              alignment: Alignment.bottomCenter,
+                              child: child,
+                            ),
+                            child: RepaintBoundary(
                           child: ClipRect(
                             key: const ValueKey('detail-backdrop-banner'),
                             child: Stack(
@@ -998,6 +1009,8 @@ extension _DetailBodyExt on _DetailScreenState {
                                 ),
                               ],
                             ),
+                          ),
+                        ),
                           ),
                         ),
                       ),

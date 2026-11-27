@@ -7,6 +7,7 @@ import '../core/models/models.dart';
 import '../core/platform/platform_perf.dart';
 import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
+import '../core/theme/vedro_scroll.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/media_card.dart';
@@ -51,7 +52,7 @@ class LibraryScreen extends StatefulWidget {
 }
 
 class _LibraryScreenState extends State<LibraryScreen> {
-  final _scrollCtrl = ScrollController();
+  final _scrollCtrl = VedroScrollController();
   MediaItemModel? _selectedLibrary;
   late String _sortBy;
   String _sortOrder = 'Descending';

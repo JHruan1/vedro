@@ -10,26 +10,18 @@ class _CinemaHeroBanner extends StatefulWidget {
     required this.appState,
     required this.scrollOffsetListenable,
     required this.topNavClearance,
-    required this.showMobileHeader,
     required this.onPlay,
     required this.onDetail,
     this.onGenreTap,
-    this.onOpenFavorites,
-    required this.onOpenServerHub,
-    required this.onRefresh,
   });
 
   final List<({MediaItemModel item, String eyebrow})> featured;
   final VedroAppState appState;
   final ValueListenable<double> scrollOffsetListenable;
   final double topNavClearance;
-  final bool showMobileHeader;
   final void Function(MediaItemModel) onPlay;
   final void Function(MediaItemModel) onDetail;
   final ValueChanged<String>? onGenreTap;
-  final VoidCallback? onOpenFavorites;
-  final VoidCallback onOpenServerHub;
-  final VoidCallback onRefresh;
 
   @override
   State<_CinemaHeroBanner> createState() => _CinemaHeroBannerState();
@@ -103,8 +95,8 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     if (_pageCtrl.hasClients && widget.featured.length > 1) {
       _pageCtrl.animateToPage(
         target,
-        duration: const Duration(milliseconds: 380),
-        curve: Curves.easeOutCubic,
+        duration: const Duration(milliseconds: 680),
+        curve: VedroSpringCurve.smooth,
       );
     } else {
       setState(() => _active = target);
@@ -163,8 +155,8 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               children: [
                 AnimatedScale(
                   scale: active ? 1.04 : 0.94,
-                  duration: const Duration(milliseconds: 220),
-                  curve: VedroTheme.easeOut,
+                  duration: const Duration(milliseconds: 460),
+                  curve: VedroSpringCurve.bouncy,
                   child: Container(
                     width: thumbW,
                     height: thumbH,
@@ -189,7 +181,8 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                     clipBehavior: Clip.antiAlias,
                     child: AnimatedOpacity(
                       opacity: active ? 1.0 : 0.42,
-                      duration: const Duration(milliseconds: 220),
+                      duration: const Duration(milliseconds: 320),
+                      curve: VedroTheme.easeOut,
                       child: VedroArtwork(
                         item: entry.item,
                         appState: widget.appState,
@@ -201,7 +194,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 ),
                 const SizedBox(height: 6),
                 AnimatedContainer(
-                  duration: const Duration(milliseconds: 220),
+                  duration: const Duration(milliseconds: 420),
                   curve: VedroTheme.easeOut,
                   width: active ? (thumbW * 0.30).clamp(18.0, 28.0) : 8,
                   height: 3,
@@ -236,10 +229,10 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
             child: AnimatedContainer(
-              duration: const Duration(milliseconds: 220),
+              duration: const Duration(milliseconds: 420),
               curve: VedroTheme.easeOut,
               margin: const EdgeInsets.symmetric(horizontal: 3),
-              width: active ? 22 : 6,
+              width: active ? 20 : 6,
               height: 6,
               decoration: BoxDecoration(
                 color: active ? activeColor : inactiveColor,
@@ -249,86 +242,6 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
           ),
         );
       }),
-    );
-  }
-
-  Widget _buildMobileTopBar() {
-    final skin = VedroSkin.of(context);
-    final serverName = widget.appState.activeServerDisplayName;
-    final routeName = widget.appState.activeRouteDisplayName;
-    final pillBg = skin.isLight ? const Color(0xCCFFFFFF) : const Color(0x58141417);
-    final pillFg = skin.isLight ? skin.fg : Colors.white;
-    return SafeArea(
-      bottom: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-        child: Row(
-          children: [
-            PressableScale(
-              onTap: widget.onOpenServerHub,
-              child: GlassSurface(
-                borderRadius: 18,
-                blur: 18,
-                color: pillBg,
-                borderColor: skin.isLight ? skin.border : Colors.transparent,
-                padding: const EdgeInsets.fromLTRB(6, 5, 10, 5),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const VedroBrandMark(size: 22),
-                    const SizedBox(width: 7),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 160),
-                      child: Text(
-                        routeName != null ? '$serverName · $routeName' : serverName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: pillFg,
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 3),
-                    Icon(
-                      Icons.keyboard_arrow_down_rounded,
-                      size: 16,
-                      color: skin.isLight ? skin.fg2 : const Color(0xCCFFFFFF),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const Spacer(),
-            if (widget.onOpenFavorites != null) ...[
-              PressableScale(
-                onTap: widget.onOpenFavorites,
-                child: GlassSurface(
-                  borderRadius: 18,
-                  blur: 18,
-                  color: pillBg,
-                  borderColor: skin.isLight ? skin.border : Colors.transparent,
-                  padding: const EdgeInsets.all(8),
-                  child: Icon(Icons.favorite_border_rounded, size: 17, color: pillFg),
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
-            PressableScale(
-              onTap: widget.onRefresh,
-              child: GlassSurface(
-                borderRadius: 18,
-                blur: 18,
-                color: pillBg,
-                borderColor: skin.isLight ? skin.border : Colors.transparent,
-                padding: const EdgeInsets.all(8),
-                child: Icon(Icons.refresh_rounded, size: 17, color: pillFg),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -347,9 +260,15 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     final pillR = skin.radiusForPill(44);
 
     return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 360),
-      switchInCurve: Curves.easeOutCubic,
+      duration: const Duration(milliseconds: 420),
+      switchInCurve: VedroTheme.easeOut,
       switchOutCurve: Curves.easeInCubic,
+      // Copy is always left-anchored (default switcher layout would center a
+      // narrow column inside the hero's full-width slot).
+      layoutBuilder: (current, previous) => Stack(
+        alignment: AlignmentDirectional.bottomStart,
+        children: [...previous, if (current != null) current],
+      ),
       transitionBuilder: (child, anim) => FadeTransition(
         opacity: anim,
         child: SlideTransition(
@@ -369,12 +288,12 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
             eyebrow,
             style: TextStyle(
               color: onPhoto ? textMuted : skin.accent,
-              fontSize: 13,
+              fontSize: wide ? 12.5 : 11.5,
               fontWeight: FontWeight.w600,
-              letterSpacing: 0.3,
+              letterSpacing: 0.8,
             ),
           ),
-          const SizedBox(height: 8),
+          SizedBox(height: wide ? 10 : 6),
           if (logoUrl != null && skin.preferClearLogo && (onPhoto || !skin.isLight))
             ConstrainedBox(
               constraints: BoxConstraints(
@@ -396,87 +315,82 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
             )
           else
             _HeroTitleText(text: item.cardTitle, wide: wide, color: textPrimary),
-          if (item.communityRating != null ||
-              item.productionYear != null ||
-              item.genres.isNotEmpty ||
-              (item.type == 'Episode' && item.cardSubtitle.isNotEmpty)) ...[
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 10,
-              runSpacing: 4,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
+          Builder(
+            builder: (context) {
+              final metaStyle = TextStyle(
+                color: textSecondary,
+                fontSize: wide ? 13.5 : 12.5,
+                fontWeight: FontWeight.w500,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              );
+              final parts = <Widget>[
                 if (item.type == 'Episode' && item.cardSubtitle.isNotEmpty)
-                  Text(
-                    item.cardSubtitle,
-                    style: TextStyle(color: textSecondary, fontSize: 13.5),
-                  ),
+                  Text(item.cardSubtitle, style: metaStyle),
                 if (item.communityRating != null)
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
                         Icons.star_rounded,
-                        size: 15,
+                        size: wide ? 15 : 13.5,
                         color: onPhoto ? const Color(0xFFFBBF24) : const Color(0xFFD97706),
                       ),
-                      const SizedBox(width: 2.5),
+                      const SizedBox(width: 2),
                       Text(
                         item.communityRating!.toStringAsFixed(1),
-                        style: TextStyle(
+                        style: metaStyle.copyWith(
                           color: onPhoto ? const Color(0xF2FFFFFF) : const Color(0xFFD97706),
-                          fontSize: 13.5,
                           fontWeight: FontWeight.w700,
-                          fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                       ),
                     ],
                   ),
-                if (item.productionYear != null)
-                  Text(
-                    '${item.productionYear}',
-                    style: TextStyle(
-                      color: textSecondary,
-                      fontSize: 13.5,
-                      fontFeatures: const [FontFeature.tabularFigures()],
-                    ),
-                  ),
-                for (final g in item.genres.take(4))
+                if (item.productionYear != null) Text('${item.productionYear}', style: metaStyle),
+                for (final g in item.genres.take(wide ? 3 : 2))
                   PressableScale(
                     onTap: widget.onGenreTap == null ? null : () => widget.onGenreTap!(g),
+                    canRequestFocus: wide,
                     borderRadius: BorderRadius.circular(6),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
-                      child: Text(
-                        g,
-                        style: TextStyle(
-                          color: textSecondary,
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
+                    child: Text(g, style: metaStyle),
                   ),
-              ],
-            ),
-          ],
-          if (item.cleanOverview.isNotEmpty) ...[
-            SizedBox(height: wide ? 10 : 6),
+              ];
+              if (parts.isEmpty) return const SizedBox.shrink();
+              final dot = Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 7),
+                child: Text('·', style: metaStyle.copyWith(color: textMuted)),
+              );
+              return Padding(
+                padding: EdgeInsets.only(top: wide ? 12 : 8),
+                child: Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  runSpacing: 4,
+                  children: [
+                    for (var i = 0; i < parts.length; i++) ...[
+                      if (i > 0) dot,
+                      parts[i],
+                    ],
+                  ],
+                ),
+              );
+            },
+          ),
+          if (wide && item.cleanOverview.isNotEmpty) ...[
+            const SizedBox(height: 12),
             ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 540),
+              constraints: const BoxConstraints(maxWidth: 520),
               child: Text(
                 item.cleanOverview,
-                maxLines: wide ? 3 : 2,
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: textSecondary,
-                  fontSize: wide ? 14 : 12.5,
-                  height: wide ? 1.55 : 1.42,
+                  fontSize: 14,
+                  height: 1.55,
                 ),
               ),
             ),
           ],
-          SizedBox(height: wide ? 22 : 14),
+          SizedBox(height: wide ? 24 : 16),
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -717,12 +631,11 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
         Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (widget.showMobileHeader) _buildMobileTopBar(),
             Padding(
               key: const ValueKey('hero-framed-stage'),
               padding: EdgeInsets.fromLTRB(
                 padX,
-                wide ? widget.topNavClearance + 8 : 4,
+                wide ? widget.topNavClearance + 8 : MediaQuery.paddingOf(context).top + 58,
                 padX,
                 4,
               ),
@@ -766,12 +679,19 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                             child: Stack(
                               fit: StackFit.expand,
                               children: [
-                                VedroArtwork(
-                                  item: slide.item,
-                                  appState: widget.appState,
-                                  isHero: true,
-                                  alignment: const Alignment(0, -0.45),
-                                  showInitials: false,
+                                ClipRect(
+                                  child: _HeroParallax(
+                                    pageController: _pageCtrl,
+                                    index: idx,
+                                    fallbackPage: _active,
+                                    child: VedroArtwork(
+                                      item: slide.item,
+                                      appState: widget.appState,
+                                      isHero: true,
+                                      alignment: const Alignment(0, -0.45),
+                                      showInitials: false,
+                                    ),
+                                  ),
                                 ),
                                 DecoratedBox(
                                   decoration: BoxDecoration(
@@ -884,11 +804,16 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 }
                 return false;
               },
-              child: PageView.builder(
+              // Clip horizontally to the hero, but let the stretched artwork grow upward
+              // into the rubber-band overscroll gap (iOS stretchy header).
+              child: ClipRect(
+                clipper: const _HeroUpwardOpenClipper(),
+                child: PageView.builder(
                 key: const ValueKey('hero-page-view'),
                 controller: _pageCtrl,
                 itemCount: widget.featured.length,
                 physics: const BouncingScrollPhysics(),
+                clipBehavior: Clip.none,
                 onPageChanged: _onPageChanged,
                 itemBuilder: (ctx, idx) {
                   final slide = widget.featured[idx];
@@ -900,19 +825,28 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                       fit: StackFit.expand,
                       children: [
                         // Direct zero-saveLayer gradient dissolve into `skin.canvas` (no offscreen ShaderMask!)
-                        RepaintBoundary(
+                        _HeroStretch(
+                          scrollOffset: widget.scrollOffsetListenable,
+                          heroHeight: heroH,
+                          child: RepaintBoundary(
                           child: ClipRect(
                             key: ValueKey('hero-alpha-mask-$idx'),
                             child: Stack(
                               fit: StackFit.expand,
                               children: [
                                 Positioned.fill(
-                                  child: VedroArtwork(
-                                    item: slide.item,
-                                    appState: widget.appState,
-                                    isHero: true,
-                                    alignment: const Alignment(0, -0.46),
-                                    showInitials: false,
+                                  child: _HeroParallax(
+                                    pageController: _pageCtrl,
+                                    index: idx,
+                                    fallbackPage: _active,
+                                    scrollOffset: widget.scrollOffsetListenable,
+                                    child: VedroArtwork(
+                                      item: slide.item,
+                                      appState: widget.appState,
+                                      isHero: true,
+                                      alignment: const Alignment(0, -0.46),
+                                      showInitials: false,
+                                    ),
                                   ),
                                 ),
                                 if (wide)
@@ -967,19 +901,24 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                               ],
                             ),
                           ),
+                          ),
                         ),
                         Positioned(
                           left: padX,
                           right: wide ? size.width * 0.36 : padX,
-                          bottom: wide ? 44 : 28,
-                          child: _buildHeroInfoColumn(
-                            context: context,
-                            skin: skin,
-                            item: slide.item,
-                            eyebrow: slide.eyebrow,
-                            logoUrl: slideLogo,
-                            wide: wide,
-                            onPhoto: !skin.isLight,
+                          bottom: wide ? 44 : 34,
+                          child: _HeroScrollFade(
+                            scrollOffset: widget.scrollOffsetListenable,
+                            fadeDistance: heroH * 0.5,
+                            child: _buildHeroInfoColumn(
+                              context: context,
+                              skin: skin,
+                              item: slide.item,
+                              eyebrow: slide.eyebrow,
+                              logoUrl: slideLogo,
+                              wide: wide,
+                              onPhoto: !skin.isLight,
+                            ),
                           ),
                         ),
                       ],
@@ -987,15 +926,8 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                   );
                 },
               ),
-            ),
-
-            if (widget.showMobileHeader)
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: _buildMobileTopBar(),
               ),
+            ),
 
             if (wide && widget.featured.length > 1) ...[
               Positioned(
@@ -1069,7 +1001,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               Positioned(
                 right: padX,
                 left: wide ? null : padX,
-                bottom: wide ? 40 : 10,
+                bottom: wide ? 40 : 8,
                 child: wide
                     ? _buildBorderlessPreviewStrip(
                         skin,
@@ -1111,6 +1043,114 @@ class _HeroTitleText extends StatelessWidget {
           height: 1.08,
         ),
       ),
+    );
+  }
+}
+
+/// Clip rect that is bounded on the left, right and bottom but open upward, so
+/// the hero artwork can stretch into the overscroll gap without bleeding sideways.
+class _HeroUpwardOpenClipper extends CustomClipper<Rect> {
+  const _HeroUpwardOpenClipper();
+
+  @override
+  Rect getClip(Size size) => Rect.fromLTRB(0, -4000, size.width, size.height);
+
+  @override
+  bool shouldReclip(covariant _HeroUpwardOpenClipper oldClipper) => false;
+}
+
+/// iOS stretchy header: rubber-band overscroll scales the artwork from its bottom
+/// edge so the canvas never peeks through above the hero.
+class _HeroStretch extends StatelessWidget {
+  const _HeroStretch({
+    required this.scrollOffset,
+    required this.heroHeight,
+    required this.child,
+  });
+
+  final ValueListenable<double> scrollOffset;
+  final double heroHeight;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<double>(
+      valueListenable: scrollOffset,
+      child: child,
+      builder: (context, offset, child) {
+        final pull = offset < 0 ? -offset : 0.0;
+        return Transform.scale(
+          scale: 1.0 + pull / heroHeight.clamp(1.0, double.infinity),
+          alignment: Alignment.bottomCenter,
+          child: child,
+        );
+      },
+    );
+  }
+}
+
+/// Depth parallax: artwork glides at ~60 % of the page swipe speed and ~65 % of
+/// the vertical scroll speed (compositor-only transform, zero relayout).
+class _HeroParallax extends StatelessWidget {
+  const _HeroParallax({
+    required this.pageController,
+    required this.index,
+    required this.fallbackPage,
+    required this.child,
+    this.scrollOffset,
+  });
+
+  final PageController pageController;
+  final int index;
+  final int fallbackPage;
+  final ValueListenable<double>? scrollOffset;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) => AnimatedBuilder(
+        animation: Listenable.merge([pageController, if (scrollOffset != null) scrollOffset!]),
+        child: child,
+        builder: (context, child) {
+          var page = fallbackPage.toDouble();
+          if (pageController.hasClients && pageController.position.hasContentDimensions) {
+            page = pageController.page ?? page;
+          }
+          final dx = (page - index).clamp(-1.0, 1.0) * constraints.maxWidth * 0.4;
+          final scroll = scrollOffset?.value ?? 0.0;
+          final dy = scroll > 0 ? scroll * 0.35 : 0.0;
+          return Transform.translate(offset: Offset(dx, dy), child: child);
+        },
+      ),
+    );
+  }
+}
+
+/// Fades the hero copy & CTAs out as the hero scrolls away (Apple TV app).
+class _HeroScrollFade extends StatelessWidget {
+  const _HeroScrollFade({
+    required this.scrollOffset,
+    required this.fadeDistance,
+    required this.child,
+  });
+
+  final ValueListenable<double> scrollOffset;
+  final double fadeDistance;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<double>(
+      valueListenable: scrollOffset,
+      child: child,
+      builder: (context, offset, child) {
+        final t = offset <= 0 ? 1.0 : (1.0 - offset / fadeDistance).clamp(0.0, 1.0);
+        return IgnorePointer(
+          ignoring: t < 0.05,
+          child: Opacity(opacity: t, child: child),
+        );
+      },
     );
   }
 }

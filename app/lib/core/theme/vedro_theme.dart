@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../platform/platform_perf.dart';
+import 'vedro_motion.dart';
 import 'vedro_skin.dart';
 
 /// Vedro multi-personality design system:
@@ -37,9 +38,12 @@ class VedroTheme {
   static const Duration fast = Duration(milliseconds: 160);
   static const Duration normal = Duration(milliseconds: 260);
   static const Duration slow = Duration(milliseconds: 420);
-  static const Curve easeOut = Cubic(0.16, 1.0, 0.3, 1.0);
-  static const Curve springCurve = Cubic(0.175, 0.885, 0.32, 1.15);
-  static const Curve snappySpring = Cubic(0.20, 0.90, 0.28, 1.18);
+  /// Critically damped spring shape (zero overshoot, safe for opacity & color).
+  static const Curve easeOut = VedroSpringCurve.smooth;
+
+  /// Real damped-spring shapes (overshoot): use only for scale / position / size.
+  static const Curve springCurve = VedroSpringCurve.bouncy;
+  static const Curve snappySpring = VedroSpringCurve.snappy;
 
   static Color highContrastOn(Color bg) =>
       bg.computeLuminance() > 0.52 ? const Color(0xFF09090B) : Colors.white;
@@ -92,6 +96,12 @@ class VedroTheme {
           );
 
     return base.copyWith(
+      // Android phones adopt iOS interaction idioms (Cupertino text selection,
+      // chevron back buttons, centered titles, edge-swipe back) so both mobile
+      // platforms share one Apple-grade feel. Android TV keeps D-Pad idioms.
+      platform: (PlatformPerfProfile.isAndroid && !PlatformPerfProfile.isTv)
+          ? TargetPlatform.iOS
+          : null,
       brightness: skin.brightness,
       extensions: <ThemeExtension<dynamic>>[skin],
       scaffoldBackgroundColor: skin.canvas,
@@ -106,8 +116,8 @@ class VedroTheme {
           TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
           TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
           TargetPlatform.android: CupertinoPageTransitionsBuilder(),
-          TargetPlatform.windows: _VedroSmoothTransitionsBuilder(),
-          TargetPlatform.linux: _VedroSmoothTransitionsBuilder(),
+          TargetPlatform.windows: VedroDesktopPageTransitionsBuilder(),
+          TargetPlatform.linux: VedroDesktopPageTransitionsBuilder(),
         },
       ),
       textTheme: base.textTheme.apply(
@@ -272,9 +282,18 @@ class VedroTheme {
   }
 }
 
-/// Smooth cinema fade + subtle depth-scale page transition for desktop platforms.
-class _VedroSmoothTransitionsBuilder extends PageTransitionsBuilder {
-  const _VedroSmoothTransitionsBuilder();
+/// macOS-grade desktop page transition shared by Windows / Linux / macOS routes:
+/// the incoming page settles in on a critically damped spring (fade + subtle
+/// depth scale + 10px glide) while the outgoing page stays static, so there is
+/// never a second full-screen alpha `saveLayer`.
+class VedroDesktopPageTransitionsBuilder extends PageTransitionsBuilder {
+  const VedroDesktopPageTransitionsBuilder();
+
+  @override
+  Duration get transitionDuration => VedroMotion.routeForward;
+
+  @override
+  Duration get reverseTransitionDuration => VedroMotion.routeReverse;
 
   @override
   Widget buildTransitions<T>(
@@ -283,55 +302,54 @@ class _VedroSmoothTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> animation,
     Animation<double> secondaryAnimation,
     Widget child,
-  ) {
-    final curved = CurvedAnimation(
-      parent: animation,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
-    );
-    return FadeTransition(
-      opacity: curved,
-      child: ScaleTransition(
-        scale: Tween<double>(begin: 0.985, end: 1.0).animate(curved),
-        child: child,
-      ),
-    );
-  }
+  ) =>
+      vedroDesktopTransition(animation, child);
+}
+
+/// Spring-shaped fade-through-depth transition (desktop routes & dialogs).
+Widget vedroDesktopTransition(Animation<double> animation, Widget child) {
+  final fade = CurvedAnimation(
+    parent: animation,
+    curve: const Interval(0.0, 0.62, curve: Curves.easeOut),
+    reverseCurve: Curves.easeInCubic,
+  );
+  final motion = CurvedAnimation(
+    parent: animation,
+    curve: VedroSpringCurve.snappy,
+    reverseCurve: Curves.easeInCubic,
+  );
+  return FadeTransition(
+    opacity: fade,
+    child: AnimatedBuilder(
+      animation: motion,
+      child: child,
+      builder: (context, child) {
+        final t = motion.value;
+        return Transform(
+          alignment: Alignment.topCenter,
+          transform: Matrix4.identity()
+            ..translateByDouble(0.0, (1 - t) * 10.0, 0.0, 1.0)
+            ..scaleByDouble(0.975 + 0.025 * t, 0.975 + 0.025 * t, 1.0, 1.0),
+          child: child,
+        );
+      },
+    ),
+  );
 }
 
 /// Fluid platform-optimal cinema page route:
 /// - Mobile (iOS / Android): native `CupertinoPageRoute` with 120Hz hardware-composited
 ///   slide + interactive edge swipe-back and zero double-fullscreen alpha `saveLayer`.
-/// - Desktop (macOS / Windows / Linux): crisp 220ms fade + subtle vertical glide without
-///   re-scaling the outgoing full-screen Home tree.
+/// - Desktop (macOS / Windows / Linux): spring-settled fade + depth glide.
 Route<T> vedroRoute<T>(Widget page) {
   if (PlatformPerfProfile.preferCupertinoRoute) {
     return CupertinoPageRoute<T>(builder: (_) => page);
   }
   return PageRouteBuilder<T>(
-    transitionDuration: const Duration(milliseconds: 260),
-    reverseTransitionDuration: const Duration(milliseconds: 200),
+    transitionDuration: VedroMotion.routeForward,
+    reverseTransitionDuration: VedroMotion.routeReverse,
     pageBuilder: (_, __, ___) => page,
-    transitionsBuilder: (_, animation, __, child) {
-      final curved = CurvedAnimation(
-        parent: animation,
-        curve: VedroTheme.easeOut,
-        reverseCurve: Curves.easeInCubic,
-      );
-      return FadeTransition(
-        opacity: curved,
-        child: ScaleTransition(
-          scale: Tween<double>(begin: 0.985, end: 1.0).animate(curved),
-          child: SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(0, 0.014),
-              end: Offset.zero,
-            ).animate(curved),
-            child: child,
-          ),
-        ),
-      );
-    },
+    transitionsBuilder: (_, animation, __, child) => vedroDesktopTransition(animation, child),
   );
 }
 
@@ -359,7 +377,16 @@ class VedroScrollBehavior extends MaterialScrollBehavior {
   }
 
   @override
+  Widget buildOverscrollIndicator(BuildContext context, Widget child, ScrollableDetails details) {
+    // Rubber-band bounce everywhere: never the Android glow / stretch indicator.
+    return child;
+  }
+
+  @override
   ScrollPhysics getScrollPhysics(BuildContext context) {
-    return const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics());
+    return const BouncingScrollPhysics(
+      parent: AlwaysScrollableScrollPhysics(),
+      decelerationRate: ScrollDecelerationRate.normal,
+    );
   }
 }

@@ -11,6 +11,7 @@ import '../core/models/preferences.dart';
 import '../core/platform/native_playback_channel.dart';
 import '../core/platform/platform_perf.dart';
 import '../core/theme/vedro_skin.dart';
+import '../core/theme/vedro_scroll.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/admin_console_pane.dart';
@@ -97,7 +98,7 @@ class _NavItemMeta {
 class _SettingsScreenState extends State<SettingsScreen> {
   late _SettingsSection _active;
   final _filterCtrl = TextEditingController();
-  final _detailScrollCtrl = ScrollController();
+  final _detailScrollCtrl = VedroScrollController();
   final FocusScopeNode _sidebarScope = FocusScopeNode(debugLabel: 'settings-sidebar-scope');
   final FocusScopeNode _detailScope = FocusScopeNode(debugLabel: 'settings-detail-scope');
   bool _detailFocused = false;
@@ -874,7 +875,7 @@ class _MobileSettingsSubPage extends StatefulWidget {
 }
 
 class _MobileSettingsSubPageState extends State<_MobileSettingsSubPage> {
-  final _scrollCtrl = ScrollController();
+  final _scrollCtrl = VedroScrollController();
   VedroSkin? _cachedSkin;
   ThemeData? _cachedTheme;
 

@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../core/models/models.dart';
 import '../core/platform/platform_perf.dart';
 import '../core/theme/display_profile.dart';
+import '../core/theme/vedro_motion.dart';
+import '../core/theme/vedro_scroll.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -46,7 +48,7 @@ class HorizontalMediaRail extends StatefulWidget {
 }
 
 class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
-  final _scrollCtrl = ScrollController();
+  final _scrollCtrl = VedroScrollController();
 
   @override
   void dispose() {
@@ -90,51 +92,12 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
     final vPad = (wide || PlatformPerfProfile.isTv) ? 20.0 : 6.0;
     final railHeight = cardMetrics.cardHeight + vPad;
 
-    final titleStyle = skin.applyHeadlineMood(
-      TextStyle(
-        color: skin.fg,
-        fontSize: wide ? 20 : 16.5,
-        fontWeight: FontWeight.w600,
-        letterSpacing: -0.3,
-      ),
-    );
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: EdgeInsets.fromLTRB(padX, topGap, padX, wide ? 10 : 7),
-          child: widget.onSeeAll != null
-              ? PressableScale(
-                  onTap: widget.onSeeAll,
-                  hoverScale: 1.0,
-                  pressScale: 0.97,
-                  borderRadius: BorderRadius.circular(8),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Flexible(
-                          child: Text(
-                            widget.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: titleStyle,
-                          ),
-                        ),
-                        const SizedBox(width: 3),
-                        Icon(Icons.chevron_right_rounded, size: wide ? 20 : 18, color: skin.fg3),
-                      ],
-                    ),
-                  ),
-                )
-              : Text(
-                  widget.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: titleStyle,
-                ),
+          padding: EdgeInsets.fromLTRB(padX, topGap, padX, wide ? 12 : 8),
+          child: VedroRailHeader(title: widget.title, onSeeAll: widget.onSeeAll),
         ),
         SmoothHorizontalStrip(
           controller: _scrollCtrl,
@@ -210,7 +173,7 @@ class CustomHorizontalRail extends StatefulWidget {
 }
 
 class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
-  final _scrollCtrl = ScrollController();
+  final _scrollCtrl = VedroScrollController();
 
   @override
   void dispose() {
@@ -221,7 +184,6 @@ class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
   @override
   Widget build(BuildContext context) {
     if (widget.itemCount == 0) return const SizedBox.shrink();
-    final skin = VedroSkin.of(context);
     final wide = MediaQuery.sizeOf(context).width >= 820;
     final padX = widget.padXOverride ?? (wide ? 30.0 : 12.0);
     final gap = widget.spacingOverride ?? (wide ? 16.0 : 9.0);
@@ -231,18 +193,8 @@ class _CustomHorizontalRailState extends State<CustomHorizontalRail> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: EdgeInsets.fromLTRB(padX, topGap, padX, wide ? 10 : 7),
-          child: Text(
-            widget.title,
-            style: skin.applyHeadlineMood(
-              TextStyle(
-                color: skin.fg,
-                fontSize: wide ? 20 : 16.5,
-                fontWeight: FontWeight.w600,
-                letterSpacing: -0.3,
-              ),
-            ),
-          ),
+          padding: EdgeInsets.fromLTRB(padX, topGap, padX, wide ? 12 : 8),
+          child: VedroRailHeader(title: widget.title),
         ),
         SmoothHorizontalStrip(
           controller: _scrollCtrl,
@@ -285,7 +237,7 @@ class SmoothHorizontalStrip extends StatefulWidget {
 
 class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
   ScrollController? _ownedCtrl;
-  ScrollController get _ctrl => widget.controller ?? (_ownedCtrl ??= ScrollController());
+  ScrollController get _ctrl => widget.controller ?? (_ownedCtrl ??= VedroScrollController());
 
   bool _atStart = true;
   bool _atEnd = true;
@@ -337,8 +289,8 @@ class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
     final target = (_ctrl.offset + dir * stride).clamp(0.0, _ctrl.position.maxScrollExtent);
     _ctrl.animateTo(
       target,
-      duration: const Duration(milliseconds: 380),
-      curve: Curves.easeOutCubic,
+      duration: const Duration(milliseconds: 620),
+      curve: VedroSpringCurve.smooth,
     );
   }
 
@@ -436,9 +388,13 @@ class _EdgePaddleButton extends StatelessWidget {
         ignoring: !visible,
         child: AnimatedOpacity(
           opacity: visible ? 1.0 : 0.0,
-          duration: const Duration(milliseconds: 180),
+          duration: const Duration(milliseconds: 240),
           curve: VedroTheme.easeOut,
-          child: Material(
+          child: AnimatedScale(
+            scale: visible ? 1.0 : 0.82,
+            duration: const Duration(milliseconds: 420),
+            curve: VedroSpringCurve.bouncy,
+            child: Material(
             color: skin.surface.withValues(alpha: 0.92),
             shape: CircleBorder(side: BorderSide(color: skin.borderStrong, width: 0.8)),
             elevation: 8,
@@ -453,7 +409,69 @@ class _EdgePaddleButton extends StatelessWidget {
               ),
             ),
           ),
+          ),
         ),
+      ),
+    );
+  }
+}
+
+/// Unified Apple-style section header: bold title with an optional chevron
+/// "see all" affordance that nudges right on hover / press.
+class VedroRailHeader extends StatefulWidget {
+  const VedroRailHeader({super.key, required this.title, this.onSeeAll});
+
+  final String title;
+  final VoidCallback? onSeeAll;
+
+  @override
+  State<VedroRailHeader> createState() => _VedroRailHeaderState();
+}
+
+class _VedroRailHeaderState extends State<VedroRailHeader> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final wide = MediaQuery.sizeOf(context).width >= 820;
+    final titleStyle = skin.applyHeadlineMood(
+      TextStyle(
+        color: skin.fg,
+        fontSize: wide ? 21 : 18,
+        fontWeight: FontWeight.w700,
+        letterSpacing: wide ? -0.45 : -0.35,
+        height: 1.15,
+      ),
+    );
+    final title = Text(
+      widget.title,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: titleStyle,
+    );
+    if (widget.onSeeAll == null) return title;
+    return PressableScale(
+      onTap: widget.onSeeAll,
+      onHoverChanged: (v) => setState(() => _hover = v),
+      hoverScale: 1.0,
+      pressScale: 0.97,
+      borderRadius: BorderRadius.circular(8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(child: title),
+          AnimatedSlide(
+            offset: Offset(_hover ? 0.18 : 0.0, 0),
+            duration: const Duration(milliseconds: 380),
+            curve: VedroSpringCurve.bouncy,
+            child: Icon(
+              Icons.chevron_right_rounded,
+              size: wide ? 23 : 21,
+              color: _hover ? skin.fg2 : skin.fg3,
+            ),
+          ),
+        ],
       ),
     );
   }

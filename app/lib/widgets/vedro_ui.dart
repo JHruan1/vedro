@@ -6,8 +6,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/platform/platform_perf.dart';
+import '../core/theme/vedro_motion.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
+import 'vedro_motion_widgets.dart';
+
+export 'vedro_motion_widgets.dart';
 
 /// Signature Anamorphic Cinema 'V' + Play Prism brand mark for Vedro, matching the 5-platform app icon.
 class VedroBrandMark extends StatelessWidget {
@@ -329,7 +333,7 @@ class _ContextMenuIntent extends Intent {
   const _ContextMenuIntent();
 }
 
-class _PressableScaleState extends State<PressableScale> {
+class _PressableScaleState extends State<PressableScale> with SingleTickerProviderStateMixin {
   static const Map<ShortcutActivator, Intent> _kActivateShortcuts = {
     SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
     SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
@@ -347,7 +351,16 @@ class _PressableScaleState extends State<PressableScale> {
   bool _focused = false;
   bool _showFocusHighlight = false;
   Timer? _peekChargeTimer;
+  Timer? _releaseTimer;
+  DateTime? _pressStartedAt;
   FocusNode? _internalFocusNode;
+
+  /// Physics-driven scale: retargets keep momentum, so a quick tap dips and
+  /// rebounds with a short natural overshoot exactly like UIKit buttons.
+  late final VedroSpringDriver _scale = VedroSpringDriver(vsync: this, initialValue: 1.0);
+
+  /// Minimum time a press stays visibly "down" so instant taps still read.
+  static const Duration _minPressVisible = Duration(milliseconds: 85);
 
   bool get _hasLongPress => widget.onLongPress != null || widget.onLongPressWithRect != null;
   bool get _hasSecondaryTap =>
@@ -359,8 +372,54 @@ class _PressableScaleState extends State<PressableScale> {
   @override
   void dispose() {
     _peekChargeTimer?.cancel();
+    _releaseTimer?.cancel();
+    _scale.dispose();
     _internalFocusNode?.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant PressableScale oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.hoverScale != widget.hoverScale ||
+        oldWidget.pressScale != widget.pressScale ||
+        oldWidget.peekScale != widget.peekScale) {
+      _syncScale();
+    }
+  }
+
+  bool get _focusRingActive {
+    final hasFocusForRing = widget.primaryFocusRingOnly
+        ? (_focused && _effectiveFocusNode.hasPrimaryFocus)
+        : _focused;
+    return hasFocusForRing && (_showFocusHighlight || PlatformPerfProfile.isTv);
+  }
+
+  double get _targetScale {
+    final focusScale = widget.hoverScale > 1.0 ? widget.hoverScale : 1.018;
+    if (_peeking) return widget.peekScale;
+    if (_pressing) return widget.pressScale;
+    if (_focusRingActive) return focusScale;
+    if (_hovering) return widget.hoverScale;
+    return 1.0;
+  }
+
+  void _syncScale() {
+    if (!mounted) return;
+    final target = _targetScale;
+    final reduce = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    final current = _scale.value;
+    final VedroSpring spring;
+    if (_peeking) {
+      spring = VedroSpring.gentle;
+    } else if (target < current - 1e-4) {
+      spring = VedroSpring.press;
+    } else if (_pressing || _hovering || _focusRingActive) {
+      spring = VedroSpring.snappy;
+    } else {
+      spring = VedroSpring.release;
+    }
+    _scale.animateTo(target, spring, immediate: reduce);
   }
 
   Rect? _currentGlobalRect() {
@@ -372,33 +431,46 @@ class _PressableScaleState extends State<PressableScale> {
 
   void _startPress() {
     _peekChargeTimer?.cancel();
+    _releaseTimer?.cancel();
+    _pressStartedAt = DateTime.now();
     setState(() {
       _pressing = true;
       _peeking = false;
     });
+    _syncScale();
     if (_hasLongPress) {
       // Progressive iOS Peek & Pop charge-up: after initial tactile press dip,
       // gently swell the card so it feels alive right before popping into the menu.
-      _peekChargeTimer = Timer(const Duration(milliseconds: 165), () {
+      _peekChargeTimer = Timer(const Duration(milliseconds: 200), () {
         if (!mounted || !_pressing) return;
         HapticFeedback.selectionClick();
         setState(() => _peeking = true);
+        _syncScale();
       });
     }
   }
 
-  void _endPress() {
+  void _endPress({bool immediate = false}) {
     _peekChargeTimer?.cancel();
-    if (_pressing || _peeking) {
-      setState(() {
-        _pressing = false;
-        _peeking = false;
-      });
+    if (!_pressing && !_peeking) return;
+    final started = _pressStartedAt;
+    final held = started == null ? _minPressVisible : DateTime.now().difference(started);
+    if (!immediate && !_peeking && held < _minPressVisible) {
+      // Let an instant tap register a visible dip before the spring rebound.
+      _releaseTimer?.cancel();
+      _releaseTimer = Timer(_minPressVisible - held, () => _endPress(immediate: true));
+      return;
     }
+    _releaseTimer?.cancel();
+    setState(() {
+      _pressing = false;
+      _peeking = false;
+    });
+    _syncScale();
   }
 
   void _triggerLongPress() {
-    _endPress();
+    _endPress(immediate: true);
     if (widget.onLongPressWithRect != null) {
       final rect = _currentGlobalRect();
       if (rect != null) {
@@ -410,7 +482,7 @@ class _PressableScaleState extends State<PressableScale> {
   }
 
   void _triggerSecondaryTap() {
-    _endPress();
+    _endPress(immediate: true);
     if (widget.onSecondaryTapWithRect != null) {
       final rect = _currentGlobalRect();
       if (rect != null) {
@@ -434,6 +506,7 @@ class _PressableScaleState extends State<PressableScale> {
   void _setHover(bool v) {
     if (_hovering == v) return;
     setState(() => _hovering = v);
+    _syncScale();
     widget.onHoverChanged?.call(v);
   }
 
@@ -441,6 +514,7 @@ class _PressableScaleState extends State<PressableScale> {
     final effective = widget.primaryFocusRingOnly ? (v && _effectiveFocusNode.hasPrimaryFocus) : v;
     if (_focused == effective) return;
     setState(() => _focused = effective);
+    _syncScale();
     widget.onFocusChanged?.call(effective);
     if (effective) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -459,18 +533,7 @@ class _PressableScaleState extends State<PressableScale> {
 
   @override
   Widget build(BuildContext context) {
-    final hasFocusForRing = widget.primaryFocusRingOnly
-        ? (_focused && _effectiveFocusNode.hasPrimaryFocus)
-        : _focused;
-    final focusActive = hasFocusForRing && (_showFocusHighlight || PlatformPerfProfile.isTv);
-    final focusScale = widget.hoverScale > 1.0 ? widget.hoverScale : 1.018;
-    final targetScale = _peeking
-        ? widget.peekScale
-        : (_pressing
-            ? widget.pressScale
-            : (focusActive
-                ? focusScale
-                : (_hovering ? widget.hoverScale : 1.0)));
+    final focusActive = _focusRingActive;
 
     Widget content = widget.child;
     if (focusActive && widget.showFocusRing) {
@@ -505,16 +568,12 @@ class _PressableScaleState extends State<PressableScale> {
       behavior: HitTestBehavior.opaque,
       onTapDown: interactive ? (_) => _startPress() : null,
       onTapUp: interactive ? (_) => _endPress() : null,
-      onTapCancel: interactive ? _endPress : null,
+      onTapCancel: interactive ? () => _endPress(immediate: true) : null,
       onTap: widget.onTap,
       onLongPress: _hasLongPress ? _triggerLongPress : null,
       onSecondaryTap: (_hasSecondaryTap || _hasLongPress) ? _triggerSecondaryTap : null,
-      child: AnimatedScale(
-        scale: targetScale,
-        duration: Duration(milliseconds: _peeking ? 260 : (_pressing ? 105 : 270)),
-        curve: _peeking
-            ? Curves.easeOutCubic
-            : (_pressing ? Curves.easeOutQuad : VedroTheme.springCurve),
+      child: ScaleTransition(
+        scale: _scale.animation,
         child: content,
       ),
     );
@@ -549,11 +608,12 @@ class _PressableScaleState extends State<PressableScale> {
             ? null
             : (v) {
                 _setHover(v);
-                if (!v && (_pressing || _peeking)) _endPress();
+                if (!v && (_pressing || _peeking)) _endPress(immediate: true);
               },
         onShowFocusHighlight: (v) {
           if (_showFocusHighlight != v) {
             setState(() => _showFocusHighlight = v);
+            _syncScale();
           }
         },
         onFocusChange: _setFocus,
@@ -571,7 +631,7 @@ class _PressableScaleState extends State<PressableScale> {
       onEnter: (_) => _setHover(true),
       onExit: (_) {
         _setHover(false);
-        if (_pressing) setState(() => _pressing = false);
+        if (_pressing) _endPress(immediate: true);
       },
       child: result,
     );
@@ -672,6 +732,7 @@ class VedroSegmentedControl<T> extends StatelessWidget {
     final skin = VedroSkin.of(context);
     final outerR = skin.radiusForPill(38);
     final innerR = skin.radiusForPill(32);
+    final selectedIdx = items.indexWhere((e) => e.$1 == selected);
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Container(
@@ -681,35 +742,45 @@ class VedroSegmentedControl<T> extends StatelessWidget {
           borderRadius: BorderRadius.circular(outerR),
           border: skin.frameStyle == 'borderless' ? null : Border.all(color: skin.border, width: 0.7),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: items.map((entry) {
-            final (val, label) = entry;
-            final active = val == selected;
-            return PressableScale(
-              onTap: () => onSelected(val),
-              hoverScale: 1.0,
-              pressScale: 0.96,
-              borderRadius: BorderRadius.circular(innerR),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                curve: VedroTheme.easeOut,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6.5),
-                decoration: BoxDecoration(
-                  color: active ? skin.activePillBg : Colors.transparent,
-                  borderRadius: BorderRadius.circular(innerR),
-                ),
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    color: active ? skin.activePillFg : skin.fg2,
-                    fontSize: 13,
-                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+        child: VedroSlidingPillRow(
+          selectedIndex: selectedIdx < 0 ? null : selectedIdx,
+          pillDecoration: BoxDecoration(
+            color: skin.activePillBg,
+            borderRadius: BorderRadius.circular(innerR),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: skin.isLight ? 0.10 : 0.28),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          children: [
+            for (final (val, label) in items)
+              PressableScale(
+                onTap: () {
+                  if (val != selected) HapticFeedback.selectionClick();
+                  onSelected(val);
+                },
+                hoverScale: 1.0,
+                pressScale: 0.95,
+                borderRadius: BorderRadius.circular(innerR),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6.5),
+                  child: AnimatedDefaultTextStyle(
+                    duration: const Duration(milliseconds: 200),
+                    curve: VedroTheme.easeOut,
+                    style: TextStyle(
+                      color: val == selected ? skin.activePillFg : skin.fg2,
+                      fontSize: 13,
+                      fontWeight: val == selected ? FontWeight.w600 : FontWeight.w500,
+                      fontFamilyFallback: DefaultTextStyle.of(context).style.fontFamilyFallback,
+                    ),
+                    child: Text(label),
                   ),
                 ),
               ),
-            );
-          }).toList(),
+          ],
         ),
       ),
     );
@@ -735,55 +806,15 @@ class VedroStaggeredEntrance extends StatefulWidget {
   State<VedroStaggeredEntrance> createState() => _VedroStaggeredEntranceState();
 }
 
-class _VedroStaggeredEntranceState extends State<VedroStaggeredEntrance>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-  late final Animation<double> _curved;
-  late final Animation<Offset> _slide;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 280),
-    );
-    _curved = CurvedAnimation(parent: _ctrl, curve: VedroTheme.easeOut);
-    _slide = Tween<Offset>(
-      begin: Offset(0, (widget.offsetY / 280.0).clamp(0.015, 0.08)),
-      end: Offset.zero,
-    ).animate(_curved);
-    if (widget.reduceMotion) {
-      _ctrl.value = 1.0;
-    } else {
-      final delayMs = (widget.index.clamp(0, 6)) * 28;
-      if (delayMs == 0) {
-        _ctrl.forward();
-      } else {
-        Future<void>.delayed(Duration(milliseconds: delayMs), () {
-          if (mounted) _ctrl.forward();
-        });
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
+class _VedroStaggeredEntranceState extends State<VedroStaggeredEntrance> {
   @override
   Widget build(BuildContext context) {
-    if (widget.reduceMotion || MediaQuery.disableAnimationsOf(context)) {
-      return widget.child;
-    }
-    return FadeTransition(
-      opacity: _curved,
-      child: SlideTransition(
-        position: _slide,
-        child: widget.child,
-      ),
+    return VedroEntrance(
+      delay: Duration(milliseconds: widget.index.clamp(0, 8) * 36),
+      duration: const Duration(milliseconds: 480),
+      offsetY: widget.offsetY,
+      enabled: !widget.reduceMotion,
+      child: widget.child,
     );
   }
 }
@@ -1157,22 +1188,23 @@ Future<T?> showGlassSheet<T>({
       barrierDismissible: true,
       barrierLabel: 'Dismiss',
       barrierColor: Colors.black.withValues(alpha: effectiveSkin.isLight ? 0.36 : 0.62),
-      transitionDuration: const Duration(milliseconds: 280),
+      transitionDuration: const Duration(milliseconds: 460),
       transitionBuilder: (ctx, anim, _, child) {
+        // macOS / iPadOS sheet presentation: quick fade, spring-settled depth pop.
         final fade = CurvedAnimation(
           parent: anim,
-          curve: Curves.easeOutCubic,
+          curve: const Interval(0.0, 0.5, curve: Curves.easeOut),
           reverseCurve: Curves.easeInCubic,
         );
         final spring = CurvedAnimation(
           parent: anim,
-          curve: VedroTheme.snappySpring,
+          curve: VedroSpringCurve.bouncy,
           reverseCurve: Curves.easeInCubic,
         );
         return FadeTransition(
           opacity: fade,
           child: ScaleTransition(
-            scale: Tween<double>(begin: 0.90, end: 1.0).animate(spring),
+            scale: Tween<double>(begin: 0.92, end: 1.0).animate(spring),
             child: child,
           ),
         );
@@ -1232,6 +1264,13 @@ Future<T?> showGlassSheet<T>({
     isScrollControlled: true,
     isDismissible: true,
     enableDrag: true,
+    // iOS-style sheet: critically damped spring rise, brisk dismissal.
+    sheetAnimationStyle: AnimationStyle(
+      duration: const Duration(milliseconds: 520),
+      reverseDuration: const Duration(milliseconds: 280),
+      curve: VedroSpringCurve.snappy,
+      reverseCurve: Curves.easeInCubic,
+    ),
     builder: (ctx) {
       final s = MediaQuery.sizeOf(ctx);
       final skin = overrideTheme != null ? effectiveSkin : VedroSkin.of(ctx);
@@ -1290,6 +1329,29 @@ Future<T?> showGlassSheet<T>({
   );
 }
 
+
+/// Present an anchored floating glass action menu (macOS / iOS pull-down style)
+/// from [anchorRect]. Each item should carry an `onTapOverride` action.
+Future<void> showVedroActionMenu({
+  required BuildContext context,
+  required Rect anchorRect,
+  required List<VedroDropdownItem<String>> items,
+  double minWidth = 232,
+  double maxWidth = 320,
+}) {
+  HapticFeedback.selectionClick();
+  return Navigator.of(context).push(
+    _VedroPullDownRoute<void>(
+      triggerRect: anchorRect,
+      theme: Theme.of(context),
+      minWidth: minWidth,
+      maxWidth: maxWidth,
+      items: items,
+      selectedValue: const Object(),
+      onSelectItem: (item) => item.onTapOverride?.call(),
+    ),
+  );
+}
 
 /// Safely owns dialog/sheet controllers (e.g. [TextEditingController]) and disposes them
 /// in [State.dispose] AFTER the route exit animation finishes, avoiding "used after disposed"
@@ -1594,7 +1656,7 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
   String? get barrierLabel => 'Dismiss menu';
 
   @override
-  Duration get transitionDuration => const Duration(milliseconds: 250);
+  Duration get transitionDuration => const Duration(milliseconds: 420);
 
   @override
   Duration get reverseTransitionDuration => const Duration(milliseconds: 165);
@@ -1625,12 +1687,12 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
     final scaleOrigin = Alignment(alignX, openUpward ? 1.0 : -1.0);
     final fadeCurve = CurvedAnimation(
       parent: animation,
-      curve: Curves.easeOutCubic,
+      curve: const Interval(0.0, 0.45, curve: Curves.easeOut),
       reverseCurve: Curves.easeInCubic,
     );
     final springCurve = CurvedAnimation(
       parent: animation,
-      curve: VedroTheme.snappySpring,
+      curve: VedroSpringCurve.bouncy,
       reverseCurve: Curves.easeInCubic,
     );
 
@@ -1822,7 +1884,7 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
               opacity: fadeCurve,
               child: ScaleTransition(
                 alignment: scaleOrigin,
-                scale: Tween<double>(begin: 0.84, end: 1.0).animate(springCurve),
+                scale: Tween<double>(begin: 0.78, end: 1.0).animate(springCurve),
                 child: menuCard,
               ),
             ),

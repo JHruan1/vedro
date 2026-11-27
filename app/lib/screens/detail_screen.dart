@@ -11,6 +11,7 @@ import '../core/platform/native_playback_channel.dart';
 import '../core/platform/platform_perf.dart';
 import '../core/theme/display_profile.dart';
 import '../core/theme/dynamic_color_engine.dart';
+import '../core/theme/vedro_scroll.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -78,6 +79,18 @@ class _DetailScreenState extends State<DetailScreen> {
   int _episodeRangeIndex = 0;
   bool _episodeSearchOpen = false;
   final TextEditingController _episodeJumpCtrl = TextEditingController();
+
+  /// Smooth desktop wheel glide + iOS stretchy backdrop (rubber-band pull distance).
+  late final VedroScrollController _detailScrollCtrl = VedroScrollController()
+    ..addListener(_onDetailScroll);
+  final ValueNotifier<double> _detailPull = ValueNotifier<double>(0.0);
+
+  void _onDetailScroll() {
+    if (!_detailScrollCtrl.hasClients) return;
+    final o = _detailScrollCtrl.offset;
+    final pull = o < 0 ? -o : 0.0;
+    if (pull != _detailPull.value) _detailPull.value = pull;
+  }
   final FocusNode _episodeSearchFocus = FocusNode();
   String _episodeFilterQuery = '';
   String? _translatedOverview;
@@ -163,6 +176,8 @@ class _DetailScreenState extends State<DetailScreen> {
   @override
   void dispose() {
     widget.appState.removeListener(_onAppStateChanged);
+    _detailScrollCtrl.dispose();
+    _detailPull.dispose();
     _episodeJumpCtrl.dispose();
     _episodeSearchFocus.dispose();
     final restoreSkin = widget.appState.prefs.activeSkinFor(

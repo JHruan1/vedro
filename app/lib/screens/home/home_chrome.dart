@@ -1,0 +1,186 @@
+part of '../home_screen.dart';
+
+/// Pull distance (logical px) that arms the stretch-to-refresh gesture.
+const double _kPullToRefreshTrigger = 92.0;
+
+/// iOS-style pinned mobile navigation bar for Home:
+/// - fully transparent over the hero artwork, then
+/// - progressively frosts (blur + glass fill + hairline) as content scrolls under it,
+/// exactly like UINavigationBar's scroll-edge appearance.
+class _HomeMobileTopBar extends StatelessWidget {
+  const _HomeMobileTopBar({
+    required this.appState,
+    required this.scrollOffset,
+    required this.solidAfter,
+    required this.onOpenServerHub,
+    this.onOpenFavorites,
+  });
+
+  final VedroAppState appState;
+  final ValueListenable<double> scrollOffset;
+  final double solidAfter;
+  final VoidCallback onOpenServerHub;
+  final VoidCallback? onOpenFavorites;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final serverName = appState.activeServerDisplayName;
+    final routeName = appState.activeRouteDisplayName;
+
+    return ValueListenableBuilder<double>(
+      valueListenable: scrollOffset,
+      builder: (context, offset, _) {
+        final t = (1.0 + (offset - solidAfter) / 48.0).clamp(0.0, 1.0);
+        final overArt = t < 0.5;
+        final pillBg = skin.isLight
+            ? Color.lerp(const Color(0xCCFFFFFF), skin.fg.withValues(alpha: 0.06), t)!
+            : Color.lerp(const Color(0x58141417), Colors.white.withValues(alpha: 0.08), t)!;
+        final pillFg = skin.isLight ? skin.fg : Colors.white;
+        final barBlur = PlatformPerfProfile.clampLiveBlur(26) * t;
+
+        Widget pill({required Widget child, required EdgeInsets padding}) => GlassSurface(
+              borderRadius: 19,
+              blur: 18,
+              enableBlur: overArt,
+              color: pillBg,
+              borderColor: skin.isLight && overArt ? skin.border : Colors.transparent,
+              padding: padding,
+              child: child,
+            );
+
+        return Stack(
+          children: [
+            if (t > 0.01)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: ClipRect(
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: barBlur, sigmaY: barBlur),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: PlatformPerfProfile.adaptGlassFill(skin.glass).withValues(
+                              alpha: PlatformPerfProfile.adaptGlassFill(skin.glass).a * t),
+                          border: Border(
+                            bottom: BorderSide(
+                              color: skin.border.withValues(alpha: skin.border.a * t),
+                              width: 0.5,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            SafeArea(
+              bottom: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: PressableScale(
+                        onTap: onOpenServerHub,
+                        pressScale: 0.94,
+                        child: pill(
+                          padding: const EdgeInsets.fromLTRB(6, 5, 10, 5),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const VedroBrandMark(size: 24),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  routeName != null ? '$serverName · $routeName' : serverName,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: pillFg,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    letterSpacing: -0.2,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 2),
+                              Icon(
+                                Icons.keyboard_arrow_down_rounded,
+                                size: 17,
+                                color: pillFg.withValues(alpha: 0.75),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    if (onOpenFavorites != null)
+                      PressableScale(
+                        onTap: onOpenFavorites,
+                        pressScale: 0.88,
+                        child: pill(
+                          padding: const EdgeInsets.all(8.5),
+                          child: Icon(Icons.favorite_border_rounded, size: 18, color: pillFg),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// Floating glass activity indicator for the stretch-to-refresh gesture: the
+/// iOS spokes reveal one by one while pulling, then spin while refreshing.
+class _PullRefreshIndicator extends StatelessWidget {
+  const _PullRefreshIndicator({required this.progress, required this.refreshing});
+
+  final ValueListenable<double> progress;
+  final ValueListenable<bool> refreshing;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    return IgnorePointer(
+      child: AnimatedBuilder(
+        animation: Listenable.merge([progress, refreshing]),
+        builder: (context, _) {
+          final busy = refreshing.value;
+          final p = progress.value;
+          final visible = busy || p > 0.04;
+          return AnimatedOpacity(
+            opacity: visible ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 220),
+            curve: VedroTheme.easeOut,
+            child: AnimatedScale(
+              scale: busy ? 1.0 : (0.55 + 0.45 * p),
+              duration: Duration(milliseconds: busy ? 420 : 60),
+              curve: busy ? VedroSpringCurve.playful : Curves.linear,
+              child: GlassSurface(
+                borderRadius: 20,
+                blur: 18,
+                padding: const EdgeInsets.all(9),
+                child: SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: busy
+                      ? CupertinoActivityIndicator(radius: 10, color: skin.fg)
+                      : CupertinoActivityIndicator.partiallyRevealed(
+                          radius: 10,
+                          progress: p,
+                          color: skin.fg,
+                        ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}

@@ -346,54 +346,55 @@ class _CenteredCapsuleNavIsland extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              for (final (idx, label, icon) in navItems)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 2),
-                  child: PressableScale(
-                    onTap: () => onSelectIndex(idx),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      curve: VedroTheme.easeOut,
-                      height: 34,
-                      padding: const EdgeInsets.symmetric(horizontal: 13),
-                      decoration: BoxDecoration(
-                        color: activeIndex == idx ? skin.activePillBg : Colors.transparent,
-                        borderRadius: BorderRadius.circular(btnR),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            icon,
-                            size: 15,
-                            color: activeIndex == idx ? skin.activePillFg : skin.fg2,
+              VedroSlidingPillRow(
+                spacing: 4,
+                selectedIndex: _navSlot(navItems, activeIndex),
+                pillDecoration: BoxDecoration(
+                  color: skin.activePillBg,
+                  borderRadius: BorderRadius.circular(btnR),
+                ),
+                children: [
+                  for (final (idx, label, icon) in navItems)
+                    PressableScale(
+                      onTap: () => onSelectIndex(idx),
+                      hoverScale: 1.03,
+                      pressScale: 0.95,
+                      child: SizedBox(
+                        height: 34,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 13),
+                          child: _NavLabel(
+                            icon: icon,
+                            label: label,
+                            active: activeIndex == idx,
+                            activeColor: skin.activePillFg,
+                            idleColor: skin.fg2,
+                            fontSize: 13,
                           ),
-                          const SizedBox(width: 5),
-                          Text(
-                            label,
-                            style: TextStyle(
-                              color: activeIndex == idx ? skin.activePillFg : skin.fg2,
-                              fontSize: 13,
-                              fontWeight: activeIndex == idx ? FontWeight.w600 : FontWeight.w500,
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
                     ),
-                  ),
-                ),
+                ],
+              ),
               const SizedBox(width: 8),
               _IslandIconBtn(
                 icon: Icons.search_rounded,
                 tooltip: (!kIsWeb && Platform.isMacOS) ? '搜索 (⌘K)' : '搜索 (Ctrl+K)',
                 onTap: onOpenSearch,
               ),
-              _IslandIconBtn(icon: Icons.folder_open_rounded, tooltip: '本地视频', onTap: onOpenLocalMedia),
-              _IslandIconBtn(icon: Icons.link_rounded, tooltip: '打开网络链接', onTap: onOpenNetworkUrl),
-              if (appState.isSignedIn) ...[
-                _IslandIconBtn(icon: Icons.favorite_border_rounded, tooltip: '我的收藏', onTap: onOpenFavorites),
-                _IslandIconBtn(icon: Icons.refresh_rounded, tooltip: '刷新', onTap: onRefresh),
-              ],
+              _IslandIconBtn(
+                icon: Icons.more_horiz_rounded,
+                tooltip: '更多',
+                onTapWithRect: (rect) => _showShellOverflowMenu(
+                  context: context,
+                  anchorRect: rect,
+                  signedIn: appState.isSignedIn,
+                  onOpenLocalMedia: onOpenLocalMedia,
+                  onOpenNetworkUrl: onOpenNetworkUrl,
+                  onOpenFavorites: onOpenFavorites,
+                  onRefresh: onRefresh,
+                ),
+              ),
             ],
           ),
           ),
@@ -404,10 +405,11 @@ class _CenteredCapsuleNavIsland extends StatelessWidget {
 }
 
 class _IslandIconBtn extends StatelessWidget {
-  const _IslandIconBtn({required this.icon, required this.tooltip, required this.onTap});
+  const _IslandIconBtn({required this.icon, required this.tooltip, this.onTap, this.onTapWithRect});
   final IconData icon;
   final String tooltip;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
+  final void Function(Rect anchorRect)? onTapWithRect;
 
   @override
   Widget build(BuildContext context) {
@@ -417,7 +419,9 @@ class _IslandIconBtn extends StatelessWidget {
       child: Tooltip(
         message: tooltip,
         child: PressableScale(
-          onTap: onTap,
+          onTap: onTapWithRect == null ? onTap : () => onTapWithRect!(_globalRectOf(context)),
+          hoverScale: 1.06,
+          pressScale: 0.9,
           child: Container(
             width: 34,
             height: 34,
@@ -482,14 +486,16 @@ class _FloatingDesktopHeader extends StatelessWidget {
         Widget headerCircleBtn({
           required String tooltip,
           required IconData icon,
-          required VoidCallback onTap,
+          VoidCallback? onTap,
+          void Function(Rect anchorRect)? onTapWithRect,
         }) {
           return Tooltip(
             message: tooltip,
-            child: PressableScale(
-              onTap: onTap,
+            child: Builder(
+              builder: (btnCtx) => PressableScale(
+              onTap: onTapWithRect == null ? onTap : () => onTapWithRect(_globalRectOf(btnCtx)),
               hoverScale: 1.06,
-              pressScale: 0.92,
+              pressScale: 0.9,
               child: Container(
                 width: 36,
                 height: 36,
@@ -508,6 +514,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
                   color: clear ? Colors.white : skin.fg2,
                 ),
               ),
+            ),
             ),
           );
         }
@@ -608,47 +615,43 @@ class _FloatingDesktopHeader extends StatelessWidget {
                       ),
                     ),
                     SizedBox(width: compactHeader ? 10 : 18),
-                    for (final (idx, label, _) in navItems)
-                      Padding(
-                        padding: EdgeInsets.only(right: narrowHeader ? 2 : 4),
-                        child: PressableScale(
-                          onTap: () => onSelectIndex(idx),
-                          hoverScale: 1.03,
-                          pressScale: 0.96,
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 180),
-                            curve: VedroTheme.easeOut,
-                            height: 34,
-                            padding: EdgeInsets.symmetric(horizontal: navPadH),
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: activeIndex == idx
-                                  ? (clear
-                                      ? const Color(0x28FFFFFF)
-                                      : (skin.ctaStyle == 'contrast'
-                                          ? skin.subtleChipHoverBg
-                                          : skin.accent.withValues(alpha: skin.isLight ? 0.14 : 0.22)))
-                                  : Colors.transparent,
-                              borderRadius: BorderRadius.circular(skin.radiusForPill(34)),
-                              border: (activeIndex == idx && skin.frameStyle == 'neon' && !clear)
-                                  ? Border.all(color: skin.accent.withValues(alpha: 0.55), width: 0.8)
-                                  : null,
-                            ),
-                            child: Text(
-                              label,
-                              style: TextStyle(
-                                color: activeIndex == idx
-                                    ? (clear
-                                        ? Colors.white
-                                        : (skin.ctaStyle == 'contrast' ? skin.fg : skin.accent))
-                                    : (clear ? const Color(0xCCFFFFFF) : skin.fg2),
+                    VedroSlidingPillRow(
+                      spacing: narrowHeader ? 2 : 4,
+                      selectedIndex: _navSlot(navItems, activeIndex),
+                      pillDecoration: BoxDecoration(
+                        color: clear
+                            ? const Color(0x2EFFFFFF)
+                            : (skin.ctaStyle == 'contrast'
+                                ? skin.subtleChipHoverBg
+                                : skin.accent.withValues(alpha: skin.isLight ? 0.14 : 0.22)),
+                        borderRadius: BorderRadius.circular(skin.radiusForPill(34)),
+                        border: (skin.frameStyle == 'neon' && !clear)
+                            ? Border.all(color: skin.accent.withValues(alpha: 0.55), width: 0.8)
+                            : null,
+                      ),
+                      children: [
+                        for (final (idx, label, _) in navItems)
+                          PressableScale(
+                            onTap: () => onSelectIndex(idx),
+                            hoverScale: 1.03,
+                            pressScale: 0.95,
+                            child: Container(
+                              height: 34,
+                              padding: EdgeInsets.symmetric(horizontal: navPadH),
+                              alignment: Alignment.center,
+                              child: _NavLabel(
+                                label: label,
+                                active: activeIndex == idx,
+                                activeColor: clear
+                                    ? Colors.white
+                                    : (skin.ctaStyle == 'contrast' ? skin.fg : skin.accent),
+                                idleColor: clear ? const Color(0xCCFFFFFF) : skin.fg2,
                                 fontSize: 13.5,
-                                fontWeight: activeIndex == idx ? FontWeight.w600 : FontWeight.w500,
                               ),
                             ),
                           ),
-                        ),
-                      ),
+                      ],
+                    ),
                     const Spacer(),
                     if (searchWidth > 0)
                       PressableScale(
@@ -714,36 +717,19 @@ class _FloatingDesktopHeader extends StatelessWidget {
                       ),
                     SizedBox(width: btnGap),
                     headerCircleBtn(
-                      tooltip: '打开本地视频 / 文件夹（也支持直接拖入窗口）',
-                      icon: Icons.folder_open_rounded,
-                      onTap: onOpenLocalMedia,
+                      tooltip: '更多：本地播放 · 网络链接 · 收藏 · 首页布局 · 刷新',
+                      icon: Icons.more_horiz_rounded,
+                      onTapWithRect: (rect) => _showShellOverflowMenu(
+                        context: context,
+                        anchorRect: rect,
+                        signedIn: appState.isSignedIn,
+                        onOpenLocalMedia: onOpenLocalMedia,
+                        onOpenNetworkUrl: onOpenNetworkUrl,
+                        onOpenFavorites: onOpenFavorites,
+                        onOpenLayout: onOpenLayout,
+                        onRefresh: onRefresh,
+                      ),
                     ),
-                    SizedBox(width: btnGap),
-                    headerCircleBtn(
-                      tooltip: '打开网络串流链接 (HTTP / HTTPS / RTSP / RTMP / M3U8)',
-                      icon: Icons.link_rounded,
-                      onTap: onOpenNetworkUrl,
-                    ),
-                    if (appState.isSignedIn) ...[
-                      SizedBox(width: btnGap),
-                      headerCircleBtn(
-                        tooltip: '我的收藏',
-                        icon: Icons.favorite_border_rounded,
-                        onTap: onOpenFavorites,
-                      ),
-                      SizedBox(width: btnGap),
-                      headerCircleBtn(
-                        tooltip: '自定义首页布局',
-                        icon: Icons.dashboard_customize_outlined,
-                        onTap: onOpenLayout,
-                      ),
-                      SizedBox(width: btnGap),
-                      headerCircleBtn(
-                        tooltip: '刷新首页',
-                        icon: Icons.refresh_rounded,
-                        onTap: onRefresh,
-                      ),
-                    ],
                   ],
                 ),
               ),
@@ -813,55 +799,54 @@ class _BottomTabButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
     final activeColor = skin.accent;
-    final pillFill = skin.isLight
-        ? Colors.black.withValues(alpha: 0.065)
-        : Colors.white.withValues(alpha: 0.11);
     final pillR = skin.radiusForPill(46);
-    return Expanded(
-      child: PressableScale(
-        onTap: onTap,
-        hoverScale: 1.0,
-        pressScale: 0.94,
-        borderRadius: BorderRadius.circular(pillR),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 220),
-          curve: VedroTheme.easeOut,
-          margin: const EdgeInsets.symmetric(horizontal: 2),
-          padding: EdgeInsets.symmetric(vertical: iconOnly ? 8.5 : 6.5),
-          decoration: BoxDecoration(
-            color: selected ? pillFill : Colors.transparent,
-            borderRadius: BorderRadius.circular(pillR),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              AnimatedScale(
-                scale: selected ? 1.12 : 1.0,
-                duration: const Duration(milliseconds: 280),
-                curve: VedroTheme.snappySpring,
-                child: Icon(
+    return PressableScale(
+      onTap: onTap,
+      hoverScale: 1.0,
+      pressScale: 0.9,
+      borderRadius: BorderRadius.circular(pillR),
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 2, vertical: iconOnly ? 8.5 : 6.5),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedScale(
+              scale: selected ? 1.08 : 1.0,
+              duration: const Duration(milliseconds: 420),
+              curve: VedroSpringCurve.playful,
+              child: TweenAnimationBuilder<Color?>(
+                tween: ColorTween(end: selected ? activeColor : skin.fg2),
+                duration: const Duration(milliseconds: 220),
+                curve: VedroTheme.easeOut,
+                builder: (_, color, __) => Icon(
                   selected ? tab.activeIcon : tab.icon,
                   size: iconOnly ? 21.5 : 20.5,
-                  color: selected ? activeColor : skin.fg2,
+                  color: color,
                 ),
               ),
-              if (!iconOnly) ...[
-                const SizedBox(height: 2.5),
-                Text(
+            ),
+            if (!iconOnly) ...[
+              const SizedBox(height: 2.5),
+              AnimatedDefaultTextStyle(
+                duration: const Duration(milliseconds: 220),
+                curve: VedroTheme.easeOut,
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  color: selected ? activeColor : skin.fg2,
+                  fontFamilyFallback: DefaultTextStyle.of(context).style.fontFamilyFallback,
+                ),
+                child: Text(
                   tab.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                    color: selected ? activeColor : skin.fg2,
-                  ),
                 ),
-              ],
+              ),
             ],
-          ),
+          ],
         ),
       ),
     );
   }
 }
+

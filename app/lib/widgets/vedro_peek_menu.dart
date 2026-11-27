@@ -89,7 +89,7 @@ class _VedroPeekMenuRoute extends PopupRoute<void> {
   String? get barrierLabel => '关闭菜单';
 
   @override
-  Duration get transitionDuration => const Duration(milliseconds: 360);
+  Duration get transitionDuration => const Duration(milliseconds: 460);
 
   @override
   Duration get reverseTransitionDuration => const Duration(milliseconds: 220);

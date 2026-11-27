@@ -40,6 +40,18 @@ REQUIRED_C_ABI_SYMBOLS = {
 
 # File-size ratchets (lines). Updated downwards as each governance round completes.
 FILE_LINE_LIMITS: dict[str, int] = {
+    # Rust vedro-ffi deep modules (decomposed in Round 2 from 6,822L monolith)
+    "core/vedro-ffi/src/lib.rs": 700,
+    "core/vedro-ffi/src/types.rs": 120,
+    "core/vedro-ffi/src/security.rs": 260,
+    "core/vedro-ffi/src/c_abi.rs": 260,
+    "core/vedro-ffi/src/rpc_admin.rs": 700,
+    "core/vedro-ffi/src/rpc_ai.rs": 950,
+    "core/vedro-ffi/src/rpc_server.rs": 950,
+    "core/vedro-ffi/src/danmaku.rs": 1000,
+    "core/vedro-ffi/src/updater.rs": 850,
+    "core/vedro-ffi/src/rpc_media.rs": 1650,
+    # Flutter core & widgets
     "app/lib/widgets/beauty_filter.dart": 600,
     "app/lib/widgets/danmaku_engine.dart": 350,
     "app/lib/core/services/danmaku_parser.dart": 150,

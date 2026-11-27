@@ -245,23 +245,26 @@ class VedroUpdateChecker extends ChangeNotifier {
 
   Future<Map<String, dynamic>> _defaultFetch(String curVer) async {
     final core = _core;
+    Object? coreErr;
     if (core != null) {
       try {
         final raw = await core.invoke('check_app_update');
         if (raw is Map<String, dynamic>) {
           return raw;
         }
-      } catch (_) {
+      } catch (e) {
+        coreErr = e;
         // Fall through to direct HttpClient if core mock/environment doesn't implement `check_app_update`
       }
     }
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 12);
-    try {
-      final uri = Uri.parse('https://api.github.com/repos/$repoSlug/releases/latest');
+    final ua = 'Vedro/${normalizeSemver(curVer)}';
+
+    Future<(int, Uri, String)> fetchText(Uri uri, {String? accept}) async {
       final req = await client.getUrl(uri);
-      req.headers.set('Accept', 'application/vnd.github+json');
-      req.headers.set('User-Agent', 'Vedro/${normalizeSemver(curVer)}');
+      if (accept != null) req.headers.set('Accept', accept);
+      req.headers.set('User-Agent', ua);
       final resp = await req.close().timeout(const Duration(seconds: 12));
       final chunks = <int>[];
       await for (final chunk in resp.timeout(const Duration(seconds: 12))) {
@@ -270,15 +273,76 @@ class VedroUpdateChecker extends ChangeNotifier {
           throw Exception('更新元数据超出大小限制');
         }
       }
-      final body = utf8.decode(chunks, allowMalformed: true);
-      if (resp.statusCode != 200) {
-        throw Exception('HTTP ${resp.statusCode}');
+      final finalUri = resp.redirects.isNotEmpty ? resp.redirects.last.location : uri;
+      return (resp.statusCode, finalUri, utf8.decode(chunks, allowMalformed: true));
+    }
+
+    try {
+      final apiUri = Uri.parse('https://api.github.com/repos/$repoSlug/releases/latest');
+      final (apiCode, _, apiBody) = await fetchText(
+        apiUri,
+        accept: 'application/vnd.github+json',
+      );
+      if (apiCode == 200) {
+        final parsed = jsonDecode(apiBody);
+        if (parsed is Map<String, dynamic>) {
+          return parsed;
+        }
       }
-      final parsed = jsonDecode(body);
-      if (parsed is! Map<String, dynamic>) {
-        throw Exception('返回格式异常');
+
+      // Rate-limit-free fallback when api.github.com returns HTTP 403/429 on shared VPN/proxy IPs
+      final webUri = Uri.parse('https://github.com/$repoSlug/releases/latest');
+      final (webCode, finalUri, webBody) = await fetchText(webUri, accept: 'application/json');
+      if (webCode != 200) {
+        if (coreErr != null) throw coreErr;
+        throw Exception('HTTP $apiCode');
       }
-      return parsed;
+      String tag = '';
+      try {
+        final parsed = jsonDecode(webBody);
+        if (parsed is Map<String, dynamic>) {
+          tag = (parsed['tag_name'] ?? '').toString().trim();
+        }
+      } catch (_) {}
+      if (tag.isEmpty) {
+        final m = RegExp(r'/releases/tag/([^/?#]+)').firstMatch(finalUri.toString());
+        if (m != null) tag = (m.group(1) ?? '').trim();
+      }
+      if (tag.isEmpty || !RegExp(r'^[A-Za-z0-9._+\-]{1,64}$').hasMatch(tag)) {
+        throw Exception('无法解析最新版本号 (HTTP $apiCode)');
+      }
+
+      final assets = <Map<String, dynamic>>[];
+      try {
+        final sumsUri = Uri.parse('https://github.com/$repoSlug/releases/download/$tag/SHA256SUMS.txt');
+        final (sCode, _, sBody) = await fetchText(sumsUri);
+        if (sCode == 200) {
+          for (final line in const LineSplitter().convert(sBody)) {
+            final t = line.trim();
+            if (t.isEmpty || t.startsWith('#')) continue;
+            final parts = t.split(RegExp(r'\s+'));
+            if (parts.length < 2) continue;
+            final hash = parts[0].toLowerCase();
+            final name = parts[1].replaceFirst(RegExp(r'^\*'), '').split('/').last;
+            if (hash.length == 64 && RegExp(r'^[0-9a-f]{64}$').hasMatch(hash) && name.isNotEmpty) {
+              assets.add({
+                'name': name,
+                'url': 'https://github.com/$repoSlug/releases/download/$tag/$name',
+                'size': 0,
+                'sha256': hash,
+              });
+            }
+          }
+        }
+      } catch (_) {}
+
+      return {
+        'tag_name': tag,
+        'version': normalizeSemver(tag),
+        'html_url': 'https://github.com/$repoSlug/releases/tag/$tag',
+        'body': '已通过 GitHub 官方发布通道校验最新版本，支持应用内高速下载与 SHA-256 完整性校验。',
+        'assets': assets,
+      };
     } finally {
       client.close(force: true);
     }

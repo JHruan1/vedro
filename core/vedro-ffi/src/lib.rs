@@ -163,6 +163,247 @@ fn parse_sha256sums_map(raw: &str) -> std::collections::HashMap<String, String> 
     map
 }
 
+fn is_safe_release_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 64
+        && !tag.contains("..")
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
+}
+
+fn extract_tag_from_release_url(url: &url::Url) -> Option<String> {
+    let path = url.path();
+    let (_, after) = path.split_once("/releases/tag/")?;
+    let seg = after.split('/').next()?.trim();
+    if is_safe_release_tag(seg) {
+        Some(seg.to_string())
+    } else {
+        None
+    }
+}
+
+async fn fetch_sha256sums_map(
+    http: &reqwest::Client,
+    sums_url: &str,
+    verify_hosts: bool,
+) -> std::collections::HashMap<String, String> {
+    let Ok(sums_parsed) = validate_http_url(sums_url) else {
+        return std::collections::HashMap::new();
+    };
+    if verify_hosts && !is_trusted_update_host(&sums_parsed) {
+        return std::collections::HashMap::new();
+    }
+    let Ok(s_resp) = http
+        .get(sums_parsed)
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("Vedro/", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .await
+    else {
+        return std::collections::HashMap::new();
+    };
+    if !s_resp.status().is_success() {
+        return std::collections::HashMap::new();
+    }
+    let Ok(s_bytes) = read_reqwest_body_capped(s_resp, 256 * 1024).await else {
+        return std::collections::HashMap::new();
+    };
+    parse_sha256sums_map(&String::from_utf8_lossy(&s_bytes))
+}
+
+async fn fetch_github_latest_release(
+    http: &reqwest::Client,
+    api_url: &str,
+    web_latest_url: &str,
+    release_download_base: &str,
+    verify_hosts: bool,
+) -> Result<Value, String> {
+    let parsed_api = validate_http_url(api_url)?;
+    if verify_hosts && !is_trusted_update_host(&parsed_api) {
+        return Err("仅允许从受信任的 GitHub 官方发布源检查更新".to_string());
+    }
+
+    // 1. Primary: GitHub REST API (returns full release notes, published_at, asset sizes)
+    let primary_err: String = match http
+        .get(parsed_api)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("Vedro/", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(raw_bytes) = read_reqwest_body_capped(resp, 2 * 1024 * 1024).await {
+                if let Ok(release) = serde_json::from_slice::<Value>(&raw_bytes) {
+                    let tag_name = release
+                        .get("tag_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if is_safe_release_tag(&tag_name) {
+                        let html_url = release
+                            .get("html_url")
+                            .and_then(Value::as_str)
+                            .unwrap_or("https://github.com/JHruan1/vedro/releases/latest")
+                            .to_string();
+                        let body = release
+                            .get("body")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let published_at = release
+                            .get("published_at")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let raw_assets = release
+                            .get("assets")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        let sums_url = raw_assets
+                            .iter()
+                            .find_map(|a| {
+                                let name = a.get("name").and_then(Value::as_str)?;
+                                if name.eq_ignore_ascii_case("SHA256SUMS.txt") {
+                                    a.get("browser_download_url")
+                                        .and_then(Value::as_str)
+                                        .map(ToString::to_string)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "{}/{}/SHA256SUMS.txt",
+                                    release_download_base.trim_end_matches('/'),
+                                    tag_name
+                                )
+                            });
+                        let sha_map = fetch_sha256sums_map(http, &sums_url, verify_hosts).await;
+                        let assets: Vec<Value> = raw_assets
+                            .into_iter()
+                            .filter_map(|a| {
+                                let name = a.get("name").and_then(Value::as_str)?.to_string();
+                                let url = a
+                                    .get("browser_download_url")
+                                    .and_then(Value::as_str)?
+                                    .to_string();
+                                let size = a.get("size").and_then(Value::as_u64).unwrap_or(0);
+                                let sha256 = sha_map.get(&name).cloned();
+                                Some(json!({
+                                    "name": name,
+                                    "url": url,
+                                    "size": size,
+                                    "sha256": sha256,
+                                }))
+                            })
+                            .collect();
+                        return Ok(json!({
+                            "current_version": env!("CARGO_PKG_VERSION"),
+                            "tag_name": tag_name,
+                            "version": tag_name.trim_start_matches(['v', 'V']),
+                            "html_url": html_url,
+                            "body": body,
+                            "published_at": published_at,
+                            "assets": assets,
+                            "source": "github_api",
+                        }));
+                    }
+                }
+            }
+            "解析 GitHub API 响应失败".to_string()
+        }
+        Ok(resp) => format!("HTTP {}", resp.status().as_u16()),
+        Err(e) => vedro_protocol::error::format_transport_error(&e),
+    };
+
+    // 2. Fallback: Rate-limit-free GitHub Web `/releases/latest` + CDN `SHA256SUMS.txt`.
+    // Immune to GitHub REST API's 60 req/hr per-IP limit on shared VPN/proxy/NAT IPs!
+    let parsed_web = validate_http_url(web_latest_url)?;
+    if verify_hosts && !is_trusted_update_host(&parsed_web) {
+        return Err(format!("检查更新失败: {primary_err}"));
+    }
+    let web_resp = http
+        .get(parsed_web)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("Vedro/", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .await
+        .map_err(|e| {
+            format!(
+                "检查更新失败: {primary_err}（备用源: {}）",
+                vedro_protocol::error::format_transport_error(&e)
+            )
+        })?;
+    if !web_resp.status().is_success() {
+        return Err(format!(
+            "检查更新失败: {primary_err}（备用源 HTTP {}）",
+            web_resp.status().as_u16()
+        ));
+    }
+    let final_url = web_resp.url().clone();
+    let web_bytes = read_reqwest_body_capped(web_resp, 1024 * 1024).await?;
+    let mut tag_name = serde_json::from_slice::<Value>(&web_bytes)
+        .ok()
+        .and_then(|v| {
+            v.get("tag_name")
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_string())
+        })
+        .filter(|t| is_safe_release_tag(t))
+        .or_else(|| extract_tag_from_release_url(&final_url))
+        .unwrap_or_default();
+    if tag_name.is_empty() {
+        return Err(format!(
+            "检查更新失败: 无法解析最新版本号（主源: {primary_err}）"
+        ));
+    }
+    let dl_base = release_download_base.trim_end_matches('/');
+    let sums_url = format!("{dl_base}/{tag_name}/SHA256SUMS.txt");
+    let sha_map = fetch_sha256sums_map(http, &sums_url, verify_hosts).await;
+    let mut entries: Vec<(String, String)> = sha_map.into_iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let assets: Vec<Value> = entries
+        .into_iter()
+        .map(|(name, sha256)| {
+            json!({
+                "name": name,
+                "url": format!("{dl_base}/{tag_name}/{name}"),
+                "size": 0,
+                "sha256": sha256,
+            })
+        })
+        .collect();
+    let html_url = if verify_hosts {
+        format!("https://github.com/JHruan1/vedro/releases/tag/{tag_name}")
+    } else {
+        final_url.to_string()
+    };
+    if !tag_name.starts_with('v') && !tag_name.starts_with('V') {
+        tag_name = format!("v{tag_name}");
+    }
+    Ok(json!({
+        "current_version": env!("CARGO_PKG_VERSION"),
+        "tag_name": tag_name,
+        "version": tag_name.trim_start_matches(['v', 'V']),
+        "html_url": html_url,
+        "body": "已通过 GitHub 官方发布通道校验最新版本，支持应用内高速下载与 SHA-256 完整性校验。",
+        "published_at": "",
+        "assets": assets,
+        "source": "github_web_fallback",
+    }))
+}
+
 fn bytes_to_lower_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -4724,123 +4965,15 @@ impl VedroRuntime {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .unwrap_or("https://api.github.com/repos/JHruan1/vedro/releases/latest");
-                let parsed = validate_http_url(api_url)?;
-                if !is_trusted_update_host(&parsed) {
-                    return Err("仅允许从受信任的 GitHub 官方发布源检查更新".to_string());
-                }
                 let http = self.build_update_http_client(true)?;
-                let resp = http
-                    .get(parsed)
-                    .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-                    .header(
-                        reqwest::header::USER_AGENT,
-                        concat!("Vedro/", env!("CARGO_PKG_VERSION")),
-                    )
-                    .send()
-                    .await
-                    .map_err(|e| {
-                        format!(
-                            "检查更新失败: {}",
-                            vedro_protocol::error::format_transport_error(&e)
-                        )
-                    })?;
-                if !resp.status().is_success() {
-                    return Err(format!("检查更新失败: HTTP {}", resp.status().as_u16()));
-                }
-                let raw_bytes = read_reqwest_body_capped(resp, 2 * 1024 * 1024).await?;
-                let release: Value = serde_json::from_slice(&raw_bytes)
-                    .map_err(|e| format!("解析更新信息失败: {e}"))?;
-                let tag_name = release
-                    .get("tag_name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                let html_url = release
-                    .get("html_url")
-                    .and_then(Value::as_str)
-                    .unwrap_or("https://github.com/JHruan1/vedro/releases/latest")
-                    .to_string();
-                let body = release
-                    .get("body")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let published_at = release
-                    .get("published_at")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-
-                let mut sha_map = std::collections::HashMap::<String, String>::new();
-                let raw_assets = release
-                    .get("assets")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Fetch SHA256SUMS.txt if present in release assets for mandatory checksum verification
-                if let Some(sums_url) = raw_assets.iter().find_map(|a| {
-                    let name = a.get("name").and_then(Value::as_str)?;
-                    if name.eq_ignore_ascii_case("SHA256SUMS.txt") {
-                        a.get("browser_download_url").and_then(Value::as_str)
-                    } else {
-                        None
-                    }
-                }) {
-                    if let Ok(sums_parsed) = validate_http_url(sums_url) {
-                        if is_trusted_update_host(&sums_parsed) {
-                            if let Ok(s_resp) = http
-                                .get(sums_parsed)
-                                .header(
-                                    reqwest::header::USER_AGENT,
-                                    concat!("Vedro/", env!("CARGO_PKG_VERSION")),
-                                )
-                                .send()
-                                .await
-                            {
-                                if s_resp.status().is_success() {
-                                    if let Ok(s_bytes) =
-                                        read_reqwest_body_capped(s_resp, 256 * 1024).await
-                                    {
-                                        sha_map = parse_sha256sums_map(&String::from_utf8_lossy(
-                                            &s_bytes,
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let assets: Vec<Value> = raw_assets
-                    .into_iter()
-                    .filter_map(|a| {
-                        let name = a.get("name").and_then(Value::as_str)?.to_string();
-                        let url = a
-                            .get("browser_download_url")
-                            .and_then(Value::as_str)?
-                            .to_string();
-                        let size = a.get("size").and_then(Value::as_u64).unwrap_or(0);
-                        let sha256 = sha_map.get(&name).cloned();
-                        Some(json!({
-                            "name": name,
-                            "url": url,
-                            "size": size,
-                            "sha256": sha256,
-                        }))
-                    })
-                    .collect();
-
-                Ok(json!({
-                    "current_version": env!("CARGO_PKG_VERSION"),
-                    "tag_name": tag_name,
-                    "version": tag_name.trim_start_matches(['v', 'V']),
-                    "html_url": html_url,
-                    "body": body,
-                    "published_at": published_at,
-                    "assets": assets,
-                }))
+                fetch_github_latest_release(
+                    &http,
+                    api_url,
+                    "https://github.com/JHruan1/vedro/releases/latest",
+                    "https://github.com/JHruan1/vedro/releases/download",
+                    true,
+                )
+                .await
             }
 
             "start_update_download" => {
@@ -6418,6 +6551,31 @@ mod tests {
                                     String::new(),
                                     upd,
                                 ),
+                                "/github-api/latest" => (
+                                    "403 Forbidden",
+                                    "application/json",
+                                    "X-RateLimit-Remaining: 0\r\n".to_string(),
+                                    br#"{"message":"API rate limit exceeded"}"#.to_vec(),
+                                ),
+                                "/github-web/releases/latest" => (
+                                    "302 Found",
+                                    "text/plain",
+                                    "Location: /github-web/releases/tag/v1.0.3\r\n".to_string(),
+                                    Vec::new(),
+                                ),
+                                "/github-web/releases/tag/v1.0.3" => (
+                                    "200 OK",
+                                    "application/json",
+                                    String::new(),
+                                    br#"{"id":1,"tag_name":"v1.0.3"}"#.to_vec(),
+                                ),
+                                "/github-web/releases/download/v1.0.3/SHA256SUMS.txt" => {
+                                    let hash = "a".repeat(64);
+                                    let body = format!(
+                                        "{hash}  vedro-v1.0.3-windows-x64-setup.exe\n{hash}  vedro-v1.0.3-android-arm64-v8a.apk\n"
+                                    );
+                                    ("200 OK", "text/plain", String::new(), body.into_bytes())
+                                }
                                 _ => ("404 Not Found", "text/plain", String::new(), b"not found".to_vec()),
                             };
 
@@ -6621,6 +6779,34 @@ mod tests {
             assert!(bad_res.is_err());
             assert!(!part_bad.exists());
             assert!(!final_bad.exists());
+
+            // Verify GitHub API 403 rate-limit seamlessly falls back to rate-limit-free
+            // `/releases/latest` + `SHA256SUMS.txt` and builds verified asset URLs + SHA-256!
+            let fallback_rel = rt2
+                .rt
+                .as_ref()
+                .unwrap()
+                .block_on(fetch_github_latest_release(
+                    &reqwest::Client::builder().no_proxy().build().unwrap(),
+                    &format!("{mock_base}/github-api/latest"),
+                    &format!("{mock_base}/github-web/releases/latest"),
+                    &format!("{mock_base}/github-web/releases/download"),
+                    false,
+                ))
+                .expect("403 rate limit must fall back to web releases/latest");
+            assert_eq!(fallback_rel["tag_name"], "v1.0.3");
+            assert_eq!(fallback_rel["version"], "1.0.3");
+            assert_eq!(fallback_rel["source"], "github_web_fallback");
+            let fb_assets = fallback_rel["assets"].as_array().expect("fallback assets");
+            assert_eq!(fb_assets.len(), 2);
+            assert!(fb_assets.iter().any(|a| {
+                a["name"] == "vedro-v1.0.3-windows-x64-setup.exe"
+                    && a["sha256"] == "a".repeat(64)
+                    && a["url"]
+                        .as_str()
+                        .unwrap()
+                        .ends_with("/v1.0.3/vedro-v1.0.3-windows-x64-setup.exe")
+            }));
 
             // Logout must clear client & proxy streams/upstreams cleanly
             rt2.invoke("logout", json!({})).expect("logout");

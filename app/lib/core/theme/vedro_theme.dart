@@ -4,6 +4,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../platform/platform_perf.dart';
 import 'vedro_skin.dart';
 
 /// Vedro multi-personality design system:
@@ -258,32 +259,33 @@ class _VedroSmoothTransitionsBuilder extends PageTransitionsBuilder {
   }
 }
 
-/// Fluid cinema page route with Hero compatibility and Apple quintic ease-out.
+/// Fluid platform-optimal cinema page route:
+/// - Mobile (iOS / Android): native `CupertinoPageRoute` with 120Hz hardware-composited
+///   slide + interactive edge swipe-back and zero double-fullscreen alpha `saveLayer`.
+/// - Desktop (macOS / Windows / Linux): crisp 220ms fade + subtle vertical glide without
+///   re-scaling the outgoing full-screen Home tree.
 Route<T> vedroRoute<T>(Widget page) {
+  if (PlatformPerfProfile.preferCupertinoRoute) {
+    return CupertinoPageRoute<T>(builder: (_) => page);
+  }
   return PageRouteBuilder<T>(
-    transitionDuration: const Duration(milliseconds: 340),
-    reverseTransitionDuration: const Duration(milliseconds: 250),
+    transitionDuration: const Duration(milliseconds: 220),
+    reverseTransitionDuration: const Duration(milliseconds: 180),
     pageBuilder: (_, __, ___) => page,
-    transitionsBuilder: (_, animation, secondaryAnimation, child) {
+    transitionsBuilder: (_, animation, __, child) {
       final curved = CurvedAnimation(
         parent: animation,
         curve: VedroTheme.easeOut,
         reverseCurve: Curves.easeInCubic,
       );
-      final bgScale = Tween<double>(begin: 1.0, end: 0.985).animate(
-        CurvedAnimation(parent: secondaryAnimation, curve: VedroTheme.easeOut),
-      );
-      return ScaleTransition(
-        scale: bgScale,
-        child: FadeTransition(
-          opacity: curved,
-          child: SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(0, 0.022),
-              end: Offset.zero,
-            ).animate(curved),
-            child: child,
-          ),
+      return FadeTransition(
+        opacity: curved,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.014),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
         ),
       );
     },

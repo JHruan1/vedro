@@ -45,6 +45,45 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
             channel.setMethodCallHandler(plugin)
             return plugin
         }
+
+        /**
+         * Unlock native high refresh rate (90/120/144Hz) on Android during UI browsing (`fps <= 0f`)
+         * and step down to an energy-efficient 60Hz mode during video playback (`fps > 0f`) to
+         * prevent unnecessary battery drain and phone heating.
+         */
+        @Suppress("DEPRECATION")
+        fun applyPreferredFrameRate(activity: Activity, fps: Float) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+            activity.runOnUiThread {
+                try {
+                    val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        activity.display
+                    } else {
+                        activity.windowManager.defaultDisplay
+                    } ?: return@runOnUiThread
+                    val current = display.mode ?: return@runOnUiThread
+                    val sameResModes = display.supportedModes.filter {
+                        it.physicalWidth == current.physicalWidth &&
+                            it.physicalHeight == current.physicalHeight
+                    }
+                    if (sameResModes.isEmpty()) return@runOnUiThread
+                    val chosen = if (fps <= 0f) {
+                        sameResModes.maxByOrNull { it.refreshRate }
+                    } else {
+                        sameResModes
+                            .filter { it.refreshRate >= fps - 1f }
+                            .minByOrNull { it.refreshRate }
+                            ?: sameResModes.minByOrNull { kotlin.math.abs(it.refreshRate - fps) }
+                    } ?: return@runOnUiThread
+                    val lp = activity.window.attributes
+                    if (lp.preferredDisplayModeId != chosen.modeId) {
+                        lp.preferredDisplayModeId = chosen.modeId
+                        activity.window.attributes = lp
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+        }
     }
 
     private var pendingPickResult: MethodChannel.Result? = null
@@ -70,6 +109,11 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
                         activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     }
                 }
+                result.success(null)
+            }
+            "setPreferredFrameRate" -> {
+                val fps = (call.argument<Number>("fps")?.toFloat()) ?: 0f
+                applyPreferredFrameRate(activity, fps)
                 result.success(null)
             }
             "setWindowChrome" -> {

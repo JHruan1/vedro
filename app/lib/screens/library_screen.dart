@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/platform/platform_perf.dart';
 import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
@@ -446,6 +447,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   if (_listViewMode) {
                     return ListView.separated(
                       controller: _scrollCtrl,
+                      cacheExtent: PlatformPerfProfile.scrollCacheExtent,
                       padding: EdgeInsets.fromLTRB(padX, 4, padX, wide ? 44 : 108),
                       itemCount: _items.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 10),
@@ -462,6 +464,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   return GridView.builder(
                     key: const ValueKey('library-poster-grid'),
                     controller: _scrollCtrl,
+                    cacheExtent: PlatformPerfProfile.scrollCacheExtent,
                     padding: EdgeInsets.fromLTRB(padX, 6, padX, wide ? 44 : 108),
                     gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                       crossAxisCount: gridLayout.columns,

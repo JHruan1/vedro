@@ -7,6 +7,7 @@ import 'package:vedro/core/ffi/vedro_bridge.dart';
 import 'package:vedro/core/models/models.dart';
 import 'package:vedro/core/models/preferences.dart';
 import 'package:vedro/core/platform/native_playback_channel.dart';
+import 'package:vedro/core/platform/platform_perf.dart';
 import 'package:vedro/core/theme/display_profile.dart';
 import 'package:vedro/core/theme/dynamic_color_engine.dart';
 import 'package:vedro/core/theme/vedro_skin.dart';
@@ -2544,5 +2545,76 @@ void main() {
     final animOpacity = tester.widget<AnimatedOpacity>(find.byType(AnimatedOpacity).first);
     expect(animOpacity.opacity, equals(0.0));
     NativePlaybackChannel.playerHudAutoHideNotifier.value = false;
+  });
+
+  testWidgets(
+      'v0.3.9: Per-platform blur cap, image cacheWidth scaling, GlassSurface zero-blur bypass & cached DanmakuLayer',
+      (tester) async {
+    // 1. PlatformPerfProfile bounds live blur sigma and computes lean decode cacheWidth
+    expect(PlatformPerfProfile.clampLiveBlur(44.0), lessThanOrEqualTo(20.0));
+    expect(PlatformPerfProfile.clampLiveBlur(0.0), equals(0.0));
+    final posterCacheW = PlatformPerfProfile.imageCacheWidthFor(120, 3.0);
+    expect(posterCacheW, isNotNull);
+    expect(posterCacheW!, inInclusiveRange(180, 320));
+
+    // 2. GlassSurface(enableBlur: false) mounts ZERO BackdropFilter layers (used when player HUD hides)
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(VedroSkin.immersiveCinema),
+        home: const Scaffold(
+          body: GlassSurface(
+            enableBlur: false,
+            blur: 32,
+            child: Text('Hidden HUD'),
+          ),
+        ),
+      ),
+    );
+    expect(find.byType(BackdropFilter), findsNothing);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(VedroSkin.immersiveCinema),
+        home: const Scaffold(
+          body: GlassSurface(
+            enableBlur: true,
+            blur: 32,
+            child: Text('Visible HUD'),
+          ),
+        ),
+      ),
+    );
+    expect(find.byType(BackdropFilter), findsOneWidget);
+
+    // 3. Cached DanmakuLayer paints cleanly inside RepaintBoundary without Opacity saveLayer
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 800,
+            height: 450,
+            child: DanmakuLayer(
+              comments: [
+                DanmakuComment(timeSecs: 1.0, mode: 1, color: Colors.white, text: '流畅弹幕测试'),
+                DanmakuComment(timeSecs: 1.5, mode: 5, color: Colors.amber, text: '顶部弹幕测试'),
+              ],
+              positionSecs: 2.0,
+              opacity: 0.85,
+              fontSize: 18.0,
+              speedSecs: 8.0,
+              areaFraction: 0.5,
+              hideTop: false,
+              hideBottom: false,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byType(DanmakuLayer), findsOneWidget);
+    expect(
+      find.descendant(of: find.byType(DanmakuLayer), matching: find.byType(Opacity)),
+      findsNothing,
+    );
   });
 }

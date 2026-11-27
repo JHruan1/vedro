@@ -27,6 +27,7 @@ class MainActivity : FlutterActivity() {
             window.isNavigationBarContrastEnforced = false
             window.isStatusBarContrastEnforced = false
         }
+        VedroHardwarePlugin.applyPreferredFrameRate(this, 0f)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {

@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/platform/platform_perf.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 
@@ -64,6 +65,8 @@ class BreathingBrandMark extends StatefulWidget {
 class _BreathingBrandMarkState extends State<BreathingBrandMark>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
+  late final Animation<double> _opacity;
+  late final Animation<double> _scale;
 
   @override
   void initState() {
@@ -72,6 +75,9 @@ class _BreathingBrandMarkState extends State<BreathingBrandMark>
       vsync: this,
       duration: const Duration(milliseconds: 1400),
     )..repeat(reverse: true);
+    final curved = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOutSine);
+    _opacity = Tween<double>(begin: 0.55, end: 1.0).animate(curved);
+    _scale = Tween<double>(begin: 0.96, end: 1.01).animate(curved);
   }
 
   @override
@@ -82,16 +88,14 @@ class _BreathingBrandMarkState extends State<BreathingBrandMark>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _ctrl,
-      builder: (_, child) {
-        final v = Curves.easeInOutSine.transform(_ctrl.value);
-        return Opacity(
-          opacity: 0.55 + 0.45 * v,
-          child: Transform.scale(scale: 0.96 + 0.05 * v, child: child),
-        );
-      },
-      child: VedroBrandMark(size: widget.size),
+    return RepaintBoundary(
+      child: FadeTransition(
+        opacity: _opacity,
+        child: ScaleTransition(
+          scale: _scale,
+          child: VedroBrandMark(size: widget.size),
+        ),
+      ),
     );
   }
 }
@@ -181,6 +185,7 @@ class GlassSurface extends StatelessWidget {
     this.borderRadius = 14,
     this.padding,
     this.blur = 26,
+    this.enableBlur = true,
     this.color,
     this.borderColor,
   });
@@ -189,6 +194,7 @@ class GlassSurface extends StatelessWidget {
   final double borderRadius;
   final EdgeInsetsGeometry? padding;
   final double blur;
+  final bool enableBlur;
   final Color? color;
   final Color? borderColor;
 
@@ -201,64 +207,71 @@ class GlassSurface extends StatelessWidget {
       'vivid' => 1.35,
       _ => 1.0,
     };
-    final effectiveColor = color ?? skin.glass;
+    final effBlur = enableBlur ? PlatformPerfProfile.clampLiveBlur(blur) : 0.0;
+    final effectiveColor = PlatformPerfProfile.adaptGlassFill(color ?? skin.glass);
     final effectiveBorder = borderColor ?? skin.borderStrong;
     final radius = BorderRadius.circular(borderRadius);
-    return Container(
-      decoration: isLiquid
-          ? BoxDecoration(
-              borderRadius: radius,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: skin.isLight ? 0.08 : 0.30),
-                  blurRadius: 22,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-            )
-          : null,
-      foregroundDecoration: isLiquid
-          ? null
-          : BoxDecoration(
-              borderRadius: radius,
-              border: Border.all(color: effectiveBorder, width: 0.8),
-            ),
-      child: CustomPaint(
-        foregroundPainter: isLiquid
-            ? LiquidGlassRimPainter(
-                radius: borderRadius,
-                isLight: skin.isLight,
-                accent: skin.accent,
-                intensity: specMul,
+    final inner = DecoratedBox(
+      decoration: BoxDecoration(
+        color: effectiveColor,
+        gradient: isLiquid
+            ? LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                stops: const [0.0, 0.42, 1.0],
+                colors: [
+                  Colors.white.withValues(
+                    alpha: ((skin.isLight ? 0.48 : 0.16) * specMul).clamp(0.04, 0.72),
+                  ),
+                  Colors.transparent,
+                  skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.07),
+                ],
               )
             : null,
-        child: ClipRRect(
-          borderRadius: radius,
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: effectiveColor,
-                gradient: isLiquid
-                    ? LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        stops: const [0.0, 0.42, 1.0],
-                        colors: [
-                          Colors.white.withValues(
-                            alpha: ((skin.isLight ? 0.48 : 0.16) * specMul).clamp(0.04, 0.72),
-                          ),
-                          Colors.transparent,
-                          skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.07),
-                        ],
-                      )
-                    : null,
+      ),
+      child: Padding(
+        padding: padding ?? EdgeInsets.zero,
+        child: child,
+      ),
+    );
+
+    return RepaintBoundary(
+      child: Container(
+        decoration: isLiquid
+            ? BoxDecoration(
+                borderRadius: radius,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: skin.isLight ? 0.08 : 0.30),
+                    blurRadius: 22,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              )
+            : null,
+        foregroundDecoration: isLiquid
+            ? null
+            : BoxDecoration(
+                borderRadius: radius,
+                border: Border.all(color: effectiveBorder, width: 0.8),
               ),
-              child: Padding(
-                padding: padding ?? EdgeInsets.zero,
-                child: child,
-              ),
-            ),
+        child: CustomPaint(
+          foregroundPainter: isLiquid
+              ? LiquidGlassRimPainter(
+                  radius: borderRadius,
+                  isLight: skin.isLight,
+                  accent: skin.accent,
+                  intensity: specMul,
+                )
+              : null,
+          child: ClipRRect(
+            borderRadius: radius,
+            child: effBlur > 0.1
+                ? BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: effBlur, sigmaY: effBlur),
+                    child: inner,
+                  )
+                : inner,
           ),
         ),
       ),
@@ -307,6 +320,26 @@ class _PressableScaleState extends State<PressableScale> {
         ? widget.pressScale
         : (_hovering ? widget.hoverScale : 1.0);
 
+    final gesture = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => setState(() => _pressing = true),
+      onTapUp: (_) => setState(() => _pressing = false),
+      onTapCancel: () => setState(() => _pressing = false),
+      onTap: widget.onTap,
+      onLongPress: widget.onLongPress,
+      onSecondaryTap: widget.onSecondaryTap,
+      child: AnimatedScale(
+        scale: targetScale,
+        duration: Duration(milliseconds: _pressing ? 100 : 200),
+        curve: _pressing ? Curves.easeOutQuad : VedroTheme.springCurve,
+        child: widget.child,
+      ),
+    );
+
+    if (PlatformPerfProfile.isMobile) {
+      return gesture;
+    }
+
     return MouseRegion(
       cursor: widget.onTap != null ? SystemMouseCursors.click : MouseCursor.defer,
       onEnter: (_) => _setHover(true),
@@ -314,21 +347,7 @@ class _PressableScaleState extends State<PressableScale> {
         _setHover(false);
         if (_pressing) setState(() => _pressing = false);
       },
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTapDown: (_) => setState(() => _pressing = true),
-        onTapUp: (_) => setState(() => _pressing = false),
-        onTapCancel: () => setState(() => _pressing = false),
-        onTap: widget.onTap,
-        onLongPress: widget.onLongPress,
-        onSecondaryTap: widget.onSecondaryTap,
-        child: AnimatedScale(
-          scale: targetScale,
-          duration: Duration(milliseconds: _pressing ? 110 : 240),
-          curve: _pressing ? Curves.easeOutQuad : VedroTheme.springCurve,
-          child: widget.child,
-        ),
-      ),
+      child: gesture,
     );
   }
 }
@@ -492,19 +511,24 @@ class _VedroStaggeredEntranceState extends State<VedroStaggeredEntrance>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
   late final Animation<double> _curved;
+  late final Animation<Offset> _slide;
 
   @override
   void initState() {
     super.initState();
     _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 380),
+      duration: const Duration(milliseconds: 280),
     );
     _curved = CurvedAnimation(parent: _ctrl, curve: VedroTheme.easeOut);
+    _slide = Tween<Offset>(
+      begin: Offset(0, (widget.offsetY / 280.0).clamp(0.015, 0.08)),
+      end: Offset.zero,
+    ).animate(_curved);
     if (widget.reduceMotion) {
       _ctrl.value = 1.0;
     } else {
-      final delayMs = (widget.index.clamp(0, 6)) * 38;
+      final delayMs = (widget.index.clamp(0, 6)) * 28;
       if (delayMs == 0) {
         _ctrl.forward();
       } else {
@@ -526,19 +550,12 @@ class _VedroStaggeredEntranceState extends State<VedroStaggeredEntrance>
     if (widget.reduceMotion || MediaQuery.disableAnimationsOf(context)) {
       return widget.child;
     }
-    return AnimatedBuilder(
-      animation: _curved,
-      builder: (_, child) {
-        final v = _curved.value;
-        return Opacity(
-          opacity: v.clamp(0.0, 1.0),
-          child: Transform.translate(
-            offset: Offset(0, (1.0 - v) * widget.offsetY),
-            child: child,
-          ),
-        );
-      },
-      child: widget.child,
+    return FadeTransition(
+      opacity: _curved,
+      child: SlideTransition(
+        position: _slide,
+        child: widget.child,
+      ),
     );
   }
 }
@@ -1139,7 +1156,10 @@ class _VedroPullDownButtonState<T> extends State<VedroPullDownButton<T>> {
         child: ClipRRect(
           borderRadius: BorderRadius.circular(r),
           child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+            filter: ImageFilter.blur(
+              sigmaX: PlatformPerfProfile.clampLiveBlur(22),
+              sigmaY: PlatformPerfProfile.clampLiveBlur(22),
+            ),
             child: Container(
               height: widget.height,
               padding: const EdgeInsets.symmetric(horizontal: 13),
@@ -1397,7 +1417,10 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
         child: ClipRRect(
           borderRadius: BorderRadius.circular(r),
           child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 34, sigmaY: 34),
+            filter: ImageFilter.blur(
+              sigmaX: PlatformPerfProfile.clampLiveBlur(34),
+              sigmaY: PlatformPerfProfile.clampLiveBlur(34),
+            ),
             child: DecoratedBox(
               decoration: BoxDecoration(
                 color: menuBg,

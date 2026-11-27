@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/platform/platform_perf.dart';
 import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
@@ -57,19 +58,19 @@ class _MediaCardState extends State<MediaCard> {
       width: (widget.landscape || skin.posterAspect == 'landscape_16_9') ? 640 : 420,
     );
 
+    final touchPrimary = DisplayMetricsProfile.of(context).isTouchPrimary;
     if (widget.heroPrefix != null) {
       artBox = Hero(tag: '${widget.heroPrefix}-${item.id}', child: artBox);
     }
-    if (skin.cardHoverEffect == 'zoom_art') {
+    if (!touchPrimary && skin.cardHoverEffect == 'zoom_art') {
       artBox = AnimatedScale(
         scale: _hovered ? 1.065 : 1.0,
-        duration: const Duration(milliseconds: 240),
+        duration: const Duration(milliseconds: 220),
         curve: VedroTheme.easeOut,
         child: artBox,
       );
     }
 
-    final touchPrimary = DisplayMetricsProfile.of(context).isTouchPrimary;
     final effectiveStyle =
         (skin.cardStyle == 'hover_reveal' && touchPrimary) ? 'overlay_poster' : skin.cardStyle;
     final isOverlayCard = effectiveStyle == 'overlay_poster';
@@ -91,9 +92,10 @@ class _MediaCardState extends State<MediaCard> {
     final profile = DisplayMetricsProfile.of(context);
     final textScaler = MediaQuery.textScalerOf(context);
 
-    return SizedBox(
-      width: widget.width,
-      child: LayoutBuilder(
+    return RepaintBoundary(
+      child: SizedBox(
+        width: widget.width,
+        child: LayoutBuilder(
         builder: (context, constraints) {
           final actualW = constraints.hasBoundedWidth && constraints.maxWidth > 0
               ? constraints.maxWidth
@@ -105,11 +107,20 @@ class _MediaCardState extends State<MediaCard> {
             textScaler: textScaler,
             devicePixelRatio: profile.devicePixelRatio,
           );
+          final cardDecoration = BoxDecoration(
+            borderRadius: BorderRadius.circular(radius),
+            color: skin.surface2,
+            boxShadow: skin.posterShadow(hovered: !touchPrimary && _hovered),
+          );
+          final cardForeground = BoxDecoration(
+            borderRadius: BorderRadius.circular(radius),
+            border: skin.cardBorder(hovered: !touchPrimary && _hovered),
+          );
           return PressableScale(
             onTap: widget.onTap,
             onLongPress: widget.onLongPress,
             onSecondaryTap: widget.onLongPress,
-            onHoverChanged: (v) => setState(() => _hovered = v),
+            onHoverChanged: touchPrimary ? null : (v) => setState(() => _hovered = v),
             hoverScale: touchPrimary || skin.cardHoverEffect == 'zoom_art' ? 1.0 : 1.02,
             pressScale: pressScale,
             child: Column(
@@ -118,298 +129,47 @@ class _MediaCardState extends State<MediaCard> {
               children: [
                 AspectRatio(
                   aspectRatio: aspect,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    curve: VedroTheme.easeOut,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(radius),
-                      color: skin.surface2,
-                      boxShadow: skin.posterShadow(hovered: _hovered),
-                    ),
-                    foregroundDecoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(radius),
-                      border: skin.cardBorder(hovered: _hovered),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        artBox,
-                        if (isOverlayCard || isHoverReveal)
-                          Positioned(
-                            left: 0,
-                            right: 0,
-                            bottom: 0,
-                            child: IgnorePointer(
-                              child: AnimatedOpacity(
-                                opacity: isOverlayCard ? 1.0 : (_hovered ? 1.0 : 0.0),
-                                duration: const Duration(milliseconds: 190),
-                                curve: Curves.easeOut,
-                                child: Container(
-                                  padding: EdgeInsets.fromLTRB(
-                                    10,
-                                    28,
-                                    showPlayFab && _hovered ? 48 : 10,
-                                    item.resumeProgress > 0.01 ? 14 : 9,
-                                  ),
-                                  decoration: const BoxDecoration(
-                                    gradient: LinearGradient(
-                                      begin: Alignment.topCenter,
-                                      end: Alignment.bottomCenter,
-                                      stops: [0.0, 0.45, 1.0],
-                                      colors: [
-                                        Colors.transparent,
-                                        Color(0x9005060A),
-                                        Color(0xEB05060A),
-                                      ],
-                                    ),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text(
-                                        item.cardTitle,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: metrics.titleFontSize,
-                                          fontWeight: FontWeight.w600,
-                                          letterSpacing: -0.1,
-                                        ),
-                                      ),
-                                      if (subtitleText.isNotEmpty) ...[
-                                        const SizedBox(height: 1.5),
-                                        Text(
-                                          subtitleText,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                            color: const Color(0xBDFFFFFF),
-                                            fontSize: metrics.metaFontSize,
-                                            fontFeatures: const [FontFeature.tabularFigures()],
-                                          ),
-                                        ),
-                                      ],
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
+                  child: touchPrimary
+                      ? Container(
+                          decoration: cardDecoration,
+                          foregroundDecoration: cardForeground,
+                          clipBehavior: Clip.antiAlias,
+                          child: _buildPosterStack(
+                            skin: skin,
+                            item: item,
+                            prefs: prefs,
+                            artBox: artBox,
+                            isOverlayCard: isOverlayCard,
+                            isHoverReveal: isHoverReveal,
+                            showPlayFab: false,
+                            hideBadges: hideBadges,
+                            showRatingBadge: showRatingBadge,
+                            showVersionBadge: showVersionBadge,
+                            subtitleText: subtitleText,
+                            metrics: metrics,
                           ),
-                        if (!hideBadges && prefs.showWatchedBadge && item.played)
-                          Positioned(
-                            top: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
-                            right: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
-                            child: skin.badgeStyle == 'minimal_dot'
-                                ? Container(
-                                    width: 9,
-                                    height: 9,
-                                    decoration: BoxDecoration(
-                                      color: skin.accent,
-                                      shape: BoxShape.circle,
-                                      boxShadow: const [
-                                        BoxShadow(color: Color(0x88000000), blurRadius: 4),
-                                      ],
-                                    ),
-                                  )
-                                : _CornerBadge(
-                                    accentRibbon: skin.badgeStyle == 'accent_ribbon',
-                                    accentColor: skin.accent,
-                                    child: Icon(
-                                      Icons.check_rounded,
-                                      size: 11.5,
-                                      color: skin.badgeStyle == 'accent_ribbon'
-                                          ? highContrastOn(skin.accent)
-                                          : Colors.white,
-                                    ),
-                                  ),
-                          )
-                        else if (!hideBadges &&
-                            prefs.showUnplayedCount &&
-                            item.unplayedItemCount != null &&
-                            item.unplayedItemCount! > 0)
-                          Positioned(
-                            top: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
-                            right: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
-                            child: skin.badgeStyle == 'minimal_dot'
-                                ? Container(
-                                    width: 9,
-                                    height: 9,
-                                    decoration: BoxDecoration(
-                                      color: skin.accent,
-                                      shape: BoxShape.circle,
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: skin.accent.withValues(alpha: 0.6),
-                                          blurRadius: 6,
-                                        ),
-                                      ],
-                                    ),
-                                  )
-                                : _CornerBadge(
-                                    accentRibbon: skin.badgeStyle == 'accent_ribbon',
-                                    accentColor: skin.accent,
-                                    child: Text(
-                                      '${item.unplayedItemCount}',
-                                      style: TextStyle(
-                                        color: skin.badgeStyle == 'accent_ribbon'
-                                            ? highContrastOn(skin.accent)
-                                            : Colors.white,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w700,
-                                        fontFeatures: const [FontFeature.tabularFigures()],
-                                      ),
-                                    ),
-                                  ),
+                        )
+                      : AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          curve: VedroTheme.easeOut,
+                          decoration: cardDecoration,
+                          foregroundDecoration: cardForeground,
+                          clipBehavior: Clip.antiAlias,
+                          child: _buildPosterStack(
+                            skin: skin,
+                            item: item,
+                            prefs: prefs,
+                            artBox: artBox,
+                            isOverlayCard: isOverlayCard,
+                            isHoverReveal: isHoverReveal,
+                            showPlayFab: showPlayFab,
+                            hideBadges: hideBadges,
+                            showRatingBadge: showRatingBadge,
+                            showVersionBadge: showVersionBadge,
+                            subtitleText: subtitleText,
+                            metrics: metrics,
                           ),
-                        if (!hideBadges && (item.isFavorite || showVersionBadge || showRatingBadge))
-                          Positioned(
-                            top: 6,
-                            left: 6,
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (showRatingBadge) ...[
-                                  _CornerBadge(
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(
-                                          Icons.star_rounded,
-                                          size: 10.5,
-                                          color: Color(0xFFFBBF24),
-                                        ),
-                                        const SizedBox(width: 2),
-                                        Text(
-                                          item.communityRating!.toStringAsFixed(1),
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w700,
-                                            fontFeatures: [FontFeature.tabularFigures()],
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  if (item.isFavorite || showVersionBadge) const SizedBox(width: 4),
-                                ],
-                                if (item.isFavorite)
-                                  const _CornerBadge(
-                                    child: Icon(Icons.favorite_rounded, size: 11, color: Colors.white),
-                                  ),
-                                if (item.isFavorite && showVersionBadge) const SizedBox(width: 4),
-                                if (showVersionBadge)
-                                  _CornerBadge(
-                                    child: Text(
-                                      '${item.versionCount}×',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w600,
-                                        fontFeatures: [FontFeature.tabularFigures()],
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        if (item.resumeProgress > 0.01) ...[
-                          if (skin.progressStyle != 'edge_flush')
-                            const Positioned(
-                              left: 0,
-                              right: 0,
-                              bottom: 0,
-                              height: 30,
-                              child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topCenter,
-                                    end: Alignment.bottomCenter,
-                                    colors: [Colors.transparent, Color(0xB3000000)],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          Positioned(
-                            left: skin.progressStyle == 'edge_flush' ? 0 : 8,
-                            right: skin.progressStyle == 'edge_flush' ? 0 : 8,
-                            bottom: skin.progressStyle == 'edge_flush' ? 0 : 8,
-                            child: Container(
-                              decoration: skin.progressStyle == 'glow_accent'
-                                  ? BoxDecoration(
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: skin.accent.withValues(alpha: 0.75),
-                                          blurRadius: 8,
-                                        ),
-                                      ],
-                                    )
-                                  : null,
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(
-                                  skin.progressStyle == 'edge_flush' ? 0 : 2.5,
-                                ),
-                                child: LinearProgressIndicator(
-                                  value: item.resumeProgress,
-                                  minHeight: skin.progressStyle == 'edge_flush' ? 3.5 : 3,
-                                  backgroundColor: const Color(0x45FFFFFF),
-                                  color: (skin.ctaStyle == 'contrast' &&
-                                          skin.progressStyle != 'glow_accent')
-                                      ? Colors.white
-                                      : skin.accent,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                        if (showPlayFab)
-                          Positioned(
-                            right: 10,
-                            bottom: item.resumeProgress > 0.01 ? 16 : 10,
-                            child: IgnorePointer(
-                              ignoring: !_hovered,
-                              child: AnimatedOpacity(
-                                opacity: _hovered ? 1.0 : 0.0,
-                                duration: const Duration(milliseconds: 180),
-                                curve: Curves.easeOut,
-                                child: AnimatedScale(
-                                  scale: _hovered ? 1.0 : 0.85,
-                                  duration: const Duration(milliseconds: 200),
-                                  curve: VedroTheme.springCurve,
-                                  child: GestureDetector(
-                                    onTap: widget.onQuickPlay,
-                                    child: Container(
-                                      width: 38,
-                                      height: 38,
-                                      decoration: BoxDecoration(
-                                        color: skin.primaryCtaBg,
-                                        gradient: skin.primaryCtaGradient,
-                                        shape: BoxShape.circle,
-                                        boxShadow: const [
-                                          BoxShadow(
-                                            color: Color(0x70000000),
-                                            blurRadius: 14,
-                                            offset: Offset(0, 4),
-                                          ),
-                                        ],
-                                      ),
-                                      child: Icon(
-                                        Icons.play_arrow_rounded,
-                                        size: 21,
-                                        color: skin.primaryCtaFg,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
+                        ),
                 ),
                 if (showBelowCaption) ...[
                   SizedBox(height: metrics.captionTopGap),
@@ -453,6 +213,301 @@ class _MediaCardState extends State<MediaCard> {
           );
         },
       ),
+      ),
+    );
+  }
+
+  Widget _buildPosterStack({
+    required VedroSkin skin,
+    required MediaItemModel item,
+    required dynamic prefs,
+    required Widget artBox,
+    required bool isOverlayCard,
+    required bool isHoverReveal,
+    required bool showPlayFab,
+    required bool hideBadges,
+    required bool showRatingBadge,
+    required bool showVersionBadge,
+    required String subtitleText,
+    required PosterCardLayout metrics,
+  }) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        artBox,
+        if (isOverlayCard || isHoverReveal)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: IgnorePointer(
+              child: AnimatedOpacity(
+                opacity: isOverlayCard ? 1.0 : (_hovered ? 1.0 : 0.0),
+                duration: const Duration(milliseconds: 190),
+                curve: Curves.easeOut,
+                child: Container(
+                  padding: EdgeInsets.fromLTRB(
+                    10,
+                    28,
+                    showPlayFab && _hovered ? 48 : 10,
+                    item.resumeProgress > 0.01 ? 14 : 9,
+                  ),
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      stops: [0.0, 0.45, 1.0],
+                      colors: [
+                        Colors.transparent,
+                        Color(0x9005060A),
+                        Color(0xEB05060A),
+                      ],
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        item.cardTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: metrics.titleFontSize,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: -0.1,
+                        ),
+                      ),
+                      if (subtitleText.isNotEmpty) ...[
+                        const SizedBox(height: 1.5),
+                        Text(
+                          subtitleText,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: const Color(0xBDFFFFFF),
+                            fontSize: metrics.metaFontSize,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        if (!hideBadges && prefs.showWatchedBadge && item.played)
+          Positioned(
+            top: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
+            right: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
+            child: skin.badgeStyle == 'minimal_dot'
+                ? Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(
+                      color: skin.accent,
+                      shape: BoxShape.circle,
+                      boxShadow: const [
+                        BoxShadow(color: Color(0x88000000), blurRadius: 4),
+                      ],
+                    ),
+                  )
+                : _CornerBadge(
+                    accentRibbon: skin.badgeStyle == 'accent_ribbon',
+                    accentColor: skin.accent,
+                    child: Icon(
+                      Icons.check_rounded,
+                      size: 11.5,
+                      color: skin.badgeStyle == 'accent_ribbon'
+                          ? highContrastOn(skin.accent)
+                          : Colors.white,
+                    ),
+                  ),
+          )
+        else if (!hideBadges &&
+            prefs.showUnplayedCount &&
+            item.unplayedItemCount != null &&
+            item.unplayedItemCount! > 0)
+          Positioned(
+            top: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
+            right: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
+            child: skin.badgeStyle == 'minimal_dot'
+                ? Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(
+                      color: skin.accent,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: skin.accent.withValues(alpha: 0.6),
+                          blurRadius: 6,
+                        ),
+                      ],
+                    ),
+                  )
+                : _CornerBadge(
+                    accentRibbon: skin.badgeStyle == 'accent_ribbon',
+                    accentColor: skin.accent,
+                    child: Text(
+                      '${item.unplayedItemCount}',
+                      style: TextStyle(
+                        color: skin.badgeStyle == 'accent_ribbon'
+                            ? highContrastOn(skin.accent)
+                            : Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ),
+          ),
+        if (!hideBadges && (item.isFavorite || showVersionBadge || showRatingBadge))
+          Positioned(
+            top: 6,
+            left: 6,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (showRatingBadge) ...[
+                  _CornerBadge(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.star_rounded,
+                          size: 10.5,
+                          color: Color(0xFFFBBF24),
+                        ),
+                        const SizedBox(width: 2),
+                        Text(
+                          item.communityRating!.toStringAsFixed(1),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (item.isFavorite || showVersionBadge) const SizedBox(width: 4),
+                ],
+                if (item.isFavorite)
+                  const _CornerBadge(
+                    child: Icon(Icons.favorite_rounded, size: 11, color: Colors.white),
+                  ),
+                if (item.isFavorite && showVersionBadge) const SizedBox(width: 4),
+                if (showVersionBadge)
+                  _CornerBadge(
+                    child: Text(
+                      '${item.versionCount}×',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        if (item.resumeProgress > 0.01) ...[
+          if (skin.progressStyle != 'edge_flush')
+            const Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 30,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Colors.transparent, Color(0xB3000000)],
+                  ),
+                ),
+              ),
+            ),
+          Positioned(
+            left: skin.progressStyle == 'edge_flush' ? 0 : 8,
+            right: skin.progressStyle == 'edge_flush' ? 0 : 8,
+            bottom: skin.progressStyle == 'edge_flush' ? 0 : 8,
+            child: Container(
+              decoration: skin.progressStyle == 'glow_accent'
+                  ? BoxDecoration(
+                      boxShadow: [
+                        BoxShadow(
+                          color: skin.accent.withValues(alpha: 0.75),
+                          blurRadius: 8,
+                        ),
+                      ],
+                    )
+                  : null,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(
+                  skin.progressStyle == 'edge_flush' ? 0 : 2.5,
+                ),
+                child: LinearProgressIndicator(
+                  value: item.resumeProgress,
+                  minHeight: skin.progressStyle == 'edge_flush' ? 3.5 : 3,
+                  backgroundColor: const Color(0x45FFFFFF),
+                  color: (skin.ctaStyle == 'contrast' &&
+                          skin.progressStyle != 'glow_accent')
+                      ? Colors.white
+                      : skin.accent,
+                ),
+              ),
+            ),
+          ),
+        ],
+        if (showPlayFab)
+          Positioned(
+            right: 10,
+            bottom: item.resumeProgress > 0.01 ? 16 : 10,
+            child: IgnorePointer(
+              ignoring: !_hovered,
+              child: AnimatedOpacity(
+                opacity: _hovered ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
+                child: AnimatedScale(
+                  scale: _hovered ? 1.0 : 0.85,
+                  duration: const Duration(milliseconds: 200),
+                  curve: VedroTheme.springCurve,
+                  child: GestureDetector(
+                    onTap: widget.onQuickPlay,
+                    child: Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: skin.primaryCtaBg,
+                        gradient: skin.primaryCtaGradient,
+                        shape: BoxShape.circle,
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x70000000),
+                            blurRadius: 14,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Icon(
+                        Icons.play_arrow_rounded,
+                        size: 21,
+                        color: skin.primaryCtaFg,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -729,6 +784,10 @@ class _LibraryCardState extends State<LibraryCard> {
                       FadeNetworkImage(
                         url: serverCover,
                         fit: BoxFit.cover,
+                        cacheWidth: PlatformPerfProfile.imageCacheWidthFor(
+                          widget.width,
+                          MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0,
+                        ),
                       ),
                     if (!hasServerCover)
                       DecoratedBox(

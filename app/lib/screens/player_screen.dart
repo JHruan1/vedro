@@ -97,6 +97,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double _positionSecs = 0;
   double _bufferedSecs = 0;
   double _durationSecs = 0;
+  final ValueNotifier<double> _positionNotifier = ValueNotifier<double>(0);
+  final ValueNotifier<double> _bufferedNotifier = ValueNotifier<double>(0);
+  final ValueNotifier<MediaSegmentModel?> _activeSegmentNotifier =
+      ValueNotifier<MediaSegmentModel?>(null);
+  int _lastPosNotifyMs = 0;
+  int _lastBufNotifyMs = 0;
   double _speed = 1.0;
   double _preBoostSpeed = 1.0;
   bool _isSpeedBoost = false;
@@ -273,6 +279,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
     if (_isMobile) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      NativePlaybackChannel.setPreferredFrameRate(60.0);
       final initialPortrait = _inferInitialPortraitVideo(_currentItem);
       _applyMobileOrientation(landscape: !initialPortrait);
     }
@@ -309,18 +316,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
     }));
     _subs.add(_player.stream.position.listen((pos) {
-      if (mounted && !_scrubbing) {
-        final secs = pos.inMilliseconds / 1000.0;
-        setState(() => _positionSecs = secs);
-        _checkAutoSkipSegments(secs);
-        if (_loopPointA != null && _loopPointB != null && secs >= _loopPointB!) {
-          _seekTo(_loopPointA!);
+      if (!mounted || _scrubbing) return;
+      final secs = pos.inMilliseconds / 1000.0;
+      _positionSecs = secs;
+      _checkAutoSkipSegments(secs);
+      if (_loopPointA != null && _loopPointB != null && secs >= _loopPointB!) {
+        _seekTo(_loopPointA!);
+      }
+      final nextSeg = _activeSegment;
+      final curSeg = _activeSegmentNotifier.value;
+      if (nextSeg?.type != curSeg?.type || nextSeg?.endTicks != curSeg?.endTicks) {
+        _activeSegmentNotifier.value = nextSeg;
+      }
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final danmakuActive = _danmakuEnabled && _danmakuComments.isNotEmpty;
+      if (danmakuActive) {
+        final interval = _isMobile ? 33 : 20;
+        if (nowMs - _lastPosNotifyMs >= interval) {
+          _lastPosNotifyMs = nowMs;
+          _positionNotifier.value = secs;
+        }
+      } else if (_controlsVisible) {
+        if (nowMs - _lastPosNotifyMs >= 250) {
+          _lastPosNotifyMs = nowMs;
+          _positionNotifier.value = secs;
         }
       }
     }));
     _subs.add(_player.stream.buffer.listen((buf) {
-      if (mounted) {
-        setState(() => _bufferedSecs = buf.inMilliseconds / 1000.0);
+      if (!mounted) return;
+      final secs = buf.inMilliseconds / 1000.0;
+      _bufferedSecs = secs;
+      if (_controlsVisible) {
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        if (nowMs - _lastBufNotifyMs >= 500) {
+          _lastBufNotifyMs = nowMs;
+          _bufferedNotifier.value = secs;
+        }
       }
     }));
     _subs.add(_player.stream.duration.listen((dur) {
@@ -865,6 +897,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _sleepTimer?.cancel();
     _lockIconTimer?.cancel();
     _focusNode.dispose();
+    _positionNotifier.dispose();
+    _bufferedNotifier.dispose();
+    _activeSegmentNotifier.dispose();
     if (widget.appState.prefs.rememberBrightness) {
       unawaited(widget.appState.updatePrefs(
         widget.appState.prefs.copyWith(savedBrightness: _brightness),
@@ -882,6 +917,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       unawaited(NativePlaybackChannel.setAlwaysOnTop(false));
     }
     if (_isMobile) {
+      NativePlaybackChannel.setPreferredFrameRate(0.0);
       SystemChrome.setPreferredOrientations(const []);
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
@@ -910,6 +946,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _revealControls() {
+    _positionNotifier.value = _positionSecs;
+    _bufferedNotifier.value = _bufferedSecs;
     if (!_controlsVisible) {
       setState(() => _controlsVisible = true);
     }
@@ -960,6 +998,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _showEpisodeDrawer = false;
       _positionSecs = 0;
       _bufferedSecs = 0;
+      _positionNotifier.value = 0;
+      _bufferedNotifier.value = 0;
+      _activeSegmentNotifier.value = null;
       _durationSecs = 0;
       _danmakuComments = const [];
       _danmakuMatchTitle = null;
@@ -995,10 +1036,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await _applyMpvProperty('hwdec', hwVal);
     await _applyMpvProperty('hwdec-codecs', 'all');
     await _applyMpvProperty('target-colorspace-hint', 'yes');
-    await _applyMpvProperty('hdr-compute-peak', p.hdrComputePeak ? 'yes' : 'no');
+    // Mobile thermal protection: avoid per-frame 4K compute-shader peak detection
+    // and heavy display-resample / dithering on battery-powered phone SoCs.
+    final effComputePeak = !_isMobile && p.hdrComputePeak;
+    await _applyMpvProperty('hdr-compute-peak', effComputePeak ? 'yes' : 'no');
     await _applyMpvProperty('tone-mapping', _toneMapping);
-    await _applyMpvProperty('video-sync', p.videoSync);
-    await _applyMpvProperty('demuxer-max-bytes', '${p.bufferSizeMb}MiB');
+    await _applyMpvProperty('video-sync', _isMobile ? 'audio' : p.videoSync);
+    final effBufMb = _isMobile ? p.bufferSizeMb.clamp(32, 96) : p.bufferSizeMb;
+    await _applyMpvProperty('demuxer-max-bytes', '${effBufMb}MiB');
+    if (_isMobile && !_anime4kActive) {
+      await _applyMpvProperty('scale', 'bilinear');
+      await _applyMpvProperty('cscale', 'bilinear');
+      await _applyMpvProperty('dscale', 'bilinear');
+      await _applyMpvProperty('dither-depth', 'no');
+    }
 
     // Apply preferred audio & subtitle language priorities (honoring per-version override if set!)
     final effAudioPref = widget.preferredAudioLangOverride ?? p.preferredAudioLang;
@@ -1500,7 +1551,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _seekTo(double secs) async {
     final target = secs.clamp(0.0, _durationSecs > 0 ? _durationSecs : 86400.0);
     await _player.seek(Duration(milliseconds: (target * 1000).round()));
-    if (mounted) setState(() => _positionSecs = target);
+    _positionSecs = target;
+    _positionNotifier.value = target;
   }
 
   Future<void> _seekBy(double delta, {bool showHud = false}) async {
@@ -1631,7 +1683,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final isMac = !kIsWeb && Platform.isMacOS;
     final isWin = !kIsWeb && Platform.isWindows;
     final topPad = MediaQuery.paddingOf(context).top;
-    final seg = _activeSegment;
     final step = widget.appState.prefs.seekStepSecs;
     final showSpecs = widget.appState.prefs.showSpecBadges;
     final specs = showSpecs
@@ -1788,17 +1839,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ),
 
-                  // Real 60fps Canvas Danmaku overlay (DandanPlay JSON & Bilibili XML)
+                  // GPU-cached Canvas Danmaku overlay driven solely by _positionNotifier
                   if (_danmakuEnabled)
-                    DanmakuLayer(
-                      comments: _danmakuComments,
-                      positionSecs: _positionSecs,
-                      opacity: _danmakuOpacity,
-                      fontSize: _danmakuFontSize,
-                      speedSecs: _danmakuSpeedSecs,
-                      areaFraction: _danmakuArea,
-                      hideTop: _danmakuHideTop,
-                      hideBottom: _danmakuHideBottom,
+                    ValueListenableBuilder<double>(
+                      valueListenable: _positionNotifier,
+                      builder: (_, posSecs, __) => DanmakuLayer(
+                        comments: _danmakuComments,
+                        positionSecs: posSecs,
+                        opacity: _danmakuOpacity,
+                        fontSize: _danmakuFontSize,
+                        speedSecs: _danmakuSpeedSecs,
+                        areaFraction: _danmakuArea,
+                        hideTop: _danmakuHideTop,
+                        hideBottom: _danmakuHideBottom,
+                      ),
                     ),
 
                   if (_loading)
@@ -1832,38 +1886,44 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ),
 
-                  // Skip Intro / Outro floating frosted button
-                  if (seg != null && !_showEpisodeDrawer)
-                    Positioned(
-                      right: 28,
-                      bottom: _controlsVisible ? 142 : 34,
-                      child: PressableScale(
-                        onTap: () => _seekTo(seg.endSecs),
-                        hoverScale: 1.04,
-                        pressScale: 0.94,
-                        child: GlassSurface(
-                          borderRadius: 12,
-                          blur: 24,
-                          color: const Color(0xCC181920),
-                          borderColor: const Color(0x45FFFFFF),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                seg.buttonLabel,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 13.5,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                  // Skip Intro / Outro floating frosted button (rebuilds only on segment enter/exit)
+                  if (!_showEpisodeDrawer)
+                    ValueListenableBuilder<MediaSegmentModel?>(
+                      valueListenable: _activeSegmentNotifier,
+                      builder: (_, seg, __) {
+                        if (seg == null) return const SizedBox.shrink();
+                        return Positioned(
+                          right: 28,
+                          bottom: _controlsVisible ? 142 : 34,
+                          child: PressableScale(
+                            onTap: () => _seekTo(seg.endSecs),
+                            hoverScale: 1.04,
+                            pressScale: 0.94,
+                            child: GlassSurface(
+                              borderRadius: 12,
+                              blur: 24,
+                              color: const Color(0xCC181920),
+                              borderColor: const Color(0x45FFFFFF),
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    seg.buttonLabel,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  const Icon(Icons.skip_next_rounded, size: 18, color: Colors.white),
+                                ],
                               ),
-                              const SizedBox(width: 6),
-                              const Icon(Icons.skip_next_rounded, size: 18, color: Colors.white),
-                            ],
+                            ),
                           ),
-                        ),
-                      ),
+                        );
+                      },
                     ),
 
                   if (_isSpeedBoost)
@@ -2180,7 +2240,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                               : (isMinimalGlass
                                                   ? 28
                                                   : activeSkin.cardRadius.clamp(12.0, 24.0)),
-                                          blur: isFullGradient ? 14 : (isMinimalGlass ? 40 : 30),
+                                          blur: isFullGradient ? 12 : (isMinimalGlass ? 22 : 18),
+                                          enableBlur: _controlsVisible &&
+                                              !_showEpisodeDrawer &&
+                                              !_screenLocked,
                                           color: isFullGradient
                                               ? const Color(0xE608090E)
                                               : (isMinimalGlass
@@ -2290,24 +2353,34 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                           return Column(
                                             mainAxisSize: MainAxisSize.min,
                                             children: [
-                                              // Row 1: Custom precision Cinema Scrub Bar
-                                              _CinemaScrubBar(
-                                                positionSecs: _scrubbing ? _scrubTargetSecs : _positionSecs,
-                                                bufferedSecs: _bufferedSecs,
-                                                durationSecs: _durationSecs,
-                                                segments: _segments,
-                                                chapterTimes: _chapters.map((c) => c.timeSecs).toList(),
-                                                showRemaining: _showRemaining,
-                                                fmtTime: _fmtTime,
-                                                onToggleRemaining: () =>
-                                                    setState(() => _showRemaining = !_showRemaining),
-                                                onScrubStart: () => _hideControlsTimer?.cancel(),
-                                                onScrubUpdate: (secs) =>
-                                                    setState(() => _positionSecs = secs),
-                                                onScrubEnd: (secs) {
-                                                  _seekTo(secs);
-                                                  _scheduleHideControls();
-                                                },
+                                              // Row 1: Custom precision Cinema Scrub Bar (isolated ValueNotifier updates!)
+                                              ListenableBuilder(
+                                                listenable: Listenable.merge([
+                                                  _positionNotifier,
+                                                  _bufferedNotifier,
+                                                ]),
+                                                builder: (_, __) => _CinemaScrubBar(
+                                                  positionSecs: _scrubbing
+                                                      ? _scrubTargetSecs
+                                                      : _positionNotifier.value,
+                                                  bufferedSecs: _bufferedNotifier.value,
+                                                  durationSecs: _durationSecs,
+                                                  segments: _segments,
+                                                  chapterTimes: _chapters.map((c) => c.timeSecs).toList(),
+                                                  showRemaining: _showRemaining,
+                                                  fmtTime: _fmtTime,
+                                                  onToggleRemaining: () =>
+                                                      setState(() => _showRemaining = !_showRemaining),
+                                                  onScrubStart: () => _hideControlsTimer?.cancel(),
+                                                  onScrubUpdate: (secs) {
+                                                    _positionSecs = secs;
+                                                    _positionNotifier.value = secs;
+                                                  },
+                                                  onScrubEnd: (secs) {
+                                                    _seekTo(secs);
+                                                    _scheduleHideControls();
+                                                  },
+                                                ),
                                               ),
                                               const SizedBox(height: 10),
                                               if (singleRowDeck)

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/platform/platform_perf.dart';
 import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
@@ -351,6 +352,7 @@ class _HomeScreenState extends State<HomeScreen> {
       onRefresh: app.refreshHome,
       child: CustomScrollView(
         controller: _scrollCtrl,
+        cacheExtent: PlatformPerfProfile.scrollCacheExtent,
         slivers: [
           if (featured.isNotEmpty)
             SliverToBoxAdapter(
@@ -778,6 +780,11 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     if (widget.featured.length < 2 || _paused || _userDragging) return;
     _autoTimer = Timer(const Duration(seconds: 8), () {
       if (!mounted || _userDragging) return;
+      // Skip invisible background Hero advances when scrolled past or on another tab/route!
+      if (!TickerMode.of(context) || widget.scrollOffsetListenable.value > 380) {
+        _armTimer();
+        return;
+      }
       final next = (_active + 1) % widget.featured.length;
       _select(next);
     });
@@ -1044,6 +1051,8 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               ),
               child: Image.network(
                 logoUrl,
+                cacheWidth: 640,
+                filterQuality: FilterQuality.medium,
                 fit: BoxFit.contain,
                 alignment: Alignment.centerLeft,
                 errorBuilder: (_, __, ___) => _HeroTitleText(
@@ -1551,6 +1560,8 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                       fit: StackFit.expand,
                       children: [
                         // Dissolve Hero artwork + legibility scrim smoothly to 0.0 alpha BEFORE bottom edge!
+                        // Static inside RepaintBoundary (no per-scroll Transform inside ShaderMask!)
+                        // so scrolling Home NEVER re-rasterizes a full-screen offscreen saveLayer!
                         RepaintBoundary(
                           child: ShaderMask(
                             key: ValueKey('hero-alpha-mask-$idx'),
@@ -1571,27 +1582,13 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                               child: Stack(
                                 fit: StackFit.expand,
                                 children: [
-                                  Positioned(
-                                    top: -72,
-                                    left: 0,
-                                    right: 0,
-                                    bottom: -36,
-                                    child: ValueListenableBuilder<double>(
-                                      valueListenable: widget.scrollOffsetListenable,
-                                      builder: (_, scrollOff, child) => Transform.translate(
-                                        offset: Offset(
-                                          0,
-                                          (scrollOff * 0.18).clamp(-32.0, 64.0),
-                                        ),
-                                        child: child,
-                                      ),
-                                      child: VedroArtwork(
-                                        item: slide.item,
-                                        appState: widget.appState,
-                                        isHero: true,
-                                        alignment: const Alignment(0, -0.46),
-                                        showInitials: false,
-                                      ),
+                                  Positioned.fill(
+                                    child: VedroArtwork(
+                                      item: slide.item,
+                                      appState: widget.appState,
+                                      isHero: true,
+                                      alignment: const Alignment(0, -0.46),
+                                      showInitials: false,
                                     ),
                                   ),
                                   if (wide)

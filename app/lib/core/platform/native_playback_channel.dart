@@ -178,6 +178,16 @@ class NativePlaybackChannel {
     } catch (_) {}
   }
 
+  /// Request an adaptive display refresh rate on Android (`0` = highest UI
+  /// refresh rate e.g. 90/120Hz for silky browsing; `60.0` during video playback
+  /// to cut mobile GPU/display power draw and phone heat).
+  static Future<void> setPreferredFrameRate(double fps) async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      await _channel.invokeMethod<void>('setPreferredFrameRate', {'fps': fps});
+    } catch (_) {}
+  }
+
   static Future<bool> isFullscreen() async {
     ensureWindowListener();
     try {

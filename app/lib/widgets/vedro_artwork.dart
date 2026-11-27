@@ -5,6 +5,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/platform/platform_perf.dart';
 import '../core/theme/vedro_skin.dart';
 import '../state/app_state.dart';
 
@@ -99,11 +100,15 @@ class FadeNetworkImage extends StatefulWidget {
     required this.url,
     this.fit = BoxFit.cover,
     this.alignment = Alignment.center,
+    this.cacheWidth,
+    this.filterQuality = FilterQuality.medium,
   });
 
   final String url;
   final BoxFit fit;
   final Alignment alignment;
+  final int? cacheWidth;
+  final FilterQuality filterQuality;
 
   @override
   State<FadeNetworkImage> createState() => _FadeNetworkImageState();
@@ -150,15 +155,14 @@ class _FadeNetworkImageState extends State<FadeNetworkImage> {
       key: ValueKey('${widget.url}#$_attempt'),
       fit: widget.fit,
       alignment: widget.alignment,
+      cacheWidth: widget.cacheWidth,
+      filterQuality: widget.filterQuality,
       gaplessPlayback: true,
       frameBuilder: (_, child, frame, wasSynchronouslyLoaded) {
-        if (wasSynchronouslyLoaded) return child;
-        return AnimatedOpacity(
-          opacity: frame == null ? 0.0 : 1.0,
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOut,
-          child: child,
-        );
+        if (wasSynchronouslyLoaded || frame != null) {
+          return child;
+        }
+        return const SizedBox.shrink();
       },
       errorBuilder: (_, __, ___) {
         _scheduleTransientRetry();
@@ -171,72 +175,90 @@ class _FadeNetworkImageState extends State<FadeNetworkImage> {
 /// Portrait poster displayed inside a 16:9 slot (exact `embygo` Web `FramedPoster` treatment):
 /// compact blurred, darkened, saturated ambient fill + soft cinema scrim + crisp centered 2:3 cover.
 class FramedPoster extends StatelessWidget {
-  const FramedPoster({super.key, required this.url, this.tinyUrl});
+  const FramedPoster({super.key, required this.url, this.tinyUrl, this.cacheWidth});
   final String url;
   final String? tinyUrl;
+  final int? cacheWidth;
 
   @override
   Widget build(BuildContext context) {
     final bgUrl = (tinyUrl != null && tinyUrl!.isNotEmpty) ? tinyUrl! : url;
-    return ClipRect(
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Transform.scale(
-            scale: 1.14,
-            child: ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: 10, sigmaY: 10, tileMode: TileMode.clamp),
-              child: ColorFiltered(
-                // Matches embygo Web `brightness-[.55] saturate-[1.3]`
-                colorFilter: const ColorFilter.matrix(<double>[
-                  0.667, -0.058, -0.058, 0, 0,
-                  -0.115, 0.610, -0.058, 0, 0,
-                  -0.115, -0.115, 0.725, 0, 0,
-                  0, 0, 0, 1, 0,
-                ]),
-                child: FadeNetworkImage(url: bgUrl, fit: BoxFit.cover),
-              ),
-            ),
-          ),
-          const DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.bottomCenter,
-                end: Alignment.topCenter,
-                colors: [Color(0x99000000), Color(0x33000000)],
-              ),
-            ),
-          ),
-          Center(
-            child: FractionallySizedBox(
-              heightFactor: 0.84,
-              child: AspectRatio(
-                aspectRatio: 2 / 3,
-                child: Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(6),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x99000000),
-                        blurRadius: 20,
-                        offset: Offset(0, 8),
-                      ),
-                    ],
+    final sigma = PlatformPerfProfile.framedPosterBlurSigma;
+    return RepaintBoundary(
+      child: ClipRect(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Transform.scale(
+              scale: 1.14,
+              child: ImageFiltered(
+                imageFilter: ImageFilter.blur(
+                  sigmaX: sigma,
+                  sigmaY: sigma,
+                  tileMode: TileMode.clamp,
+                ),
+                child: ColorFiltered(
+                  // Matches embygo Web `brightness-[.55] saturate-[1.3]`
+                  colorFilter: const ColorFilter.matrix(<double>[
+                    0.667, -0.058, -0.058, 0, 0,
+                    -0.115, 0.610, -0.058, 0, 0,
+                    -0.115, -0.115, 0.725, 0, 0,
+                    0, 0, 0, 1, 0,
+                  ]),
+                  child: FadeNetworkImage(
+                    url: bgUrl,
+                    fit: BoxFit.cover,
+                    cacheWidth: 96,
+                    filterQuality: FilterQuality.low,
                   ),
-                  clipBehavior: Clip.antiAlias,
-                  child: FadeNetworkImage(url: url, fit: BoxFit.cover),
                 ),
               ),
             ),
-          ),
-        ],
+            const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.topCenter,
+                  colors: [Color(0x99000000), Color(0x33000000)],
+                ),
+              ),
+            ),
+            Center(
+              child: FractionallySizedBox(
+                heightFactor: 0.84,
+                child: AspectRatio(
+                  aspectRatio: 2 / 3,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(6),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x99000000),
+                          blurRadius: 14,
+                          offset: Offset(0, 6),
+                        ),
+                      ],
+                    ),
+                    clipBehavior: Clip.antiAlias,
+                    child: FadeNetworkImage(
+                      url: url,
+                      fit: BoxFit.cover,
+                      cacheWidth: cacheWidth ?? 260,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 /// Strictly clipped ultra-soft color-wash diffusion when a detail banner lacks a 16:9 widescreen backdrop.
-/// Uses wide Gaussian diffusion (`sigma = 56`) so portrait poster faces NEVER appear stretched or double-stacked behind the poster card!
+/// Decodes at tiny `cacheWidth: 96` inside a `RepaintBoundary` so portrait poster faces NEVER appear
+/// stretched AND GPU raster cost stays negligible on phones and desktop GPUs!
 class _AmbientBlurBackdrop extends StatelessWidget {
   const _AmbientBlurBackdrop({required this.url});
   final String url;
@@ -244,30 +266,38 @@ class _AmbientBlurBackdrop extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    return ClipRect(
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Transform.scale(
-            scale: 1.52,
-            child: ImageFiltered(
-              imageFilter: ImageFilter.blur(
-                sigmaX: 56,
-                sigmaY: 56,
-                tileMode: TileMode.clamp,
-              ),
-              child: Opacity(
-                opacity: skin.isLight ? 0.34 : 0.42,
-                child: FadeNetworkImage(url: url, fit: BoxFit.cover),
+    final sigma = PlatformPerfProfile.ambientBlurSigma;
+    return RepaintBoundary(
+      child: ClipRect(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Transform.scale(
+              scale: 1.45,
+              child: ImageFiltered(
+                imageFilter: ImageFilter.blur(
+                  sigmaX: sigma,
+                  sigmaY: sigma,
+                  tileMode: TileMode.clamp,
+                ),
+                child: Image.network(
+                  url,
+                  cacheWidth: 96,
+                  fit: BoxFit.cover,
+                  filterQuality: FilterQuality.low,
+                  color: Colors.white.withValues(alpha: skin.isLight ? 0.34 : 0.42),
+                  colorBlendMode: BlendMode.modulate,
+                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                ),
               ),
             ),
-          ),
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: skin.canvas.withValues(alpha: skin.isLight ? 0.35 : 0.38),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: skin.canvas.withValues(alpha: skin.isLight ? 0.35 : 0.38),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -306,17 +336,26 @@ class VedroArtwork extends StatelessWidget {
         ? (item.type == 'Episode' ? (item.seriesName ?? item.displayName) : item.name)
         : null;
 
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
     Widget? artLayer;
     if (isHero) {
-      final art = appState.backdropArt(item, width: width ?? 1920) ??
-          (fallbackItem != null ? appState.backdropArt(fallbackItem!, width: width ?? 1920) : null);
+      final reqW = width ?? (PlatformPerfProfile.isMobile ? 1280 : 1920);
+      final cacheW = PlatformPerfProfile.imageCacheWidthFor(reqW.toDouble() / 1.5, dpr);
+      final art = appState.backdropArt(item, width: reqW) ??
+          (fallbackItem != null ? appState.backdropArt(fallbackItem!, width: reqW) : null);
       if (art != null) {
         artLayer = art.isPoster
             ? _AmbientBlurBackdrop(url: art.url)
-            : FadeNetworkImage(url: art.url, fit: BoxFit.cover, alignment: alignment);
+            : FadeNetworkImage(
+                url: art.url,
+                fit: BoxFit.cover,
+                alignment: alignment,
+                cacheWidth: cacheW,
+              );
       }
     } else if (landscape) {
       final w = width ?? 640;
+      final cacheW = PlatformPerfProfile.imageCacheWidthFor(w.toDouble() / 1.6, dpr);
       final primaryArt = appState.wideArt(item, width: w);
       final fbArt = fallbackItem != null ? appState.wideArt(fallbackItem!, width: w) : null;
       // Prefer real 16:9 landscape still/backdrop from item first, then from fallbackItem (Season/Series),
@@ -331,14 +370,26 @@ class VedroArtwork extends StatelessWidget {
       }
       if (chosen != null) {
         artLayer = chosen.isPoster
-            ? FramedPoster(url: chosen.url, tinyUrl: chosen.tinyUrl)
-            : FadeNetworkImage(url: chosen.url, fit: BoxFit.cover, alignment: alignment);
+            ? FramedPoster(url: chosen.url, tinyUrl: chosen.tinyUrl, cacheWidth: cacheW)
+            : FadeNetworkImage(
+                url: chosen.url,
+                fit: BoxFit.cover,
+                alignment: alignment,
+                cacheWidth: cacheW,
+              );
       }
     } else {
-      final url = appState.posterArtUrl(item, width: width ?? 420) ??
-          (fallbackItem != null ? appState.posterArtUrl(fallbackItem!, width: width ?? 420) : null);
+      final reqW = width ?? 420;
+      final cacheW = PlatformPerfProfile.imageCacheWidthFor(reqW.toDouble() / 1.6, dpr);
+      final url = appState.posterArtUrl(item, width: reqW) ??
+          (fallbackItem != null ? appState.posterArtUrl(fallbackItem!, width: reqW) : null);
       if (url != null) {
-        artLayer = FadeNetworkImage(url: url, fit: BoxFit.cover, alignment: alignment);
+        artLayer = FadeNetworkImage(
+          url: url,
+          fit: BoxFit.cover,
+          alignment: alignment,
+          cacheWidth: cacheW,
+        );
       }
     }
 
@@ -394,29 +445,43 @@ class _VedroShimmerState extends State<VedroShimmer> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    final box = AnimatedBuilder(
-      animation: _ctrl,
-      builder: (_, __) {
-        final t = _ctrl.value;
-        final slide = -1.0 + 3.0 * t;
-        return Container(
-          width: widget.width,
-          height: widget.height,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(widget.borderRadius),
-            gradient: LinearGradient(
-              begin: Alignment(slide - 0.8, -0.3),
-              end: Alignment(slide + 0.8, 0.3),
-              colors: [
-                skin.surface,
-                skin.surface2,
-                skin.surface,
-              ],
-            ),
-          ),
-        );
-      },
-    );
+    final Widget box;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      box = Container(
+        width: widget.width,
+        height: widget.height,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(widget.borderRadius),
+          color: skin.surface,
+        ),
+      );
+    } else {
+      box = RepaintBoundary(
+        child: AnimatedBuilder(
+          animation: _ctrl,
+          builder: (_, __) {
+            final t = _ctrl.value;
+            final slide = -1.0 + 3.0 * t;
+            return Container(
+              width: widget.width,
+              height: widget.height,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(widget.borderRadius),
+                gradient: LinearGradient(
+                  begin: Alignment(slide - 0.8, -0.3),
+                  end: Alignment(slide + 0.8, 0.3),
+                  colors: [
+                    skin.surface,
+                    skin.surface2,
+                    skin.surface,
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    }
     if (widget.aspectRatio != null) {
       return AspectRatio(aspectRatio: widget.aspectRatio!, child: box);
     }

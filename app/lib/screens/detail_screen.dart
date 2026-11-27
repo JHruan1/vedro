@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
+import '../core/platform/platform_perf.dart';
 import '../core/theme/dynamic_color_engine.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
@@ -1670,6 +1671,8 @@ class _DetailScreenState extends State<DetailScreen> {
                 ),
                 child: Image.network(
                   logoUrl,
+                  cacheWidth: 640,
+                  filterQuality: FilterQuality.medium,
                   fit: BoxFit.contain,
                   errorBuilder: (_, __, ___) =>
                       _TitleHeadline(_item.displayName, wide, centered: true),
@@ -1778,6 +1781,8 @@ class _DetailScreenState extends State<DetailScreen> {
                         ),
                         child: Image.network(
                           logoUrl,
+                          cacheWidth: 640,
+                          filterQuality: FilterQuality.medium,
                           fit: BoxFit.contain,
                           alignment: Alignment.centerLeft,
                           errorBuilder: (_, __, ___) =>
@@ -1951,6 +1956,7 @@ class _DetailScreenState extends State<DetailScreen> {
         child: Stack(
           children: [
             CustomScrollView(
+              cacheExtent: PlatformPerfProfile.scrollCacheExtent,
               slivers: [
                 // 1. Seamless Full-Stage Hero adapting to `detailLayout` (`apple_immersive` | `jellyfin_glass` | `centered_editorial`)
                 SliverToBoxAdapter(
@@ -1958,9 +1964,10 @@ class _DetailScreenState extends State<DetailScreen> {
                     clipBehavior: Clip.none,
                     children: [
                       Positioned.fill(
-                        child: ClipRect(
-                          key: const ValueKey('detail-backdrop-banner'),
-                          child: ShaderMask(
+                        child: RepaintBoundary(
+                          child: ClipRect(
+                            key: const ValueKey('detail-backdrop-banner'),
+                            child: ShaderMask(
                             blendMode: skin.backdropMode != 'solid'
                                 ? BlendMode.dstIn
                                 : BlendMode.dst,
@@ -2019,6 +2026,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                 ),
                               ],
                             ),
+                          ),
                           ),
                         ),
                       ),

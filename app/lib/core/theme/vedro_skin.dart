@@ -4,6 +4,8 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
+import '../platform/platform_perf.dart';
+
 /// Choose high-contrast ink (near-black or pure white) against any background color.
 Color highContrastOn(Color bg) =>
     bg.computeLuminance() > 0.52 ? const Color(0xFF09090B) : Colors.white;
@@ -1760,19 +1762,22 @@ class VedroSkinCanvas extends StatelessWidget {
         children: [
           if (showFanart)
             Positioned.fill(
-              child: IgnorePointer(
-                child: ClipRect(
-                  child: ImageFiltered(
-                    imageFilter: ImageFilter.blur(
-                      sigmaX: skin.backdropBlur,
-                      sigmaY: skin.backdropBlur,
-                      tileMode: TileMode.clamp,
-                    ),
-                    child: Opacity(
-                      opacity: skin.isLight ? 0.24 : 0.34,
+              child: RepaintBoundary(
+                child: IgnorePointer(
+                  child: ClipRect(
+                    child: ImageFiltered(
+                      imageFilter: ImageFilter.blur(
+                        sigmaX: PlatformPerfProfile.ambientBlurSigma,
+                        sigmaY: PlatformPerfProfile.ambientBlurSigma,
+                        tileMode: TileMode.clamp,
+                      ),
                       child: Image.network(
                         backdropImageUrl!,
+                        cacheWidth: 96,
                         fit: BoxFit.cover,
+                        filterQuality: FilterQuality.low,
+                        color: Colors.white.withValues(alpha: skin.isLight ? 0.24 : 0.34),
+                        colorBlendMode: BlendMode.modulate,
                         errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                       ),
                     ),
@@ -1857,8 +1862,12 @@ class VedroAdaptiveSurface extends StatelessWidget {
         'vivid' => 1.35,
         _ => 1.0,
       };
-      final effBlur = isLiquid ? (skin.backdropBlur * 0.85).clamp(14.0, 48.0) : blurSigma;
-      return Container(
+      final effBlur = PlatformPerfProfile.clampLiveBlur(
+        isLiquid ? (skin.backdropBlur * 0.85).clamp(14.0, 48.0) : blurSigma,
+      );
+      final adaptedFill = PlatformPerfProfile.adaptGlassFill(fill);
+      return RepaintBoundary(
+        child: Container(
         decoration: isLiquid
             ? BoxDecoration(
                 borderRadius: radius,
@@ -1893,7 +1902,7 @@ class VedroAdaptiveSurface extends StatelessWidget {
               filter: ImageFilter.blur(sigmaX: effBlur, sigmaY: effBlur),
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: fill,
+                  color: adaptedFill,
                   gradient: LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
@@ -1916,6 +1925,7 @@ class VedroAdaptiveSurface extends StatelessWidget {
               ),
             ),
           ),
+        ),
         ),
       );
     }

@@ -2213,9 +2213,24 @@ class VedroAppState extends ChangeNotifier {
     if (changed) notifyListeners();
   }
 
+  bool _appResumed = true;
+
+  void setAppResumed(bool resumed) {
+    if (_appResumed == resumed) return;
+    _appResumed = resumed;
+    if (!resumed) {
+      _wsPollTimer?.cancel();
+      _wsPollTimer = null;
+    } else if (isSignedIn) {
+      _startEventPolling();
+    }
+  }
+
   void _startEventPolling() {
     _wsPollTimer?.cancel();
-    _wsPollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _consumeCoreEvents());
+    if (!_appResumed) return;
+    final pollSecs = (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? 4 : 3;
+    _wsPollTimer = Timer.periodic(Duration(seconds: pollSecs), (_) => _consumeCoreEvents());
   }
 
   /// Fetch registered login devices (`GET /emby-compat/devices` or `/Devices`).

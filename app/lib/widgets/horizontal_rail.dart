@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/platform/platform_perf.dart';
 import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
@@ -282,21 +283,25 @@ class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
   @override
   void initState() {
     super.initState();
-    _ctrl.addListener(_syncEdges);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncEdges());
+    if (!PlatformPerfProfile.isMobile) {
+      _ctrl.addListener(_syncEdges);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _syncEdges());
+    }
   }
 
   @override
   void didUpdateWidget(covariant SmoothHorizontalStrip oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.itemCount != widget.itemCount) {
+    if (!PlatformPerfProfile.isMobile && oldWidget.itemCount != widget.itemCount) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _syncEdges());
     }
   }
 
   @override
   void dispose() {
-    _ctrl.removeListener(_syncEdges);
+    if (!PlatformPerfProfile.isMobile) {
+      _ctrl.removeListener(_syncEdges);
+    }
     _ownedCtrl?.dispose();
     super.dispose();
   }
@@ -334,6 +339,26 @@ class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
     final paddleTop = ((widget.paddleCenterY ?? (widget.height * 0.44)) - 20)
         .clamp(8.0, (widget.height - 48).clamp(8.0, widget.height));
 
+    final list = ScrollConfiguration(
+      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+      child: ListView.separated(
+        controller: _ctrl,
+        padding: EdgeInsets.fromLTRB(widget.padX, padTop, widget.padX, padBottom),
+        scrollDirection: Axis.horizontal,
+        cacheExtent: PlatformPerfProfile.scrollCacheExtent,
+        physics: const BouncingScrollPhysics(
+          parent: AlwaysScrollableScrollPhysics(),
+        ),
+        itemCount: widget.itemCount,
+        separatorBuilder: (_, __) => SizedBox(width: widget.spacing),
+        itemBuilder: widget.itemBuilder,
+      ),
+    );
+
+    if (!wide || PlatformPerfProfile.isMobile) {
+      return SizedBox(height: widget.height, child: list);
+    }
+
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
@@ -347,22 +372,9 @@ class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
                   _syncEdges();
                   return false;
                 },
-                child: ScrollConfiguration(
-                  behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-                  child: ListView.separated(
-                    controller: _ctrl,
-                    padding: EdgeInsets.fromLTRB(widget.padX, padTop, widget.padX, padBottom),
-                    scrollDirection: Axis.horizontal,
-                    physics: const BouncingScrollPhysics(
-                      parent: AlwaysScrollableScrollPhysics(),
-                    ),
-                    itemCount: widget.itemCount,
-                    separatorBuilder: (_, __) => SizedBox(width: widget.spacing),
-                    itemBuilder: widget.itemBuilder,
-                  ),
-                ),
+                child: list,
               ),
-              if (wide && !_atStart)
+              if (!_atStart)
                 Positioned(
                   left: 12,
                   top: paddleTop,
@@ -372,7 +384,7 @@ class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
                     onTap: () => _scrollStep(-1),
                   ),
                 ),
-              if (wide && !_atEnd)
+              if (!_atEnd)
                 Positioned(
                   right: 12,
                   top: paddleTop,

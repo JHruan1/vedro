@@ -215,6 +215,7 @@ impl PlaybackConfig {
         set("hwdec-codecs", "all");
 
         // 3. Dolby Vision RPU & HDR10/HDR10+/HLG Pipeline
+        let is_mobile = matches!(self.platform, TargetPlatform::Android | TargetPlatform::Ios);
         let hdr_decision = resolve_hdr_pipeline(
             self.platform,
             &self.display,
@@ -230,9 +231,11 @@ impl PlaybackConfig {
                 "no"
             },
         );
+        // On mobile SoCs, per-frame 4K compute-shader peak detection (`hdr-compute-peak=yes`)
+        // drives heavy GPU heat & battery drain; rely on static/dynamic metadata on phones.
         set(
             "hdr-compute-peak",
-            if hdr_decision.hdr_compute_peak {
+            if hdr_decision.hdr_compute_peak && !is_mobile {
                 "yes"
             } else {
                 "no"
@@ -272,8 +275,18 @@ impl PlaybackConfig {
             }
         }
 
-        // 5. High-quality video processing & sync
-        set("video-sync", "display-resample");
+        // 5. High-quality video processing & sync (thermally tuned on mobile!)
+        if is_mobile && !self.frame_interpolation {
+            set("video-sync", "audio");
+            if self.shader_preset == ShaderPreset::None && !self.deband {
+                set("scale", "bilinear");
+                set("cscale", "bilinear");
+                set("dscale", "bilinear");
+                set("dither-depth", "no");
+            }
+        } else {
+            set("video-sync", "display-resample");
+        }
         if self.frame_interpolation {
             set("interpolation", "yes");
             set("tscale", "oversample");
@@ -298,12 +311,20 @@ impl PlaybackConfig {
             set("slang", &self.preferred_subtitle_langs.join(","));
         }
 
-        // 7. Streaming demuxer cache tuned for 4K Remuxes over vedro-stream proxy
-        let cache_bytes = (self.demuxer_cache_mb.clamp(32, 512) as u64) * 1024 * 1024;
+        // 7. Streaming demuxer cache tuned for 4K Remuxes (leaner RAM/wakeups on mobile)
+        let max_mb = if is_mobile {
+            self.demuxer_cache_mb.clamp(32, 96)
+        } else {
+            self.demuxer_cache_mb.clamp(32, 512)
+        };
+        let cache_bytes = (max_mb as u64) * 1024 * 1024;
         set("cache", "yes");
         set("demuxer-max-bytes", &cache_bytes.to_string());
         set("demuxer-max-back-bytes", &(cache_bytes / 4).to_string());
-        set("demuxer-readahead-secs", "20");
+        set(
+            "demuxer-readahead-secs",
+            if is_mobile { "12" } else { "20" },
+        );
         set("network-timeout", "30");
         set("keep-open", "yes");
 
@@ -349,5 +370,30 @@ mod tests {
         assert_eq!(find("ao"), Some("wasapi"));
         assert_eq!(find("audio-exclusive"), Some("yes"));
         assert!(find("audio-spdif").unwrap().contains("truehd"));
+    }
+
+    #[test]
+    fn tunes_mobile_mpv_pipeline_for_low_heat_and_power() {
+        let cfg = PlaybackConfig {
+            platform: TargetPlatform::Android,
+            demuxer_cache_mb: 256,
+            ..Default::default()
+        };
+        let opts = cfg.build_mpv_options(&HdrFormat::Hdr10, None);
+        let find = |k: &str| {
+            opts.iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(find("hwdec"), Some("mediacodec"));
+        assert_eq!(find("video-sync"), Some("audio"));
+        assert_eq!(find("hdr-compute-peak"), Some("no"));
+        assert_eq!(find("scale"), Some("bilinear"));
+        assert_eq!(find("dither-depth"), Some("no"));
+        assert_eq!(find("demuxer-readahead-secs"), Some("12"));
+        assert_eq!(
+            find("demuxer-max-bytes"),
+            Some((96u64 * 1024 * 1024).to_string().as_str())
+        );
     }
 }

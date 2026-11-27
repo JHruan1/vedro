@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
+import '../core/platform/platform_perf.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -37,10 +38,19 @@ class ShellScreen extends StatefulWidget {
 
 class _ShellScreenState extends State<ShellScreen> {
   int _index = 0;
+  final Set<int> _visitedTabs = {0};
   bool _homeScrolled = false;
   bool _topHovering = false;
   DateTime? _lastBackPressedAt;
   final GlobalKey _pageStageKey = GlobalKey(debugLabel: 'vedro-shell-page-stage');
+
+  void _selectTab(int next) {
+    if (_index == next && _visitedTabs.contains(next)) return;
+    setState(() {
+      _index = next;
+      _visitedTabs.add(next);
+    });
+  }
 
   @override
   void initState() {
@@ -262,71 +272,72 @@ class _ShellScreenState extends State<ShellScreen> {
             : (isMinimalAutoHide ? 52.0 : 68.0))
         : 0.0;
 
-    final pages = [
-      HomeScreen(
-        key: const ValueKey('tab-home'),
-        appState: widget.appState,
-        topNavClearance: wide ? (isLeftRail ? 24.0 : 72.0) : 0.0,
-        onItemTap: (item, {String? heroPrefix}) =>
-            _openItem(item, heroPrefix: heroPrefix),
-        onQuickPlay: _quickPlay,
-        onLibraryTap: _openLibrary,
-        onGenreTap: _openGenre,
-        onOpenFavorites: _openFavorites,
-        onOpenLocalMedia: _openLocalMediaPicker,
-        onOpenServerHub: _openServerHub,
-        onOpenAddServer: _openAddServer,
-        onOpenSettings: () => setState(() => _index = 4),
-        onScrollChanged: (scrolled) {
-          if (scrolled != _homeScrolled) {
-            setState(() => _homeScrolled = scrolled);
-          }
-        },
-      ),
-      ServerHubScreen(
-        key: const ValueKey('tab-server-hub'),
-        appState: widget.appState,
-        onServerSelected: () => setState(() => _index = 0),
-        onOpenAddServer: _openAddServer,
-        onOpenLocalMedia: _openLocalMediaPicker,
-        topInset: childTopInset,
-      ),
-      SearchScreen(
-        key: const ValueKey('tab-search'),
-        appState: widget.appState,
-        onSelectHit: _openAggregatedHit,
-      ),
-      PlaylistsScreen(
-        key: const ValueKey('tab-playlists'),
-        appState: widget.appState,
-        onItemTap: _openItem,
-        onQuickPlay: _quickPlay,
-        topInset: childTopInset,
-      ),
-      SettingsScreen(
-        key: const ValueKey('tab-settings'),
-        appState: widget.appState,
-        onOpenServerHub: _openServerHub,
-        onOpenAddServer: _openAddServer,
-        topInset: childTopInset,
-      ),
-    ];
+    _visitedTabs.add(_index);
 
-    final pageSwitcher = AnimatedSwitcher(
-      duration: Duration(milliseconds: widget.appState.prefs.reduceMotion ? 0 : 260),
-      switchInCurve: VedroTheme.easeOut,
-      switchOutCurve: Curves.easeInCubic,
-      transitionBuilder: (child, anim) => FadeTransition(
-        opacity: anim,
-        child: SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0, 0.014),
-            end: Offset.zero,
-          ).animate(anim),
-          child: child,
-        ),
-      ),
-      child: pages[_index],
+    Widget buildTab(int idx) {
+      if (!_visitedTabs.contains(idx)) return const SizedBox.shrink();
+      final Widget page = switch (idx) {
+        0 => HomeScreen(
+            key: const ValueKey('tab-home'),
+            appState: widget.appState,
+            topNavClearance: wide ? (isLeftRail ? 24.0 : 72.0) : 0.0,
+            onItemTap: (item, {String? heroPrefix}) =>
+                _openItem(item, heroPrefix: heroPrefix),
+            onQuickPlay: _quickPlay,
+            onLibraryTap: _openLibrary,
+            onGenreTap: _openGenre,
+            onOpenFavorites: _openFavorites,
+            onOpenLocalMedia: _openLocalMediaPicker,
+            onOpenServerHub: _openServerHub,
+            onOpenAddServer: _openAddServer,
+            onOpenSettings: () => _selectTab(4),
+            onScrollChanged: (scrolled) {
+              if (scrolled != _homeScrolled) {
+                setState(() => _homeScrolled = scrolled);
+              }
+            },
+          ),
+        1 => ServerHubScreen(
+            key: const ValueKey('tab-server-hub'),
+            appState: widget.appState,
+            onServerSelected: () => _selectTab(0),
+            onOpenAddServer: _openAddServer,
+            onOpenLocalMedia: _openLocalMediaPicker,
+            topInset: childTopInset,
+          ),
+        2 => SearchScreen(
+            key: const ValueKey('tab-search'),
+            appState: widget.appState,
+            onSelectHit: _openAggregatedHit,
+          ),
+        3 => PlaylistsScreen(
+            key: const ValueKey('tab-playlists'),
+            appState: widget.appState,
+            onItemTap: _openItem,
+            onQuickPlay: _quickPlay,
+            topInset: childTopInset,
+          ),
+        _ => SettingsScreen(
+            key: const ValueKey('tab-settings'),
+            appState: widget.appState,
+            onOpenServerHub: _openServerHub,
+            onOpenAddServer: _openAddServer,
+            topInset: childTopInset,
+          ),
+      };
+      return TickerMode(
+        enabled: _index == idx,
+        child: RepaintBoundary(child: page),
+      );
+    }
+
+    // Lazy-mounted IndexedStack: instant 0ms tab switching with preserved Home
+    // scroll position & decoded textures, plus zero background tickers on inactive tabs!
+    final pageSwitcher = IndexedStack(
+      index: _index,
+      children: [
+        for (var i = 0; i < 5; i++) buildTab(i),
+      ],
     );
 
     final keyedStage = KeyedSubtree(
@@ -367,7 +378,7 @@ class _ShellScreenState extends State<ShellScreen> {
                       compact: size.width < 1120,
                       activeIndex: _index,
                       navItems: _desktopNav,
-                      onSelectIndex: (i) => setState(() => _index = i),
+                      onSelectIndex: _selectTab,
                       onOpenServerHub: _openServerHub,
                       onOpenSearch: _openSpotlight,
                       onOpenLocalMedia: _openLocalMediaPicker,
@@ -392,7 +403,7 @@ class _ShellScreenState extends State<ShellScreen> {
                               appState: widget.appState,
                               activeIndex: _index,
                               navItems: _desktopNav,
-                              onSelectIndex: (i) => setState(() => _index = i),
+                              onSelectIndex: _selectTab,
                               onOpenServerHub: _openServerHub,
                               onOpenSearch: _openSpotlight,
                               onOpenLocalMedia: _openLocalMediaPicker,
@@ -416,7 +427,7 @@ class _ShellScreenState extends State<ShellScreen> {
                                   clear: topBarClear && !_topHovering,
                                   activeIndex: _index,
                                   navItems: _desktopNav,
-                                  onSelectIndex: (i) => setState(() => _index = i),
+                                  onSelectIndex: _selectTab,
                                   onOpenServerHub: _openServerHub,
                                   onOpenSearch: _openSpotlight,
                                   onOpenLocalMedia: _openLocalMediaPicker,
@@ -440,7 +451,7 @@ class _ShellScreenState extends State<ShellScreen> {
                               clear: topBarClear,
                               activeIndex: _index,
                               navItems: _desktopNav,
-                              onSelectIndex: (i) => setState(() => _index = i),
+                              onSelectIndex: _selectTab,
                               onOpenServerHub: _openServerHub,
                               onOpenSearch: _openSpotlight,
                               onOpenLocalMedia: _openLocalMediaPicker,
@@ -478,20 +489,22 @@ class _ShellScreenState extends State<ShellScreen> {
       } else if (skin.touchFeedbackStyle == 'subtle_scale') {
         HapticFeedback.selectionClick();
       }
-      setState(() => _index = i);
+      _selectTab(i);
     }
 
     Widget bottomBar;
     if (fullTabBar) {
-      bottomBar = ClipRect(
-        key: const ValueKey('mobile-nav-full-tab-bar'),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: skin.glass,
-              border: Border(top: BorderSide(color: skin.border, width: 0.7)),
-            ),
+      final barBlur = PlatformPerfProfile.clampLiveBlur(24);
+      bottomBar = RepaintBoundary(
+        child: ClipRect(
+          key: const ValueKey('mobile-nav-full-tab-bar'),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: barBlur, sigmaY: barBlur),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: PlatformPerfProfile.adaptGlassFill(skin.glass),
+                border: Border(top: BorderSide(color: skin.border, width: 0.7)),
+              ),
             child: SafeArea(
               top: false,
               child: Padding(
@@ -511,6 +524,7 @@ class _ShellScreenState extends State<ShellScreen> {
               ),
             ),
           ),
+        ),
         ),
       );
     } else {
@@ -1281,17 +1295,20 @@ class _FloatingDesktopHeader extends StatelessWidget {
         }
 
         // Feather-seamless frosted header when scrolled — NO harsh 1px line!
-        return ClipRect(
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: skin.glass,
-                border: skin.frameStyle == 'neon'
-                    ? Border(bottom: BorderSide(color: skin.border, width: 0.7))
-                    : null,
+        final headerBlur = PlatformPerfProfile.clampLiveBlur(26);
+        return RepaintBoundary(
+          child: ClipRect(
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: headerBlur, sigmaY: headerBlur),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: PlatformPerfProfile.adaptGlassFill(skin.glass),
+                  border: skin.frameStyle == 'neon'
+                      ? Border(bottom: BorderSide(color: skin.border, width: 0.7))
+                      : null,
+                ),
+                child: content,
               ),
-              child: content,
             ),
           ),
         );

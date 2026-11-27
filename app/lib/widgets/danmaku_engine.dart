@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -68,10 +69,80 @@ class DanmakuComment {
   }
 }
 
-/// Real 60fps GPU-friendly Danmaku Canvas Layer:
-/// renders scrolling, top-fixed, and bottom-fixed bullet comments with crisp outline stroke,
-/// deterministic collision-avoiding lanes, opacity, font size, speed, and display-area clipping.
-class DanmakuLayer extends StatelessWidget {
+/// Cached stroke + fill TextPainter pair so scrolling Danmaku never re-runs
+/// expensive text shaping & layout 128× per frame.
+class _CachedBulletPainters {
+  _CachedBulletPainters(this.stroke, this.fill);
+  final TextPainter stroke;
+  final TextPainter fill;
+}
+
+class _DanmakuLayoutCache {
+  static const int _maxEntries = 180;
+  final LinkedHashMap<String, _CachedBulletPainters> _cache = LinkedHashMap();
+  double _cachedFontSize = -1;
+  double _cachedOpacity = -1;
+
+  void syncParams(double fontSize, double opacity) {
+    if ((fontSize - _cachedFontSize).abs() > 0.05 ||
+        (opacity - _cachedOpacity).abs() > 0.02) {
+      _cache.clear();
+      _cachedFontSize = fontSize;
+      _cachedOpacity = opacity;
+    }
+  }
+
+  _CachedBulletPainters getOrLayout(DanmakuComment c, double fontSize, double opacity) {
+    final key = '${c.color.toARGB32()}:${c.text}';
+    final existing = _cache.remove(key);
+    if (existing != null) {
+      _cache[key] = existing;
+      return existing;
+    }
+    final alpha = opacity.clamp(0.15, 1.0);
+    final strokeTp = TextPainter(
+      text: TextSpan(
+        text: c.text,
+        style: TextStyle(
+          fontSize: fontSize,
+          fontWeight: FontWeight.w600,
+          foreground: Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.4
+            ..color = Color.fromRGBO(0, 0, 0, (0.80 * alpha).clamp(0.0, 1.0)),
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+    )..layout();
+
+    final fillTp = TextPainter(
+      text: TextSpan(
+        text: c.text,
+        style: TextStyle(
+          fontSize: fontSize,
+          fontWeight: FontWeight.w600,
+          color: c.color.withValues(alpha: alpha),
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+    )..layout();
+
+    final entry = _CachedBulletPainters(strokeTp, fillTp);
+    if (_cache.length >= _maxEntries) {
+      _cache.remove(_cache.keys.first);
+    }
+    _cache[key] = entry;
+    return entry;
+  }
+}
+
+/// Real GPU-friendly Danmaku Canvas Layer:
+/// renders scrolling, top-fixed, and bottom-fixed bullet comments with cached
+/// `TextPainter` layouts, baked opacity (zero offscreen `Opacity` `saveLayer`),
+/// and `RepaintBoundary` isolation.
+class DanmakuLayer extends StatefulWidget {
   const DanmakuLayer({
     super.key,
     required this.comments,
@@ -94,24 +165,32 @@ class DanmakuLayer extends StatelessWidget {
   final bool hideBottom;
 
   @override
+  State<DanmakuLayer> createState() => _DanmakuLayerState();
+}
+
+class _DanmakuLayerState extends State<DanmakuLayer> {
+  final _DanmakuLayoutCache _layoutCache = _DanmakuLayoutCache();
+
+  @override
   Widget build(BuildContext context) {
-    if (comments.isEmpty) return const SizedBox.shrink();
-    return IgnorePointer(
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: FractionallySizedBox(
-          widthFactor: 1.0,
-          heightFactor: areaFraction.clamp(0.2, 1.0),
-          child: Opacity(
-            opacity: opacity.clamp(0.15, 1.0),
+    if (widget.comments.isEmpty) return const SizedBox.shrink();
+    return RepaintBoundary(
+      child: IgnorePointer(
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: FractionallySizedBox(
+            widthFactor: 1.0,
+            heightFactor: widget.areaFraction.clamp(0.2, 1.0),
             child: CustomPaint(
               painter: _DanmakuPainter(
-                comments: comments,
-                positionSecs: positionSecs,
-                fontSize: fontSize.clamp(12.0, 32.0),
-                speedSecs: speedSecs.clamp(4.0, 16.0),
-                hideTop: hideTop,
-                hideBottom: hideBottom,
+                comments: widget.comments,
+                positionSecs: widget.positionSecs,
+                opacity: widget.opacity.clamp(0.15, 1.0),
+                fontSize: widget.fontSize.clamp(12.0, 32.0),
+                speedSecs: widget.speedSecs.clamp(4.0, 16.0),
+                hideTop: widget.hideTop,
+                hideBottom: widget.hideBottom,
+                layoutCache: _layoutCache,
               ),
               size: Size.infinite,
             ),
@@ -126,23 +205,28 @@ class _DanmakuPainter extends CustomPainter {
   _DanmakuPainter({
     required this.comments,
     required this.positionSecs,
+    required this.opacity,
     required this.fontSize,
     required this.speedSecs,
     required this.hideTop,
     required this.hideBottom,
+    required this.layoutCache,
   });
 
   final List<DanmakuComment> comments;
   final double positionSecs;
+  final double opacity;
   final double fontSize;
   final double speedSecs;
   final bool hideTop;
   final bool hideBottom;
+  final _DanmakuLayoutCache layoutCache;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (size.width <= 0 || size.height <= 0 || comments.isEmpty) return;
 
+    layoutCache.syncParams(fontSize, opacity);
     final laneH = fontSize * 1.38;
     final laneCount = math.max(1, (size.height / laneH).floor());
     final windowStart = positionSecs - speedSecs;
@@ -161,7 +245,7 @@ class _DanmakuPainter extends CustomPainter {
     }
 
     var drawn = 0;
-    for (var i = lo; i < comments.length && drawn < 64; i++) {
+    for (var i = lo; i < comments.length && drawn < 48; i++) {
       final c = comments[i];
       if (c.timeSecs > windowEnd) break;
       final age = positionSecs - c.timeSecs;
@@ -173,62 +257,35 @@ class _DanmakuPainter extends CustomPainter {
       if ((isTop || isBottom) && age > 4.2) continue;
       if (!isTop && !isBottom && age > speedSecs) continue;
 
-      final strokeTp = TextPainter(
-        text: TextSpan(
-          text: c.text,
-          style: TextStyle(
-            fontSize: fontSize,
-            fontWeight: FontWeight.w600,
-            foreground: Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 2.4
-              ..color = const Color(0xCC000000),
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-        maxLines: 1,
-      )..layout();
-
-      final fillTp = TextPainter(
-        text: TextSpan(
-          text: c.text,
-          style: TextStyle(
-            fontSize: fontSize,
-            fontWeight: FontWeight.w600,
-            color: c.color,
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-        maxLines: 1,
-      )..layout();
-
+      final painters = layoutCache.getOrLayout(c, fontSize, opacity);
       final lane = i % laneCount;
       final double dx;
       final double dy;
       if (isTop) {
-        dx = (size.width - fillTp.width) * 0.5;
+        dx = (size.width - painters.fill.width) * 0.5;
         dy = (lane * laneH) + 8;
       } else if (isBottom) {
-        dx = (size.width - fillTp.width) * 0.5;
+        dx = (size.width - painters.fill.width) * 0.5;
         dy = size.height - ((lane + 1) * laneH) - 8;
       } else {
         final progress = age / speedSecs;
-        dx = size.width - progress * (size.width + fillTp.width);
+        dx = size.width - progress * (size.width + painters.fill.width);
         dy = (lane * laneH) + 8;
       }
 
       if (dy < 0 || dy + laneH > size.height) continue;
-      strokeTp.paint(canvas, Offset(dx, dy));
-      fillTp.paint(canvas, Offset(dx, dy));
+      painters.stroke.paint(canvas, Offset(dx, dy));
+      painters.fill.paint(canvas, Offset(dx, dy));
       drawn++;
     }
   }
 
   @override
   bool shouldRepaint(covariant _DanmakuPainter oldDelegate) =>
-      (oldDelegate.positionSecs - positionSecs).abs() > 0.015 ||
+      (oldDelegate.positionSecs - positionSecs).abs() > 0.025 ||
       oldDelegate.comments.length != comments.length ||
       oldDelegate.fontSize != fontSize ||
+      oldDelegate.opacity != opacity ||
       oldDelegate.speedSecs != speedSecs ||
       oldDelegate.hideTop != hideTop ||
       oldDelegate.hideBottom != hideBottom;

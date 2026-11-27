@@ -1274,6 +1274,55 @@ impl EmbyClient {
         .await
     }
 
+    /// List registered login devices (`GET /emby-compat/devices[?userId=...]`, with fallback to `GET /Devices`).
+    pub async fn embygo_devices(&self, user_id: Option<&str>) -> Result<serde_json::Value> {
+        let mut q = Vec::new();
+        if let Some(uid) = user_id.map(str::trim).filter(|s| !s.is_empty()) {
+            q.push(("userId", uid.to_string()));
+        }
+        match self
+            .request_json::<serde_json::Value>(Method::GET, "emby-compat/devices", &q, None)
+            .await
+        {
+            Ok(v) => Ok(v),
+            Err(ProtocolError::NotFound(_)) => {
+                self.request_json(Method::GET, "Devices", &[], None).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Remove a registered device (`DELETE /emby-compat/devices?userId=...&id=...`, fallback `DELETE /Devices?Id=...`).
+    pub async fn embygo_delete_device(&self, user_id: Option<&str>, device_id: &str) -> Result<()> {
+        let mut q = Vec::new();
+        if let Some(uid) = user_id.map(str::trim).filter(|s| !s.is_empty()) {
+            q.push(("userId", uid.to_string()));
+        }
+        q.push(("id", device_id.to_string()));
+        match self
+            .request_empty(Method::DELETE, "emby-compat/devices", &q, None)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(ProtocolError::NotFound(_)) => {
+                self.request_empty(
+                    Method::DELETE,
+                    "Devices",
+                    &[("Id", device_id.to_string())],
+                    None,
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Admit an EmbyGo playback route speedtest (`POST /emby-compat/speedtest`).
+    pub async fn embygo_start_speedtest(&self) -> Result<serde_json::Value> {
+        self.request_json(Method::POST, "emby-compat/speedtest", &[], None)
+            .await
+    }
+
     /// Build the authenticated WebSocket URL (`/embywebsocket` or `/socket`).
     pub fn websocket_url(&self) -> Result<Url> {
         let token = self

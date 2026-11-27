@@ -15,16 +15,25 @@ namespace {
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1
+#define DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 19
+#endif
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
+#ifndef DWMWA_TEXT_COLOR
+#define DWMWA_TEXT_COLOR 36
+#endif
 
 constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
 
-/// Registry key for app theme preference.
-///
-/// A value of 0 indicates apps should use dark mode. A non-zero or missing
-/// value indicates apps should use light mode.
-constexpr const wchar_t kGetPreferredBrightnessRegKey[] =
-  L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
-constexpr const wchar_t kGetPreferredBrightnessRegValue[] = L"AppsUseLightTheme";
+static bool g_vedro_is_light = false;
+static COLORREF g_vedro_caption_rgb = RGB(11, 11, 13);
+static COLORREF g_vedro_text_rgb = RGB(244, 244, 246);
+static HBRUSH g_vedro_bg_brush = nullptr;
 
 // The number of Win32Window objects that currently exist.
 static int g_active_window_count = 0;
@@ -97,7 +106,10 @@ const wchar_t* WindowClassRegistrar::GetWindowClass() {
     window_class.hInstance = GetModuleHandle(nullptr);
     window_class.hIcon =
         LoadIcon(window_class.hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
-    window_class.hbrBackground = 0;
+    if (!g_vedro_bg_brush) {
+      g_vedro_bg_brush = CreateSolidBrush(RGB(11, 11, 13));
+    }
+    window_class.hbrBackground = g_vedro_bg_brush;
     window_class.lpszMenuName = nullptr;
     window_class.lpfnWndProc = Win32Window::WndProc;
     RegisterClass(&window_class);
@@ -272,17 +284,29 @@ void Win32Window::OnDestroy() {
   // No-op; provided for subclasses.
 }
 
-void Win32Window::UpdateTheme(HWND const window) {
-  DWORD light_mode;
-  DWORD light_mode_size = sizeof(light_mode);
-  LSTATUS result = RegGetValue(HKEY_CURRENT_USER, kGetPreferredBrightnessRegKey,
-                               kGetPreferredBrightnessRegValue,
-                               RRF_RT_REG_DWORD, nullptr, &light_mode,
-                               &light_mode_size);
+void VedroApplyWin32WindowChrome(HWND const window,
+                                 bool is_light,
+                                 COLORREF caption_rgb,
+                                 COLORREF text_rgb) {
+  g_vedro_is_light = is_light;
+  g_vedro_caption_rgb = caption_rgb;
+  g_vedro_text_rgb = text_rgb;
+  if (!window) return;
 
-  if (result == ERROR_SUCCESS) {
-    BOOL enable_dark_mode = light_mode == 0;
-    DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
-                          &enable_dark_mode, sizeof(enable_dark_mode));
-  }
+  BOOL enable_dark_mode = is_light ? FALSE : TRUE;
+  DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                        &enable_dark_mode, sizeof(enable_dark_mode));
+  DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1,
+                        &enable_dark_mode, sizeof(enable_dark_mode));
+  // Windows 11 (Build 22000+) seamless page-matched DWM titlebar & border tinting
+  DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR,
+                        &g_vedro_caption_rgb, sizeof(g_vedro_caption_rgb));
+  DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
+                        &g_vedro_caption_rgb, sizeof(g_vedro_caption_rgb));
+  DwmSetWindowAttribute(window, DWMWA_TEXT_COLOR,
+                        &g_vedro_text_rgb, sizeof(g_vedro_text_rgb));
+}
+
+void Win32Window::UpdateTheme(HWND const window) {
+  VedroApplyWin32WindowChrome(window, g_vedro_is_light, g_vedro_caption_rgb, g_vedro_text_rgb);
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
@@ -42,6 +43,8 @@ class SettingsScreen extends StatefulWidget {
 
 enum _SettingsSection {
   servers,
+  speedtest,
+  devices,
   proxy,
   downloads,
   fonts,
@@ -112,7 +115,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
       tintTop: Color(0xFF4F8FF7),
       tintBottom: Color(0xFF2B65D9),
       group: '媒体源与管理',
-      keywords: 'server route 线路 卡片 测速',
+      keywords: 'server route 线路 卡片',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.speedtest,
+      title: '播放测速',
+      icon: Icons.speed_rounded,
+      tintTop: Color(0xFF10B981),
+      tintBottom: Color(0xFF059669),
+      group: '媒体源与管理',
+      keywords: 'speedtest 测速 带宽 码率 延迟 线路 embygo',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.devices,
+      title: '设备管理',
+      icon: Icons.devices_rounded,
+      tintTop: Color(0xFF6366F1),
+      tintBottom: Color(0xFF4338CA),
+      group: '媒体源与管理',
+      keywords: 'devices 设备 登录 名额 移除 embygo',
     ),
     _NavItemMeta(
       section: _SettingsSection.proxy,
@@ -282,6 +303,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     switch (sec) {
       case _SettingsSection.servers:
         return app.isSignedIn ? app.activeServerDisplayName : '${app.savedServers.length} 个';
+      case _SettingsSection.speedtest:
+        final eff = (app.lastSpeedTestResult?['effective_mbps'] as num?)?.toDouble();
+        return app.isSpeedTesting
+            ? '测速中'
+            : (eff != null ? '${eff.toStringAsFixed(0)} Mbps' : '测试线路');
+      case _SettingsSection.devices:
+        final reg = app.meQuota?.registeredDevices ?? app.userDevices.length;
+        return reg > 0 ? '$reg 台' : '管理设备';
       case _SettingsSection.proxy:
         return switch (p.inAppProxyMode) {
           'sub' => p.proxyNodes.isEmpty ? '节点订阅' : '${p.proxyNodes.length} 节点',
@@ -857,6 +886,15 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     if (p.proxySubscriptions.isEmpty) {
       _subUrlCtrl.text = p.proxySubscriptionUrl;
     }
+    if (widget.section == _SettingsSection.devices && widget.appState.isSignedIn) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        unawaited(
+          widget.appState.loadUserDevices().catchError((_) => const <Map<String, dynamic>>[]),
+        );
+        unawaited(widget.appState.refreshMeQuota());
+      });
+    }
   }
 
   @override
@@ -896,6 +934,8 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
 
         return switch (widget.section) {
           _SettingsSection.servers => _buildServers(app),
+          _SettingsSection.speedtest => _buildSpeedTest(app),
+          _SettingsSection.devices => _buildDevices(app),
           _SettingsSection.proxy => _buildInAppProxy(app, p),
           _SettingsSection.downloads => _buildDownloads(app, p),
           _SettingsSection.fonts => _buildFonts(app, p),
@@ -972,6 +1012,430 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           onSelectServer: (srv) => app.restoreSavedServer(srv),
           onAddServer: () => widget.onOpenAddServer(),
         ),
+      ],
+    );
+  }
+
+  static String _speedRouteLabel(String raw) {
+    return switch (raw) {
+      'cdn' => '自建 CDN',
+      'cloudflare' => 'Cloudflare',
+      'entry' => '主入口',
+      'direct' => '直连',
+      '' => '默认',
+      _ => raw,
+    };
+  }
+
+  // 1a. 播放测速 (EmbyGo /emby-compat/speedtest)
+  Widget _buildSpeedTest(VedroAppState app) {
+    final skin = VedroSkin.of(context);
+    final res = app.lastSpeedTestResult;
+    final running = app.isSpeedTesting;
+    final liveMbps = app.liveSpeedTestMbps;
+    final effectiveMbps = (res?['effective_mbps'] as num?)?.toDouble();
+    final measuredMbps = (res?['measured_mbps'] as num?)?.toDouble();
+    final latencyMs = (res?['latency_ms'] as num?)?.toDouble() ?? app.speedTestLatencyMs;
+    final clientIp = (res?['client_ip']?.toString() ?? app.speedTestClientIp ?? '').trim();
+    final accountLimitBps = (res?['account_limit_bps'] as num?)?.toInt() ?? 0;
+    final remHour = (res?['remaining_this_hour'] as num?)?.toInt() ?? -1;
+    final remDay = (res?['remaining_today'] as num?)?.toInt() ?? -1;
+
+    const tiers = <(String label, double mbps)>[
+      ('720p', 5),
+      ('1080p', 10),
+      ('1080p 高码率 / 4K 压制', 25),
+      ('4K 高码率', 60),
+      ('4K 原盘 REMUX', 100),
+    ];
+
+    final quotaFooter = app.isAdmin
+        ? '管理员不限测速次数'
+        : [
+            '每小时可测 6 次 · 每天 20 次',
+            if (remHour >= 0) '本小时剩余 $remHour 次',
+            if (remDay >= 0) '今日剩余 $remDay 次',
+          ].join(' · ');
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _heading('播放测速'),
+        if (!app.isSignedIn)
+          _GroupedCard(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Text(
+                  '请先连接媒体服务器后再运行线路测速',
+                  style: TextStyle(color: skin.fg3, fontSize: 13.5),
+                ),
+              ),
+            ],
+          )
+        else ...[
+          _GroupedCard(
+            key: const ValueKey('settings-speedtest-card'),
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                child: Row(
+                  children: [
+                    FilledButton.icon(
+                      key: const ValueKey('speedtest-action-btn'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: running ? skin.surface3 : skin.primaryCtaBg,
+                        foregroundColor: running ? skin.fg : skin.primaryCtaFg,
+                      ),
+                      onPressed: () {
+                        if (running) {
+                          app.cancelEmbyGoSpeedTest();
+                        } else {
+                          app.runEmbyGoSpeedTest();
+                        }
+                      },
+                      icon: running
+                          ? SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: skin.fg,
+                              ),
+                            )
+                          : const Icon(Icons.speed_rounded, size: 17),
+                      label: Text(running ? '停止' : '开始测速'),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: running
+                          ? Text(
+                              liveMbps != null
+                                  ? '${liveMbps.toStringAsFixed(1)} Mbps'
+                                  : (latencyMs != null
+                                      ? '延迟 ${latencyMs.round()} ms · 下载采样中…'
+                                      : '正在连接视频流线路…'),
+                              style: TextStyle(
+                                color: skin.accent,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                fontFeatures: const [FontFeature.tabularFigures()],
+                              ),
+                            )
+                          : Text(
+                              quotaFooter,
+                              style: TextStyle(color: skin.fg3, fontSize: 12),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+              if (app.speedTestError != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Text(
+                    app.speedTestError!,
+                    style: const TextStyle(color: VedroTheme.danger, fontSize: 12.5),
+                  ),
+                ),
+              if (res != null) ...[
+                _InfoKVRow('线路', _speedRouteLabel(res['route']?.toString() ?? '')),
+                _InfoKVRow('播放出口 IP', clientIp.isEmpty ? '—' : clientIp, mono: true),
+                _InfoKVRow('网络延迟', latencyMs == null ? '—' : '${latencyMs.round()} ms'),
+                _InfoKVRow(
+                  '实测带宽',
+                  measuredMbps == null ? '—' : '${measuredMbps.toStringAsFixed(1)} Mbps',
+                ),
+                _InfoKVRow(
+                  '账号限速',
+                  accountLimitBps > 0
+                      ? '${(accountLimitBps / 1e6).toStringAsFixed(1)} Mbps'
+                      : '不限',
+                ),
+                _InfoKVRow(
+                  '预计播放速度',
+                  effectiveMbps == null ? '—' : '${effectiveMbps.toStringAsFixed(1)} Mbps',
+                  highlight: true,
+                ),
+              ],
+            ],
+          ),
+          if (res != null) ...[
+            const SizedBox(height: 16),
+            _GroupedCard(
+              children: [
+                for (final (label, needMbps) in tiers)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            label,
+                            style: TextStyle(
+                              color: skin.fg,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              (effectiveMbps != null && effectiveMbps >= needMbps)
+                                  ? Icons.check_circle_rounded
+                                  : Icons.cancel_outlined,
+                              size: 16,
+                              color: (effectiveMbps != null && effectiveMbps >= needMbps)
+                                  ? const Color(0xFF10B981)
+                                  : skin.fg3,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              (effectiveMbps != null && effectiveMbps >= needMbps)
+                                  ? '可流畅播放'
+                                  : '可能卡顿',
+                              style: TextStyle(
+                                color: (effectiveMbps != null && effectiveMbps >= needMbps)
+                                    ? const Color(0xFF10B981)
+                                    : skin.fg3,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+
+  // 1b. 设备管理 (EmbyGo /emby-compat/devices)
+  Widget _buildDevices(VedroAppState app) {
+    final skin = VedroSkin.of(context);
+    final devices = app.userDevices;
+    final curDevId = app.currentClientDeviceId;
+    final quota = app.meQuota;
+    final maxDevs = quota?.maxDevices ?? 10;
+    final regCount = devices.isNotEmpty ? devices.length : (quota?.registeredDevices ?? 0);
+
+    Future<void> confirmRemove(String devId, String label, bool isCurrent) async {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: skin.surface,
+          title: Text('移除设备', style: TextStyle(color: skin.fg, fontSize: 16)),
+          content: Text(
+            isCurrent
+                ? '确定移除当前设备「$label」？移除后本机将退出登录。'
+                : '确定移除设备「$label」？该设备将退出登录并腾出名额。',
+            style: TextStyle(color: skin.fg2, fontSize: 13.5),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: VedroTheme.danger),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('移除'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+      try {
+        await app.removeUserDevice(deviceId: devId);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('设备已移除')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('移除失败：${e.toString().replaceFirst('VedroCoreException: ', '')}')),
+          );
+        }
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _heading(
+          '设备管理',
+          app.isSignedIn
+              ? '已登记 $regCount / ${app.isAdmin || maxDevs == 0 ? '不限制' : '$maxDevs 台'}'
+              : null,
+          app.isSignedIn
+              ? IconButton(
+                  key: const ValueKey('devices-refresh-btn'),
+                  tooltip: '刷新设备列表',
+                  icon: Icon(Icons.refresh_rounded, size: 19, color: skin.fg2),
+                  onPressed: app.isLoadingDevices ? null : () => app.loadUserDevices(),
+                )
+              : null,
+        ),
+        if (!app.isSignedIn)
+          _GroupedCard(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Text(
+                  '请先连接媒体服务器后查看已登录设备',
+                  style: TextStyle(color: skin.fg3, fontSize: 13.5),
+                ),
+              ),
+            ],
+          )
+        else
+          _GroupedCard(
+            key: const ValueKey('settings-devices-card'),
+            children: [
+              if (curDevId != null && curDevId.isNotEmpty)
+                _InfoKVRow('本机设备 ID', curDevId, mono: true),
+              if (app.isLoadingDevices && devices.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.all(22),
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: skin.fg2),
+                    ),
+                  ),
+                )
+              else if (devices.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Text(
+                    '暂无已登记设备记录',
+                    style: TextStyle(color: skin.fg3, fontSize: 13.5),
+                  ),
+                )
+              else
+                for (final d in devices)
+                  () {
+                    final devId = (d['DeviceId'] ?? d['Id'] ?? '').toString();
+                    final label = (d['Name'] ?? d['DeviceName'] ?? d['AppName'] ?? devId)
+                        .toString()
+                        .trim();
+                    final appName = (d['AppName'] ?? d['Client'] ?? '').toString().trim();
+                    final appVer =
+                        (d['AppVersion'] ?? d['ApplicationVersion'] ?? '').toString().trim();
+                    final rawLast =
+                        (d['DateLastActivity'] ?? d['LastActivityDate'] ?? '').toString().trim();
+                    final lastStr = rawLast.isNotEmpty
+                        ? rawLast.replaceFirst('T', ' ').split('.').first.replaceAll('Z', '')
+                        : '';
+                    final isCurrent = curDevId != null && devId == curDevId;
+                    final meta = [
+                      if (appName.isNotEmpty) appName,
+                      if (appVer.isNotEmpty) appVer,
+                      if (lastStr.isNotEmpty) lastStr,
+                    ].join(' · ');
+
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: isCurrent
+                                  ? skin.accent.withValues(alpha: skin.isLight ? 0.14 : 0.20)
+                                  : skin.subtleChipBg,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Icon(
+                              Icons.devices_rounded,
+                              size: 18,
+                              color: isCurrent ? skin.accent : skin.fg2,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        label.isEmpty ? devId : label,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color: skin.fg,
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                    if (isCurrent) ...[
+                                      const SizedBox(width: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 7,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: skin.accent
+                                              .withValues(alpha: skin.isLight ? 0.14 : 0.22),
+                                          borderRadius: BorderRadius.circular(999),
+                                        ),
+                                        child: Text(
+                                          '当前设备',
+                                          style: TextStyle(
+                                            color: skin.isLight ? skin.accent : Colors.white,
+                                            fontSize: 10.5,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  meta.isEmpty ? devId : meta,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: skin.fg3,
+                                    fontSize: 12,
+                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (devId.isNotEmpty) ...[
+                            const SizedBox(width: 8),
+                            TextButton(
+                              key: ValueKey('remove-device-$devId'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: VedroTheme.danger,
+                                visualDensity: VisualDensity.compact,
+                              ),
+                              onPressed: () =>
+                                  confirmRemove(devId, label.isEmpty ? devId : label, isCurrent),
+                              child: const Text('移除', style: TextStyle(fontSize: 12.5)),
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  }(),
+            ],
+          ),
       ],
     );
   }
@@ -3960,12 +4424,6 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               items: const [(0, '立即'), (60, '1 分'), (300, '5 分'), (900, '15 分')],
               onChanged: (v) => _updatePrefs(p.copyWith(lockTimeoutSecs: v)),
             ),
-            _SwitchRow(
-              title: '切至后台时模糊应用画面',
-              subtitle: '防止在多任务切换器中露出正在浏览的片库内容',
-              value: p.blurInBackground,
-              onChanged: (v) => _updatePrefs(p.copyWith(blurInBackground: v)),
-            ),
           ],
         ),
       ],
@@ -4101,7 +4559,7 @@ class _GroupHeader extends StatelessWidget {
 }
 
 class _GroupedCard extends StatelessWidget {
-  const _GroupedCard({required this.children});
+  const _GroupedCard({super.key, required this.children});
   final List<Widget> children;
 
   @override
@@ -4115,6 +4573,50 @@ class _GroupedCard extends StatelessWidget {
             if (i > 0) Divider(height: 1, indent: 16, endIndent: 16, color: skin.border),
             children[i],
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoKVRow extends StatelessWidget {
+  const _InfoKVRow(
+    this.label,
+    this.value, {
+    this.mono = false,
+    this.highlight = false,
+  });
+
+  final String label;
+  final String value;
+  final bool mono;
+  final bool highlight;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Text(
+            label,
+            style: TextStyle(color: skin.fg2, fontSize: 13.5),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: SelectableText(
+              value,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                color: highlight ? skin.accent : skin.fg,
+                fontSize: 13.5,
+                fontFamily: mono ? 'monospace' : null,
+                fontWeight: highlight ? FontWeight.w700 : FontWeight.w500,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
         ],
       ),
     );

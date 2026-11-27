@@ -503,7 +503,7 @@ class VedroPreferences {
     this.passcodeEnabled = false,
     this.passcodeHash = '',
     this.lockTimeoutSecs = 60,
-    this.blurInBackground = true,
+    this.blurInBackground = false,
     // 下载管理
     this.downloadWifiOnly = true,
     this.downloadMaxConcurrent = 2,
@@ -1251,7 +1251,7 @@ class VedroPreferences {
         passcodeEnabled: j['passcode_enabled'] == true,
         passcodeHash: (j['passcode_hash'] ?? '').toString(),
         lockTimeoutSecs: (j['lock_timeout_secs'] as num?)?.toInt() ?? 60,
-        blurInBackground: j['blur_in_background'] != false,
+        blurInBackground: false,
         downloadWifiOnly: j['download_wifi_only'] != false,
         downloadMaxConcurrent: (j['download_max_concurrent'] as num?)?.toInt() ?? 2,
         downloadCustomDir: (j['download_custom_dir'] ?? '').toString(),

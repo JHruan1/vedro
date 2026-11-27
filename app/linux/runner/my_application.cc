@@ -24,16 +24,17 @@ static void my_application_activate(GApplication* application) {
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
   gtk_window_set_default_size(window, 1280, 720);
 
-  // If you want to use a header bar, uncomment the following lines.
-  // Header bars are commonly used in GNOME based desktop environments and
-  // allow additional widgets to be added to the title bar.
-  // See https://docs.gtk.org/gtk3/class.HeaderBar.html
-  // GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
-  // gtk_widget_show(GTK_WIDGET(header_bar));
-  // gtk_header_bar_set_show_close_button(header_bar, TRUE);
-  // gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
+  if (GtkSettings* settings = gtk_settings_get_default()) {
+    g_object_set(settings, "gtk-application-prefer-dark-theme", TRUE, nullptr);
+  }
 
-  gtk_window_set_title(window, "vedro");
+  GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
+  gtk_widget_show(GTK_WIDGET(header_bar));
+  gtk_header_bar_set_title(header_bar, "Vedro");
+  gtk_header_bar_set_show_close_button(header_bar, TRUE);
+  gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
+
+  gtk_window_set_title(window, "Vedro");
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(
@@ -41,9 +42,7 @@ static void my_application_activate(GApplication* application) {
 
   FlView* view = fl_view_new(project);
   GdkRGBA background_color;
-  // Background defaults to black, override it here if necessary, e.g. #00000000
-  // for transparent.
-  gdk_rgba_parse(&background_color, "#000000");
+  gdk_rgba_parse(&background_color, "#0b0b0d");
   fl_view_set_background_color(view, &background_color);
   gtk_widget_show(GTK_WIDGET(view));
   gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(view));

@@ -20,6 +20,7 @@ import 'library_screen.dart';
 import 'player_screen.dart';
 import 'playlists_screen.dart';
 import 'search_screen.dart';
+import 'server_hub_screen.dart';
 import 'settings_screen.dart';
 
 /// Multi-architecture cinema shell adapting structurally to `VedroSkin.navLayout`:
@@ -108,14 +109,14 @@ class _ShellScreenState extends State<ShellScreen> {
 
   static const _desktopNav = [
     (0, '首页', Icons.home_rounded),
-    (1, '媒体库', Icons.grid_view_rounded),
+    (1, '媒体库', Icons.dns_rounded),
     (3, '片单', Icons.bookmark_rounded),
     (4, '设置', Icons.tune_rounded),
   ];
 
   static const _mobileTabs = [
     _NavTab(icon: Icons.home_outlined, activeIcon: Icons.home_rounded, label: '首页'),
-    _NavTab(icon: Icons.grid_view_outlined, activeIcon: Icons.grid_view_rounded, label: '媒体库'),
+    _NavTab(icon: Icons.dns_outlined, activeIcon: Icons.dns_rounded, label: '媒体库'),
     _NavTab(icon: Icons.search_rounded, activeIcon: Icons.search_rounded, label: '搜索'),
     _NavTab(icon: Icons.bookmark_border_rounded, activeIcon: Icons.bookmark_rounded, label: '片单'),
     _NavTab(icon: Icons.tune_rounded, activeIcon: Icons.tune_rounded, label: '设置'),
@@ -216,12 +217,15 @@ class _ShellScreenState extends State<ShellScreen> {
     showServerHubSheet(context: context, appState: widget.appState);
   }
 
-  void _openAddServer([String? initialUrl]) {
-    showAddServerSheet(
+  Future<void> _openAddServer([String? initialUrl]) async {
+    final added = await showAddServerSheet(
       context: context,
       appState: widget.appState,
       initialUrl: initialUrl,
     );
+    if (added == true && mounted && _index == 1) {
+      setState(() => _index = 0);
+    }
   }
 
   String? _resolveHomeFanartUrl() {
@@ -277,12 +281,12 @@ class _ShellScreenState extends State<ShellScreen> {
           }
         },
       ),
-      LibraryScreen(
-        key: const ValueKey('tab-library'),
+      ServerHubScreen(
+        key: const ValueKey('tab-server-hub'),
         appState: widget.appState,
-        onItemTap: _openItem,
-        onQuickPlay: _quickPlay,
+        onServerSelected: () => setState(() => _index = 0),
         onOpenAddServer: _openAddServer,
+        onOpenLocalMedia: _openLocalMediaPicker,
         topInset: childTopInset,
       ),
       SearchScreen(
@@ -328,7 +332,13 @@ class _ShellScreenState extends State<ShellScreen> {
       child: pageSwitcher,
     );
 
-    final fanartUrl = skin.usesBlurredFanart ? _resolveHomeFanartUrl() : null;
+    // Never stack a second blurred fanart layer behind HomeScreen when HomeScreen already renders its own Hero banner!
+    final homeHasHeroBackdrop = _index == 0 &&
+        signedIn &&
+        widget.appState.showHomeHero &&
+        skin.heroStyle != 'compact_minimal';
+    final fanartUrl =
+        (skin.usesBlurredFanart && !homeHasHeroBackdrop) ? _resolveHomeFanartUrl() : null;
 
     if (wide) {
       return CallbackShortcuts(

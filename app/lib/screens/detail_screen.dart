@@ -54,6 +54,7 @@ class _DetailScreenState extends State<DetailScreen> {
   int _selectedSourceIndex = 0;
   int _selectedSeriesVersionIndex = 0;
   bool _loading = true;
+  Future<void>? _loadFuture;
   String _episodeViewMode = 'cards'; // 'grid' | 'cards' | 'list'
   bool _episodeModeUserChosen = false;
   bool _episodeDescending = false;
@@ -123,7 +124,7 @@ class _DetailScreenState extends State<DetailScreen> {
     _item = widget.item;
     _refreshDetailMonetSeed();
     widget.appState.addListener(_onAppStateChanged);
-    _loadDetails();
+    _loadFuture = _loadDetails();
     if (widget.appState.capabilities?.isEmbyGo == true) {
       unawaited(widget.appState.refreshMeQuota());
     }
@@ -147,6 +148,14 @@ class _DetailScreenState extends State<DetailScreen> {
     widget.appState.removeListener(_onAppStateChanged);
     _episodeJumpCtrl.dispose();
     _episodeSearchFocus.dispose();
+    final restoreSkin = widget.appState.prefs.activeSkinFor(
+      dynamicSeedOverride: widget.appState.dynamicPageSeedColor,
+    );
+    NativePlaybackChannel.syncWindowChrome(
+      isLight: restoreSkin.isLight,
+      canvasArgb: restoreSkin.canvas.toARGB32(),
+      fgArgb: restoreSkin.fg.toARGB32(),
+    );
     super.dispose();
   }
 
@@ -161,6 +170,32 @@ class _DetailScreenState extends State<DetailScreen> {
             .whereType<Map<String, dynamic>>()
             .map(MediaItemModel.fromJson)
             .toList();
+      } else if (_item.isSeries) {
+        // Fetch item metadata and seasons in parallel to halve Series DetailScreen TTFP
+        final results = await Future.wait<dynamic>([
+          widget.appState.core.invoke('get_item', {'item_id': _item.id}),
+          widget.appState.core.invoke('get_seasons', {'series_id': _item.id}),
+        ]);
+        final res = results[0] as Map<String, dynamic>;
+        final sRes = results[1] as Map<String, dynamic>;
+        _item = MediaItemModel.fromJson(res['item'] as Map<String, dynamic>);
+        _similar = ((res['similar'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(MediaItemModel.fromJson)
+            .toList();
+        _segments = ((res['segments'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(MediaSegmentModel.fromJson)
+            .toList();
+        _refreshDetailMonetSeed();
+        _seasons = ((sRes['Items'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(MediaItemModel.fromJson)
+            .toList();
+        if (_seasons.isNotEmpty) {
+          _selectedSeasonId = _seasons.first.id;
+          await _loadEpisodes(_seasons.first.id);
+        }
       } else {
         final res = await widget.appState.core.invoke('get_item', {'item_id': _item.id})
             as Map<String, dynamic>;
@@ -177,18 +212,6 @@ class _DetailScreenState extends State<DetailScreen> {
           _selectedSourceIndex = 0;
         }
         _refreshDetailMonetSeed();
-        if (_item.isSeries) {
-          final sRes = await widget.appState.core.invoke('get_seasons', {'series_id': _item.id})
-              as Map<String, dynamic>;
-          _seasons = ((sRes['Items'] as List<dynamic>?) ?? const [])
-              .whereType<Map<String, dynamic>>()
-              .map(MediaItemModel.fromJson)
-              .toList();
-          if (_seasons.isNotEmpty) {
-            _selectedSeasonId = _seasons.first.id;
-            await _loadEpisodes(_seasons.first.id);
-          }
-        }
       }
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -1050,6 +1073,21 @@ class _DetailScreenState extends State<DetailScreen> {
 
   Widget _buildThemedDetail(BuildContext context) {
     final skin = VedroSkin.of(context);
+    final detailOverlay = SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: skin.isLight ? Brightness.dark : Brightness.light,
+      statusBarBrightness: skin.isLight ? Brightness.light : Brightness.dark,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarDividerColor: Colors.transparent,
+      systemNavigationBarIconBrightness: skin.isLight ? Brightness.dark : Brightness.light,
+      systemStatusBarContrastEnforced: false,
+      systemNavigationBarContrastEnforced: false,
+    );
+    NativePlaybackChannel.syncWindowChrome(
+      isLight: skin.isLight,
+      canvasArgb: skin.canvas.toARGB32(),
+      fgArgb: skin.fg.toARGB32(),
+    );
     final size = MediaQuery.sizeOf(context);
     final wide = size.width >= 820;
     final ultraWide = size.width >= 1080;
@@ -1063,9 +1101,11 @@ class _DetailScreenState extends State<DetailScreen> {
     final overviewText = _translatedOverview?.isNotEmpty == true
         ? _translatedOverview!
         : _item.cleanOverview;
+    final hasOverviewSlot =
+        (_item.taglines.isNotEmpty) || overviewText.isNotEmpty || (_loading && _item.type != 'Person');
     final tagline = _item.taglines.isNotEmpty ? _item.taglines.first : null;
     final downloadTarget = _resolveDownloadTarget();
-    final canDownload = widget.appState.canDownloadItem(downloadTarget);
+    final canDownload = widget.appState.canDownloadItem(downloadTarget ?? _item);
     final dlTask = widget.appState.findDownloadForItem(downloadTarget?.id ?? _item.id);
     final localReady = dlTask != null && dlTask.status == 'completed' && dlTask.filePath.isNotEmpty;
 
@@ -1140,7 +1180,8 @@ class _DetailScreenState extends State<DetailScreen> {
     final eyebrowText = eyebrowParts.join(' · ');
 
     Widget buildActionRow() {
-      final hasPrimaryPlay = _item.isPlayable || nextEpToPlay != null;
+      // Keep Play CTA visible from Frame 0 for both Movies AND Series so buttons NEVER pop in late!
+      final hasPrimaryPlay = _item.isPlayable || _item.isSeries;
       final String playLabel = _item.isPlayable
           ? (localReady
               ? '播放离线缓存'
@@ -1151,20 +1192,36 @@ class _DetailScreenState extends State<DetailScreen> {
               ? (nextEpToPlay.resumeProgress > 0.01
                   ? '继续观看 ${nextEpToPlay.episodeCode ?? nextEpToPlay.displayName}'
                   : '播放 ${nextEpToPlay.episodeCode ?? '第 1 集'}')
-              : '播放');
+              : '播放 S01E01');
       final double playProgress =
           _item.isPlayable ? _item.resumeProgress : (nextEpToPlay?.resumeProgress ?? 0.0);
-      void onPrimaryPlay() {
+      Future<void> onPrimaryPlay() async {
         if (_item.isPlayable) {
           _play(
             _item,
             sourceId: _activeSource?.id,
             localPath: localReady ? dlTask.filePath : null,
           );
-        } else if (nextEpToPlay != null) {
+          return;
+        }
+        if (nextEpToPlay == null && _loadFuture != null) {
+          await _loadFuture;
+        }
+        if (!mounted) return;
+        final resolvedEp = nextEpToPlay ??
+            (_episodes.isNotEmpty
+                ? _episodes.firstWhere(
+                    (e) => e.resumeProgress > 0.01,
+                    orElse: () => _episodes.firstWhere(
+                      (e) => !e.played,
+                      orElse: () => _episodes.first,
+                    ),
+                  )
+                : null);
+        if (resolvedEp != null) {
           _play(
-            nextEpToPlay,
-            sourceId: _matchingSourceIdForEpisode(nextEpToPlay),
+            resolvedEp,
+            sourceId: _matchingSourceIdForEpisode(resolvedEp),
           );
         }
       }
@@ -1420,6 +1477,18 @@ class _DetailScreenState extends State<DetailScreen> {
               onTranslateToggle: _translatedOverview != null
                   ? () => setState(() => _translatedOverview = null)
                   : _translateOverview,
+            )
+          else if (_loading && _item.type != 'Person')
+            const Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  VedroShimmer(width: 440, height: 14, borderRadius: 4),
+                  SizedBox(height: 8),
+                  VedroShimmer(width: 300, height: 14, borderRadius: 4),
+                ],
+              ),
             ),
         ],
       );
@@ -1545,9 +1614,8 @@ class _DetailScreenState extends State<DetailScreen> {
     }
 
     final c = skin.canvas;
-    final endCanvas = skin.usesBlurredFanart
-        ? c.withValues(alpha: skin.isLight ? 0.56 : 0.42)
-        : c;
+    // Always dissolve smoothly into solid `skin.canvas` so the Hero image is NEVER stacked a second time!
+    final endCanvas = c;
     final heroVertStops = skin.isLight
         ? const [0.0, 0.24, 0.54, 0.82, 0.95, 1.0]
         : const [0.0, 0.22, 0.56, 0.84, 0.95, 1.0];
@@ -1555,7 +1623,7 @@ class _DetailScreenState extends State<DetailScreen> {
         ? [
             c.withValues(alpha: 0.48),
             c.withValues(alpha: 0.56),
-            c.withValues(alpha: skin.usesBlurredFanart ? 0.52 : 0.89),
+            c.withValues(alpha: 0.89),
             endCanvas,
             endCanvas,
             endCanvas,
@@ -1563,13 +1631,12 @@ class _DetailScreenState extends State<DetailScreen> {
         : [
             c.withValues(alpha: 0.30),
             c.withValues(alpha: 0.08),
-            c.withValues(alpha: skin.usesBlurredFanart ? 0.36 : 0.64),
-            c.withValues(alpha: skin.usesBlurredFanart ? 0.42 : 0.92),
+            c.withValues(alpha: 0.64),
+            c.withValues(alpha: 0.92),
             endCanvas,
             endCanvas,
           ];
 
-    final fanartUrl = widget.appState.backdropArt(_item)?.url;
     final isCenteredEditorial = skin.detailLayout == 'centered_editorial';
     final isJellyfinGlass = skin.detailLayout == 'jellyfin_glass';
 
@@ -1663,7 +1730,7 @@ class _DetailScreenState extends State<DetailScreen> {
                 ],
               ),
             ],
-            if (tagline != null || overviewText.isNotEmpty) ...[
+            if (hasOverviewSlot) ...[
               const SizedBox(height: 14),
               ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 680),
@@ -1792,7 +1859,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       ),
                     ],
                     if (wide) ...[
-                      if (tagline != null || overviewText.isNotEmpty) ...[
+                      if (hasOverviewSlot) ...[
                         const SizedBox(height: 14),
                         ConstrainedBox(
                           constraints: const BoxConstraints(maxWidth: 680),
@@ -1800,11 +1867,7 @@ class _DetailScreenState extends State<DetailScreen> {
                         ),
                       ],
                       const SizedBox(height: 22),
-                      VedroStaggeredEntrance(
-                        index: 1,
-                        reduceMotion: widget.appState.prefs.reduceMotion,
-                        child: buildActionRow(),
-                      ),
+                      buildActionRow(),
                     ],
                   ],
                 ),
@@ -1857,12 +1920,8 @@ class _DetailScreenState extends State<DetailScreen> {
           ),
           if (!wide) ...[
             const SizedBox(height: 20),
-            VedroStaggeredEntrance(
-              index: 1,
-              reduceMotion: widget.appState.prefs.reduceMotion,
-              child: buildActionRow(),
-            ),
-            if (tagline != null || overviewText.isNotEmpty) ...[
+            buildActionRow(),
+            if (hasOverviewSlot) ...[
               const SizedBox(height: 16),
               buildOverviewBlock(),
             ],
@@ -1884,10 +1943,11 @@ class _DetailScreenState extends State<DetailScreen> {
       return standardContent;
     }
 
-    return Scaffold(
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: detailOverlay,
+      child: Scaffold(
       backgroundColor: skin.canvas,
       body: VedroSkinCanvas(
-        backdropImageUrl: fanartUrl,
         child: Stack(
           children: [
             CustomScrollView(
@@ -1993,6 +2053,8 @@ class _DetailScreenState extends State<DetailScreen> {
                           padding: EdgeInsets.symmetric(horizontal: padX),
                           child: _TracksPanel(
                             isSeries: _item.isSeries,
+                            isLoading: _loading,
+                            expectedVersionCount: _item.versionCount,
                             versions: _item.isSeries ? seriesVersions : playableVersions,
                             selectedVersionIndex: _item.isSeries
                                 ? _selectedSeriesVersionIndex
@@ -2034,13 +2096,53 @@ class _DetailScreenState extends State<DetailScreen> {
                         const SizedBox(height: 30),
                       ],
 
-                      // 2c. TV Series Seasons & Scalable Episode Selector
+                      // 2c. TV Series Seasons & Scalable Episode Selector (pre-sized skeleton while loading -> 0 CLS!)
                       if (_seasons.isNotEmpty) ...[
                         _buildEpisodeSection(
                           wide: wide,
                           padX: padX,
                           accent: accent,
                           nextEpToPlay: nextEpToPlay,
+                        ),
+                        const SizedBox(height: 34),
+                      ] else if (_loading && _item.isSeries) ...[
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: padX),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Row(
+                                children: [
+                                  VedroShimmer(width: 96, height: 34, borderRadius: 999),
+                                  Spacer(),
+                                  VedroShimmer(width: 72, height: 34, borderRadius: 999),
+                                ],
+                              ),
+                              const SizedBox(height: 14),
+                              SizedBox(
+                                height: wide ? 298 : 258,
+                                child: ListView.separated(
+                                  scrollDirection: Axis.horizontal,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  itemCount: 4,
+                                  separatorBuilder: (_, __) => const SizedBox(width: 16),
+                                  itemBuilder: (_, __) => SizedBox(
+                                    width: wide ? 284 : 232,
+                                    child: const Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        VedroShimmer(aspectRatio: 16 / 9, borderRadius: 12),
+                                        SizedBox(height: 10),
+                                        VedroShimmer(width: 140, height: 14, borderRadius: 4),
+                                        SizedBox(height: 6),
+                                        VedroShimmer(width: 96, height: 11, borderRadius: 4),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                         const SizedBox(height: 34),
                       ],
@@ -2376,7 +2478,7 @@ class _DetailScreenState extends State<DetailScreen> {
                   ),
                 ),
 
-                if (_loading)
+                if (_loading && _item.type == 'Person')
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: const EdgeInsets.all(24),
@@ -2472,6 +2574,7 @@ class _DetailScreenState extends State<DetailScreen> {
               ),
           ],
         ),
+      ),
       ),
     );
   }
@@ -3945,13 +4048,21 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    VedroArtwork(
-                      item: ep,
-                      fallbackItem: widget.seriesFallback,
-                      appState: widget.appState,
-                      landscape: true,
-                      width: 520,
-                    ),
+                    if (widget.appState.wideArt(ep)?.isPoster == false ||
+                        widget.appState.wideArt(widget.seriesFallback)?.isPoster == false)
+                      VedroArtwork(
+                        item: ep,
+                        fallbackItem: widget.seriesFallback,
+                        appState: widget.appState,
+                        landscape: true,
+                        width: 520,
+                      )
+                    else
+                      GeneratedArt(
+                        seed: '${widget.seriesFallback.id}_ep_${ep.indexNumber ?? ep.id}',
+                        label: ep.episodeCode ??
+                            (ep.indexNumber != null ? 'EP ${ep.indexNumber}' : ep.displayName),
+                      ),
                     const DecoratedBox(
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
@@ -4120,6 +4231,8 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
 class _TracksPanel extends StatelessWidget {
   const _TracksPanel({
     required this.isSeries,
+    this.isLoading = false,
+    this.expectedVersionCount = 1,
     required this.versions,
     required this.selectedVersionIndex,
     required this.activeStreamSource,
@@ -4140,6 +4253,8 @@ class _TracksPanel extends StatelessWidget {
   });
 
   final bool isSeries;
+  final bool isLoading;
+  final int expectedVersionCount;
   final List<ResolvedMediaVersion> versions;
   final int selectedVersionIndex;
   final MediaSourceModel? activeStreamSource;
@@ -4200,6 +4315,46 @@ class _TracksPanel extends StatelessWidget {
         : null;
     final hasAnyRealTracks =
         audios.isNotEmpty || subs.isNotEmpty || hasKnownEmbeddedStreams || extFileName != null;
+
+    if (isLoading && versions.isEmpty) {
+      if (isSeries && expectedVersionCount <= 1) {
+        return const SizedBox.shrink();
+      }
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final compactMobile = constraints.maxWidth < 560;
+          if (compactMobile) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const VedroShimmer(height: 36, borderRadius: 999),
+                if (!isSeries) ...[
+                  const SizedBox(height: 8),
+                  const Row(
+                    children: [
+                      Expanded(child: VedroShimmer(height: 36, borderRadius: 999)),
+                      SizedBox(width: 8),
+                      Expanded(child: VedroShimmer(height: 36, borderRadius: 999)),
+                    ],
+                  ),
+                ],
+              ],
+            );
+          }
+          return Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              const VedroShimmer(width: 168, height: 36, borderRadius: 999),
+              if (!isSeries) ...[
+                const VedroShimmer(width: 142, height: 36, borderRadius: 999),
+                const VedroShimmer(width: 142, height: 36, borderRadius: 999),
+              ],
+            ],
+          );
+        },
+      );
+    }
 
     if (versions.length <= 1 && isSeries && !hasAnyRealTracks) {
       return const SizedBox.shrink();
@@ -4481,13 +4636,21 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        VedroArtwork(
-                          item: ep,
-                          fallbackItem: widget.seriesFallback,
-                          appState: widget.appState,
-                          landscape: true,
-                          width: 420,
-                        ),
+                        if (widget.appState.wideArt(ep)?.isPoster == false ||
+                            widget.appState.wideArt(widget.seriesFallback)?.isPoster == false)
+                          VedroArtwork(
+                            item: ep,
+                            fallbackItem: widget.seriesFallback,
+                            appState: widget.appState,
+                            landscape: true,
+                            width: 420,
+                          )
+                        else
+                          GeneratedArt(
+                            seed: '${widget.seriesFallback.id}_ep_${ep.indexNumber ?? ep.id}',
+                            label: ep.episodeCode ??
+                                (ep.indexNumber != null ? 'EP ${ep.indexNumber}' : ep.displayName),
+                          ),
                         if (ep.indexNumber != null)
                           Positioned(
                             left: 5,

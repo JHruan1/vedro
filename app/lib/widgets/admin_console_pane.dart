@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -22,11 +24,13 @@ class AdminConsolePane extends StatefulWidget {
 }
 
 class _AdminConsolePaneState extends State<AdminConsolePane> {
-  String _tab = 'overview'; // overview | sessions | users | tasks | activity
+  String _tab = 'overview'; // overview | sessions | devices | users | tasks | activity
   bool _refreshing = false;
   bool _scanning = false;
   String _userFilter = '';
+  String _deviceFilter = '';
   final TextEditingController _userSearchCtrl = TextEditingController();
+  final TextEditingController _deviceSearchCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -37,6 +41,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
   @override
   void dispose() {
     _userSearchCtrl.dispose();
+    _deviceSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -164,6 +169,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final data = widget.appState.embygoAdminDashboard;
     final status = data?['status'] as Map<String, dynamic>?;
     final sessions = _extractList(data?['sessions']);
+    final devices = _extractList(data?['devices']);
     final users = _extractList(data?['users']);
     final tasks = _extractList(data?['tasks']);
     final cardR = skin.cardRadius.clamp(14.0, 22.0);
@@ -302,6 +308,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
           tabs: [
             const ('overview', '概览', null),
             ('sessions', '会话', sessions.length),
+            ('devices', '设备', devices.isNotEmpty ? devices.length : null),
             ('users', '用户', users.length),
             ('tasks', '任务', tasks.length),
             const ('activity', '日志', null),
@@ -321,6 +328,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
         else
           switch (_tab) {
             'sessions' => _buildSessions(sessions),
+            'devices' => _buildAdminDevices(devices, sessions),
             'users' => _buildUsers(users),
             'tasks' => _buildTasks(tasks),
             'activity' => _buildActivity(_extractList(data['activity'])),
@@ -672,6 +680,302 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     );
   }
 
+  Widget _buildAdminDevices(
+    List<Map<String, dynamic>> rawDevices,
+    List<Map<String, dynamic>> sessions,
+  ) {
+    final skin = VedroSkin.of(context);
+    final grouped = <String, ({
+      String deviceId,
+      String name,
+      String client,
+      String version,
+      Map<String, String> users,
+      String last,
+      int playing,
+    })>{};
+
+    for (final entry in rawDevices) {
+      final key = (entry['DeviceId'] ?? entry['Id'] ?? '').toString().trim();
+      if (key.isEmpty) continue;
+      final prev = grouped[key];
+      final usersMap = prev != null ? Map<String, String>.from(prev.users) : <String, String>{};
+      final uid = (entry['LastUserId'] ?? '').toString().trim();
+      if (uid.isNotEmpty) {
+        final uname = (entry['LastUserName'] ?? uid).toString();
+        usersMap[uid] = uname;
+      }
+      grouped[key] = (
+        deviceId: key,
+        name: (entry['Name'] ?? prev?.name ?? '').toString(),
+        client: (entry['AppName'] ?? prev?.client ?? '').toString(),
+        version: (entry['AppVersion'] ?? prev?.version ?? '').toString(),
+        users: usersMap,
+        last: (entry['DateLastActivity'] ?? prev?.last ?? '').toString(),
+        playing: prev?.playing ?? 0,
+      );
+    }
+
+    for (final s in sessions) {
+      final key = (s['DeviceId'] ?? s['Id'] ?? '').toString().trim();
+      if (key.isEmpty) continue;
+      final prev = grouped[key];
+      final usersMap = prev != null ? Map<String, String>.from(prev.users) : <String, String>{};
+      final uid = (s['UserId'] ?? '').toString().trim();
+      if (uid.isNotEmpty) {
+        usersMap[uid] = (s['UserName'] ?? uid).toString();
+      }
+      grouped[key] = (
+        deviceId: (s['DeviceId'] ?? prev?.deviceId ?? '').toString(),
+        name: (prev != null && prev.name.isNotEmpty) ? prev.name : (s['DeviceName'] ?? '').toString(),
+        client: (prev != null && prev.client.isNotEmpty) ? prev.client : (s['Client'] ?? '').toString(),
+        version: (prev != null && prev.version.isNotEmpty)
+            ? prev.version
+            : (s['ApplicationVersion'] ?? '').toString(),
+        users: usersMap,
+        last: (s['LastActivityDate'] ?? prev?.last ?? '').toString(),
+        playing: (prev?.playing ?? 0) + (s['NowPlayingItem'] != null ? 1 : 0),
+      );
+    }
+
+    final allRows = grouped.values.toList()
+      ..sort((a, b) => b.last.compareTo(a.last));
+    final q = _deviceFilter.trim().toLowerCase();
+    final filtered = q.isEmpty
+        ? allRows
+        : allRows.where((d) {
+            final hay = '${d.name} ${d.client} ${d.deviceId} ${d.users.values.join(' ')}'
+                .toLowerCase();
+            return hay.contains(q);
+          }).toList();
+
+    return _ConsolePanel(
+      title: '已登记设备 (${allRows.length})',
+      icon: CupertinoIcons.device_phone_portrait,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (allRows.length > 3) ...[
+            SizedBox(
+              height: 36,
+              child: TextField(
+                controller: _deviceSearchCtrl,
+                onChanged: (v) => setState(() => _deviceFilter = v),
+                style: TextStyle(color: skin.fg, fontSize: 13.5),
+                decoration: InputDecoration(
+                  hintText: '搜索设备 / 客户端 / 用户…',
+                  hintStyle: TextStyle(color: skin.fg3, fontSize: 13),
+                  prefixIcon: Icon(CupertinoIcons.search, size: 15.5, color: skin.fg3),
+                  prefixIconConstraints: const BoxConstraints(minWidth: 34),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                  filled: true,
+                  fillColor: skin.isLight
+                      ? Colors.black.withValues(alpha: 0.04)
+                      : Colors.white.withValues(alpha: 0.07),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(999),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
+          if (filtered.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Text(
+                allRows.isEmpty ? '暂无已登记设备' : '无匹配设备',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: skin.fg3, fontSize: 13),
+              ),
+            )
+          else
+            for (var i = 0; i < filtered.length; i++) ...[
+              if (i > 0) Divider(height: 18, color: skin.border),
+              () {
+                final d = filtered[i];
+                final clientStr = [
+                  if (d.client.isNotEmpty) d.client,
+                  if (d.version.isNotEmpty) d.version,
+                ].join(' · ');
+                final userNames = d.users.values.join('、');
+                return Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: d.playing > 0
+                            ? const Color(0xFF34D399).withValues(alpha: 0.16)
+                            : skin.subtleChipBg,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        CupertinoIcons.device_phone_portrait,
+                        size: 17,
+                        color: d.playing > 0 ? const Color(0xFF34D399) : skin.fg2,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Text(
+                                d.name.isEmpty ? '未知设备' : d.name,
+                                style: TextStyle(
+                                  color: skin.fg,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              if (d.playing > 0)
+                                _StatusDotBadge(
+                                  label: '${d.playing} 播放中',
+                                  color: const Color(0xFF34D399),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            [
+                              if (userNames.isNotEmpty) '用户: $userNames',
+                              if (clientStr.isNotEmpty) clientStr,
+                              if (d.deviceId.isNotEmpty && d.name.isEmpty) d.deviceId,
+                            ].join(' · '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: skin.fg3, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (d.deviceId.isNotEmpty && d.users.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      TextButton(
+                        style: TextButton.styleFrom(
+                          foregroundColor: VedroTheme.danger,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        onPressed: () async {
+                          final firstUser = d.users.entries.first;
+                          await widget.appState.removeUserDevice(
+                            targetUserId: firstUser.key,
+                            deviceId: d.deviceId,
+                          );
+                          await _reload();
+                        },
+                        child: const Text('移除', style: TextStyle(fontSize: 12.5)),
+                      ),
+                    ],
+                  ],
+                );
+              }(),
+            ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openUserDevicesDialog(String uid, String userName) async {
+    final skin = VedroSkin.of(context);
+    List<Map<String, dynamic>> list = const [];
+    bool loading = true;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) {
+          if (loading) {
+            loading = false;
+            widget.appState
+                .loadUserDevices(targetUserId: uid)
+                .then((loaded) => setModal(() => list = loaded))
+                .catchError((_) => setModal(() => list = const []));
+          }
+          return AlertDialog(
+            backgroundColor: skin.surface,
+            title: Text(
+              '$userName · 已登录设备 (${list.length})',
+              style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            content: SizedBox(
+              width: 420,
+              child: list.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      child: Text(
+                        '该账号暂无登记设备',
+                        style: TextStyle(color: skin.fg3, fontSize: 13.5),
+                      ),
+                    )
+                  : ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 360),
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: list.length,
+                        separatorBuilder: (_, __) => Divider(height: 14, color: skin.border),
+                        itemBuilder: (_, idx) {
+                          final item = list[idx];
+                          final devId = (item['DeviceId'] ?? item['Id'] ?? '').toString();
+                          final name =
+                              (item['Name'] ?? item['AppName'] ?? devId).toString().trim();
+                          final app = [item['AppName'], item['AppVersion']]
+                              .where((e) => e != null && e.toString().isNotEmpty)
+                              .join(' · ');
+                          return Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      name,
+                                      style: TextStyle(
+                                        color: skin.fg,
+                                        fontSize: 13.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    if (app.isNotEmpty)
+                                      Text(app, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
+                                  ],
+                                ),
+                              ),
+                              TextButton(
+                                style: TextButton.styleFrom(foregroundColor: VedroTheme.danger),
+                                onPressed: () async {
+                                  await widget.appState.removeUserDevice(
+                                    targetUserId: uid,
+                                    deviceId: devId,
+                                  );
+                                  final updated =
+                                      await widget.appState.loadUserDevices(targetUserId: uid);
+                                  setModal(() => list = updated);
+                                  unawaited(_reload());
+                                },
+                                child: const Text('移除'),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildUsers(List<Map<String, dynamic>> users) {
     final skin = VedroSkin.of(context);
     final q = _userFilter.trim().toLowerCase();
@@ -786,6 +1090,13 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
         final compact = constraints.maxWidth < 500;
 
         final actionMenuItems = <VedroDropdownItem<String>>[
+          if (isEmbyGo && uid.isNotEmpty)
+            VedroDropdownItem(
+              value: 'devices',
+              label: '已登录设备',
+              icon: CupertinoIcons.device_phone_portrait,
+              onTapOverride: () => _openUserDevicesDialog(uid, name),
+            ),
           if (isEmbyGo && uid.isNotEmpty)
             VedroDropdownItem(
               value: 'quota',

@@ -18,6 +18,7 @@ import 'package:vedro/screens/settings_screen.dart';
 import 'package:vedro/screens/shell_screen.dart';
 import 'package:vedro/state/app_state.dart';
 import 'package:vedro/widgets/admin_console_pane.dart';
+import 'package:vedro/widgets/app_lock_gate.dart';
 import 'package:vedro/widgets/danmaku_engine.dart';
 import 'package:vedro/widgets/media_card.dart';
 import 'package:vedro/widgets/server_card_grid.dart';
@@ -31,30 +32,55 @@ class _MockVedroCore implements VedroCoreClient {
     this.canDownload = true,
     this.enableContentDownloading = false,
     this.meQuotaJson,
+    this.savedServersList = const [],
+    this.lastActiveServerId,
   });
   final bool isAdmin;
   final String dialect;
   final bool canDownload;
   final bool enableContentDownloading;
   final Map<String, dynamic>? meQuotaJson;
+  final List<Map<String, dynamic>> savedServersList;
+  String? lastActiveServerId;
   int probeMediaSourceCalls = 0;
   Map<String, dynamic>? lastAiTranslateParams;
   Map<String, dynamic>? lastAiModelsParams;
   Map<String, dynamic>? lastProxyConfigParams;
   Map<String, dynamic>? lastActivatedNode;
+  Map<String, dynamic>? lastRestoreParams;
+  List<Map<String, dynamic>> mockDevices = [
+    <String, dynamic>{
+      'DeviceId': 'dev-current-win',
+      'Name': 'Windows 11 Desktop',
+      'AppName': 'Vedro',
+      'AppVersion': '0.3.7',
+      'LastUserId': 'u1',
+      'LastUserName': 'alice',
+      'DateLastActivity': '2026-11-27T08:30:00Z',
+    },
+    <String, dynamic>{
+      'DeviceId': 'dev-old-ipad',
+      'Name': 'iPad Pro',
+      'AppName': 'SenPlayer',
+      'AppVersion': '4.2.0',
+      'LastUserId': 'u1',
+      'LastUserName': 'alice',
+      'DateLastActivity': '2026-11-20T12:15:00Z',
+    },
+  ];
 
   @override
-  String get coreVersion => '0.2.2-test';
+  String get coreVersion => '0.3.7-test';
 
   @override
   Future<dynamic> invoke(String method, [Map<String, dynamic> params = const {}]) async {
     switch (method) {
       case 'version':
-        return <String, dynamic>{'version': '0.2.2-test'};
+        return <String, dynamic>{'version': '0.3.7-test'};
       case 'get_me_quota':
         return meQuotaJson;
       case 'list_servers':
-        return <dynamic>[];
+        return savedServersList;
       case 'get_settings':
         return <String, dynamic>{
           'hwdec': 'auto_zero_copy',
@@ -64,9 +90,45 @@ class _MockVedroCore implements VedroCoreClient {
           'display': <String, dynamic>{'supports_hdr10': true},
         };
       case 'get_kv':
+        if (params['key'] == 'last_active_server_id') {
+          return <String, dynamic>{'value': lastActiveServerId};
+        }
         return <String, dynamic>{'value': null};
       case 'set_kv':
+        if (params['key'] == 'last_active_server_id') {
+          lastActiveServerId = params['value']?.toString();
+        }
         return <String, dynamic>{'saved': true};
+      case 'restore_session':
+        lastRestoreParams = Map<String, dynamic>.from(params);
+        final sid = params['server_id']?.toString() ?? 'embygo-1';
+        lastActiveServerId = sid;
+        final matched = savedServersList
+            .where((s) => s['id']?.toString() == sid)
+            .firstOrNull;
+        final srvName = matched?['name']?.toString() ?? 'My EmbyGo';
+        return <String, dynamic>{
+          'capabilities': <String, dynamic>{
+            'dialect': dialect,
+            'server_id': sid,
+            'server_name': srvName,
+            'advertised_version': '4.8.11.0',
+            'supports_transcoding': dialect != 'embygo',
+            'supports_popular': dialect == 'embygo',
+            'supports_suggestions': true,
+            'supports_hide_from_resume': true,
+            'uses_stream_tickets': dialect == 'embygo',
+          },
+          'user': <String, dynamic>{
+            'Id': params['user_id'] ?? 'u1',
+            'Name': isAdmin ? 'admin' : 'viewer',
+            'Policy': <String, dynamic>{
+              'IsAdministrator': isAdmin,
+              'EnableContentDownloading': enableContentDownloading,
+            },
+          },
+          'proxy_addr': '127.0.0.1:28080',
+        };
       case 'discover_servers':
         return <dynamic>[];
       case 'connect_server':
@@ -746,7 +808,32 @@ class _MockVedroCore implements VedroCoreClient {
               'Severity': 'Info',
             },
           ],
+          'devices': <String, dynamic>{
+            'Items': mockDevices,
+          },
         };
+      case 'get_user_devices':
+        return <String, dynamic>{
+          'items': List<Map<String, dynamic>>.from(mockDevices),
+          'current_device_id': 'dev-current-win',
+        };
+      case 'delete_user_device':
+        final targetDev = params['device_id']?.toString();
+        mockDevices.removeWhere((d) => d['DeviceId'] == targetDev);
+        return <String, dynamic>{'deleted': targetDev};
+      case 'run_embygo_speedtest':
+        return <String, dynamic>{
+          'route': 'cdn',
+          'latency_ms': 24.0,
+          'client_ip': '203.0.113.88',
+          'measured_mbps': 168.4,
+          'account_limit_bps': 0,
+          'effective_mbps': 168.4,
+          'remaining_this_hour': 5,
+          'remaining_today': 19,
+        };
+      case 'cancel_embygo_speedtest':
+        return <String, dynamic>{'cancelled': true};
       case 'admin_user_detail':
         return <String, dynamic>{
           'Policy': <String, dynamic>{'EnableContentDownloading': true},
@@ -2336,6 +2423,193 @@ void main() {
       posterScale: 0.85,
       textScale: 1.0,
     );
+  });
+
+  testWidgets(
+      'v0.3.7: Remembers last connected server, 媒体库 tab switches servers, zero double-fanart, zero DetailScreen CLS, no background blur, EmbyGo SpeedTest & Devices, and native window chrome sync',
+      (tester) async {
+    // Capture native window chrome calls (Windows DWM / macOS NSWindow / Android InsetsController)
+    final chromeCalls = <Map<String, dynamic>>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('com.vedro.player/hardware'),
+      (call) async {
+        if (call.method == 'setWindowChrome' && call.arguments is Map) {
+          chromeCalls.add(Map<String, dynamic>.from(call.arguments as Map));
+          return null;
+        }
+        if (call.method == 'queryCapabilities') {
+          return <String, dynamic>{'supports_hdr10': true, 'refresh_rate_hz': 120.0};
+        }
+        return null;
+      },
+    );
+    addTearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel('com.vedro.player/hardware'), null);
+    });
+
+    // 1. Remembers last connected server (`srv-2`) even if `srv-1` has higher timestamp in list
+    final mock = _MockVedroCore(
+      isAdmin: true,
+      lastActiveServerId: 'srv-2',
+      savedServersList: [
+        <String, dynamic>{
+          'id': 'srv-1',
+          'name': '一号主力服',
+          'url': 'https://srv1.example.com',
+          'dialect': 'embygo',
+          'user_id': 'u1',
+          'username': 'alice',
+          'access_token': 'tok-1',
+          'is_admin': true,
+          'last_connected_at': 2000,
+        },
+        <String, dynamic>{
+          'id': 'srv-2',
+          'name': '二号动漫专线服',
+          'url': 'https://srv2.example.com',
+          'dialect': 'embygo',
+          'user_id': 'u1',
+          'username': 'alice',
+          'access_token': 'tok-2',
+          'is_admin': true,
+          'last_connected_at': 1500,
+        },
+      ],
+    );
+
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final app = VedroAppState(mock);
+    addTearDown(app.dispose);
+    await app.initialize();
+    expect(app.isSignedIn, isTrue);
+    expect(app.activeServerId, equals('srv-2'));
+    expect(app.activeServerDisplayName, equals('二号动漫专线服'));
+    expect(mock.lastRestoreParams?['server_id'], equals('srv-2'));
+
+    // 2. Legacy `blur_in_background: true` in saved JSON is forced OFF & AppLockGate NEVER blurs on background
+    final migratedPrefs = VedroPreferences.fromJson({'blur_in_background': true});
+    expect(migratedPrefs.blurInBackground, isFalse);
+
+    await tester.pumpWidget(
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) {
+          final skin = app.prefs.activeSkin;
+          return MaterialApp(
+            theme: VedroTheme.fromSkin(skin),
+            home: AppLockGate(
+              appState: app,
+              child: ShellScreen(appState: app),
+            ),
+          );
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Simulate switching app to inactive/paused (e.g., Alt-Tab on Windows or backgrounding on mobile) -> ZERO blur shield!
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    expect(find.byType(BackdropFilter), findsWidgets); // Only glass nav, no full-screen privacy shield
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+
+    // 3. Nav bar '媒体库' opens ServerHubScreen (multi-server switcher) and tapping '一号主力服' switches straight to Home!
+    await tester.tap(find.text('媒体库').last);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('server-hub-screen')), findsOneWidget);
+    expect(find.text('一号主力服'), findsOneWidget);
+    expect(find.text('二号动漫专线服'), findsWidgets);
+
+    await tester.tap(find.text('一号主力服'));
+    await tester.pumpAndSettle();
+    expect(app.activeServerId, equals('srv-1'));
+    expect(find.byKey(const ValueKey('tab-home')), findsOneWidget);
+
+    // 4. DetailScreen Frame-0 Stability (Zero button pop-in / CLS) & Zero Double-Stacked VedroSkinCanvas Fanart!
+    await app.updatePrefs(app.prefs.copyWith(skinId: 'ios_frosted')); // usesBlurredFanart == true!
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+        home: DetailScreen(
+          item: MediaItemModel(id: 'tv1', name: 'FX战士久留美', type: 'Series'),
+          appState: app,
+        ),
+      ),
+    );
+    // Pump Frame 0 BEFORE async get_item / get_seasons / get_episodes complete!
+    await tester.pump();
+    final canvasOnDetail = tester.widget<VedroSkinCanvas>(find.byType(VedroSkinCanvas));
+    expect(canvasOnDetail.backdropImageUrl, isNull); // NEVER double-stacked!
+    expect(find.textContaining('播放'), findsOneWidget); // Play button ALREADY present on Frame 0!
+    final frame0PlayTop = tester.getTopLeft(find.textContaining('播放').first).dy;
+
+    await tester.pumpAndSettle();
+    final settledPlayTop = tester.getTopLeft(find.textContaining('播放').first).dy;
+    // Play CTA stays rock-steady instead of jumping down heavily!
+    expect((settledPlayTop - frame0PlayTop).abs(), lessThanOrEqualTo(28.0));
+    expect(chromeCalls, isNotEmpty);
+
+    // 5. SettingsScreen exposes EmbyGo 播放测速 & 设备管理 (and Privacy has NO background-blur switch!)
+    await tester.pumpWidget(
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) => MaterialApp(
+          theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+          home: SettingsScreen(
+            appState: app,
+            onOpenServerHub: () {},
+            onOpenAddServer: ([_]) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Speedtest section runs EmbyGo route speedtest and renders tiers & IP
+    await tester.tap(find.text('播放测速'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('speedtest-action-btn')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('speedtest-action-btn')));
+    await tester.pumpAndSettle();
+    expect(find.text('自建 CDN'), findsOneWidget);
+    expect(find.text('203.0.113.88'), findsOneWidget);
+    expect(find.text('168.4 Mbps'), findsWidgets);
+    expect(find.text('4K 原盘 REMUX'), findsOneWidget);
+    expect(find.text('可流畅播放'), findsWidgets);
+
+    // Devices section lists current + old device and removes old iPad device cleanly
+    await tester.tap(find.text('设备管理'));
+    await tester.pumpAndSettle();
+    expect(find.text('Windows 11 Desktop'), findsOneWidget);
+    expect(find.text('当前设备'), findsOneWidget);
+    expect(find.text('iPad Pro'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('remove-device-dev-old-ipad')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '移除'));
+    await tester.pumpAndSettle();
+    expect(find.text('iPad Pro'), findsNothing);
+    expect(app.userDevices.length, equals(1));
+
+    // Scroll Settings sidebar down to Privacy & AdminConsolePane
+    await tester.drag(find.byType(ListView).first, const Offset(0, -420));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('隐私保护'));
+    await tester.pumpAndSettle();
+    expect(find.text('切至后台时模糊应用画面'), findsNothing);
+
+    await tester.tap(find.text('服务器管理台'));
+    await tester.pumpAndSettle();
+    expect(find.text('设备'), findsOneWidget);
+    await tester.tap(find.text('设备'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已登记设备'), findsOneWidget);
   });
 
   test('Direct dart:ffi integration loads REAL compiled Rust libvedro_ffi.so', () async {

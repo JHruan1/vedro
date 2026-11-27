@@ -13,6 +13,26 @@ class NativePlaybackChannel {
   static final ValueNotifier<bool> fullscreenNotifier = ValueNotifier<bool>(false);
   static final ValueNotifier<List<String>> droppedFilesNotifier = ValueNotifier<List<String>>(const []);
   static bool _listenerBound = false;
+  static String? _lastChromeSig;
+
+  /// Syncs native OS window titlebar / frame / status-bar / nav-bar colors with the active Vedro page skin
+  /// (Windows 11 DWM `DWMWA_CAPTION_COLOR` & `DWMWA_TEXT_COLOR`, macOS `NSWindow`, Android InsetsController, iOS UIWindow).
+  static Future<void> syncWindowChrome({
+    required bool isLight,
+    required int canvasArgb,
+    required int fgArgb,
+  }) async {
+    final sig = '$isLight:$canvasArgb:$fgArgb';
+    if (_lastChromeSig == sig) return;
+    _lastChromeSig = sig;
+    try {
+      await _channel.invokeMethod<void>('setWindowChrome', {
+        'is_light': isLight,
+        'canvas_argb': canvasArgb,
+        'fg_argb': fgArgb,
+      });
+    } catch (_) {}
+  }
 
   static const Set<String> videoExtensions = {
     'mkv', 'mp4', 'm4v', 'mov', 'ts', 'm2ts', 'webm', 'avi', 'flv', 'wmv', 'mpg', 'mpeg', 'ogm', 'iso', 'strm',

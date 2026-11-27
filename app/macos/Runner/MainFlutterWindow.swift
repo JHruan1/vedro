@@ -163,6 +163,20 @@ final class VedroHardwarePlugin: NSObject {
         self.resolveWindow()?.level = enabled ? .floating : .normal
         result(enabled)
       }
+    case "setWindowChrome":
+      let args = call.arguments as? [String: Any]
+      let isLight = (args?["is_light"] as? Bool) ?? false
+      let canvasArgb = (args?["canvas_argb"] as? Int) ?? 0xFF0B0B0D
+      let r = CGFloat((canvasArgb >> 16) & 0xFF) / 255.0
+      let g = CGFloat((canvasArgb >> 8) & 0xFF) / 255.0
+      let b = CGFloat(canvasArgb & 0xFF) / 255.0
+      DispatchQueue.main.async {
+        if let win = self.resolveWindow() {
+          win.appearance = NSAppearance(named: isLight ? .aqua : .darkAqua)
+          win.backgroundColor = NSColor(srgbRed: r, green: g, blue: b, alpha: 1.0)
+        }
+        result(nil)
+      }
     case "pickFiles":
       let args = call.arguments as? [String: Any]
       let extensions = (args?["extensions"] as? [String]) ?? []

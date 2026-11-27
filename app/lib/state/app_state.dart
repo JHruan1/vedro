@@ -126,6 +126,18 @@ class VedroAppState extends ChangeNotifier {
   // EmbyGo Admin dashboard snapshot
   Map<String, dynamic>? embygoAdminDashboard;
 
+  // EmbyGo Account Devices & Playback Speedtest state
+  List<Map<String, dynamic>> userDevices = [];
+  String? currentClientDeviceId;
+  bool isLoadingDevices = false;
+  bool isSpeedTesting = false;
+  double? liveSpeedTestMbps;
+  double? speedTestLatencyMs;
+  String? speedTestClientIp;
+  Map<String, dynamic>? lastSpeedTestResult;
+  String? speedTestError;
+  Timer? _speedTestPollTimer;
+
   Timer? _wsPollTimer;
 
   bool get isSignedIn => userId != null && connectedUrl != null;
@@ -206,10 +218,13 @@ class VedroAppState extends ChangeNotifier {
           );
         }
       } catch (_) {}
-      // Re-activate selected subscription node (or auto-select lowest-latency node) on launch
+      // Re-activate selected subscription node BEFORE restoring the remembered server
+      // so servers reachable via the in-app proxy connect cleanly on cold start!
       if (prefs.inAppProxyMode == 'sub' && prefs.selectedProxyNodeId.isNotEmpty) {
         if (prefs.selectedProxyNodeId == 'auto') {
-          unawaited(autoSelectFastestProxyNode().catchError((_) => <String, dynamic>{}));
+          await autoSelectFastestProxyNode()
+              .timeout(const Duration(milliseconds: 2500), onTimeout: () => <String, dynamic>{})
+              .catchError((_) => <String, dynamic>{});
         } else {
           Map<String, dynamic>? chosen = prefs.proxyNodes
               .where((n) => n['id']?.toString() == prefs.selectedProxyNodeId)
@@ -223,7 +238,9 @@ class VedroAppState extends ChangeNotifier {
             }
           }
           if (chosen != null) {
-            unawaited(activateProxyNode(chosen).catchError((_) => <String, dynamic>{}));
+            await activateProxyNode(chosen)
+                .timeout(const Duration(milliseconds: 2000), onTimeout: () => <String, dynamic>{})
+                .catchError((_) => <String, dynamic>{});
           }
         }
       }
@@ -282,13 +299,27 @@ class VedroAppState extends ChangeNotifier {
         } catch (_) {}
       }());
 
-      // Seamless auto-restore for returning users; fresh users land directly on Home Server Hub
+      // Seamless auto-restore for returning users: strictly honor `last_active_server_id`
+      // (falling back to most recently connected profile) so reopening lands directly in that server!
+      String? rememberedId;
+      try {
+        final lastKv = await core.invoke('get_kv', {'key': 'last_active_server_id'});
+        if (lastKv is Map<String, dynamic> && lastKv['value'] is String) {
+          final v = (lastKv['value'] as String).trim();
+          if (v.isNotEmpty) rememberedId = v;
+        }
+      } catch (_) {}
+
       final recent = savedServers.where((s) => s.accessToken != null && s.userId != null).toList();
       if (recent.isNotEmpty) {
+        final target = (rememberedId != null
+                ? recent.where((s) => s.id == rememberedId).firstOrNull
+                : null) ??
+            recent.first;
         isAutoRestoring = true;
         notifyListeners();
         try {
-          await restoreSavedServer(recent.first, silentError: true);
+          await restoreSavedServer(target, silentError: true);
         } finally {
           isAutoRestoring = false;
           notifyListeners();
@@ -436,6 +467,7 @@ class VedroAppState extends ChangeNotifier {
       final routeTls = route?.acceptInvalidCerts ?? acceptInvalidCerts;
 
       final res = await core.invoke('restore_session', {
+        'server_id': profile.id,
         'url': targetUrl,
         'access_token': profile.accessToken,
         'user_id': profile.userId,
@@ -463,11 +495,32 @@ class VedroAppState extends ChangeNotifier {
       notifyListeners();
 
       _startEventPolling();
+      unawaited(_reloadSavedServers());
       unawaited(refreshHome());
       unawaited(refreshMeQuota());
     } catch (e) {
-      if (!silentError) {
-        errorMessage = _humanizeError(e.toString());
+      final humanized = _humanizeError(e.toString());
+      if (silentError) {
+        // Keep the remembered server selected even if network/proxy is temporarily unreachable on cold start
+        connectedUrl = profile.activeRoute?.url.isNotEmpty == true ? profile.activeRoute!.url : profile.url;
+        activeServerId = profile.id;
+        userId = profile.userId;
+        username = profile.username;
+        isAdmin = profile.isAdmin;
+        capabilities ??= ServerCapabilitiesModel(
+          dialect: profile.dialect,
+          serverId: profile.id,
+          serverName: profile.name,
+          advertisedVersion: '',
+          supportsTranscoding: profile.dialect != 'embygo',
+          supportsPopular: profile.dialect == 'embygo',
+          supportsSuggestions: true,
+          supportsHideFromResume: true,
+          usesStreamTickets: profile.dialect == 'embygo',
+        );
+        homeError = '无法连接至 ${profile.name}：$humanized';
+      } else {
+        errorMessage = humanized;
       }
       isBusy = false;
       loginStage = null;
@@ -2370,23 +2423,141 @@ class VedroAppState extends ChangeNotifier {
     } catch (_) {}
   }
 
-  void _startEventPolling() {
-    _wsPollTimer?.cancel();
-    _wsPollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      final events = core.pollEvents();
-      for (final ev in events) {
-        final payload = ev['event'];
-        if (payload is Map<String, dynamic>) {
-          final kind = payload['kind']?.toString();
-          if (kind == 'display_message') {
-            remoteBannerMessage = '${payload['header'] ?? ''}: ${payload['text'] ?? ''}'.trim();
-            notifyListeners();
-          } else if (kind == 'user_data_changed') {
-            refreshHome();
-          }
+  void _consumeCoreEvents() {
+    final events = core.pollEvents();
+    var changed = false;
+    for (final ev in events) {
+      if (ev['source'] == 'speedtest') {
+        final phase = ev['phase']?.toString();
+        if (phase == 'ping') {
+          speedTestLatencyMs = (ev['latency_ms'] as num?)?.toDouble();
+          speedTestClientIp = ev['client_ip']?.toString();
+          changed = true;
+        } else if (phase == 'download') {
+          liveSpeedTestMbps = (ev['live_mbps'] as num?)?.toDouble();
+          changed = true;
+        }
+        continue;
+      }
+      final payload = ev['event'];
+      if (payload is Map<String, dynamic>) {
+        final kind = payload['kind']?.toString();
+        if (kind == 'display_message') {
+          remoteBannerMessage = '${payload['header'] ?? ''}: ${payload['text'] ?? ''}'.trim();
+          changed = true;
+        } else if (kind == 'user_data_changed') {
+          refreshHome();
         }
       }
+    }
+    if (changed) notifyListeners();
+  }
+
+  void _startEventPolling() {
+    _wsPollTimer?.cancel();
+    _wsPollTimer = Timer.periodic(const Duration(seconds: 2), (_) => _consumeCoreEvents());
+  }
+
+  /// Fetch registered login devices (`GET /emby-compat/devices` or `/Devices`).
+  Future<List<Map<String, dynamic>>> loadUserDevices({String? targetUserId}) async {
+    if (!isSignedIn) return const [];
+    final isSelf = targetUserId == null || targetUserId == userId;
+    if (isSelf) {
+      isLoadingDevices = true;
+      notifyListeners();
+    }
+    try {
+      final res = await core.invoke('get_user_devices', {
+        'user_id': targetUserId ?? userId,
+      }) as Map<String, dynamic>;
+      final list = ((res['items'] as List<dynamic>?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+      if (res['current_device_id'] != null) {
+        currentClientDeviceId = res['current_device_id'].toString();
+      }
+      if (isSelf) {
+        userDevices = list;
+      }
+      return list;
+    } finally {
+      if (isSelf) {
+        isLoadingDevices = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  /// Remove a registered device slot (`DELETE /emby-compat/devices`).
+  /// If removing the current device of the signed-in user, signs out locally as well.
+  Future<void> removeUserDevice({
+    String? targetUserId,
+    required String deviceId,
+  }) async {
+    final effectiveUid = targetUserId ?? userId;
+    await core.invoke('delete_user_device', {
+      if (effectiveUid != null) 'user_id': effectiveUid,
+      'device_id': deviceId,
     });
+    final removingSelf = (effectiveUid == null || effectiveUid == userId) &&
+        currentClientDeviceId != null &&
+        deviceId == currentClientDeviceId;
+    if (removingSelf) {
+      await logout();
+      return;
+    }
+    if (effectiveUid == null || effectiveUid == userId) {
+      await loadUserDevices();
+      unawaited(refreshMeQuota());
+    }
+  }
+
+  /// Run an EmbyGo playback route speedtest (`POST /emby-compat/speedtest` + ping + download).
+  Future<Map<String, dynamic>?> runEmbyGoSpeedTest() async {
+    if (isSpeedTesting) return null;
+    isSpeedTesting = true;
+    liveSpeedTestMbps = null;
+    speedTestLatencyMs = null;
+    speedTestClientIp = null;
+    speedTestError = null;
+    notifyListeners();
+
+    _speedTestPollTimer?.cancel();
+    _speedTestPollTimer = Timer.periodic(
+      const Duration(milliseconds: 220),
+      (_) => _consumeCoreEvents(),
+    );
+    try {
+      final res = await core.invoke('run_embygo_speedtest') as Map<String, dynamic>;
+      _consumeCoreEvents();
+      lastSpeedTestResult = res;
+      speedTestLatencyMs = (res['latency_ms'] as num?)?.toDouble();
+      speedTestClientIp = res['client_ip']?.toString();
+      liveSpeedTestMbps = (res['effective_mbps'] as num?)?.toDouble() ??
+          (res['measured_mbps'] as num?)?.toDouble();
+      return res;
+    } catch (e) {
+      final msg = e.toString().replaceFirst('VedroCoreException: ', '');
+      if (!msg.contains('已取消')) {
+        speedTestError = msg;
+      }
+      return null;
+    } finally {
+      _speedTestPollTimer?.cancel();
+      _speedTestPollTimer = null;
+      isSpeedTesting = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> cancelEmbyGoSpeedTest() async {
+    try {
+      await core.invoke('cancel_embygo_speedtest');
+    } catch (_) {}
+    _speedTestPollTimer?.cancel();
+    _speedTestPollTimer = null;
+    isSpeedTesting = false;
+    notifyListeners();
   }
 
   static String _humanizeError(String raw) {
@@ -2414,6 +2585,7 @@ class VedroAppState extends ChangeNotifier {
   @override
   void dispose() {
     _wsPollTimer?.cancel();
+    _speedTestPollTimer?.cancel();
     for (final h in _activeDownloadHandles.values) {
       h.cancelled = true;
       h.abort();

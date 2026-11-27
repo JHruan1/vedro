@@ -266,6 +266,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _dialogueBoost = widget.appState.settings['dialogue_boost'] == true;
 
     NativePlaybackChannel.setKeepScreenOn(true);
+    NativePlaybackChannel.syncWindowChrome(
+      isLight: false,
+      canvasArgb: 0xFF000000,
+      fgArgb: 0xFFF4F4F6,
+    );
     if (_isMobile) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
       final initialPortrait = _inferInitialPortraitVideo(_currentItem);
@@ -880,6 +885,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     NativePlaybackChannel.setKeepScreenOn(false);
+    final restoreSkin = widget.appState.prefs.activeSkinFor(
+      dynamicSeedOverride: widget.appState.dynamicPageSeedColor,
+    );
+    NativePlaybackChannel.syncWindowChrome(
+      isLight: restoreSkin.isLight,
+      canvasArgb: restoreSkin.canvas.toARGB32(),
+      fgArgb: restoreSkin.fg.toARGB32(),
+    );
     _reportStoppedAndCleanup();
     _player.dispose();
     super.dispose();

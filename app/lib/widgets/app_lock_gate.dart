@@ -10,8 +10,8 @@ import '../state/app_state.dart';
 import 'vedro_ui.dart';
 
 /// Privacy Protection gate:
-/// - Prompts for a 4-digit passcode on startup / resume past timeout when enabled.
-/// - Blurs app content automatically when entering inactive / background state if enabled.
+/// - Prompts for a 4-digit passcode on startup / resume past timeout ONLY when explicitly enabled by the user.
+/// - Never blurs or shields the window on background / focus-switch across any client.
 class AppLockGate extends StatefulWidget {
   const AppLockGate({
     super.key,
@@ -28,7 +28,6 @@ class AppLockGate extends StatefulWidget {
 
 class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
   bool _locked = false;
-  bool _blurred = false;
   bool _checkedInitialLock = false;
   DateTime? _pausedAt;
   String _pin = '';
@@ -65,26 +64,22 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final p = widget.appState.prefs;
-    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+    if (!p.passcodeEnabled || p.passcodeHash.isEmpty) {
+      _pausedAt = null;
+      return;
+    }
+    if (state == AppLifecycleState.paused) {
       _pausedAt ??= DateTime.now();
-      if (p.blurInBackground && !_blurred && mounted) {
-        setState(() => _blurred = true);
-      }
     } else if (state == AppLifecycleState.resumed) {
       final elapsed = _pausedAt == null
           ? 0
           : DateTime.now().difference(_pausedAt!).inSeconds;
       _pausedAt = null;
-      final shouldLock =
-          p.passcodeEnabled && p.passcodeHash.isNotEmpty && elapsed >= p.lockTimeoutSecs;
-      if (mounted) {
+      if (elapsed >= p.lockTimeoutSecs && mounted) {
         setState(() {
-          _blurred = false;
-          if (shouldLock) {
-            _locked = true;
-            _pin = '';
-            _error = null;
-          }
+          _locked = true;
+          _pin = '';
+          _error = null;
         });
       }
     }
@@ -130,16 +125,6 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
     return Stack(
       children: [
         widget.child,
-        if (_blurred && !_locked)
-          Positioned.fill(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-              child: Container(
-                color: skin.canvas.withValues(alpha: 0.78),
-                child: const Center(child: VedroBrandMark(size: 56)),
-              ),
-            ),
-          ),
         if (_locked)
           Positioned.fill(
             child: KeyboardListener(

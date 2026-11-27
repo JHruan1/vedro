@@ -14,6 +14,7 @@ import android.provider.OpenableColumns
 import android.util.Rational
 import android.view.Display
 import android.view.WindowManager
+import androidx.core.view.WindowCompat
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -68,6 +69,21 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
                     } else {
                         activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     }
+                }
+                result.success(null)
+            }
+            "setWindowChrome" -> {
+                val isLight = call.argument<Boolean>("is_light") ?: false
+                val canvasArgb = (call.argument<Number>("canvas_argb")?.toLong() ?: 0xFF0B0B0DL).toInt()
+                activity.runOnUiThread {
+                    val win = activity.window
+                    WindowCompat.setDecorFitsSystemWindows(win, false)
+                    win.statusBarColor = android.graphics.Color.TRANSPARENT
+                    win.navigationBarColor = android.graphics.Color.TRANSPARENT
+                    win.decorView.setBackgroundColor(canvasArgb)
+                    val ctrl = WindowCompat.getInsetsController(win, win.decorView)
+                    ctrl.isAppearanceLightStatusBars = isLight
+                    ctrl.isAppearanceLightNavigationBars = isLight
                 }
                 result.success(null)
             }

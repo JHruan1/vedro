@@ -1595,6 +1595,9 @@ class MeQuotaModel {
   final UserTrafficModel? traffic;
   final DownloadQuotaStatusModel? downloadQuota;
 
+  int get maxDevices => limits.maxDevices;
+  int get registeredDevices => limits.registeredDevices;
+
   factory MeQuotaModel.fromJson(Map<String, dynamic> j) => MeQuotaModel(
         limits: j['limits'] is Map<String, dynamic>
             ? AccountLimitsModel.fromJson(j['limits'] as Map<String, dynamic>)

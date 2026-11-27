@@ -1,5 +1,6 @@
 #include "vedro_hardware_plugin.h"
 
+#include <dwmapi.h>
 #include <dxgi1_6.h>
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
@@ -11,13 +12,20 @@
 #include <shobjidl.h>
 #include <wrl/client.h>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
+#pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
+
+extern void VedroApplyWin32WindowChrome(HWND const window,
+                                        bool is_light,
+                                        COLORREF caption_rgb,
+                                        COLORREF text_rgb);
 
 namespace vedro {
 namespace {
@@ -313,6 +321,30 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
           SetThreadExecutionState(enabled
                                       ? (ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)
                                       : ES_CONTINUOUS);
+          result->Success();
+        } else if (method == "setWindowChrome") {
+          bool is_light = false;
+          int64_t canvas_argb = 0xFF0B0B0D;
+          int64_t fg_argb = 0xFFF4F4F6;
+          if (const auto* args = std::get_if<flutter::EncodableMap>(call.arguments())) {
+            auto lit = args->find(flutter::EncodableValue("is_light"));
+            if (lit != args->end()) {
+              if (const auto* b = std::get_if<bool>(&lit->second)) is_light = *b;
+            }
+            auto cit = args->find(flutter::EncodableValue("canvas_argb"));
+            if (cit != args->end()) {
+              if (const auto* i64 = std::get_if<int64_t>(&cit->second)) canvas_argb = *i64;
+              else if (const auto* i32 = std::get_if<int32_t>(&cit->second)) canvas_argb = static_cast<uint32_t>(*i32);
+            }
+            auto fit = args->find(flutter::EncodableValue("fg_argb"));
+            if (fit != args->end()) {
+              if (const auto* i64 = std::get_if<int64_t>(&fit->second)) fg_argb = *i64;
+              else if (const auto* i32 = std::get_if<int32_t>(&fit->second)) fg_argb = static_cast<uint32_t>(*i32);
+            }
+          }
+          COLORREF cap_rgb = RGB((canvas_argb >> 16) & 0xFF, (canvas_argb >> 8) & 0xFF, canvas_argb & 0xFF);
+          COLORREF txt_rgb = RGB((fg_argb >> 16) & 0xFF, (fg_argb >> 8) & 0xFF, fg_argb & 0xFF);
+          VedroApplyWin32WindowChrome(hwnd, is_light, cap_rgb, txt_rgb);
           result->Success();
         } else if (method == "openUrl" || method == "launchExternalPlayer") {
           std::string url;

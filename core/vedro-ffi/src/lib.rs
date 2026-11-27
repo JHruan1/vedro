@@ -104,6 +104,7 @@ pub struct VedroRuntime {
     in_app_proxy_url: Mutex<Option<String>>,
     in_process_proxy: Mutex<Option<proxy_engine::InProcessProxyHandle>>,
     managed_proxy: Mutex<Option<ManagedProxyProcess>>,
+    speedtest_cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl VedroRuntime {
@@ -192,6 +193,7 @@ impl VedroRuntime {
             in_app_proxy_url: Mutex::new(saved_in_app_proxy),
             in_process_proxy: Mutex::new(None),
             managed_proxy: Mutex::new(None),
+            speedtest_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -363,6 +365,12 @@ impl VedroRuntime {
             "delete_server" => {
                 let id = str_param(&params, "id")?;
                 self.store.delete_server(&id).map_err(|e| e.to_string())?;
+                if let Ok(Some(last_id)) = self.store.get_setting::<String>("last_active_server_id")
+                {
+                    if last_id == id {
+                        let _ = self.store.set_setting("last_active_server_id", &"");
+                    }
+                }
                 Ok(json!({"deleted": id}))
             }
 
@@ -626,6 +634,7 @@ impl VedroRuntime {
                 profile.active_route_id = Some(route.id.clone());
                 profile.last_connected_at = chrono::Utc::now().timestamp();
                 let _ = self.store.upsert_server(&profile);
+                let _ = self.store.set_setting("last_active_server_id", &server_id);
 
                 let hdrs = client.auth_headers();
                 self.proxy
@@ -761,7 +770,8 @@ impl VedroRuntime {
                 self.proxy
                     .set_image_upstream(current_url.clone(), hdrs.clone());
                 self.proxy
-                    .register_server_image_upstream(server_id, current_url, hdrs);
+                    .register_server_image_upstream(server_id.clone(), current_url, hdrs);
+                let _ = self.store.set_setting("last_active_server_id", &server_id);
                 self.start_websocket(client.clone());
                 Ok(json!({
                     "auth": auth,
@@ -772,6 +782,12 @@ impl VedroRuntime {
 
             "restore_session" => {
                 let url = str_param(&params, "url")?;
+                let explicit_server_id = params
+                    .get("server_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string);
                 let token = str_param(&params, "access_token")?;
                 let user_id = str_param(&params, "user_id")?;
                 let raw_proxy = params
@@ -799,10 +815,37 @@ impl VedroRuntime {
                 )
                 .map_err(|e| e.to_string())?;
                 let (info, caps) = client.probe_server().await.map_err(|e| e.to_string())?;
-                client.set_credentials(token, user_id);
+                client.set_credentials(token.clone(), user_id.clone());
                 let user = client.current_user().await.map_err(|e| e.to_string())?;
+
+                // Update last_connected_at & last_active_server_id so next launch remembers this exact server
+                let resolved_sid = explicit_server_id
+                    .or_else(|| (!caps.server_id.is_empty()).then(|| caps.server_id.clone()));
+                if let Some(ref sid) = resolved_sid {
+                    let _ = self.store.set_setting("last_active_server_id", sid);
+                    if let Ok(Some(mut saved)) = self.store.get_server(sid) {
+                        saved.last_connected_at = chrono::Utc::now().timestamp();
+                        saved.access_token = Some(token);
+                        saved.user_id = Some(user_id);
+                        saved.is_admin = user
+                            .policy
+                            .as_ref()
+                            .map(|p| p.is_administrator)
+                            .unwrap_or(saved.is_admin);
+                        let _ = self.store.upsert_server(&saved);
+                    }
+                }
+
+                let hdrs = client.auth_headers();
                 self.proxy
-                    .set_image_upstream(client.base_url().to_string(), client.auth_headers());
+                    .set_image_upstream(client.base_url().to_string(), hdrs.clone());
+                if let Some(sid) = resolved_sid {
+                    self.proxy.register_server_image_upstream(
+                        sid,
+                        client.base_url().to_string(),
+                        hdrs,
+                    );
+                }
                 *self.client.lock() = Some(client.clone());
                 self.start_websocket(client);
                 Ok(json!({
@@ -818,10 +861,11 @@ impl VedroRuntime {
                 if let Some(mut ws) = ws_opt {
                     ws.stop().await;
                 }
-                let client_opt = self.client.lock().clone();
+                let client_opt = self.client.lock().take();
                 if let Some(client) = client_opt {
                     let _ = client.logout().await;
                 }
+                let _ = self.store.set_setting("last_active_server_id", &"");
                 Ok(json!({"logged_out": true}))
             }
 
@@ -1882,10 +1926,11 @@ impl VedroRuntime {
 
             "get_embygo_admin_dashboard" => {
                 let client = self.require_client()?;
-                let (status, counts, sessions, libraries, users, tasks, activity) = tokio::join!(
+                let (status, counts, sessions, devices, libraries, users, tasks, activity) = tokio::join!(
                     client.embygo_status(),
                     client.item_counts(),
                     client.sessions(false),
+                    client.embygo_devices(None),
                     client.virtual_folders(),
                     client.query_users(),
                     client.scheduled_tasks(),
@@ -1902,10 +1947,299 @@ impl VedroRuntime {
                     "counts": counts.ok(),
                     "playing_sessions": playing_sessions,
                     "sessions": all_sessions,
+                    "devices": devices.ok(),
                     "libraries": libraries.ok(),
                     "users": users.ok(),
                     "tasks": tasks.ok(),
                     "activity": activity.ok(),
+                }))
+            }
+
+            "get_user_devices" => {
+                let client = self.require_client()?;
+                let explicit_uid = params
+                    .get("user_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let raw = client
+                    .embygo_devices(explicit_uid)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let items = if let Some(arr) = raw.get("Items").and_then(Value::as_array) {
+                    arr.clone()
+                } else if let Some(arr) = raw.as_array() {
+                    arr.clone()
+                } else {
+                    Vec::new()
+                };
+                let cur_dev = self.identity.lock().device_id.clone();
+                Ok(json!({
+                    "items": items,
+                    "current_device_id": cur_dev,
+                }))
+            }
+
+            "delete_user_device" => {
+                let client = self.require_client()?;
+                let device_id = str_param(&params, "device_id")?;
+                let explicit_uid = params
+                    .get("user_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string)
+                    .or_else(|| client.user_id());
+                client
+                    .embygo_delete_device(explicit_uid.as_deref(), &device_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({
+                    "deleted": device_id,
+                    "user_id": explicit_uid,
+                }))
+            }
+
+            "cancel_embygo_speedtest" => {
+                self.speedtest_cancel
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(json!({"cancelled": true}))
+            }
+
+            "run_embygo_speedtest" => {
+                use futures_util::StreamExt;
+                use std::sync::atomic::Ordering;
+
+                let client = self.require_client()?;
+                self.speedtest_cancel.store(false, Ordering::SeqCst);
+                let start = client
+                    .embygo_start_speedtest()
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                let raw_ping = start
+                    .get("PingUrl")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "服务器未返回 PingUrl".to_string())?;
+                let raw_dl = start
+                    .get("DownloadUrl")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "服务器未返回 DownloadUrl".to_string())?;
+                let ping_url = client
+                    .base_url()
+                    .join(raw_ping)
+                    .map_err(|e| format!("无效测速地址: {e}"))?;
+                let dl_url = client
+                    .base_url()
+                    .join(raw_dl)
+                    .map_err(|e| format!("无效测速下载流地址: {e}"))?;
+
+                let route = start
+                    .get("Route")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let duration_secs = start
+                    .get("DurationSeconds")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(8)
+                    .clamp(1, 25);
+                let account_limit_bps = start
+                    .get("AccountBitrateLimit")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let remaining_hour = start
+                    .get("RemainingThisHour")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(-1);
+                let remaining_today = start
+                    .get("RemainingToday")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(-1);
+
+                // Build a clean ticket-only HTTP client honoring active in-app proxy & TLS settings
+                let accept_invalid = client.transport_options().accept_invalid_certs;
+                let eff_proxy =
+                    self.effective_proxy_url(client.transport_options().proxy_url.as_deref());
+                let mut builder = reqwest::Client::builder()
+                    .danger_accept_invalid_certs(accept_invalid)
+                    .connect_timeout(Duration::from_secs(5));
+                if let Some(ref p) = eff_proxy {
+                    if let Ok(px) = reqwest::Proxy::all(p) {
+                        builder = builder.proxy(px);
+                    }
+                } else {
+                    builder = builder.no_proxy();
+                }
+                let http = builder.build().map_err(|e| e.to_string())?;
+
+                // 1. Five sequential pings (1st warms up TCP/TLS; median of 2..=5)
+                let mut ping_samples_ms: Vec<f64> = Vec::new();
+                let mut client_ip: Option<String> = None;
+                for _ in 0..5 {
+                    if self.speedtest_cancel.load(Ordering::SeqCst) {
+                        return Err("测速已取消".into());
+                    }
+                    let t0 = std::time::Instant::now();
+                    if let Ok(Ok(resp)) = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        http.get(ping_url.clone()).send(),
+                    )
+                    .await
+                    {
+                        let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
+                        if resp.status().is_success() {
+                            ping_samples_ms.push(elapsed);
+                            if let Ok(body) = resp.json::<Value>().await {
+                                if let Some(ip) = body
+                                    .get("Ip")
+                                    .and_then(Value::as_str)
+                                    .filter(|s| !s.is_empty())
+                                {
+                                    client_ip = Some(ip.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                let latency_ms: Option<f64> = {
+                    let slice = if ping_samples_ms.len() > 1 {
+                        &ping_samples_ms[1..]
+                    } else {
+                        &ping_samples_ms[..]
+                    };
+                    if slice.is_empty() {
+                        None
+                    } else {
+                        let mut sorted = slice.to_vec();
+                        sorted
+                            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                        let mid = sorted.len() / 2;
+                        Some(if sorted.len() % 2 == 1 {
+                            sorted[mid]
+                        } else {
+                            (sorted[mid - 1] + sorted[mid]) / 2.0
+                        })
+                    }
+                };
+
+                {
+                    let mut q = self.events.lock();
+                    if q.len() >= 256 {
+                        q.pop_front();
+                    }
+                    q.push_back(json!({
+                        "source": "speedtest",
+                        "phase": "ping",
+                        "latency_ms": latency_ms,
+                        "client_ip": client_ip,
+                    }));
+                }
+
+                // 2. Timed download throughput measurement (excluding 1s warm-up if >= 2s)
+                let mut samples: Vec<(u128, u64)> = Vec::new();
+                let mut total_bytes: u64 = 0;
+                let mut first_byte_at: Option<std::time::Instant> = None;
+                let mut last_emit_ms: u128 = 0;
+                let dl_deadline = tokio::time::Instant::now() + Duration::from_secs(duration_secs);
+
+                let compute_mbps = |pts: &[(u128, u64)]| -> Option<f64> {
+                    if pts.len() < 2 {
+                        return None;
+                    }
+                    let first = pts[0];
+                    let last = *pts.last().unwrap();
+                    let mut warm = first;
+                    if last.0.saturating_sub(first.0) >= 2000 {
+                        if let Some(hit) = pts.iter().find(|s| s.0.saturating_sub(first.0) >= 1000)
+                        {
+                            warm = *hit;
+                        }
+                    }
+                    let secs = (last.0.saturating_sub(warm.0)) as f64 / 1000.0;
+                    if secs <= 0.0 {
+                        return None;
+                    }
+                    let mbps = ((last.1.saturating_sub(warm.1)) as f64 * 8.0) / secs / 1e6;
+                    (mbps.is_finite() && mbps >= 0.0).then_some(mbps)
+                };
+
+                let resp = tokio::time::timeout_at(dl_deadline, http.get(dl_url).send())
+                    .await
+                    .map_err(|_| "测速下载流连接超时".to_string())?
+                    .map_err(|e| format!("测速连接失败: {e}"))?;
+                if !resp.status().is_success() {
+                    return Err(format!("测速响应异常: HTTP {}", resp.status().as_u16()));
+                }
+                let mut stream = resp.bytes_stream();
+                let transfer_epoch = std::time::Instant::now();
+                loop {
+                    if self.speedtest_cancel.load(Ordering::SeqCst) {
+                        return Err("测速已取消".into());
+                    }
+                    match tokio::time::timeout_at(dl_deadline, stream.next()).await {
+                        Ok(Some(Ok(chunk))) => {
+                            if !chunk.is_empty() {
+                                let now = std::time::Instant::now();
+                                let t_ms = transfer_epoch.elapsed().as_millis();
+                                if first_byte_at.is_none() {
+                                    first_byte_at = Some(now);
+                                }
+                                total_bytes += chunk.len() as u64;
+                                samples.push((t_ms, total_bytes));
+                                if t_ms.saturating_sub(last_emit_ms) >= 250 {
+                                    last_emit_ms = t_ms;
+                                    let live = compute_mbps(&samples).or_else(|| {
+                                        let fb = first_byte_at?;
+                                        let dt = now.duration_since(fb).as_secs_f64();
+                                        (dt > 0.02).then_some((total_bytes as f64 * 8.0) / dt / 1e6)
+                                    });
+                                    if let Some(mbps) = live {
+                                        let mut q = self.events.lock();
+                                        if q.len() >= 256 {
+                                            q.pop_front();
+                                        }
+                                        q.push_back(json!({
+                                            "source": "speedtest",
+                                            "phase": "download",
+                                            "live_mbps": mbps,
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                        Ok(Some(Err(e))) => {
+                            if samples.len() < 2 {
+                                return Err(format!("测速读取中断: {e}"));
+                            }
+                            break;
+                        }
+                        Ok(None) | Err(_) => break,
+                    }
+                }
+
+                let measured_mbps = compute_mbps(&samples).or_else(|| {
+                    let fb = first_byte_at?;
+                    let dt = fb.elapsed().as_secs_f64();
+                    (total_bytes > 0 && dt > 0.01).then_some((total_bytes as f64 * 8.0) / dt / 1e6)
+                });
+                let effective_mbps = measured_mbps.map(|m| {
+                    if account_limit_bps > 0 {
+                        m.min(account_limit_bps as f64 / 1e6)
+                    } else {
+                        m
+                    }
+                });
+
+                Ok(json!({
+                    "route": route,
+                    "latency_ms": latency_ms,
+                    "client_ip": client_ip,
+                    "measured_mbps": measured_mbps,
+                    "account_limit_bps": account_limit_bps,
+                    "effective_mbps": effective_mbps,
+                    "remaining_this_hour": remaining_hour,
+                    "remaining_today": remaining_today,
                 }))
             }
 

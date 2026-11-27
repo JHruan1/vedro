@@ -180,29 +180,39 @@ class FramedPoster extends StatelessWidget {
   }
 }
 
-/// Strictly clipped ambient blur when a detail banner lacks a widescreen backdrop.
-/// Uses moderate blur & brightness so it never smears outside bounds or turns pitch black.
+/// Strictly clipped ultra-soft color-wash diffusion when a detail banner lacks a 16:9 widescreen backdrop.
+/// Uses wide Gaussian diffusion (`sigma = 56`) so portrait poster faces NEVER appear stretched or double-stacked behind the poster card!
 class _AmbientBlurBackdrop extends StatelessWidget {
   const _AmbientBlurBackdrop({required this.url});
   final String url;
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     return ClipRect(
-      child: Transform.scale(
-        scale: 1.16,
-        child: ImageFiltered(
-          imageFilter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-          child: ColorFiltered(
-            colorFilter: const ColorFilter.matrix(<double>[
-              0.56, 0, 0, 0, 0,
-              0, 0.56, 0, 0, 0,
-              0, 0, 0.56, 0, 0,
-              0, 0, 0, 1, 0,
-            ]),
-            child: FadeNetworkImage(url: url, fit: BoxFit.cover),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Transform.scale(
+            scale: 1.52,
+            child: ImageFiltered(
+              imageFilter: ImageFilter.blur(
+                sigmaX: 56,
+                sigmaY: 56,
+                tileMode: TileMode.clamp,
+              ),
+              child: Opacity(
+                opacity: skin.isLight ? 0.34 : 0.42,
+                child: FadeNetworkImage(url: url, fit: BoxFit.cover),
+              ),
+            ),
           ),
-        ),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: skin.canvas.withValues(alpha: skin.isLight ? 0.35 : 0.38),
+            ),
+          ),
+        ],
       ),
     );
   }

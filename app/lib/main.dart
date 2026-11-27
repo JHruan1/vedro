@@ -4,6 +4,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'core/ffi/vedro_bridge.dart';
+import 'core/platform/native_playback_channel.dart';
 import 'core/theme/vedro_skin.dart';
 import 'core/theme/vedro_theme.dart';
 import 'screens/shell_screen.dart';
@@ -83,6 +84,12 @@ class _VedroAppState extends State<VedroApp> {
           systemNavigationBarIconBrightness: skin.isLight ? Brightness.dark : Brightness.light,
           systemStatusBarContrastEnforced: false,
           systemNavigationBarContrastEnforced: false,
+        );
+        SystemChrome.setSystemUIOverlayStyle(overlayStyle);
+        NativePlaybackChannel.syncWindowChrome(
+          isLight: skin.isLight,
+          canvasArgb: skin.canvas.toARGB32(),
+          fgArgb: skin.fg.toARGB32(),
         );
 
         final Widget child;

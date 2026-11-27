@@ -1,7 +1,7 @@
 name: vedro
 description: "Vedro — High-performance Rust + libmpv/libplacebo cross-platform player for embygo, Emby, and Jellyfin with Dolby Vision and Dolby Atmos."
 publish_to: 'none'
-version: 0.3.6+21
+version: 0.3.7+22
 
 environment:
   sdk: ^3.5.0

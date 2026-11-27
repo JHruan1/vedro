@@ -73,6 +73,19 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
         UIApplication.shared.isIdleTimerDisabled = enabled
       }
       result(nil)
+    case "setWindowChrome":
+      let args = call.arguments as? [String: Any]
+      let canvasArgb = (args?["canvas_argb"] as? Int) ?? 0xFF0B0B0D
+      let r = CGFloat((canvasArgb >> 16) & 0xFF) / 255.0
+      let g = CGFloat((canvasArgb >> 8) & 0xFF) / 255.0
+      let b = CGFloat(canvasArgb & 0xFF) / 255.0
+      DispatchQueue.main.async {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        for win in scenes.flatMap({ $0.windows }) {
+          win.backgroundColor = UIColor(red: r, green: g, blue: b, alpha: 1.0)
+        }
+      }
+      result(nil)
     case "pickFiles":
       let args = call.arguments as? [String: Any]
       let extensions = (args?["extensions"] as? [String]) ?? []

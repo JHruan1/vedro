@@ -559,7 +559,29 @@ extension _DetailBodyExt on _DetailScreenState {
     ];
 
     final posterRadius = widget.appState.prefs.effectiveCardRadius(skin);
-    Widget coverCard = RepaintBoundary(
+    Widget coverArt = VedroArtwork(
+      item: _item,
+      appState: widget.appState,
+      landscape: isEpisodeWithStill,
+      width: 600,
+      displayWidth: coverW,
+    );
+    if (widget.heroTag != null) {
+      final detailBorder = skin.cardBorder(hovered: false);
+      coverArt = Hero(
+        tag: widget.heroTag!,
+        flightShuttleBuilder: vedroRoundedHeroShuttleBuilder(
+          posterRadius,
+          border: detailBorder,
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(posterRadius),
+          clipBehavior: Clip.antiAlias,
+          child: coverArt,
+        ),
+      );
+    }
+    final coverCard = RepaintBoundary(
       child: PressableScale(
         onTap: _openPosterLightbox,
         borderRadius: BorderRadius.circular(posterRadius),
@@ -580,19 +602,11 @@ extension _DetailBodyExt on _DetailScreenState {
           clipBehavior: Clip.antiAlias,
           child: AspectRatio(
             aspectRatio: coverAspect,
-            child: VedroArtwork(
-              item: _item,
-              appState: widget.appState,
-              landscape: isEpisodeWithStill,
-              width: 600,
-              displayWidth: coverW,
-            ),
+            child: coverArt,
           ),
         ),
       ),
     );
-    // No Hero flight: flying art loses rounded clip/border (causing border flash)
-    // and warps aspect ratio across routes. Page transition carries the motion.
 
     final c = skin.canvas;
     // Always dissolve smoothly into solid `skin.canvas` so the Hero image is NEVER stacked a second time!

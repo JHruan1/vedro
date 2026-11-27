@@ -184,4 +184,73 @@ void main() {
     expect(captured!.height, closeTo(240 * 1.05, 0.5));
     expect(captured!.width / captured!.height, closeTo(2 / 3, 0.005));
   });
+
+  testWidgets('vedroRoundedHeroShuttleBuilder preserves rounded ClipRRect on BOTH push and pop',
+      (tester) async {
+    const r = 16.0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: GestureDetector(
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => Scaffold(
+                        body: Align(
+                          alignment: Alignment.topLeft,
+                          child: SizedBox(
+                            width: 220,
+                            height: 330,
+                            child: Hero(
+                              tag: 'poster-hero-1',
+                              flightShuttleBuilder: vedroRoundedHeroShuttleBuilder(r),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(r),
+                                child: const ColoredBox(color: Colors.indigo),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+                child: SizedBox(
+                  width: 120,
+                  height: 180,
+                  child: Hero(
+                    tag: 'poster-hero-1',
+                    flightShuttleBuilder: vedroRoundedHeroShuttleBuilder(r),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(r),
+                      child: const ColoredBox(color: Colors.indigo),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    // Push flight mid-way: shuttle MUST be rounded ClipRRect(16)
+    await tester.tap(find.byType(GestureDetector));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    final pushClips = tester.widgetList<ClipRRect>(find.byType(ClipRRect)).toList();
+    expect(pushClips.any((c) => c.borderRadius == BorderRadius.circular(r)), isTrue);
+    await tester.pumpAndSettle();
+
+    // Pop flight mid-way: shuttle MUST STAY rounded ClipRRect(16) (never snap to square)
+    final nav = tester.state<NavigatorState>(find.byType(Navigator));
+    nav.pop();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    final popClips = tester.widgetList<ClipRRect>(find.byType(ClipRRect)).toList();
+    expect(popClips.any((c) => c.borderRadius == BorderRadius.circular(r)), isTrue);
+    await tester.pumpAndSettle();
+  });
 }

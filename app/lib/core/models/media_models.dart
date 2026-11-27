@@ -267,10 +267,14 @@ class MediaSourceModel {
       final parts = raw
           .split(RegExp(r'\s*·\s*'))
           .map((e) => e.trim())
-          .where((t) =>
-              t.isNotEmpty &&
-              t.toLowerCase() != 'preferred' &&
-              t.toLowerCase() != 'default')
+          .where((t) {
+            final lower = t.toLowerCase();
+            return t.isNotEmpty &&
+                lower != 'preferred' &&
+                lower != 'default' &&
+                lower != 'local' &&
+                lower != 'cloud';
+          })
           .toList();
       if (dropEpToken) {
         while (parts.isNotEmpty && bareEpRe.hasMatch(parts.first)) {

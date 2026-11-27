@@ -1052,13 +1052,13 @@ class _DetailScreenState extends State<DetailScreen> {
             ListTile(
               autofocus: true,
               leading: Icon(Icons.subtitles_outlined, color: skin.fg2),
-              title: Text('挂载本地外挂字幕 (.srt / .ass)', style: TextStyle(color: skin.fg, fontSize: 14)),
-              subtitle: Text(
-                _localExternalSubPath != null
-                    ? '已选：${_localExternalSubPath!.split(Platform.pathSeparator).last}'
-                    : '开播时自动加载指定本地字幕文件',
-                style: TextStyle(color: skin.fg3, fontSize: 12),
-              ),
+              title: Text('挂载外挂字幕', style: TextStyle(color: skin.fg, fontSize: 14)),
+              subtitle: _localExternalSubPath != null
+                  ? Text(
+                      _localExternalSubPath!.split(Platform.pathSeparator).last,
+                      style: TextStyle(color: skin.fg3, fontSize: 12),
+                    )
+                  : null,
               onTap: () {
                 Navigator.pop(ctx);
                 _pickExternalSubtitleForDetail();
@@ -1066,8 +1066,7 @@ class _DetailScreenState extends State<DetailScreen> {
             ),
             ListTile(
               leading: Icon(Icons.open_in_new_rounded, color: skin.fg2),
-              title: Text('使用外部播放器打开', style: TextStyle(color: skin.fg, fontSize: 14)),
-              subtitle: Text('IINA / Infuse / MPV / VLC', style: TextStyle(color: skin.fg3, fontSize: 12)),
+              title: Text('外部播放器打开', style: TextStyle(color: skin.fg, fontSize: 14)),
               onTap: () {
                 Navigator.pop(ctx);
                 _launchExternal(playable, sourceId: _resolveDownloadSource(playable)?.id ?? _activeSource?.id);

@@ -457,38 +457,54 @@ class _ServerRichCardState extends State<_ServerRichCard> {
 
             const SizedBox(height: 10),
 
-            // Visual-first status strip: signal latency + compact icon+number inventory + route icon
+            // Visual-first status strip: signal latency + compact icon+number inventory (movies/series/episodes) + route icon
             Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                _OnlineStatusChip(
-                  status: liveStatus,
-                  pingOverride: activePing,
-                  probing: isProbing,
-                  isActiveConnected: widget.isActive,
+                Expanded(
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      _OnlineStatusChip(
+                        status: liveStatus,
+                        pingOverride: activePing,
+                        probing: isProbing,
+                        isActiveConnected: widget.isActive,
+                      ),
+                      if (liveStatus != null && liveStatus.online && liveStatus.movieCount != null)
+                        _InventoryChip(
+                          icon: Icons.movie_outlined,
+                          tooltip: '电影',
+                          label: fmtCompactCount(liveStatus.movieCount!),
+                        ),
+                      if (liveStatus != null && liveStatus.online && liveStatus.seriesCount != null)
+                        _InventoryChip(
+                          icon: Icons.tv_rounded,
+                          tooltip: '剧集',
+                          label: fmtCompactCount(liveStatus.seriesCount!),
+                        ),
+                      if (liveStatus != null &&
+                          liveStatus.online &&
+                          liveStatus.episodeCount != null &&
+                          liveStatus.episodeCount! > 0)
+                        _InventoryChip(
+                          icon: Icons.video_library_outlined,
+                          tooltip: '集数',
+                          label: fmtCompactCount(liveStatus.episodeCount!),
+                        ),
+                    ],
+                  ),
                 ),
-                if (liveStatus != null && liveStatus.online && liveStatus.movieCount != null) ...[
+                if (srv.routes.length > 1) ...[
                   const SizedBox(width: 6),
-                  _InventoryChip(
-                    icon: Icons.movie_outlined,
-                    tooltip: '电影',
-                    label: fmtCompactCount(liveStatus.movieCount!),
-                  ),
-                ],
-                if (liveStatus != null && liveStatus.online && liveStatus.seriesCount != null) ...[
-                  const SizedBox(width: 6),
-                  _InventoryChip(
-                    icon: Icons.tv_rounded,
-                    tooltip: '剧集',
-                    label: fmtCompactCount(liveStatus.seriesCount!),
-                  ),
-                ],
-                const Spacer(),
-                if (srv.routes.length > 1)
                   _InventoryChip(
                     icon: Icons.alt_route_rounded,
                     tooltip: activeRoute?.name ?? '线路',
                     label: '${srv.routes.length}',
                   ),
+                ],
               ],
             ),
           ],
@@ -581,27 +597,64 @@ class _ServerCompactRowCard extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Flexible(
-                    child: Text(
-                      displayName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: skin.fg,
-                        fontSize: 14.5,
-                        fontWeight: FontWeight.w600,
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: skin.fg,
+                            fontSize: 14.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
+                      const SizedBox(width: 8),
+                      _OnlineStatusChip(
+                        status: liveStatus,
+                        pingOverride: activePing,
+                        probing: isProbing,
+                        isActiveConnected: isActive,
+                      ),
+                    ],
+                  ),
+                  if (liveStatus != null &&
+                      liveStatus.online &&
+                      (liveStatus.movieCount != null ||
+                          liveStatus.seriesCount != null ||
+                          (liveStatus.episodeCount != null && liveStatus.episodeCount! > 0))) ...[
+                    const SizedBox(height: 5),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        if (liveStatus.movieCount != null)
+                          _InventoryChip(
+                            icon: Icons.movie_outlined,
+                            tooltip: '电影',
+                            label: fmtCompactCount(liveStatus.movieCount!),
+                          ),
+                        if (liveStatus.seriesCount != null)
+                          _InventoryChip(
+                            icon: Icons.tv_rounded,
+                            tooltip: '剧集',
+                            label: fmtCompactCount(liveStatus.seriesCount!),
+                          ),
+                        if (liveStatus.episodeCount != null && liveStatus.episodeCount! > 0)
+                          _InventoryChip(
+                            icon: Icons.video_library_outlined,
+                            tooltip: '集数',
+                            label: fmtCompactCount(liveStatus.episodeCount!),
+                          ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  _OnlineStatusChip(
-                    status: liveStatus,
-                    pingOverride: activePing,
-                    probing: isProbing,
-                    isActiveConnected: isActive,
-                  ),
+                  ],
                 ],
               ),
             ),

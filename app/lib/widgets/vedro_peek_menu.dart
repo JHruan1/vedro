@@ -247,13 +247,15 @@ class _VedroPeekMenuStage extends StatelessWidget {
     final clampedPreviewR = previewCornerRadius.clamp(10.0, 22.0);
     final menuRadius = (hasPreview ? clampedPreviewR : skin.cardRadius).clamp(12.0, 22.0);
     final isLiquid = skin.isLiquidGlass;
+    final isGlassTheme = skin.usesGlassPanels;
     // The full-screen scrim behind the menu already applies live blur (sigma 18).
     // Avoiding a second nested BackdropFilter inside Opacity+Scale eliminates the
-    // Android/iOS rectangular blur bleed outside rounded corners.
+    // Android/iOS rectangular blur bleed outside rounded corners, while a rich
+    // frosted fill + multi-layer glass rim preserves crisp legibility & Apple edge optics.
     final menuBg = skin.isLight
-        ? Colors.white.withValues(alpha: isLiquid ? 0.86 : 0.94)
-        : Color.lerp(skin.surface2, skin.surface, 0.35)!
-            .withValues(alpha: isLiquid ? 0.84 : 0.94);
+        ? Colors.white.withValues(alpha: isGlassTheme ? 0.93 : 0.96)
+        : Color.lerp(skin.surface2, skin.surface, 0.32)!
+            .withValues(alpha: isGlassTheme ? 0.92 : 0.96);
 
     final bgAnim = CurvedAnimation(
       parent: animation,
@@ -296,18 +298,19 @@ class _VedroPeekMenuStage extends StatelessWidget {
         ],
       ),
       child: CustomPaint(
-        foregroundPainter: isLiquid
+        foregroundPainter: isGlassTheme
             ? LiquidGlassRimPainter(
                 radius: menuRadius,
                 isLight: skin.isLight,
                 accent: skin.accent,
+                intensity: isLiquid ? 1.15 : 0.72,
               )
             : null,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(menuRadius),
           child: DecoratedBox(
             position: DecorationPosition.foreground,
-            decoration: isLiquid
+            decoration: isGlassTheme
                 ? const BoxDecoration()
                 : BoxDecoration(
                     borderRadius: BorderRadius.circular(menuRadius),
@@ -325,7 +328,7 @@ class _VedroPeekMenuStage extends StatelessWidget {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: [
-                    Colors.white.withValues(alpha: skin.isLight ? 0.35 : (isLiquid ? 0.12 : 0.06)),
+                    Colors.white.withValues(alpha: skin.isLight ? 0.45 : (isLiquid ? 0.16 : 0.08)),
                     Colors.transparent,
                   ],
                 ),

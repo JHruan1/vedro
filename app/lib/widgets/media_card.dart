@@ -68,8 +68,18 @@ class _MediaCardState extends State<MediaCard> {
       displayWidth: widget.width,
     );
 
-    // No Hero flight: flying art loses the card's clip/border (border flash) and
-    // morphs aspect into the detail poster. Page transitions carry the motion.
+    if (widget.heroPrefix != null) {
+      final heroBorder = skin.cardBorder(hovered: false);
+      artBox = Hero(
+        tag: '${widget.heroPrefix}-${item.id}',
+        flightShuttleBuilder: vedroRoundedHeroShuttleBuilder(radius, border: heroBorder),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(radius),
+          clipBehavior: Clip.antiAlias,
+          child: artBox,
+        ),
+      );
+    }
     if (!touchPrimary && skin.cardHoverEffect == 'zoom_art') {
       artBox = AnimatedScale(
         scale: _highlighted ? 1.06 : 1.0,
@@ -348,23 +358,39 @@ class _MediaCardState extends State<MediaCard> {
             item.unplayedItemCount != null &&
             item.unplayedItemCount! > 0)
           Positioned(
-              top: 7,
-              right: 7,
-              child: Container(
-                width: 9,
-                height: 9,
-                decoration: BoxDecoration(
-                  color: skin.accent,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.9), width: 1.2),
-                  boxShadow: [
-                    BoxShadow(
-                      color: skin.accent.withValues(alpha: 0.6),
-                      blurRadius: 6,
+            top: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
+            right: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
+            child: skin.badgeStyle == 'minimal_dot'
+                ? Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(
+                      color: skin.accent,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: skin.accent.withValues(alpha: 0.6),
+                          blurRadius: 6,
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              )),
+                  )
+                : _CornerBadge(
+                    accentRibbon: skin.badgeStyle == 'accent_ribbon',
+                    accentColor: skin.accent,
+                    child: Text(
+                      '${item.unplayedItemCount}',
+                      style: TextStyle(
+                        color: skin.badgeStyle == 'accent_ribbon'
+                            ? highContrastOn(skin.accent)
+                            : Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ),
+          ),
         if (!hideBadges && (showVersionBadge || showRatingBadge))
           Positioned(
             top: 6,

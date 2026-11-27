@@ -449,17 +449,17 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
         final base = Color.lerp(
           isLight ? Colors.white : surface,
           accent,
-          isLight ? 0.05 : 0.11,
+          isLight ? 0.04 : 0.09,
         )!;
         final alpha = isLight
-            ? surfaceOpacity.clamp(0.42, 0.86)
-            : (surfaceOpacity * 0.78).clamp(0.28, 0.72);
+            ? surfaceOpacity.clamp(0.80, 0.94)
+            : (surfaceOpacity * 0.96).clamp(0.74, 0.90);
         return base.withValues(alpha: alpha);
       case 'unified_glass':
-        final base = Color.lerp(surface, accent, isLight ? 0.04 : 0.08)!;
+        final base = Color.lerp(surface, accent, isLight ? 0.03 : 0.07)!;
         final alpha = isLight
-            ? surfaceOpacity.clamp(0.54, 0.90)
-            : (surfaceOpacity * 0.76).clamp(0.36, 0.80);
+            ? surfaceOpacity.clamp(0.82, 0.95)
+            : (surfaceOpacity * 0.94).clamp(0.76, 0.92);
         return base.withValues(alpha: alpha);
       case 'tinted_acrylic':
         final base = Color.lerp(surface, canvasGlow, isLight ? 0.08 : 0.12)!;
@@ -907,10 +907,10 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     surface2: Color(0xFF19263C),
     surface3: Color(0xFF233450),
     field: Color(0xFF0E1726),
-    glass: Color(0xBD101A2B),
-    glassStrong: Color(0xEC142034),
-    border: Color(0x22FFFFFF),
-    borderStrong: Color(0x3CFFFFFF),
+    glass: Color(0xD9101A2B),
+    glassStrong: Color(0xF2142034),
+    border: Color(0x28FFFFFF),
+    borderStrong: Color(0x46FFFFFF),
     fg: Color(0xFFF5F8FF),
     fg2: Color(0xFFA6B4CA),
     fg3: Color(0xFF6E7E97),
@@ -927,7 +927,7 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     detailLayout: 'apple_immersive',
     backdropMode: 'blurred_fanart',
     backdropBlur: 38.0,
-    surfaceOpacity: 0.72,
+    surfaceOpacity: 0.84,
     surfaceMaterial: 'unified_glass',
     cardStyle: 'classic_below',
     cardHoverEffect: 'lift',
@@ -950,10 +950,10 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     surface2: Color(0xFF182338),
     surface3: Color(0xFF22314C),
     field: Color(0xFF0C1320),
-    glass: Color(0x8C121C2E),
-    glassStrong: Color(0xBA162238),
-    border: Color(0x36FFFFFF),
-    borderStrong: Color(0x5EFFFFFF),
+    glass: Color(0xCC111B2E),
+    glassStrong: Color(0xEB142035),
+    border: Color(0x3CFFFFFF),
+    borderStrong: Color(0x6BFFFFFF),
     fg: Color(0xFFF8FAFF),
     fg2: Color(0xFFB4C0D6),
     fg3: Color(0xFF7B8AA4),
@@ -969,8 +969,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     heroStyle: 'full_bleed',
     detailLayout: 'apple_immersive',
     backdropMode: 'blurred_fanart',
-    backdropBlur: 30.0,
-    surfaceOpacity: 0.56,
+    backdropBlur: 32.0,
+    surfaceOpacity: 0.78,
     surfaceMaterial: 'liquid_glass',
     cardStyle: 'classic_below',
     cardHoverEffect: 'lift',
@@ -1519,8 +1519,8 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       surface2: const Color(0xFFE8EDF5),
       surface3: const Color(0xFFDCE3EE),
       field: const Color(0xFFEBEEF5),
-      glass: Colors.white.withValues(alpha: isLiquidGlass ? 0.64 : 0.82),
-      glassStrong: Colors.white.withValues(alpha: isLiquidGlass ? 0.80 : 0.94),
+      glass: Colors.white.withValues(alpha: isLiquidGlass ? 0.84 : 0.88),
+      glassStrong: Colors.white.withValues(alpha: isLiquidGlass ? 0.93 : 0.96),
       border: const Color(0x160F172A),
       borderStrong: const Color(0x280F172A),
       fg: const Color(0xFF111318),
@@ -2088,29 +2088,71 @@ class LiquidGlassRimPainter extends CustomPainter {
     if (size.isEmpty) return;
     final rect = Offset.zero & size;
     final safeR = math.min(radius, math.min(size.width, size.height) * 0.5);
-    final rrect = RRect.fromRectAndRadius(rect.deflate(0.55), Radius.circular(safeR));
 
-    final topAlpha = ((isLight ? 0.92 : 0.52) * intensity).clamp(0.14, 1.0);
-    final midAlpha = ((isLight ? 0.35 : 0.09) * intensity).clamp(0.03, 0.55);
-    final causticAlpha = ((selected ? 0.62 : (isLight ? 0.36 : 0.30)) * intensity).clamp(0.10, 0.85);
+    // 1. Hairline outer separation keyline so the luminous glass bevel pops crisply
+    //    against both bright light-mode canvases and pitch-black cinema scenes.
+    final outerKeyline = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.7
+      ..isAntiAlias = true
+      ..color = isLight
+          ? Colors.black.withValues(alpha: 0.10)
+          : Colors.black.withValues(alpha: 0.42);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect.deflate(0.35), Radius.circular(safeR)),
+      outerKeyline,
+    );
+
+    // 2. Soft inner refractive glass thickness bevel (gives authentic curved-lens depth).
+    final innerAlphaTop = ((isLight ? 0.58 : 0.22) * intensity).clamp(0.06, 0.72);
+    final innerAlphaBot = ((selected ? 0.34 : (isLight ? 0.24 : 0.16)) * intensity).clamp(0.04, 0.48);
+    final innerBevel = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.6
+      ..isAntiAlias = true
+      ..shader = LinearGradient(
+        begin: const Alignment(-1.0, -1.0),
+        end: const Alignment(1.0, 1.0),
+        stops: const [0.0, 0.34, 0.66, 1.0],
+        colors: [
+          Colors.white.withValues(alpha: innerAlphaTop),
+          Colors.white.withValues(alpha: innerAlphaTop * 0.12),
+          Colors.transparent,
+          Color.lerp(Colors.white, accent, 0.45)!.withValues(alpha: innerAlphaBot),
+        ],
+      ).createShader(rect);
+    final innerR = math.max(0.0, safeR - 1.5);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect.deflate(1.9), Radius.circular(innerR)),
+      innerBevel,
+    );
+
+    // 3. Crisp primary specular rim highlight (top-left bright catch -> mid sheen -> bottom-right caustic).
+    final topAlpha = ((isLight ? 0.98 : 0.84) * intensity).clamp(0.24, 1.0);
+    final midAlpha = ((isLight ? 0.46 : 0.22) * intensity).clamp(0.08, 0.65);
+    final causticAlpha = ((selected ? 0.82 : (isLight ? 0.58 : 0.54)) * intensity).clamp(0.18, 0.95);
 
     final rimPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = selected ? 1.45 : 1.08
+      ..strokeWidth = selected ? 1.65 : 1.32
       ..isAntiAlias = true
       ..shader = LinearGradient(
-        begin: const Alignment(-0.95, -0.95),
-        end: const Alignment(0.95, 0.95),
-        stops: const [0.0, 0.38, 0.68, 1.0],
+        begin: const Alignment(-0.98, -0.98),
+        end: const Alignment(0.98, 0.98),
+        stops: const [0.0, 0.34, 0.68, 1.0],
         colors: [
           Colors.white.withValues(alpha: topAlpha),
           Colors.white.withValues(alpha: midAlpha),
-          Colors.white.withValues(alpha: midAlpha * 0.75),
-          Color.lerp(Colors.white, accent, selected ? 0.75 : 0.52)!.withValues(alpha: causticAlpha),
+          Colors.white.withValues(alpha: midAlpha * 0.85),
+          Color.lerp(Colors.white, accent, selected ? 0.72 : 0.46)!.withValues(alpha: causticAlpha),
         ],
       ).createShader(rect);
 
-    canvas.drawRRect(rrect, rimPaint);
+    final rimR = math.max(0.0, safeR - 0.3);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect.deflate(0.8), Radius.circular(rimR)),
+      rimPaint,
+    );
   }
 
   @override

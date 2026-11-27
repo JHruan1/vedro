@@ -1130,13 +1130,15 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    // Visual-first server cards: latency as signal+ms, inventory as compact icon+number,
-    // offline as cloud_off icon (no verbose "在线 · 电影 · 剧集" sentences).
+    // Visual-first server cards: latency as signal+ms, inventory as compact icon+number
+    // (movies, series, episodes), offline as cloud_off icon.
     expect(find.text('28ms'), findsOneWidget);
     expect(find.text('420'), findsOneWidget);
     expect(find.text('85'), findsOneWidget);
+    expect(find.text('3120'), findsOneWidget);
     expect(find.byIcon(Icons.movie_outlined), findsOneWidget);
     expect(find.byIcon(Icons.tv_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.video_library_outlined), findsOneWidget);
     expect(find.byIcon(Icons.cloud_off_rounded), findsOneWidget);
   });
 
@@ -1902,15 +1904,15 @@ void main() {
   testWidgets(
       'Portrait 360px Series Episode List & AdminConsolePane stay crisp with clean version labels and zero overflow',
       (tester) async {
-    // 1. Series version resolver strips S01E01 & Preferred clutter cleanly
+    // 1. Series version resolver strips S01E01, Local/Cloud & Preferred clutter cleanly
     final cleaned = MediaSourceModel.resolveVersions(
       [
         MediaSourceModel(id: 's1', name: 'S01E01 · 动漫 · Local · Preferred', container: 'mkv'),
-        MediaSourceModel(id: 's2', name: 'S01E01 · 1080p · 国粤双语 · Preferred', container: 'mkv'),
+        MediaSourceModel(id: 's2', name: 'S01E01 · 1080p · 国粤双语 · Cloud · Preferred', container: 'mkv'),
       ],
       stripEpisodePrefix: true,
     );
-    expect(cleaned.first.displayTitle, equals('动漫 · Local'));
+    expect(cleaned.first.displayTitle, equals('动漫'));
     expect(cleaned.last.displayTitle, equals('1080p · 国粤双语'));
 
     // 2. Portrait 360x780 Series Episode list mode: full episode headline + unclipped range pills + expandable search

@@ -295,6 +295,37 @@ Rect? vedroGlobalRectOfKey(BuildContext context, GlobalKey key) {
   return MatrixUtils.transformRect(box.getTransformTo(overlay), Offset.zero & box.size);
 }
 
+/// Hero flight shuttle that keeps poster artwork strictly rounded (and framed)
+/// during BOTH push (entering DetailScreen) AND pop (flying back to the card),
+/// preventing Flutter's default Hero shuttle from snapping to square corners on exit.
+HeroFlightShuttleBuilder vedroRoundedHeroShuttleBuilder(
+  double borderRadius, {
+  BoxBorder? border,
+}) {
+  final radius = BorderRadius.circular(borderRadius);
+  return (
+    BuildContext flightContext,
+    Animation<double> animation,
+    HeroFlightDirection flightDirection,
+    BuildContext fromHeroContext,
+    BuildContext toHeroContext,
+  ) {
+    final targetHero = toHeroContext.widget as Hero;
+    return DecoratedBox(
+      position: DecorationPosition.foreground,
+      decoration: BoxDecoration(borderRadius: radius, border: border),
+      child: ClipRRect(
+        borderRadius: radius,
+        clipBehavior: Clip.antiAlias,
+        child: Material(
+          type: MaterialType.transparency,
+          child: targetHero.child,
+        ),
+      ),
+    );
+  };
+}
+
 /// Tactile Apple-style damped press + progressive long-press peek lift + desktop hover lift + 10-foot TV D-Pad focus ring.
 class PressableScale extends StatefulWidget {
   const PressableScale({
@@ -1184,14 +1215,90 @@ Future<T?> showGlassSheet<T>({
 }) {
   final size = MediaQuery.sizeOf(context);
   final wide = size.width >= 720;
+  final parentTheme = Theme.of(context);
   final parentSkin = VedroSkin.of(context);
   final effectiveSkin =
       forceDark && parentSkin.isLight ? parentSkin.withPolarity(false) : parentSkin;
-  final overrideTheme = forceDark && parentSkin.isLight ? VedroTheme.fromSkin(effectiveSkin) : null;
+  final effectiveTheme =
+      forceDark && parentSkin.isLight ? VedroTheme.fromSkin(effectiveSkin) : parentTheme;
 
-  Widget wrapTheme(BuildContext ctx, Widget child) {
-    if (overrideTheme == null) return child;
-    return Theme(data: overrideTheme, child: child);
+  Widget wrapTheme(Widget child) => Theme(data: effectiveTheme, child: child);
+
+  Widget buildSheetSurface({
+    required VedroSkin skin,
+    required double radius,
+    required bool enableLiveBlur,
+    required Widget child,
+  }) {
+    final isLiquid = skin.isLiquidGlass;
+    final isGlassTheme = skin.usesGlassPanels;
+    final liveSigma = (isGlassTheme && enableLiveBlur) ? PlatformPerfProfile.clampLiveBlur(20.0) : 0.0;
+    final baseColor = skin.isLight
+        ? Colors.white
+        : Color.lerp(skin.surface2, skin.surface, 0.36)!;
+    final fillColor = isGlassTheme
+        ? baseColor.withValues(alpha: liveSigma > 0.5 ? (skin.isLight ? 0.90 : 0.89) : 0.96)
+        : skin.surface;
+
+    final body = DecoratedBox(
+      decoration: BoxDecoration(
+        color: fillColor,
+        gradient: isGlassTheme
+            ? LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                stops: const [0.0, 0.42, 1.0],
+                colors: [
+                  Colors.white.withValues(alpha: skin.isLight ? 0.52 : (isLiquid ? 0.16 : 0.09)),
+                  Colors.transparent,
+                  skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.07),
+                ],
+              )
+            : null,
+      ),
+      child: Material(type: MaterialType.transparency, child: child),
+    );
+
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(radius),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: skin.isLight ? 0.20 : 0.72),
+            blurRadius: 34,
+            offset: const Offset(0, 14),
+          ),
+        ],
+      ),
+      child: CustomPaint(
+        foregroundPainter: isGlassTheme
+            ? LiquidGlassRimPainter(
+                radius: radius,
+                isLight: skin.isLight,
+                accent: skin.accent,
+                intensity: isLiquid ? 1.15 : 0.72,
+              )
+            : null,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(radius),
+          child: DecoratedBox(
+            position: DecorationPosition.foreground,
+            decoration: isGlassTheme
+                ? const BoxDecoration()
+                : BoxDecoration(
+                    borderRadius: BorderRadius.circular(radius),
+                    border: Border.all(color: skin.borderStrong, width: 1.0),
+                  ),
+            child: liveSigma > 0.5
+                ? BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: liveSigma, sigmaY: liveSigma),
+                    child: body,
+                  )
+                : body,
+          ),
+        ),
+      ),
+    );
   }
 
   if (wide) {
@@ -1202,12 +1309,11 @@ Future<T?> showGlassSheet<T>({
       barrierColor: Colors.black.withValues(alpha: effectiveSkin.isLight ? 0.36 : 0.62),
       transitionDuration: const Duration(milliseconds: 440),
       transitionBuilder: vedroDialogTransition,
-      pageBuilder: (ctx, _, __) {
+      pageBuilder: (ctx, animation, __) {
         final s = MediaQuery.sizeOf(ctx);
-        final skin = overrideTheme != null ? effectiveSkin : VedroSkin.of(ctx);
-        final r = skin.cardRadius.clamp(10.0, 22.0);
+        final skin = effectiveSkin;
+        final r = skin.cardRadius.clamp(12.0, 22.0);
         return wrapTheme(
-          ctx,
           Dialog(
             backgroundColor: Colors.transparent,
             elevation: 0,
@@ -1217,29 +1323,20 @@ Future<T?> showGlassSheet<T>({
                 maxWidth: maxWidth,
                 maxHeight: s.height * 0.86,
               ),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: skin.surface,
-                  borderRadius: BorderRadius.circular(r),
-                  border: Border.all(color: skin.borderStrong, width: 1.0),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: skin.isLight ? 0.22 : 0.78),
-                      blurRadius: 36,
-                      offset: const Offset(0, 16),
-                    ),
-                  ],
+              child: AnimatedBuilder(
+                animation: animation,
+                builder: (_, child) => buildSheetSurface(
+                  skin: skin,
+                  radius: r,
+                  enableLiveBlur: animation.status == AnimationStatus.completed,
+                  child: child!,
                 ),
-                clipBehavior: Clip.antiAlias,
-                child: Material(
-                  type: MaterialType.transparency,
-                  child: Builder(
-                    builder: (innerCtx) => Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Flexible(child: builder(innerCtx)),
-                      ],
-                    ),
+                child: Builder(
+                  builder: (innerCtx) => Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(child: builder(innerCtx)),
+                    ],
                   ),
                 ),
               ),
@@ -1266,10 +1363,9 @@ Future<T?> showGlassSheet<T>({
     ),
     builder: (ctx) {
       final s = MediaQuery.sizeOf(ctx);
-      final skin = overrideTheme != null ? effectiveSkin : VedroSkin.of(ctx);
+      final skin = effectiveSkin;
       final r = skin.cardRadius.clamp(12.0, 22.0);
       return wrapTheme(
-        ctx,
         SafeArea(
           top: false,
           child: Padding(
@@ -1279,38 +1375,25 @@ Future<T?> showGlassSheet<T>({
                 maxWidth: 540,
                 maxHeight: s.height * 0.84,
               ),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: skin.surface,
-                  borderRadius: BorderRadius.circular(r),
-                  border: Border.all(color: skin.borderStrong, width: 1.0),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: skin.isLight ? 0.20 : 0.72),
-                      blurRadius: 32,
-                      offset: const Offset(0, 12),
-                    ),
-                  ],
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: Material(
-                  type: MaterialType.transparency,
-                  child: Builder(
-                    builder: (innerCtx) => Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const SizedBox(height: 10),
-                        Container(
-                          width: 36,
-                          height: 4,
-                          decoration: BoxDecoration(
-                            color: skin.fg3.withValues(alpha: 0.45),
-                            borderRadius: BorderRadius.circular(2),
-                          ),
+              child: buildSheetSurface(
+                skin: skin,
+                radius: r,
+                enableLiveBlur: true,
+                child: Builder(
+                  builder: (innerCtx) => Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 10),
+                      Container(
+                        width: 36,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: skin.fg3.withValues(alpha: 0.45),
+                          borderRadius: BorderRadius.circular(2),
                         ),
-                        Flexible(child: builder(innerCtx)),
-                      ],
-                    ),
+                      ),
+                      Flexible(child: builder(innerCtx)),
+                    ],
                   ),
                 ),
               ),
@@ -1749,10 +1832,20 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
 
     final r = skin.cardRadius.clamp(12.0, 22.0);
     final isLiquid = skin.isLiquidGlass;
-    final menuBg = skin.isLight
-        ? Colors.white.withValues(alpha: isLiquid ? 0.88 : 0.96)
-        : Color.lerp(skin.surface2, skin.surface, 0.35)!
-            .withValues(alpha: isLiquid ? 0.86 : 0.96);
+    final isGlassTheme = skin.usesGlassPanels;
+    final rimIntensity = isLiquid ? 1.15 : 0.72;
+    final liveSigma = isGlassTheme ? PlatformPerfProfile.clampLiveBlur(20.0) : 0.0;
+    final baseSurface = skin.isLight
+        ? Colors.white
+        : Color.lerp(skin.surface2, skin.surface, 0.32)!;
+    // High-density frosted tint: completely obscures underlying sharp text while
+    // allowing soft ambient luminosity when live blur engages after spring settle.
+    final settledFill = baseSurface.withValues(
+      alpha: skin.isLight
+          ? (isGlassTheme ? (liveSigma > 0.5 ? 0.88 : 0.95) : 0.97)
+          : (isGlassTheme ? (liveSigma > 0.5 ? 0.88 : 0.95) : 0.97),
+    );
+    final animatingFill = baseSurface.withValues(alpha: skin.isLight ? 0.96 : 0.95);
 
     final menuList = ConstrainedBox(
       constraints: BoxConstraints(
@@ -1867,59 +1960,75 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
       ),
     );
 
-    final menuCard = Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(r),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: skin.isLight ? 0.16 : 0.54),
-            blurRadius: 32,
-            spreadRadius: 0,
-            offset: const Offset(0, 14),
-          ),
-        ],
-      ),
-      child: CustomPaint(
-        foregroundPainter: isLiquid
-            ? LiquidGlassRimPainter(
-                radius: r,
-                isLight: skin.isLight,
-                accent: skin.accent,
-              )
-            : null,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(r),
-          child: DecoratedBox(
-            position: DecorationPosition.foreground,
-            decoration: isLiquid
-                ? const BoxDecoration()
-                : BoxDecoration(
-                    borderRadius: BorderRadius.circular(r),
-                    border: Border.all(
-                      color: skin.isLight
-                          ? Colors.black.withValues(alpha: 0.08)
-                          : Colors.white.withValues(alpha: 0.16),
-                      width: 0.85,
-                    ),
-                  ),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: menuBg,
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: skin.isLight ? 0.38 : (isLiquid ? 0.12 : 0.06)),
+    Widget buildMenuCard({required bool enableLiveBlur}) {
+      final body = DecoratedBox(
+        decoration: BoxDecoration(
+          color: enableLiveBlur ? settledFill : animatingFill,
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            stops: isGlassTheme ? const [0.0, 0.42, 1.0] : const [0.0, 1.0],
+            colors: isGlassTheme
+                ? [
+                    Colors.white.withValues(alpha: skin.isLight ? 0.52 : (isLiquid ? 0.16 : 0.10)),
+                    Colors.transparent,
+                    skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.07),
+                  ]
+                : [
+                    Colors.white.withValues(alpha: skin.isLight ? 0.32 : 0.05),
                     Colors.transparent,
                   ],
-                ),
-              ),
-              child: menuList,
+          ),
+        ),
+        child: menuList,
+      );
+      return Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(r),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: skin.isLight ? 0.18 : 0.58),
+              blurRadius: 34,
+              spreadRadius: 0,
+              offset: const Offset(0, 14),
+            ),
+          ],
+        ),
+        child: CustomPaint(
+          foregroundPainter: isGlassTheme
+              ? LiquidGlassRimPainter(
+                  radius: r,
+                  isLight: skin.isLight,
+                  accent: skin.accent,
+                  intensity: rimIntensity,
+                )
+              : null,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(r),
+            child: DecoratedBox(
+              position: DecorationPosition.foreground,
+              decoration: isGlassTheme
+                  ? const BoxDecoration()
+                  : BoxDecoration(
+                      borderRadius: BorderRadius.circular(r),
+                      border: Border.all(
+                        color: skin.isLight
+                            ? Colors.black.withValues(alpha: 0.08)
+                            : Colors.white.withValues(alpha: 0.16),
+                        width: 0.85,
+                      ),
+                    ),
+              child: enableLiveBlur && liveSigma > 0.5
+                  ? BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: liveSigma, sigmaY: liveSigma),
+                      child: body,
+                    )
+                  : body,
             ),
           ),
         ),
-      ),
-    );
+      );
+    }
 
     return Theme(
       data: theme,
@@ -1929,13 +2038,21 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
             left: left,
             top: openUpward ? null : (triggerRect.bottom + 6.0),
             bottom: openUpward ? (screen.height - triggerRect.top + 6.0) : null,
-            child: FadeTransition(
-              opacity: fadeCurve,
-              child: ScaleTransition(
-                alignment: scaleOrigin,
-                scale: Tween<double>(begin: 0.78, end: 1.0).animate(springCurve),
-                child: menuCard,
-              ),
+            child: AnimatedBuilder(
+              animation: animation,
+              builder: (_, __) {
+                final settled = animation.status == AnimationStatus.completed;
+                final card = buildMenuCard(enableLiveBlur: settled);
+                if (settled) return card;
+                return FadeTransition(
+                  opacity: fadeCurve,
+                  child: ScaleTransition(
+                    alignment: scaleOrigin,
+                    scale: Tween<double>(begin: 0.78, end: 1.0).animate(springCurve),
+                    child: card,
+                  ),
+                );
+              },
             ),
           ),
         ],

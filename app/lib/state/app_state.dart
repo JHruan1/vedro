@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:ui' show Color;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart' show PaintingBinding;
 import 'package:path_provider/path_provider.dart';
 
 import '../core/ffi/vedro_bridge.dart';
@@ -135,6 +136,11 @@ class VedroAppState extends ChangeNotifier {
   Map<String, dynamic>? lastSpeedTestResult;
   String? speedTestError;
   Timer? _speedTestPollTimer;
+
+  // Local persistent image cache stats (`<db_dir>/img_cache` + Rust RAM cache)
+  Map<String, dynamic>? imageCacheStats;
+  bool isLoadingImageCacheStats = false;
+  bool isClearingImageCache = false;
 
   Timer? _wsPollTimer;
 
@@ -2333,6 +2339,61 @@ class VedroAppState extends ChangeNotifier {
     _speedTestPollTimer = null;
     isSpeedTesting = false;
     notifyListeners();
+  }
+
+  /// Query local persistent disk + memory image cache usage from the Rust core.
+  Future<Map<String, dynamic>> loadImageCacheStats() async {
+    isLoadingImageCacheStats = true;
+    notifyListeners();
+    try {
+      final raw = await core.invoke('get_image_cache_stats');
+      if (raw is Map<String, dynamic>) {
+        imageCacheStats = raw;
+        return raw;
+      }
+      imageCacheStats = const <String, dynamic>{
+        'disk_files': 0,
+        'disk_bytes': 0,
+        'memory_entries': 0,
+      };
+      return imageCacheStats!;
+    } catch (_) {
+      return imageCacheStats ??
+          const <String, dynamic>{
+            'disk_files': 0,
+            'disk_bytes': 0,
+            'memory_entries': 0,
+          };
+    } finally {
+      isLoadingImageCacheStats = false;
+      notifyListeners();
+    }
+  }
+
+  /// Clear both the Rust persistent disk/RAM image cache and Flutter's decoded image cache.
+  Future<Map<String, dynamic>> clearImageCache() async {
+    isClearingImageCache = true;
+    notifyListeners();
+    try {
+      final raw = await core.invoke('clear_image_cache');
+      try {
+        PaintingBinding.instance.imageCache.clear();
+        PaintingBinding.instance.imageCache.clearLiveImages();
+      } catch (_) {}
+      imageCacheStats = <String, dynamic>{
+        'disk_files': 0,
+        'disk_bytes': 0,
+        'memory_entries': 0,
+        if (imageCacheStats?['cache_dir'] != null)
+          'cache_dir': imageCacheStats!['cache_dir'],
+      };
+      return raw is Map<String, dynamic>
+          ? raw
+          : const <String, dynamic>{'removed_files': 0, 'freed_bytes': 0};
+    } finally {
+      isClearingImageCache = false;
+      notifyListeners();
+    }
   }
 
   static String _humanizeError(String raw) {

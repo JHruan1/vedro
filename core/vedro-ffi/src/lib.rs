@@ -1917,6 +1917,21 @@ impl VedroRuntime {
                 Ok(serde_json::to_value(CombinedPlayerStats { playback, proxy }).unwrap())
             }
 
+            "get_image_cache_stats" => {
+                let stats = self.proxy.image_cache_stats();
+                Ok(serde_json::to_value(stats).unwrap())
+            }
+
+            "clear_image_cache" => {
+                let (removed_files, freed_bytes) = self.proxy.clear_image_cache();
+                let after = self.proxy.image_cache_stats();
+                Ok(json!({
+                    "removed_files": removed_files,
+                    "freed_bytes": freed_bytes,
+                    "stats": after,
+                }))
+            }
+
             "report_playback_start" | "report_playback_progress" | "report_playback_stopped" => {
                 let client = self.require_client()?;
                 let position_ticks = params

@@ -57,7 +57,16 @@ pub struct StreamProxyStats {
     pub rate_limit_retries: u64,
     pub ticket_rotations: u64,
     pub throughput_mbps: f64,
+    pub current_speed_bytes_per_sec: u64,
     pub cache: CacheStats,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImageCacheStats {
+    pub disk_files: usize,
+    pub disk_bytes: u64,
+    pub memory_entries: usize,
+    pub cache_dir: Option<String>,
 }
 
 struct RegisteredStream {
@@ -99,6 +108,7 @@ pub struct StreamProxy {
     total_upstream_bytes: Arc<AtomicU64>,
     total_served_bytes: Arc<AtomicU64>,
     rate_limit_retries: Arc<AtomicU64>,
+    speed_sample: Mutex<(Instant, u64, u64)>,
     started_at: Instant,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
@@ -163,6 +173,7 @@ impl StreamProxy {
             total_upstream_bytes: Arc::new(AtomicU64::new(0)),
             total_served_bytes: Arc::new(AtomicU64::new(0)),
             rate_limit_retries: Arc::new(AtomicU64::new(0)),
+            speed_sample: Mutex::new((Instant::now(), 0, 0)),
             started_at: Instant::now(),
             shutdown_tx: Some(shutdown_tx),
         });
@@ -342,6 +353,18 @@ impl StreamProxy {
     pub fn stats(&self) -> StreamProxyStats {
         let elapsed = self.started_at.elapsed().as_secs_f64().max(0.001);
         let up_bytes = self.total_upstream_bytes.load(Ordering::Relaxed);
+        let current_bps = {
+            let mut sample = self.speed_sample.lock();
+            let dt = sample.0.elapsed().as_secs_f64();
+            if dt >= 0.35 {
+                let delta = up_bytes.saturating_sub(sample.1);
+                let bps = (delta as f64 / dt).round() as u64;
+                *sample = (Instant::now(), up_bytes, bps);
+                bps
+            } else {
+                sample.2
+            }
+        };
         let rotations: u64 = self
             .streams
             .iter()
@@ -356,8 +379,65 @@ impl StreamProxy {
             rate_limit_retries: self.rate_limit_retries.load(Ordering::Relaxed),
             ticket_rotations: rotations,
             throughput_mbps: (up_bytes as f64 * 8.0) / (elapsed * 1_000_000.0),
+            current_speed_bytes_per_sec: current_bps,
             cache: self.cache.stats(),
         }
+    }
+
+    /// Inspect local on-disk & RAM image cache occupancy.
+    pub fn image_cache_stats(&self) -> ImageCacheStats {
+        let mem_entries = self.image_cache.lock().len();
+        let dir_opt = self.image_cache_dir.read().clone();
+        let mut disk_files = 0usize;
+        let mut disk_bytes = 0u64;
+        if let Some(ref dir) = dir_opt {
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for entry in rd.flatten() {
+                    let path = entry.path();
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.is_file() {
+                            disk_bytes = disk_bytes.saturating_add(meta.len());
+                            if path.extension().and_then(|e| e.to_str()) == Some("img") {
+                                disk_files += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ImageCacheStats {
+            disk_files,
+            disk_bytes,
+            memory_entries: mem_entries,
+            cache_dir: dir_opt.map(|p| p.to_string_lossy().into_owned()),
+        }
+    }
+
+    /// Purge both RAM LRU and persistent disk image cache files, returning `(removed_images, freed_bytes)`.
+    pub fn clear_image_cache(&self) -> (usize, u64) {
+        self.image_cache.lock().clear();
+        let dir_opt = self.image_cache_dir.read().clone();
+        let mut removed_images = 0usize;
+        let mut freed_bytes = 0u64;
+        if let Some(dir) = dir_opt {
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for entry in rd.flatten() {
+                    let path = entry.path();
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.is_file() {
+                            let len = meta.len();
+                            if std::fs::remove_file(&path).is_ok() {
+                                freed_bytes = freed_bytes.saturating_add(len);
+                                if path.extension().and_then(|e| e.to_str()) == Some("img") {
+                                    removed_images += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (removed_images, freed_bytes)
     }
 
     async fn handle_request(
@@ -581,7 +661,7 @@ impl StreamProxy {
                             let _ = tokio::fs::rename(&tmp_path, &bin_path).await;
                         }
                         if write_idx % 128 == 127 {
-                            prune_image_disk_cache(&dir, 900).await;
+                            prune_image_disk_cache(&dir, 2400).await;
                         }
                     });
                 }
@@ -978,5 +1058,36 @@ mod tests {
             parse_content_range_total("bytes 0-1048575/123456789"),
             Some(123_456_789)
         );
+    }
+
+    #[tokio::test]
+    async fn image_cache_stats_and_clear_work() {
+        let dir =
+            std::env::temp_dir().join(format!("vedro_img_cache_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("aaa.img"), vec![1u8; 4096]).unwrap();
+        std::fs::write(dir.join("aaa.ct"), b"image/jpeg").unwrap();
+        std::fs::write(dir.join("bbb.img"), vec![2u8; 2048]).unwrap();
+        std::fs::write(dir.join("bbb.ct"), b"image/webp").unwrap();
+
+        let proxy = StreamProxy::start(StreamProxyConfig::default())
+            .await
+            .unwrap();
+        proxy.set_image_cache_dir(dir.clone());
+
+        let stats = proxy.image_cache_stats();
+        assert_eq!(stats.disk_files, 2);
+        assert!(stats.disk_bytes >= 6144);
+        assert_eq!(stats.memory_entries, 0);
+
+        let (removed, freed) = proxy.clear_image_cache();
+        assert_eq!(removed, 2);
+        assert!(freed >= 6144);
+
+        let after = proxy.image_cache_stats();
+        assert_eq!(after.disk_files, 0);
+        assert_eq!(after.disk_bytes, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

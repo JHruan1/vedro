@@ -136,12 +136,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ),
     _NavItemMeta(
       section: _SettingsSection.downloads,
-      title: '下载管理',
+      title: '下载与缓存',
       icon: Icons.download_rounded,
       tintTop: Color(0xFF34D399),
       tintBottom: Color(0xFF059669),
       group: '媒体源与管理',
-      keywords: 'offline cache 离线 缓存',
+      keywords: 'offline cache image 离线 下载 图片 缓存 清理 存储',
     ),
     _NavItemMeta(
       section: _SettingsSection.fonts,
@@ -302,7 +302,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final reg = app.meQuota?.registeredDevices ?? app.userDevices.length;
         return reg > 0 ? '$reg 台' : '管理设备';
       case _SettingsSection.downloads:
-        return app.downloads.isEmpty ? '无任务' : '${app.downloads.length} 项';
+        if (app.downloads.isNotEmpty) return '${app.downloads.length} 项';
+        final imgBytes = (app.imageCacheStats?['disk_bytes'] as num?)?.toInt() ?? 0;
+        return imgBytes > 0 ? fmtFileSize(imgBytes) : '无任务';
       case _SettingsSection.fonts:
         return p.subtitleFontFamily.isEmpty ? '系统默认' : p.subtitleFontFamily;
       case _SettingsSection.style:
@@ -854,6 +856,11 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
         );
         unawaited(widget.appState.refreshMeQuota());
       });
+    } else if (widget.section == _SettingsSection.downloads) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        unawaited(widget.appState.loadImageCacheStats());
+      });
     }
   }
 
@@ -1393,16 +1400,130 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     );
   }
 
-  // 2. 下载管理
+  // 2. 下载与缓存
   Widget _buildDownloads(VedroAppState app, VedroPreferences p) {
     final skin = VedroSkin.of(context);
     final totalBytes = app.downloads.fold<int>(0, (sum, d) => sum + d.downloadedBytes);
     final dq = app.meQuota?.downloadQuota;
     final traffic = app.meQuota?.traffic;
+    final imgStats = app.imageCacheStats;
+    final imgFiles = (imgStats?['disk_files'] as num?)?.toInt() ?? 0;
+    final imgBytes = (imgStats?['disk_bytes'] as num?)?.toInt() ?? 0;
+    final imgMemEntries = (imgStats?['memory_entries'] as num?)?.toInt() ?? 0;
+    final imgSizeLabel = fmtFileSize(imgBytes).isEmpty ? '0 B' : fmtFileSize(imgBytes);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('下载管理'),
+        _heading('下载与缓存'),
+        const _GroupHeader('本地图片缓存'),
+        KeyedSubtree(
+          key: const ValueKey('settings-image-cache-card'),
+          child: _GroupedCard(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        Icons.photo_library_outlined,
+                        size: 19,
+                        color: Theme.of(context).colorScheme.secondary,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                '海报与剧照本地缓存',
+                                style: TextStyle(
+                                  color: skin.fg,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                imgSizeLabel,
+                                style: TextStyle(
+                                  color: Theme.of(context).colorScheme.secondary,
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w700,
+                                  fontFeatures: const [FontFeature.tabularFigures()],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            app.isLoadingImageCacheStats
+                                ? '正在统计缓存占用…'
+                                : '已缓存 $imgFiles 张本地图片 · 内存热缓存 $imgMemEntries 张（避免重复网络加载）',
+                            style: TextStyle(color: skin.fg3, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '刷新缓存统计',
+                      visualDensity: VisualDensity.compact,
+                      icon: app.isLoadingImageCacheStats
+                          ? SizedBox(
+                              width: 15,
+                              height: 15,
+                              child: CircularProgressIndicator(strokeWidth: 1.8, color: skin.fg2),
+                            )
+                          : Icon(Icons.refresh_rounded, size: 18, color: skin.fg2),
+                      onPressed: app.isLoadingImageCacheStats ? null : () => app.loadImageCacheStats(),
+                    ),
+                    const SizedBox(width: 4),
+                    OutlinedButton.icon(
+                      key: const ValueKey('clear-image-cache-btn'),
+                      onPressed: app.isClearingImageCache
+                          ? null
+                          : () async {
+                              final res = await app.clearImageCache();
+                              if (!mounted) return;
+                              final removed = (res['removed_files'] as num?)?.toInt() ?? 0;
+                              final freed = (res['freed_bytes'] as num?)?.toInt() ?? 0;
+                              final freedLabel =
+                                  fmtFileSize(freed).isEmpty ? '0 B' : fmtFileSize(freed);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    removed > 0
+                                        ? '已清理 $removed 张缓存图片，释放 $freedLabel'
+                                        : '本地图片缓存已清空',
+                                  ),
+                                ),
+                              );
+                            },
+                      icon: app.isClearingImageCache
+                          ? const SizedBox(
+                              width: 13,
+                              height: 13,
+                              child: CircularProgressIndicator(strokeWidth: 1.8),
+                            )
+                          : const Icon(Icons.cleaning_services_rounded, size: 15),
+                      label: const Text('清理缓存', style: TextStyle(fontSize: 12.5)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 18),
         if (dq != null && dq.enabled) ...[
           _buildDownloadQuotaCard(app, dq, traffic),
           const SizedBox(height: 18),
@@ -2626,20 +2747,48 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 onChanged: (v) => _updatePrefs(p.copyWith(longPressSpeed: v)),
               ),
             ),
-            if (isMobileOs) ...[
+            if (isMobileOs)
               _SwitchRow(
                 title: '双指捏合缩放画面',
                 subtitle: '播放时支持双指自由缩放，松手保持比例',
                 value: p.pinchToZoom,
                 onChanged: (v) => _updatePrefs(p.copyWith(pinchToZoom: v)),
               ),
-              _SwitchRow(
-                title: '记忆播放器亮度',
-                subtitle: '下次进入播放时自动恢复上次调节的画面亮度',
-                value: p.rememberBrightness,
-                onChanged: (v) => _updatePrefs(p.copyWith(rememberBrightness: v)),
-              ),
-            ],
+            _SwitchRow(
+              key: const ValueKey('pref-show-network-speed'),
+              title: '显示播放网速',
+              subtitle: '播放与缓冲时实时显示当前下载网速',
+              value: p.showNetworkSpeed,
+              onChanged: (v) => _updatePrefs(p.copyWith(showNetworkSpeed: v)),
+            ),
+            _SwitchRow(
+              key: const ValueKey('pref-remember-brightness'),
+              title: '记忆播放器亮度',
+              subtitle: '下次进入播放时自动恢复上次调节的画面亮度',
+              value: p.rememberBrightness,
+              onChanged: (v) => _updatePrefs(p.copyWith(rememberBrightness: v)),
+            ),
+            _SwitchRow(
+              key: const ValueKey('pref-remember-volume'),
+              title: '记忆播放器音量',
+              subtitle: '下次进入播放时自动恢复上次调节的音量与静音状态',
+              value: p.rememberVolume,
+              onChanged: (v) => _updatePrefs(p.copyWith(rememberVolume: v)),
+            ),
+            _SwitchRow(
+              key: const ValueKey('pref-remember-speed'),
+              title: '记忆播放倍速',
+              subtitle: '下次进入播放时自动恢复上次选择的倍速',
+              value: p.rememberSpeed,
+              onChanged: (v) => _updatePrefs(p.copyWith(rememberSpeed: v)),
+            ),
+            _SwitchRow(
+              key: const ValueKey('pref-remember-aspect'),
+              title: '记忆画面比例',
+              subtitle: '下次进入播放时自动恢复上次选择的画面比例',
+              value: p.rememberAspect,
+              onChanged: (v) => _updatePrefs(p.copyWith(rememberAspect: v)),
+            ),
             if (supportsPip)
               _SwitchRow(
                 title: '启用画中画 (PiP)',

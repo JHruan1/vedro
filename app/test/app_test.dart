@@ -52,6 +52,9 @@ class _MockVedroCore implements VedroCoreClient {
   Map<String, dynamic>? lastAiTranslateParams;
   Map<String, dynamic>? lastAiModelsParams;
   Map<String, dynamic>? lastRestoreParams;
+  int mockImageCacheFiles = 42;
+  int mockImageCacheBytes = 12 * 1024 * 1024;
+  int mockImageCacheMemEntries = 18;
   List<Map<String, dynamic>> mockDevices = [
     <String, dynamic>{
       'DeviceId': 'dev-current-win',
@@ -760,6 +763,23 @@ class _MockVedroCore implements VedroCoreClient {
         };
       case 'admin_download_quota_events':
         return <dynamic>[];
+      case 'get_image_cache_stats':
+        return <String, dynamic>{
+          'disk_files': mockImageCacheFiles,
+          'disk_bytes': mockImageCacheBytes,
+          'memory_entries': mockImageCacheMemEntries,
+          'cache_dir': '/tmp/vedro-mock/img_cache',
+        };
+      case 'clear_image_cache':
+        final removed = mockImageCacheFiles;
+        final freed = mockImageCacheBytes;
+        mockImageCacheFiles = 0;
+        mockImageCacheBytes = 0;
+        mockImageCacheMemEntries = 0;
+        return <String, dynamic>{
+          'removed_files': removed,
+          'freed_bytes': freed,
+        };
       default:
         return <String, dynamic>{};
     }
@@ -1022,11 +1042,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('更多操作'), findsNothing);
 
-    expect(find.text('影片资料与 NFO 信息'), findsOneWidget);
-    expect(find.text('Netflix'), findsOneWidget);
-    expect(find.text('# 科幻'), findsOneWidget);
-    expect(find.text('TMDB: 108545'), findsOneWidget);
-    expect(find.text('2024-03-21'), findsWidgets);
+    // v0.3.10: redundant NFO metadata, technical specs, and file path footer blocks are removed
+    expect(find.text('影片资料与 NFO 信息'), findsNothing);
+    expect(find.text('技术规格'), findsNothing);
+    expect(find.text('媒体路径'), findsNothing);
     // Short overview MUST NOT show 展开全部
     expect(find.text('展开全部'), findsNothing);
   });
@@ -1245,9 +1264,9 @@ void main() {
       ),
     ));
     await tester.pumpAndSettle();
-    // Before clicking 下载管理, sidebar shows clean "无任务" without quota balance text
+    // Before clicking 下载与缓存, sidebar shows clean "无任务" without quota balance text
     expect(find.byKey(const ValueKey('settings-download-quota-card')), findsNothing);
-    await tester.tap(find.text('下载管理'));
+    await tester.tap(find.text('下载与缓存'));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('settings-download-quota-card')), findsOneWidget);
     expect(find.text('下载流量包'), findsOneWidget);
@@ -2420,6 +2439,12 @@ void main() {
       expect(boot['proxy_addr']?.toString(), contains('127.0.0.1:'));
       expect(boot['servers'], isA<List<dynamic>>());
       expect(boot['settings'], isA<Map<String, dynamic>>());
+      final imgStats = await bridge.invoke('get_image_cache_stats') as Map<String, dynamic>;
+      expect(imgStats['disk_files'], isA<num>());
+      expect(imgStats['disk_bytes'], isA<num>());
+      final cleared = await bridge.invoke('clear_image_cache') as Map<String, dynamic>;
+      expect(cleared['removed_files'], isA<num>());
+      expect(cleared['freed_bytes'], isA<num>());
     } finally {
       bridge.dispose();
     }
@@ -2616,5 +2641,77 @@ void main() {
       find.descendant(of: find.byType(DanmakuLayer), matching: find.byType(Opacity)),
       findsNothing,
     );
+  });
+
+  testWidgets(
+      'v0.3.10: Network speed & player memory prefs, local image cache usage + clear button, and clean settings toggles',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    // 1. VedroPreferences defaults & JSON round-trip for v0.3.10 features
+    const defaults = VedroPreferences();
+    expect(defaults.showNetworkSpeed, isTrue);
+    expect(defaults.rememberBrightness, isTrue);
+    expect(defaults.rememberVolume, isTrue);
+    expect(defaults.savedVolume, equals(100.0));
+    expect(defaults.rememberSpeed, isTrue);
+    expect(defaults.rememberAspect, isTrue);
+
+    final customized = defaults.copyWith(
+      showNetworkSpeed: false,
+      rememberBrightness: false,
+      savedBrightness: 0.65,
+      rememberVolume: true,
+      savedVolume: 72.0,
+      rememberSpeed: false,
+      rememberAspect: false,
+    );
+    final decoded = VedroPreferences.fromJson(customized.toJson());
+    expect(decoded.showNetworkSpeed, isFalse);
+    expect(decoded.rememberBrightness, isFalse);
+    expect(decoded.savedBrightness, closeTo(0.65, 0.001));
+    expect(decoded.rememberVolume, isTrue);
+    expect(decoded.savedVolume, closeTo(72.0, 0.001));
+    expect(decoded.rememberSpeed, isFalse);
+    expect(decoded.rememberAspect, isFalse);
+
+    // 2. Settings -> 下载与缓存 shows local image cache size/count and clears cleanly
+    final mock = _MockVedroCore();
+    final app = VedroAppState(mock);
+    addTearDown(app.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+        home: SettingsScreen(
+          appState: app,
+          onOpenServerHub: () {},
+          onOpenAddServer: ([_]) {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('下载与缓存'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings-image-cache-card')), findsOneWidget);
+    expect(find.textContaining('12 MB'), findsOneWidget);
+    expect(find.textContaining('42 张本地图片'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('clear-image-cache-btn')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('0 张本地图片'), findsOneWidget);
+    expect(find.textContaining('已清理 42 张缓存图片'), findsOneWidget);
+
+    // 3. Settings -> 播放设置 exposes network speed & player memory toggles across all platforms
+    await tester.tap(find.text('播放设置'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('pref-show-network-speed')), findsOneWidget);
+    expect(find.byKey(const ValueKey('pref-remember-brightness')), findsOneWidget);
+    expect(find.byKey(const ValueKey('pref-remember-volume')), findsOneWidget);
+    expect(find.byKey(const ValueKey('pref-remember-speed')), findsOneWidget);
+    expect(find.byKey(const ValueKey('pref-remember-aspect')), findsOneWidget);
   });
 }

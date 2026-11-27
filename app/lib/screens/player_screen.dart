@@ -73,6 +73,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   PreparedPlaybackModel? _prepared;
   Map<String, dynamic> _stats = {};
   bool _loading = true;
+  bool _buffering = false;
   String? _error;
 
   bool _controlsVisible = true;
@@ -101,8 +102,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   final ValueNotifier<double> _bufferedNotifier = ValueNotifier<double>(0);
   final ValueNotifier<MediaSegmentModel?> _activeSegmentNotifier =
       ValueNotifier<MediaSegmentModel?>(null);
+  final ValueNotifier<int> _networkSpeedBpsNotifier = ValueNotifier<int>(0);
   int _lastPosNotifyMs = 0;
   int _lastBufNotifyMs = 0;
+  Timer? _speedTimer;
+  Timer? _persistPrefsTimer;
   double _speed = 1.0;
   double _preBoostSpeed = 1.0;
   bool _isSpeedBoost = false;
@@ -246,8 +250,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _buildLocalPlaylist(resolved.files);
       }
     }
-    _speed = p.defaultSpeed;
-    _aspectMode = p.defaultAspect;
+    _speed = p.rememberSpeed ? p.defaultSpeed.clamp(0.25, 4.0) : 1.0;
+    _aspectMode = p.rememberAspect ? p.defaultAspect : 'fit';
     _subScale = p.subtitleFontScale;
     _subPos = p.subtitlePos;
     _subDelaySecs = p.subtitleDelaySecs;
@@ -264,6 +268,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _danmakuHideBottom = p.danmakuHideBottom;
     if (p.rememberBrightness) {
       _brightness = p.savedBrightness.clamp(0.15, 1.0);
+    }
+    if (p.rememberVolume) {
+      _volume = p.savedVolume.clamp(0.0, _maxVolume);
+      _muted = _volume <= 0.1;
+      if (_volume > 5) _preMuteVolume = _volume;
     }
     _hwDecodeEnabled = (widget.appState.settings['hwdec'] ?? 'auto_zero_copy') != 'software';
     _anime4kActive = p.anime4kEnabled && (!p.anime4kOnlyAnime || _isLikelyAnime(_currentItem));
@@ -313,6 +322,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
         } else {
           _hideControlsTimer?.cancel();
         }
+      }
+    }));
+    _subs.add(_player.stream.buffering.listen((buffering) {
+      if (mounted && _buffering != buffering) {
+        setState(() => _buffering = buffering);
       }
     }));
     _subs.add(_player.stream.position.listen((pos) {
@@ -884,6 +898,40 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _flashGestureHud('seek_feedback', text: forward ? '下一帧 (+1f)' : '上一帧 (-1f)');
   }
 
+  void _schedulePersistPlayerPrefs() {
+    _persistPrefsTimer?.cancel();
+    _persistPrefsTimer = Timer(const Duration(milliseconds: 600), _persistRememberedPlayerPrefs);
+  }
+
+  void _persistRememberedPlayerPrefs() {
+    final p = widget.appState.prefs;
+    final nextBrightness = p.rememberBrightness ? _brightness.clamp(0.15, 1.0) : p.savedBrightness;
+    final nextVolume = p.rememberVolume ? (_muted ? 0.0 : _volume).clamp(0.0, _maxVolume) : p.savedVolume;
+    final nextSpeed = (p.rememberSpeed && !_isSpeedBoost) ? _speed.clamp(0.25, 4.0) : p.defaultSpeed;
+    final nextAspect = p.rememberAspect ? _aspectMode : p.defaultAspect;
+    if ((nextBrightness - p.savedBrightness).abs() < 0.005 &&
+        (nextVolume - p.savedVolume).abs() < 0.5 &&
+        (nextSpeed - p.defaultSpeed).abs() < 0.005 &&
+        nextAspect == p.defaultAspect) {
+      return;
+    }
+    unawaited(widget.appState.updatePrefs(
+      p.copyWith(
+        savedBrightness: nextBrightness,
+        savedVolume: nextVolume,
+        defaultSpeed: nextSpeed,
+        defaultAspect: nextAspect,
+      ),
+    ));
+  }
+
+  String _fmtNetSpeed(int bps) {
+    if (bps <= 0) return '0 KB/s';
+    if (bps < 1024) return '$bps B/s';
+    if (bps < 1024 * 1024) return '${(bps / 1024).toStringAsFixed(bps < 10 * 1024 ? 1 : 0)} KB/s';
+    return '${(bps / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+  }
+
   @override
   void dispose() {
     for (final s in _subs) {
@@ -892,6 +940,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _hideControlsTimer?.cancel();
     _gestureHudTimer?.cancel();
     _statsTimer?.cancel();
+    _speedTimer?.cancel();
+    _persistPrefsTimer?.cancel();
     _progressTimer?.cancel();
     _ticketRefreshTimer?.cancel();
     _sleepTimer?.cancel();
@@ -900,11 +950,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _positionNotifier.dispose();
     _bufferedNotifier.dispose();
     _activeSegmentNotifier.dispose();
-    if (widget.appState.prefs.rememberBrightness) {
-      unawaited(widget.appState.updatePrefs(
-        widget.appState.prefs.copyWith(savedBrightness: _brightness),
-      ));
-    }
+    _networkSpeedBpsNotifier.dispose();
+    _persistRememberedPlayerPrefs();
     if (_isDesktop) {
       NativePlaybackChannel.playerHudAutoHideNotifier.value = false;
       NativePlaybackChannel.fullscreenNotifier.removeListener(_onNativeFullscreenChanged);
@@ -1109,6 +1156,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await _applyMpvProperty('video-zoom', _videoZoom.toStringAsFixed(3));
     await _applyAnime4k(_anime4kActive);
     await _applyCustomMpvConf(p.customMpvConf);
+    await _player.setVolume(_muted ? 0.0 : _volume);
     if ((_speed - 1.0).abs() > 0.01) {
       await _player.setRate(_speed);
     }
@@ -1481,6 +1529,35 @@ class _PlayerScreenState extends State<PlayerScreen> {
         } catch (_) {}
       });
     }
+
+    _speedTimer?.cancel();
+    if (_activeLocalPath == null) {
+      _speedTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+        if (!mounted) return;
+        final showSpeed = widget.appState.prefs.showNetworkSpeed;
+        if (!showSpeed && !_buffering && !_loading) return;
+        try {
+          int bps = 0;
+          final rustStats = await widget.appState.core.invoke('player_stats');
+          if (rustStats is Map<String, dynamic>) {
+            final proxy = rustStats['proxy'];
+            if (proxy is Map<String, dynamic>) {
+              bps = (proxy['current_speed_bytes_per_sec'] as num?)?.toInt() ?? 0;
+            }
+          }
+          if (bps <= 0) {
+            final mpvSpeed = await _readMpvProperty('cache-speed');
+            bps = double.tryParse(mpvSpeed ?? '')?.round() ?? 0;
+          }
+          if (mounted) {
+            final safeBps = bps < 0 ? 0 : bps;
+            if (_networkSpeedBpsNotifier.value != safeBps) {
+              _networkSpeedBpsNotifier.value = safeBps;
+            }
+          }
+        } catch (_) {}
+      });
+    }
   }
 
   Future<void> _reportStoppedAndCleanup() async {
@@ -1536,6 +1613,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       });
       _player.setVolume(0);
     }
+    _schedulePersistPlayerPrefs();
     _flashGestureHud('volume');
   }
 
@@ -1546,6 +1624,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _muted = clamped <= 0.1;
     });
     _player.setVolume(clamped);
+    _schedulePersistPlayerPrefs();
   }
 
   Future<void> _seekTo(double secs) async {
@@ -1568,10 +1647,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final clamped = s.clamp(0.25, 4.0);
     await _player.setRate(clamped);
     if (mounted) setState(() => _speed = clamped);
+    if (!_isSpeedBoost) _schedulePersistPlayerPrefs();
   }
 
   Future<void> _applyAspectMode(String mode) async {
     setState(() => _aspectMode = mode);
+    _schedulePersistPlayerPrefs();
     switch (mode) {
       case 'fill':
         await _applyMpvProperty('video-aspect-override', '-1');
@@ -1807,6 +1888,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   final vDelta = -delta.dy / (size.height * 0.55);
                   if (_scaleAnchor.dx < size.width * 0.5) {
                     setState(() => _brightness = (_brightness + vDelta).clamp(0.15, 1.0));
+                    _schedulePersistPlayerPrefs();
                     _flashGestureHud('brightness');
                   } else {
                     _setVolume(_volume + vDelta * 100);
@@ -1855,12 +1937,101 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ),
 
-                  if (_loading)
-                    const Center(
-                      child: SizedBox(
-                        width: 28,
-                        height: 28,
-                        child: CircularProgressIndicator(strokeWidth: 2.2, color: VedroTheme.fg),
+                  if (_loading || _buffering)
+                    Center(
+                      child: ValueListenableBuilder<int>(
+                        valueListenable: _networkSpeedBpsNotifier,
+                        builder: (_, bps, __) {
+                          final showNet = _activeLocalPath == null &&
+                              widget.appState.prefs.showNetworkSpeed;
+                          final label = _loading ? '正在加载' : '缓冲中';
+                          return GlassSurface(
+                            borderRadius: 16,
+                            blur: 18,
+                            color: const Color(0xBD121318),
+                            borderColor: const Color(0x30FFFFFF),
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2.0,
+                                    color: VedroTheme.fg,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                Text(
+                                  showNet && bps > 0
+                                      ? '$label · ${_fmtNetSpeed(bps)}'
+                                      : '$label…',
+                                  style: const TextStyle(
+                                    color: VedroTheme.fg,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                    fontFeatures: [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+
+                  // Live network download speed pill (zero full-page rebuild via ValueNotifier)
+                  if (widget.appState.prefs.showNetworkSpeed &&
+                      _activeLocalPath == null &&
+                      !_showEpisodeDrawer &&
+                      !_screenLocked)
+                    Positioned(
+                      top: _controlsVisible ? topPad + 60 : topPad + 14,
+                      right: (isWin && !_isFullscreen && !_controlsVisible) ? 148 : 20,
+                      child: IgnorePointer(
+                        child: ValueListenableBuilder<int>(
+                          valueListenable: _networkSpeedBpsNotifier,
+                          builder: (_, bps, __) {
+                            if (bps <= 0 && !_buffering && !_loading && !_controlsVisible) {
+                              return const SizedBox.shrink();
+                            }
+                            return Container(
+                              key: const ValueKey('player-network-speed-pill'),
+                              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: const Color(0x8C0D0E12),
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.14),
+                                  width: 0.7,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.arrow_downward_rounded,
+                                    size: 11.5,
+                                    color: bps > 0
+                                        ? const Color(0xFF34D399)
+                                        : Colors.white.withValues(alpha: 0.65),
+                                  ),
+                                  const SizedBox(width: 3.5),
+                                  Text(
+                                    _fmtNetSpeed(bps),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w600,
+                                      fontFeatures: [FontFeature.tabularFigures()],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
                       ),
                     ),
 

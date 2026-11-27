@@ -362,8 +362,13 @@ class VedroPreferences {
     this.customSkipIntroSecs = 0,
     this.customSkipOutroSecs = 0,
     this.rememberPosition = true,
-    this.rememberBrightness = false,
+    this.rememberBrightness = true,
     this.savedBrightness = 1.0,
+    this.rememberVolume = true,
+    this.savedVolume = 100.0,
+    this.rememberSpeed = true,
+    this.rememberAspect = true,
+    this.showNetworkSpeed = true,
     this.defaultSpeed = 1.0,
     this.longPressSpeed = 2.0,
     this.seekStepSecs = 10,
@@ -470,6 +475,11 @@ class VedroPreferences {
   final bool rememberPosition;
   final bool rememberBrightness;
   final double savedBrightness;
+  final bool rememberVolume;
+  final double savedVolume;
+  final bool rememberSpeed;
+  final bool rememberAspect;
+  final bool showNetworkSpeed;
   final double defaultSpeed;
   final double longPressSpeed;
   final int seekStepSecs;
@@ -723,6 +733,11 @@ class VedroPreferences {
     bool? rememberPosition,
     bool? rememberBrightness,
     double? savedBrightness,
+    bool? rememberVolume,
+    double? savedVolume,
+    bool? rememberSpeed,
+    bool? rememberAspect,
+    bool? showNetworkSpeed,
     double? defaultSpeed,
     double? longPressSpeed,
     int? seekStepSecs,
@@ -818,6 +833,11 @@ class VedroPreferences {
         rememberPosition: rememberPosition ?? this.rememberPosition,
         rememberBrightness: rememberBrightness ?? this.rememberBrightness,
         savedBrightness: savedBrightness ?? this.savedBrightness,
+        rememberVolume: rememberVolume ?? this.rememberVolume,
+        savedVolume: savedVolume ?? this.savedVolume,
+        rememberSpeed: rememberSpeed ?? this.rememberSpeed,
+        rememberAspect: rememberAspect ?? this.rememberAspect,
+        showNetworkSpeed: showNetworkSpeed ?? this.showNetworkSpeed,
         defaultSpeed: defaultSpeed ?? this.defaultSpeed,
         longPressSpeed: longPressSpeed ?? this.longPressSpeed,
         seekStepSecs: seekStepSecs ?? this.seekStepSecs,
@@ -914,6 +934,11 @@ class VedroPreferences {
         'remember_position': rememberPosition,
         'remember_brightness': rememberBrightness,
         'saved_brightness': savedBrightness,
+        'remember_volume': rememberVolume,
+        'saved_volume': savedVolume,
+        'remember_speed': rememberSpeed,
+        'remember_aspect': rememberAspect,
+        'show_network_speed': showNetworkSpeed,
         'default_speed': defaultSpeed,
         'long_press_speed': longPressSpeed,
         'seek_step_secs': seekStepSecs,
@@ -1018,8 +1043,13 @@ class VedroPreferences {
         customSkipIntroSecs: (j['custom_skip_intro_secs'] as num?)?.toInt() ?? 0,
         customSkipOutroSecs: (j['custom_skip_outro_secs'] as num?)?.toInt() ?? 0,
         rememberPosition: j['remember_position'] != false,
-        rememberBrightness: j['remember_brightness'] == true,
-        savedBrightness: (j['saved_brightness'] as num?)?.toDouble() ?? 1.0,
+        rememberBrightness: j['remember_brightness'] != false,
+        savedBrightness: ((j['saved_brightness'] as num?)?.toDouble() ?? 1.0).clamp(0.15, 1.0),
+        rememberVolume: j['remember_volume'] != false,
+        savedVolume: ((j['saved_volume'] as num?)?.toDouble() ?? 100.0).clamp(0.0, 200.0),
+        rememberSpeed: j['remember_speed'] != false,
+        rememberAspect: j['remember_aspect'] != false,
+        showNetworkSpeed: j['show_network_speed'] != false,
         defaultSpeed: (j['default_speed'] as num?)?.toDouble() ?? 1.0,
         longPressSpeed: (j['long_press_speed'] as num?)?.toDouble() ?? 2.0,
         seekStepSecs: (j['seek_step_secs'] as num?)?.toInt() ?? 10,

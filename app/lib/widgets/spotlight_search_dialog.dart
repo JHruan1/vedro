@@ -52,6 +52,7 @@ class _SpotlightSearchOverlay extends StatefulWidget {
 
 class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
   final _ctrl = TextEditingController();
+  final _resultsScope = FocusScopeNode(debugLabel: 'spotlight_results_scope');
   Timer? _debounce;
   List<AggregatedSearchHit> _hits = [];
   List<Map<String, dynamic>> _servers = [];
@@ -63,6 +64,7 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
   void dispose() {
     _debounce?.cancel();
     _ctrl.dispose();
+    _resultsScope.dispose();
     super.dispose();
   }
 
@@ -148,7 +150,17 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                           child: TextField(
                             controller: _ctrl,
                             autofocus: true,
+                            textInputAction: TextInputAction.search,
                             onChanged: _onChanged,
+                            onSubmitted: (val) async {
+                              final q = val.trim();
+                              if (q.isEmpty) return;
+                              _debounce?.cancel();
+                              await _runSearch(q);
+                              if (mounted && _hits.isNotEmpty) {
+                                _resultsScope.requestFocus();
+                              }
+                            },
                             style: TextStyle(color: skin.fg, fontSize: 16),
                             decoration: InputDecoration(
                               filled: false,
@@ -215,38 +227,43 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                   const Divider(height: 1),
                   if (filtered.isNotEmpty)
                     Flexible(
-                      child: ListView.separated(
-                        shrinkWrap: true,
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        itemCount: filtered.length,
-                        separatorBuilder: (_, __) =>
-                            const Divider(height: 1, indent: 72, endIndent: 16),
-                        itemBuilder: (_, idx) {
-                          final h = filtered[idx];
-                          final thumbUrl = h.primaryImageTag != null
-                              ? widget.appState.buildServerImageUrl(
-                                  h.serverId,
-                                  h.id,
-                                  type: 'Primary',
-                                  tag: h.primaryImageTag,
-                                  maxWidth: 120,
-                                )
-                              : '';
-                          final sub = [
-                            if (h.productionYear != null) '${h.productionYear}',
-                            if (h.series != null) h.series!,
-                            _typeLabel(h.type),
-                          ].join(' · ');
+                      child: FocusScope(
+                        node: _resultsScope,
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          itemCount: filtered.length,
+                          separatorBuilder: (_, __) =>
+                              const Divider(height: 1, indent: 72, endIndent: 16),
+                          itemBuilder: (_, idx) {
+                            final h = filtered[idx];
+                            final thumbUrl = h.primaryImageTag != null
+                                ? widget.appState.buildServerImageUrl(
+                                    h.serverId,
+                                    h.id,
+                                    type: 'Primary',
+                                    tag: h.primaryImageTag,
+                                    maxWidth: 120,
+                                  )
+                                : '';
+                            final sub = [
+                              if (h.productionYear != null) '${h.productionYear}',
+                              if (h.series != null) h.series!,
+                              _typeLabel(h.type),
+                            ].join(' · ');
 
-                          return InkWell(
-                            onTap: () {
-                              Navigator.of(context).pop();
-                              widget.onSelectHit(h);
-                            },
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-                              child: Row(
-                                children: [
+                            return PressableScale(
+                              hoverScale: 1.0,
+                              pressScale: 0.99,
+                              borderRadius: BorderRadius.circular(10),
+                              onTap: () {
+                                Navigator.of(context).pop();
+                                widget.onSelectHit(h);
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                                child: Row(
+                                  children: [
                                     Container(
                                       width: 40,
                                       height: 58,
@@ -254,75 +271,76 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                                         borderRadius: BorderRadius.circular(7),
                                         border: Border.all(color: skin.border, width: 0.6),
                                       ),
-                                    clipBehavior: Clip.antiAlias,
-                                    child: thumbUrl.isNotEmpty
-                                        ? FadeNetworkImage(
-                                            url: thumbUrl,
-                                            cacheWidth: 120,
-                                            placeholder: GeneratedArt(seed: h.id, label: h.name),
-                                          )
-                                        : GeneratedArt(seed: h.id, label: h.name),
-                                  ),
-                                  const SizedBox(width: 14),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          h.name,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                            color: skin.fg,
-                                            fontSize: 14.5,
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                        ),
-                                        if (sub.isNotEmpty) ...[
-                                          const SizedBox(height: 3),
+                                      clipBehavior: Clip.antiAlias,
+                                      child: thumbUrl.isNotEmpty
+                                          ? FadeNetworkImage(
+                                              url: thumbUrl,
+                                              cacheWidth: 120,
+                                              placeholder: GeneratedArt(seed: h.id, label: h.name),
+                                            )
+                                          : GeneratedArt(seed: h.id, label: h.name),
+                                    ),
+                                    const SizedBox(width: 14),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
                                           Text(
-                                            sub,
+                                            h.name,
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
                                             style: TextStyle(
-                                              color: skin.fg3,
-                                              fontSize: 12,
+                                              color: skin.fg,
+                                              fontSize: 14.5,
+                                              fontWeight: FontWeight.w500,
                                             ),
                                           ),
+                                          if (sub.isNotEmpty) ...[
+                                            const SizedBox(height: 3),
+                                            Text(
+                                              sub,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                color: skin.fg3,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          ],
                                         ],
-                                      ],
+                                      ),
                                     ),
-                                  ),
-                                  if (multiServer)
-                                    Container(
-                                      margin: const EdgeInsets.only(right: 8),
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 7,
-                                        vertical: 2.5,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: skin.surface2,
-                                        borderRadius: BorderRadius.circular(6),
-                                        border: Border.all(color: skin.border, width: 0.6),
-                                      ),
-                                      child: Text(
-                                        h.serverName,
-                                        style: TextStyle(
-                                          color: skin.fg2,
-                                          fontSize: 11,
+                                    if (multiServer)
+                                      Container(
+                                        margin: const EdgeInsets.only(right: 8),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 7,
+                                          vertical: 2.5,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: skin.surface2,
+                                          borderRadius: BorderRadius.circular(6),
+                                          border: Border.all(color: skin.border, width: 0.6),
+                                        ),
+                                        child: Text(
+                                          h.serverName,
+                                          style: TextStyle(
+                                            color: skin.fg2,
+                                            fontSize: 11,
+                                          ),
                                         ),
                                       ),
+                                    Icon(
+                                      Icons.chevron_right_rounded,
+                                      size: 18,
+                                      color: skin.fg3,
                                     ),
-                                  Icon(
-                                    Icons.chevron_right_rounded,
-                                    size: 18,
-                                    color: skin.fg3,
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
-                            ),
-                          );
-                        },
+                            );
+                          },
+                        ),
                       ),
                     )
                   else

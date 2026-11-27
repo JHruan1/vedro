@@ -273,47 +273,117 @@ impl VedroStore {
         Ok(())
     }
 
-    /// Batch-fetch settings matching a key prefix in a single query (eliminates N+1 lookups).
+    /// Batch-fetch settings matching a key prefix using an indexed PRIMARY KEY B-tree range scan
+    /// (avoids SQLite `LIKE` full-table scans and `_` wildcard ambiguity).
     pub fn get_settings_by_prefix(
         &self,
         prefix: &str,
     ) -> Result<std::collections::HashMap<String, String>> {
         let conn = self.conn.lock();
-        let pattern = format!("{prefix}%");
-        let mut stmt =
-            conn.prepare_cached("SELECT key, value_json FROM settings WHERE key LIKE ?1")?;
-        let rows = stmt.query_map(params![pattern], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
         let mut out = std::collections::HashMap::new();
-        for r in rows {
-            let (k, v) = r?;
-            out.insert(k, v);
+        if prefix.is_empty() {
+            let mut stmt = conn.prepare_cached("SELECT key, value_json FROM settings")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for r in rows {
+                let (k, v) = r?;
+                out.insert(k, v);
+            }
+            return Ok(out);
+        }
+        let upper = next_prefix_bound(prefix);
+        match upper {
+            Some(hi) => {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT key, value_json FROM settings WHERE key >= ?1 AND key < ?2",
+                )?;
+                let rows = stmt.query_map(params![prefix, hi], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                for r in rows {
+                    let (k, v) = r?;
+                    out.insert(k, v);
+                }
+            }
+            None => {
+                let mut stmt =
+                    conn.prepare_cached("SELECT key, value_json FROM settings WHERE key >= ?1")?;
+                let rows = stmt.query_map(params![prefix], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                for r in rows {
+                    let (k, v) = r?;
+                    out.insert(k, v);
+                }
+            }
         }
         Ok(out)
+    }
+
+    /// Fetch a specific batch of setting keys using cached point lookups (O(K log N)).
+    pub fn get_settings_by_keys(
+        &self,
+        keys: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let mut out = std::collections::HashMap::with_capacity(keys.len());
+        if keys.is_empty() {
+            return Ok(out);
+        }
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare_cached("SELECT value_json FROM settings WHERE key = ?1")?;
+        for k in keys {
+            if let Some(v) = stmt
+                .query_row(params![k], |row| row.get::<_, String>(0))
+                .optional()?
+            {
+                out.insert(k.clone(), v);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Prune oldest rows matching a prefix in `settings` beyond `max_rows` (LRU cap).
+    pub fn prune_settings_prefix(&self, prefix: &str, max_rows: usize) -> Result<usize> {
+        if prefix.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock();
+        let removed = match next_prefix_bound(prefix) {
+            Some(hi) => conn.execute(
+                "DELETE FROM settings WHERE key >= ?1 AND key < ?2 AND key NOT IN (
+                    SELECT key FROM settings WHERE key >= ?1 AND key < ?2
+                    ORDER BY updated_at DESC LIMIT ?3
+                )",
+                params![prefix, hi, max_rows as i64],
+            )?,
+            None => conn.execute(
+                "DELETE FROM settings WHERE key >= ?1 AND key NOT IN (
+                    SELECT key FROM settings WHERE key >= ?1
+                    ORDER BY updated_at DESC LIMIT ?2
+                )",
+                params![prefix, max_rows as i64],
+            )?,
+        };
+        Ok(removed)
     }
 
     pub fn set_setting<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
         let json = serde_json::to_string(value)?;
         let now = chrono::Utc::now().timestamp();
         let conn = self.conn.lock();
-        conn.execute(
+        let mut stmt = conn.prepare_cached(
             "INSERT INTO settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)
              ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
-            params![key, json, now],
         )?;
+        stmt.execute(params![key, json, now])?;
         Ok(())
     }
 
     pub fn get_setting<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<Option<T>> {
         let conn = self.conn.lock();
-        let raw: Option<String> = conn
-            .query_row(
-                "SELECT value_json FROM settings WHERE key = ?1",
-                params![key],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let mut stmt = conn.prepare_cached("SELECT value_json FROM settings WHERE key = ?1")?;
+        let raw: Option<String> = stmt.query_row(params![key], |row| row.get(0)).optional()?;
         match raw {
             Some(s) => Ok(Some(serde_json::from_str(&s)?)),
             None => Ok(None),
@@ -416,6 +486,21 @@ fn restrict_unix_file_perms(db_path: &Path) {
 
 #[cfg(not(unix))]
 fn restrict_unix_file_perms(_db_path: &Path) {}
+
+/// Compute the exclusive upper bound string for an indexed SQLite `key >= prefix AND key < upper` scan.
+fn next_prefix_bound(prefix: &str) -> Option<String> {
+    let mut bytes = prefix.as_bytes().to_vec();
+    while let Some(last) = bytes.pop() {
+        if last < 0xFF {
+            bytes.push(last + 1);
+            if let Ok(s) = String::from_utf8(bytes.clone()) {
+                return Some(s);
+            }
+            bytes.pop();
+        }
+    }
+    None
+}
 
 fn row_to_server_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerProfile> {
     let routes_str: String = row.get::<_, Option<String>>(9)?.unwrap_or_default();

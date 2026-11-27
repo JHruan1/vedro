@@ -422,24 +422,27 @@ class _EdgePaddleButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    return IgnorePointer(
-      ignoring: !visible,
-      child: AnimatedOpacity(
-        opacity: visible ? 1.0 : 0.0,
-        duration: const Duration(milliseconds: 180),
-        curve: VedroTheme.easeOut,
-        child: Material(
-          color: skin.surface.withValues(alpha: 0.92),
-          shape: CircleBorder(side: BorderSide(color: skin.borderStrong, width: 0.8)),
-          elevation: 8,
-          shadowColor: Colors.black.withValues(alpha: skin.isLight ? 0.22 : 0.65),
-          child: InkWell(
-            customBorder: const CircleBorder(),
-            onTap: onTap,
-            child: SizedBox(
-              width: 38,
-              height: 38,
-              child: Icon(icon, size: 22, color: skin.fg),
+    return ExcludeFocus(
+      excluding: !visible,
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: AnimatedOpacity(
+          opacity: visible ? 1.0 : 0.0,
+          duration: const Duration(milliseconds: 180),
+          curve: VedroTheme.easeOut,
+          child: Material(
+            color: skin.surface.withValues(alpha: 0.92),
+            shape: CircleBorder(side: BorderSide(color: skin.borderStrong, width: 0.8)),
+            elevation: 8,
+            shadowColor: Colors.black.withValues(alpha: skin.isLight ? 0.22 : 0.65),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: onTap,
+              child: SizedBox(
+                width: 38,
+                height: 38,
+                child: Icon(icon, size: 22, color: skin.fg),
+              ),
             ),
           ),
         ),

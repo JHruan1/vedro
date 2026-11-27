@@ -26,93 +26,167 @@ abstract class VedroCoreClient {
 }
 
 /// Persistent background FFI worker isolate so `VedroNativeBindings` is loaded ONCE
-/// instead of spawning a new Dart Isolate + `DynamicLibrary.open` on every single RPC!
+/// instead of spawning a new Dart Isolate + `DynamicLibrary.open` on every single RPC.
+/// Multiplexes concurrent calls over a single shared reply port and detects unexpected exit.
 class _FfiWorker {
-  _FfiWorker._(this._isolate, this._sendPort, this._exitPort);
+  _FfiWorker._(
+    this._isolate,
+    this._sendPort,
+    this._replyPort,
+    this._exitPort,
+    this._errorPort,
+  ) {
+    _replyPort.listen(_onReply);
+    _exitPort.listen((_) => _handleUnexpectedExit('FFI worker isolate exited unexpectedly'));
+    _errorPort.listen((err) => _handleUnexpectedExit('FFI worker isolate error: $err'));
+  }
 
   final Isolate _isolate;
   final SendPort _sendPort;
+  final ReceivePort _replyPort;
   final ReceivePort _exitPort;
+  final ReceivePort _errorPort;
+  final Map<int, Completer<dynamic>> _pending = <int, Completer<dynamic>>{};
+  int _nextId = 1;
   bool _closed = false;
+  Timer? _killTimer;
+
+  bool get isAlive => !_closed;
 
   static Future<_FfiWorker> spawn(String? libraryPath) async {
     final readyPort = ReceivePort();
+    final replyPort = ReceivePort();
     final exitPort = ReceivePort();
+    final errorPort = ReceivePort();
     Isolate? iso;
     try {
       iso = await Isolate.spawn(
         _workerMain,
         <String, dynamic>{
           'ready': readyPort.sendPort,
+          'reply': replyPort.sendPort,
           'lib_path': libraryPath,
         },
         onExit: exitPort.sendPort,
+        onError: errorPort.sendPort,
+        errorsAreFatal: false,
       );
       final msg = await readyPort.first.timeout(const Duration(seconds: 15));
       if (msg is Map && msg['error'] != null) {
         iso.kill(priority: Isolate.immediate);
+        replyPort.close();
         exitPort.close();
+        errorPort.close();
         throw VedroCoreException(msg['error'].toString());
       }
       if (msg is SendPort) {
-        return _FfiWorker._(iso, msg, exitPort);
+        return _FfiWorker._(iso, msg, replyPort, exitPort, errorPort);
       }
       iso.kill(priority: Isolate.immediate);
+      replyPort.close();
       exitPort.close();
+      errorPort.close();
       throw VedroCoreException('FFI worker failed to start');
     } catch (_) {
       iso?.kill(priority: Isolate.immediate);
+      replyPort.close();
       exitPort.close();
+      errorPort.close();
       rethrow;
     } finally {
       readyPort.close();
     }
   }
 
-  Future<dynamic> call(int handleAddr, String method, Map<String, dynamic> params) async {
-    if (_closed) {
-      throw VedroCoreException('FFI worker closed');
+  void _onReply(dynamic msg) {
+    if (msg is! Map) return;
+    final id = msg['id'];
+    if (id is! int) return;
+    final completer = _pending.remove(id);
+    if (completer == null || completer.isCompleted) return;
+    final resp = msg['resp'];
+    if (resp is Map) {
+      if (resp['ok'] == true) {
+        completer.complete(resp['data']);
+      } else {
+        completer.completeError(
+          VedroCoreException(resp['error']?.toString() ?? 'Unknown Rust core error'),
+        );
+      }
+      return;
     }
-    final reply = ReceivePort();
+    completer.completeError(VedroCoreException('Invalid FFI worker response'));
+  }
+
+  void _handleUnexpectedExit(String reason) {
+    _killTimer?.cancel();
+    _killTimer = null;
+    if (!_closed) {
+      _closed = true;
+    }
+    _failAllPending(reason);
+    _replyPort.close();
+    _exitPort.close();
+    _errorPort.close();
+  }
+
+  void _failAllPending(String reason) {
+    if (_pending.isEmpty) return;
+    final entries = List<Completer<dynamic>>.from(_pending.values);
+    _pending.clear();
+    final err = VedroCoreException(reason);
+    for (final c in entries) {
+      if (!c.isCompleted) {
+        c.completeError(err);
+      }
+    }
+  }
+
+  Future<dynamic> call(int handleAddr, String method, Map<String, dynamic> params) {
+    if (_closed) {
+      return Future<dynamic>.error(VedroCoreException('FFI worker closed'));
+    }
+    final id = _nextId++;
+    final completer = Completer<dynamic>();
+    _pending[id] = completer;
     try {
       _sendPort.send(<String, dynamic>{
         'cmd': 'invoke',
+        'id': id,
         'handle': handleAddr,
         'method': method,
         'params': params,
-        'reply': reply.sendPort,
       });
-      final resp = await reply.first;
-      if (resp is Map) {
-        if (resp['ok'] == true) {
-          return resp['data'];
-        }
-        throw VedroCoreException(resp['error']?.toString() ?? 'Unknown Rust core error');
-      }
-      throw VedroCoreException('Invalid FFI worker response');
-    } finally {
-      reply.close();
+    } catch (e) {
+      _pending.remove(id);
+      return Future<dynamic>.error(VedroCoreException('FFI worker send failed: $e'));
     }
+    return completer.future;
   }
 
   void close() {
     if (_closed) return;
     _closed = true;
+    _failAllPending('FFI worker closed');
     try {
       _sendPort.send(const <String, dynamic>{'cmd': 'shutdown'});
     } catch (_) {}
-    _exitPort.close();
-    // Give worker a brief window to finish cleanly; OS reclaims isolate on exit
-    Future<void>.delayed(const Duration(milliseconds: 500), () {
+    _replyPort.close();
+    _errorPort.close();
+    // Wait briefly for graceful shutdown; cancel fallback kill timer as soon as exitPort fires.
+    _killTimer = Timer(const Duration(milliseconds: 500), () {
+      _killTimer = null;
       try {
         _isolate.kill(priority: Isolate.beforeNextEvent);
       } catch (_) {}
+      _exitPort.close();
     });
   }
 }
 
 void _workerMain(Map<String, dynamic> initArgs) {
   final readyPort = initArgs['ready'] as SendPort;
+  final replyPort = initArgs['reply'] as SendPort;
   final libPath = initArgs['lib_path'] as String?;
 
   final VedroNativeBindings bindings;
@@ -134,7 +208,7 @@ void _workerMain(Map<String, dynamic> initArgs) {
       return;
     }
     if (cmd == 'invoke') {
-      final reply = msg['reply'] as SendPort;
+      final id = msg['id'] as int;
       final handleAddr = msg['handle'] as int;
       final method = msg['method'] as String;
       final params = msg['params'];
@@ -149,14 +223,20 @@ void _workerMain(Map<String, dynamic> initArgs) {
         paramsPtr = paramsJson.toNativeUtf8();
         resultPtr = bindings.invoke(handle, methodPtr, paramsPtr);
         if (resultPtr == nullptr) {
-          reply.send(const <String, dynamic>{'ok': false, 'error': 'Null FFI response'});
+          replyPort.send(<String, dynamic>{
+            'id': id,
+            'resp': const <String, dynamic>{'ok': false, 'error': 'Null FFI response'},
+          });
           return;
         }
         final raw = resultPtr.toDartString();
         final decoded = jsonDecode(raw);
-        reply.send(decoded);
+        replyPort.send(<String, dynamic>{'id': id, 'resp': decoded});
       } catch (e) {
-        reply.send(<String, dynamic>{'ok': false, 'error': e.toString()});
+        replyPort.send(<String, dynamic>{
+          'id': id,
+          'resp': <String, dynamic>{'ok': false, 'error': e.toString()},
+        });
       } finally {
         if (methodPtr != nullptr) calloc.free(methodPtr);
         if (paramsPtr != nullptr) calloc.free(paramsPtr);
@@ -168,7 +248,7 @@ void _workerMain(Map<String, dynamic> initArgs) {
 
 /// Production FFI bridge calling our Rust `VedroRuntime` asynchronously via a 2-worker
 /// persistent Isolate pool (zero per-call isolate spawns, JSON encode/decode off UI thread,
-/// lock-free `proxySpeedBps`, and ref-counted safe shutdown).
+/// lock-free `proxySpeedBps`, automatic dead-worker respawn, and ref-counted safe shutdown).
 class VedroFfiBridge implements VedroCoreClient {
   VedroFfiBridge._(this._bindings, this._handle, this._libraryPath);
 
@@ -204,19 +284,60 @@ class VedroFfiBridge implements VedroCoreClient {
   }
 
   Future<List<_FfiWorker>> _ensurePool() {
-    if (_workers != null) return Future.value(_workers!);
-    return _poolInitFuture ??= Future.wait(
-      List.generate(_poolSize, (_) => _FfiWorker.spawn(_libraryPath)),
-    ).then((pool) {
-      if (_disposed) {
-        for (final w in pool) {
+    final existing = _workers;
+    if (existing != null) return Future.value(existing);
+    final inflight = _poolInitFuture;
+    if (inflight != null) return inflight;
+
+    final spawned = <_FfiWorker>[];
+    final future = () async {
+      try {
+        final pool = await Future.wait(
+          List.generate(_poolSize, (_) async {
+            final w = await _FfiWorker.spawn(_libraryPath);
+            spawned.add(w);
+            return w;
+          }),
+        );
+        if (_disposed) {
+          for (final w in pool) {
+            w.close();
+          }
+          throw VedroCoreException('VedroFfiBridge already disposed');
+        }
+        _workers = pool;
+        return pool;
+      } catch (_) {
+        for (final w in spawned) {
           w.close();
         }
+        _poolInitFuture = null;
+        rethrow;
+      }
+    }();
+    _poolInitFuture = future;
+    return future;
+  }
+
+  Future<_FfiWorker> _acquireWorker() async {
+    final pool = _workers ?? await _ensurePool();
+    if (_disposed || _handle == nullptr) {
+      throw VedroCoreException('VedroFfiBridge already disposed');
+    }
+    final slot = _rr++ % pool.length;
+    var worker = pool[slot];
+    if (!worker.isAlive) {
+      final replacement = await _FfiWorker.spawn(_libraryPath);
+      if (_disposed || _handle == nullptr) {
+        replacement.close();
         throw VedroCoreException('VedroFfiBridge already disposed');
       }
-      _workers = pool;
-      return pool;
-    });
+      if (identical(_workers, pool)) {
+        pool[slot] = replacement;
+      }
+      worker = replacement;
+    }
+    return worker;
   }
 
   @override
@@ -240,11 +361,17 @@ class VedroFfiBridge implements VedroCoreClient {
     }
     _inFlight++;
     try {
-      final pool = await _ensurePool();
+      final existing = _workers;
+      final _FfiWorker worker;
+      if (existing != null) {
+        final slot = _rr++ % existing.length;
+        worker = existing[slot].isAlive ? existing[slot] : await _acquireWorker();
+      } else {
+        worker = await _acquireWorker();
+      }
       if (_disposed || _handle == nullptr) {
         throw VedroCoreException('VedroFfiBridge already disposed');
       }
-      final worker = pool[_rr++ % pool.length];
       return await worker.call(_handle.address, method, params);
     } finally {
       _inFlight--;

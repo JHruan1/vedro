@@ -21,6 +21,7 @@ class ServerHubScreen extends StatefulWidget {
     required this.onOpenAddServer,
     this.onOpenLocalMedia,
     this.onOpenNetworkUrl,
+    this.onPlayLocalHistory,
     this.topInset = 0,
   });
 
@@ -29,6 +30,7 @@ class ServerHubScreen extends StatefulWidget {
   final void Function([String? initialUrl]) onOpenAddServer;
   final VoidCallback? onOpenLocalMedia;
   final VoidCallback? onOpenNetworkUrl;
+  final void Function(VedroLocalHistoryEntry)? onPlayLocalHistory;
   final double topInset;
 
   @override
@@ -90,60 +92,119 @@ class _ServerHubScreenState extends State<ServerHubScreen> {
                   wide ? 48 : 112,
                 ),
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '媒体库',
-                              style: skin.applyHeadlineMood(
-                                TextStyle(
-                                  color: skin.fg,
-                                  fontSize: wide ? 28 : 24,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: -0.6,
-                                ),
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final headerTitle = Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '媒体库',
+                            style: skin.applyHeadlineMood(
+                              TextStyle(
+                                color: skin.fg,
+                                fontSize: wide ? 28 : 24,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.6,
                               ),
                             ),
-                            if (app.savedServers.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 2),
-                                child: Text(
-                                  app.isSignedIn
-                                      ? '当前连接：${app.activeServerDisplayName}'
-                                      : '选择要进入的媒体服务器',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(color: skin.fg3, fontSize: 12.5),
-                                ),
+                          ),
+                          if (app.savedServers.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                app.isSignedIn
+                                    ? '当前连接：${app.activeServerDisplayName}'
+                                    : '选择要进入的媒体服务器',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(color: skin.fg3, fontSize: 12.5),
                               ),
-                          ],
-                        ),
-                      ),
-                      if (widget.onOpenNetworkUrl != null) ...[
+                            ),
+                        ],
+                      );
+                      final actionButtons = <Widget>[
+                        if (widget.onOpenNetworkUrl != null)
+                          PressableScale(
+                            key: const ValueKey('server-hub-network-url-btn'),
+                            onTap: widget.onOpenNetworkUrl,
+                            borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
+                            child: Container(
+                              height: 36,
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: skin.subtleChipBg,
+                                borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
+                                border: skin.cardBorder(),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.link_rounded, size: 15.5, color: skin.fg2),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    '网络链接',
+                                    style: TextStyle(
+                                      color: skin.fg,
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        if (widget.onOpenLocalMedia != null)
+                          PressableScale(
+                            key: const ValueKey('server-hub-local-video-btn'),
+                            onTap: widget.onOpenLocalMedia,
+                            borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
+                            child: Container(
+                              height: 36,
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: skin.subtleChipBg,
+                                borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
+                                border: skin.cardBorder(),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.folder_open_rounded, size: 15.5, color: skin.fg2),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    '本地视频',
+                                    style: TextStyle(
+                                      color: skin.fg,
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
                         PressableScale(
-                          key: const ValueKey('server-hub-network-url-btn'),
-                          onTap: widget.onOpenNetworkUrl,
+                          key: const ValueKey('server-hub-add-btn'),
+                          onTap: () => widget.onOpenAddServer(),
                           borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
                           child: Container(
                             height: 36,
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            padding: const EdgeInsets.symmetric(horizontal: 14),
                             decoration: BoxDecoration(
-                              color: skin.subtleChipBg,
+                              color: skin.primaryCtaBg,
+                              gradient: skin.primaryCtaGradient,
                               borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
-                              border: skin.cardBorder(),
+                              border: skin.primaryCtaBorder,
                             ),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.link_rounded, size: 15.5, color: skin.fg2),
-                                const SizedBox(width: 6),
+                                Icon(Icons.add_rounded, size: 17, color: skin.primaryCtaFg),
+                                const SizedBox(width: 4),
                                 Text(
-                                  '网络链接',
+                                  '添加服务器',
                                   style: TextStyle(
-                                    color: skin.fg,
+                                    color: skin.primaryCtaFg,
                                     fontSize: 12.5,
                                     fontWeight: FontWeight.w600,
                                   ),
@@ -152,69 +213,26 @@ class _ServerHubScreenState extends State<ServerHubScreen> {
                             ),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                      ],
-                      if (widget.onOpenLocalMedia != null) ...[
-                        PressableScale(
-                          key: const ValueKey('server-hub-local-video-btn'),
-                          onTap: widget.onOpenLocalMedia,
-                          child: Container(
-                            height: 36,
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            decoration: BoxDecoration(
-                              color: skin.subtleChipBg,
-                              borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
-                              border: skin.cardBorder(),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.folder_open_rounded, size: 15.5, color: skin.fg2),
-                                const SizedBox(width: 6),
-                                Text(
-                                  '本地视频',
-                                  style: TextStyle(
-                                    color: skin.fg,
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                      ],
-                      PressableScale(
-                        key: const ValueKey('server-hub-add-btn'),
-                        onTap: () => widget.onOpenAddServer(),
-                        child: Container(
-                          height: 36,
-                          padding: const EdgeInsets.symmetric(horizontal: 14),
-                          decoration: BoxDecoration(
-                            color: skin.primaryCtaBg,
-                            gradient: skin.primaryCtaGradient,
-                            borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
-                            border: skin.primaryCtaBorder,
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.add_rounded, size: 17, color: skin.primaryCtaFg),
-                              const SizedBox(width: 4),
-                              Text(
-                                '添加服务器',
-                                style: TextStyle(
-                                  color: skin.primaryCtaFg,
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
+                      ];
+
+                      if (constraints.maxWidth < 560) {
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            headerTitle,
+                            const SizedBox(height: 12),
+                            Wrap(spacing: 8, runSpacing: 8, children: actionButtons),
+                          ],
+                        );
+                      }
+                      return Row(
+                        children: [
+                          Expanded(child: headerTitle),
+                          const SizedBox(width: 12),
+                          Wrap(spacing: 8, runSpacing: 8, children: actionButtons),
+                        ],
+                      );
+                    },
                   ),
                   const SizedBox(height: 18),
                   if (app.savedServers.isEmpty)
@@ -254,6 +272,122 @@ class _ServerHubScreenState extends State<ServerHubScreen> {
                       onSelectServer: _handleSelectServer,
                       onAddServer: () => widget.onOpenAddServer(),
                     ),
+                  if (app.localHistory.isNotEmpty) ...[
+                    const SizedBox(height: 22),
+                    Row(
+                      children: [
+                        Text(
+                          '最近本地与链接播放',
+                          style: TextStyle(
+                            color: skin.fg3,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: app.clearLocalHistory,
+                          child: Text('清空', style: TextStyle(color: skin.fg3, fontSize: 12)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: skin.surface,
+                        borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 16.0)),
+                        border: skin.cardBorder(),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: Column(
+                        children: [
+                          for (var i = 0; i < app.localHistory.length; i++) ...[
+                            if (i > 0) Divider(height: 1, indent: 14, endIndent: 14, color: skin.border),
+                            Builder(
+                              builder: (_) {
+                                final entry = app.localHistory[i];
+                                final pct = entry.progress;
+                                return PressableScale(
+                                  onTap: widget.onPlayLocalHistory == null
+                                      ? null
+                                      : () => widget.onPlayLocalHistory!(entry),
+                                  hoverScale: 1.0,
+                                  pressScale: 0.99,
+                                  borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          width: 34,
+                                          height: 34,
+                                          decoration: BoxDecoration(
+                                            color: skin.surface2,
+                                            borderRadius: BorderRadius.circular(9),
+                                          ),
+                                          child: Icon(
+                                            entry.isNetworkUrl
+                                                ? Icons.link_rounded
+                                                : Icons.video_file_rounded,
+                                            size: 17,
+                                            color: skin.accent,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                entry.title,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(
+                                                  color: skin.fg,
+                                                  fontSize: 13.5,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                entry.isNetworkUrl
+                                                    ? VedroAppState.sanitizeUrlForHistory(entry.target)
+                                                    : entry.target,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(color: skin.fg3, fontSize: 11.5),
+                                              ),
+                                              if (pct > 0) ...[
+                                                const SizedBox(height: 5),
+                                                ClipRRect(
+                                                  borderRadius: BorderRadius.circular(2),
+                                                  child: LinearProgressIndicator(
+                                                    value: pct,
+                                                    minHeight: 3,
+                                                    backgroundColor: skin.surface2,
+                                                    valueColor: AlwaysStoppedAnimation(skin.accent),
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ),
+                                        IconButton(
+                                          tooltip: '移除记录',
+                                          icon: Icon(Icons.close_rounded, size: 16, color: skin.fg3),
+                                          onPressed: () => app.removeLocalHistoryEntry(entry.key),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
                   if (discovered.isNotEmpty) ...[
                     const SizedBox(height: 22),
                     Text(

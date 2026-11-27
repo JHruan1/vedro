@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -29,8 +31,19 @@ Future<void> showServerHubSheet({
 }) {
   return showGlassSheet<void>(
     context: context,
-    builder: (ctx) => _ServerHubSheetBody(appState: appState),
+    builder: (ctx) => _ServerHubSheetBody(
+      appState: appState,
+      parentContext: context,
+    ),
   );
+}
+
+String _maskProxyCredentials(String raw) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty) return '';
+  final uri = Uri.tryParse(trimmed);
+  if (uri == null || uri.userInfo.isEmpty) return trimmed;
+  return uri.replace(userInfo: '***').toString();
 }
 
 class _AddServerForm extends StatefulWidget {
@@ -52,10 +65,16 @@ class _AddServerFormState extends State<_AddServerForm> {
   bool _acceptInvalidCerts = false;
   String? _localError;
 
+  // Jellyfin Quick Connect (TV remote friendly passwordless sign-in!)
+  String? _qcCode;
+  String? _qcSecret;
+  bool _qcStarting = false;
+  Timer? _qcPollTimer;
+
   @override
   void initState() {
     super.initState();
-    _urlCtrl = TextEditingController(text: widget.initialUrl ?? 'https://');
+    _urlCtrl = TextEditingController(text: widget.initialUrl?.trim() ?? '');
     _proxyCtrl.text = widget.appState.customProxyUrl;
     _acceptInvalidCerts = widget.appState.acceptInvalidCerts;
     widget.appState.discoverLanServers();
@@ -63,6 +82,7 @@ class _AddServerFormState extends State<_AddServerForm> {
 
   @override
   void dispose() {
+    _qcPollTimer?.cancel();
     _urlCtrl.dispose();
     _userCtrl.dispose();
     _passCtrl.dispose();
@@ -72,7 +92,12 @@ class _AddServerFormState extends State<_AddServerForm> {
 
   Future<void> _submit() async {
     if (widget.appState.isBusy) return;
-    setState(() => _localError = null);
+    _qcPollTimer?.cancel();
+    setState(() {
+      _localError = null;
+      _qcCode = null;
+      _qcSecret = null;
+    });
     try {
       await widget.appState.login(
         _urlCtrl.text,
@@ -89,6 +114,69 @@ class _AddServerFormState extends State<_AddServerForm> {
     }
   }
 
+  Future<void> _startQuickConnect() async {
+    if (widget.appState.isBusy || _qcStarting) return;
+    final url = _urlCtrl.text.trim();
+    if (url.isEmpty) {
+      setState(() => _localError = '请先输入服务器地址');
+      return;
+    }
+    _qcPollTimer?.cancel();
+    setState(() {
+      _localError = null;
+      _qcStarting = true;
+      _qcCode = null;
+      _qcSecret = null;
+    });
+    try {
+      final res = await widget.appState.initiateQuickConnect(
+        url,
+        proxyUrl: _proxyCtrl.text,
+        acceptInvalidTls: _acceptInvalidCerts,
+      );
+      if (!mounted) return;
+      final code = res['code']?.toString() ?? '';
+      final secret = res['secret']?.toString() ?? '';
+      if (code.isEmpty || secret.isEmpty) {
+        throw Exception('该服务器未开启 Quick Connect');
+      }
+      setState(() {
+        _qcCode = code;
+        _qcSecret = secret;
+        _qcStarting = false;
+      });
+      _qcPollTimer = Timer.periodic(const Duration(seconds: 3), (t) async {
+        if (!mounted || _qcSecret == null) {
+          t.cancel();
+          return;
+        }
+        try {
+          final done = await widget.appState.pollQuickConnect(_qcSecret!);
+          if (done) {
+            t.cancel();
+            if (mounted) Navigator.of(context).pop(true);
+          }
+        } catch (e) {
+          t.cancel();
+          if (mounted) {
+            setState(() {
+              _qcCode = null;
+              _qcSecret = null;
+              _localError = VedroErrorFormatter.format(e);
+            });
+          }
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _qcStarting = false;
+          _localError = VedroErrorFormatter.format(e);
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
@@ -98,6 +186,7 @@ class _AddServerFormState extends State<_AddServerForm> {
         final busy = widget.appState.isBusy;
         final stage = widget.appState.loginStage ?? '连接中…';
         final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+        final maskedSysProxy = _maskProxyCredentials(widget.appState.systemProxyUrl);
 
         return SingleChildScrollView(
           padding: EdgeInsets.fromLTRB(22, 14, 22, 22 + bottomInset),
@@ -140,9 +229,13 @@ class _AddServerFormState extends State<_AddServerForm> {
                           children: [
                             Icon(Icons.wifi_tethering_rounded, size: 13, color: skin.fg2),
                             const SizedBox(width: 6),
-                            Text(
-                              '${d['name'] ?? addr}',
-                              style: TextStyle(color: skin.fg2, fontSize: 12),
+                            Flexible(
+                              child: Text(
+                                '${d['name'] ?? addr}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(color: skin.fg2, fontSize: 12),
+                              ),
                             ),
                           ],
                         ),
@@ -154,13 +247,14 @@ class _AddServerFormState extends State<_AddServerForm> {
               const SizedBox(height: 16),
               TextField(
                 controller: _urlCtrl,
+                autofocus: true,
                 enabled: !busy,
                 keyboardType: TextInputType.url,
                 textInputAction: TextInputAction.next,
                 style: TextStyle(color: skin.fg, fontSize: 14),
                 decoration: const InputDecoration(
                   labelText: '服务器地址',
-                  hintText: 'https://example.com',
+                  hintText: 'https://emby.example.com:8096',
                 ),
               ),
               const SizedBox(height: 12),
@@ -191,6 +285,42 @@ class _AddServerFormState extends State<_AddServerForm> {
                 ),
                 onSubmitted: (_) => _submit(),
               ),
+              if (_qcCode != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: skin.accent.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: skin.accent.withValues(alpha: 0.4)),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        'Jellyfin Quick Connect 授权码',
+                        style: TextStyle(color: skin.fg2, fontSize: 12),
+                      ),
+                      const SizedBox(height: 6),
+                      SelectableText(
+                        _qcCode!,
+                        style: TextStyle(
+                          color: skin.fg,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 4,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '请在已登录设备的 Jellyfin「快速连接」中输入此码，授权后自动完成登录',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: skin.fg3, fontSize: 11.5),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 8),
               PressableScale(
                 onTap: () => setState(() => _showAdvanced = !_showAdvanced),
@@ -231,30 +361,43 @@ class _AddServerFormState extends State<_AddServerForm> {
                               style: TextStyle(color: skin.fg, fontSize: 13.5),
                               decoration: InputDecoration(
                                 labelText: 'HTTP 代理（可选，留空跟随系统）',
-                                hintText: widget.appState.systemProxyUrl.isNotEmpty
-                                    ? '系统代理: ${widget.appState.systemProxyUrl}'
+                                hintText: maskedSysProxy.isNotEmpty
+                                    ? '系统代理: $maskedSysProxy'
                                     : 'http://127.0.0.1:7890',
                               ),
                             ),
                             const SizedBox(height: 6),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    '允许自签名证书',
-                                    style: TextStyle(color: skin.fg2, fontSize: 13),
-                                  ),
+                            PressableScale(
+                              onTap: busy
+                                  ? null
+                                  : () => setState(() => _acceptInvalidCerts = !_acceptInvalidCerts),
+                              hoverScale: 1.0,
+                              pressScale: 0.99,
+                              borderRadius: BorderRadius.circular(8),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 2),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        '允许自签名证书',
+                                        style: TextStyle(color: skin.fg2, fontSize: 13),
+                                      ),
+                                    ),
+                                    ExcludeFocus(
+                                      child: Transform.scale(
+                                        scale: 0.8,
+                                        child: CupertinoSwitch(
+                                          value: _acceptInvalidCerts,
+                                          onChanged: busy
+                                              ? null
+                                              : (v) => setState(() => _acceptInvalidCerts = v),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                Transform.scale(
-                                  scale: 0.8,
-                                  child: CupertinoSwitch(
-                                    value: _acceptInvalidCerts,
-                                    onChanged: busy
-                                        ? null
-                                        : (v) => setState(() => _acceptInvalidCerts = v),
-                                  ),
-                                ),
-                              ],
+                              ),
                             ),
                           ],
                         ),
@@ -280,24 +423,53 @@ class _AddServerFormState extends State<_AddServerForm> {
               SizedBox(
                 height: 44,
                 child: FilledButton(
+                  style: FilledButton.styleFrom(
+                    disabledBackgroundColor: skin.surface2,
+                    disabledForegroundColor: skin.fg2,
+                  ),
                   onPressed: busy ? null : _submit,
                   child: busy
                       ? Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const SizedBox(
+                            SizedBox(
                               width: 15,
                               height: 15,
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
-                                color: Colors.white,
+                                color: skin.fg,
                               ),
                             ),
                             const SizedBox(width: 10),
-                            Text(stage, style: const TextStyle(color: Colors.white, fontSize: 14)),
+                            Flexible(
+                              child: Text(
+                                stage,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(color: skin.fg, fontSize: 14),
+                              ),
+                            ),
                           ],
                         )
                       : const Text('连接并添加'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 38,
+                child: OutlinedButton.icon(
+                  onPressed: (busy || _qcStarting) ? null : _startQuickConnect,
+                  icon: _qcStarting
+                      ? SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 1.8, color: skin.accent),
+                        )
+                      : const Icon(Icons.qr_code_2_rounded, size: 16),
+                  label: Text(
+                    _qcCode != null ? '刷新 Jellyfin 快速连接码' : 'Jellyfin 快速连接（电视免输密码）',
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
                 ),
               ),
             ],
@@ -309,8 +481,12 @@ class _AddServerFormState extends State<_AddServerForm> {
 }
 
 class _ServerHubSheetBody extends StatelessWidget {
-  const _ServerHubSheetBody({required this.appState});
+  const _ServerHubSheetBody({
+    required this.appState,
+    required this.parentContext,
+  });
   final VedroAppState appState;
+  final BuildContext parentContext;
 
   @override
   Widget build(BuildContext context) {
@@ -324,7 +500,11 @@ class _ServerHubSheetBody extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
+              Wrap(
+                spacing: 10,
+                runSpacing: 8,
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Text(
                     '媒体服务器与线路',
@@ -335,11 +515,12 @@ class _ServerHubSheetBody extends StatelessWidget {
                       letterSpacing: -0.3,
                     ),
                   ),
-                  const Spacer(),
                   PressableScale(
                     onTap: () async {
                       Navigator.pop(context);
-                      await showAddServerSheet(context: context, appState: appState);
+                      if (parentContext.mounted) {
+                        await showAddServerSheet(context: parentContext, appState: appState);
+                      }
                     },
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -379,7 +560,9 @@ class _ServerHubSheetBody extends StatelessWidget {
                 },
                 onAddServer: () async {
                   Navigator.pop(context);
-                  await showAddServerSheet(context: context, appState: appState);
+                  if (parentContext.mounted) {
+                    await showAddServerSheet(context: parentContext, appState: appState);
+                  }
                 },
               ),
             ],

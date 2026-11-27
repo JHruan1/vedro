@@ -9,10 +9,12 @@
 #include <ks.h>
 #include <ksmedia.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <shobjidl.h>
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -62,15 +64,26 @@ bool IsAllowedHttpUrl(const std::string& url) {
   };
   if (!starts_ci("http://") && !starts_ci("https://")) return false;
   for (unsigned char c : url) {
-    if (c < 0x20 || c == '"' || c == '`' || c == '|') return false;
+    if (c <= 0x20 || c == '"' || c == '`' || c == '|' || c == ';' || c == '^' || c == '<' || c == '>') {
+      return false;
+    }
   }
   return true;
 }
 
-double QueryWindowsRefreshRateHz() {
+double QueryWindowsRefreshRateHz(HWND hwnd) {
   DEVMODEW dm = {};
   dm.dmSize = sizeof(dm);
-  if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm) &&
+  const wchar_t* dev_name = nullptr;
+  MONITORINFOEXW mi = {};
+  mi.cbSize = sizeof(mi);
+  if (hwnd) {
+    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (GetMonitorInfoW(mon, &mi)) {
+      dev_name = mi.szDevice;
+    }
+  }
+  if (EnumDisplaySettingsW(dev_name, ENUM_CURRENT_SETTINGS, &dm) &&
       dm.dmDisplayFrequency >= 24 && dm.dmDisplayFrequency <= 500) {
     return static_cast<double>(dm.dmDisplayFrequency);
   }
@@ -89,10 +102,14 @@ std::vector<std::string> PickFilesWindows(HWND hwnd,
     return results;
   }
 
+  // On Win32 IFileOpenDialog, FOS_PICKFOLDERS hides ALL files! Only enable folder-pick mode
+  // when caller explicitly wants a folder (allow_directory && extensions.empty()).
+  const bool pick_folders_only = allow_directory && extensions.empty();
+
   DWORD options = 0;
   if (SUCCEEDED(dialog->GetOptions(&options))) {
     options |= FOS_FORCEFILESYSTEM;
-    if (allow_directory) {
+    if (pick_folders_only) {
       options |= FOS_PICKFOLDERS;
     } else if (allow_multiple) {
       options |= FOS_ALLOWMULTISELECT;
@@ -106,7 +123,7 @@ std::vector<std::string> PickFilesWindows(HWND hwnd,
   }
 
   std::wstring spec;
-  if (!allow_directory && !extensions.empty()) {
+  if (!pick_folders_only && !extensions.empty()) {
     for (size_t i = 0; i < extensions.size(); ++i) {
       if (i > 0) spec += L";";
       spec += L"*." + Utf8ToWide(extensions[i]);
@@ -120,7 +137,7 @@ std::vector<std::string> PickFilesWindows(HWND hwnd,
 
   if (SUCCEEDED(dialog->Show(hwnd))) {
     ComPtr<IShellItemArray> items;
-    if (allow_multiple && !allow_directory && SUCCEEDED(dialog->GetResults(&items))) {
+    if (allow_multiple && !pick_folders_only && SUCCEEDED(dialog->GetResults(&items))) {
       DWORD count = 0;
       if (SUCCEEDED(items->GetCount(&count))) {
         for (DWORD i = 0; i < count; ++i) {
@@ -165,6 +182,8 @@ bool SetWindowsFullscreen(HWND hwnd, WindowModeState* state, bool enable) {
     MONITORINFO mi = {sizeof(MONITORINFO)};
     if (GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) {
       VedroSetWin32FullscreenFlag(true);
+      const MARGINS zero_margins = {0, 0, 0, 0};
+      DwmExtendFrameIntoClientArea(hwnd, &zero_margins);
       SetWindowLong(hwnd, GWL_STYLE, state->saved_style & ~WS_OVERLAPPEDWINDOW);
       SetWindowPos(
           hwnd,
@@ -197,27 +216,33 @@ struct WindowsDisplayCaps {
   int max_luminance_nits = 400;
 };
 
-WindowsDisplayCaps ProbeDxgiHdrCapabilities() {
+WindowsDisplayCaps ProbeDxgiHdrCapabilities(HWND hwnd) {
   WindowsDisplayCaps caps;
   ComPtr<IDXGIFactory6> factory;
   if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
     return caps;
   }
+  HMONITOR target_mon = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) : nullptr;
+  WindowsDisplayCaps fallback_caps;
   ComPtr<IDXGIAdapter1> adapter;
-  for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+  for (UINT i = 0; SUCCEEDED(factory->EnumAdapters1(i, &adapter)); ++i) {
     ComPtr<IDXGIOutput> output;
-    for (UINT j = 0; adapter->EnumOutputs(j, &output) != DXGI_ERROR_NOT_FOUND; ++j) {
+    for (UINT j = 0; SUCCEEDED(adapter->EnumOutputs(j, &output)); ++j) {
       ComPtr<IDXGIOutput6> output6;
       if (SUCCEEDED(output.As(&output6))) {
         DXGI_OUTPUT_DESC1 desc = {};
         if (SUCCEEDED(output6->GetDesc1(&desc))) {
           if (desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) {
-            caps.supports_hdr10 = true;
-            if (desc.MaxLuminance > 100.0f) {
-              caps.max_luminance_nits = static_cast<int>(desc.MaxLuminance);
-            } else {
-              caps.max_luminance_nits = 1000;
+            WindowsDisplayCaps cur;
+            cur.supports_hdr10 = true;
+            cur.max_luminance_nits = desc.MaxLuminance > 100.0f
+                                         ? static_cast<int>(desc.MaxLuminance)
+                                         : 1000;
+            if (!target_mon || desc.Monitor == target_mon) {
+              return cur;
             }
+            fallback_caps = cur;
+          } else if (target_mon && desc.Monitor == target_mon) {
             return caps;
           }
         }
@@ -226,7 +251,7 @@ WindowsDisplayCaps ProbeDxgiHdrCapabilities() {
     }
     adapter.Reset();
   }
-  return caps;
+  return fallback_caps;
 }
 
 bool ProbeWasapiExclusiveAtmosSupport() {
@@ -245,26 +270,85 @@ bool ProbeWasapiExclusiveAtmosSupport() {
     return false;
   }
 
-  WAVEFORMATEXTENSIBLE fmt = {};
-  fmt.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-  fmt.Format.nChannels = 8;
-  fmt.Format.nSamplesPerSec = 192000;
-  fmt.Format.wBitsPerSample = 16;
-  fmt.Format.nBlockAlign = fmt.Format.nChannels * (fmt.Format.wBitsPerSample / 8);
-  fmt.Format.nAvgBytesPerSec = fmt.Format.nSamplesPerSec * fmt.Format.nBlockAlign;
-  fmt.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
-  fmt.Samples.wValidBitsPerSample = 16;
-  fmt.dwChannelMask = KSAUDIO_SPEAKER_7POINT1_SURROUND;
-  fmt.SubFormat = KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_MLP;
+  auto probe_subtype = [&](const GUID& subformat, WORD channels, DWORD rate, DWORD mask) -> bool {
+    WAVEFORMATEXTENSIBLE fmt = {};
+    fmt.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    fmt.Format.nChannels = channels;
+    fmt.Format.nSamplesPerSec = rate;
+    fmt.Format.wBitsPerSample = 16;
+    fmt.Format.nBlockAlign = fmt.Format.nChannels * (fmt.Format.wBitsPerSample / 8);
+    fmt.Format.nAvgBytesPerSec = fmt.Format.nSamplesPerSec * fmt.Format.nBlockAlign;
+    fmt.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+    fmt.Samples.wValidBitsPerSample = 16;
+    fmt.dwChannelMask = mask;
+    fmt.SubFormat = subformat;
+    return client->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE,
+                                     reinterpret_cast<WAVEFORMATEX*>(&fmt),
+                                     nullptr) == S_OK;
+  };
 
-  return client->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE,
-                                   reinterpret_cast<WAVEFORMATEX*>(&fmt),
-                                   nullptr) == S_OK;
+  if (probe_subtype(KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_MLP, 8, 192000,
+                    KSAUDIO_SPEAKER_7POINT1_SURROUND)) {
+    return true;
+  }
+  return probe_subtype(KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_DIGITAL_PLUS, 2, 192000,
+                       KSAUDIO_SPEAKER_STEREO);
 }
+
+std::string SaveScreenshotWindows(const std::vector<uint8_t>& bytes, const std::string& raw_name) {
+  if (bytes.empty()) return {};
+  PWSTR pics_path = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_Pictures, 0, nullptr, &pics_path)) || !pics_path) {
+    return {};
+  }
+  std::wstring dir = std::wstring(pics_path) + L"\\Vedro";
+  CoTaskMemFree(pics_path);
+  CreateDirectoryW(dir.c_str(), nullptr);
+  std::string clean;
+  for (unsigned char c : raw_name) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+        c == '.' || c == '_' || c == '-') {
+      clean.push_back(static_cast<char>(c));
+    } else {
+      clean.push_back('_');
+    }
+  }
+  if (clean.empty()) clean = "vedro_screenshot.png";
+  std::wstring full = dir + L"\\" + Utf8ToWide(clean);
+  std::ofstream ofs(full, std::ios::binary | std::ios::trunc);
+  if (!ofs.is_open()) return {};
+  ofs.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  ofs.close();
+  return WideToUtf8(full);
+}
+
+std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> g_hw_channel;
 
 }  // namespace
 
+void NotifyWindowsDroppedFiles(const std::vector<std::string>& paths) {
+  if (!g_hw_channel || paths.empty()) return;
+  flutter::EncodableList list;
+  for (const auto& p : paths) {
+    list.push_back(flutter::EncodableValue(p));
+  }
+  flutter::EncodableMap args = {
+      {flutter::EncodableValue("paths"), flutter::EncodableValue(std::move(list))},
+  };
+  g_hw_channel->InvokeMethod("filesDropped",
+                             std::make_unique<flutter::EncodableValue>(std::move(args)));
+}
+
+void UnregisterVedroHardwarePlugin() {
+  SetThreadExecutionState(ES_CONTINUOUS);
+  if (g_hw_channel) {
+    g_hw_channel->SetMethodCallHandler(nullptr);
+    g_hw_channel.reset();
+  }
+}
+
 void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd) {
+  UnregisterVedroHardwarePlugin();
   auto channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
       messenger, "com.vedro.player/hardware",
       &flutter::StandardMethodCodec::GetInstance());
@@ -276,7 +360,7 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
                          std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
         const auto& method = call.method_name();
         if (method == "queryCapabilities") {
-          auto display = ProbeDxgiHdrCapabilities();
+          auto display = ProbeDxgiHdrCapabilities(hwnd);
           bool atmos_bitstream = ProbeWasapiExclusiveAtmosSupport();
           flutter::EncodableMap map = {
               {flutter::EncodableValue("is_tv"), flutter::EncodableValue(false)},
@@ -295,7 +379,7 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
               {flutter::EncodableValue("max_luminance_nits"),
                flutter::EncodableValue(display.max_luminance_nits)},
               {flutter::EncodableValue("refresh_rate_hz"),
-               flutter::EncodableValue(QueryWindowsRefreshRateHz())},
+               flutter::EncodableValue(QueryWindowsRefreshRateHz(hwnd))},
           };
           result->Success(flutter::EncodableValue(map));
         } else if (method == "createVideoSurface") {
@@ -338,8 +422,10 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
           result->Success();
         } else if (method == "startWindowDrag") {
           if (hwnd && !mode_state->is_fullscreen) {
+            POINT pt = {};
+            GetCursorPos(&pt);
             ReleaseCapture();
-            SendMessage(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+            PostMessage(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(pt.x, pt.y));
           }
           result->Success();
         } else if (method == "startWindowResize") {
@@ -361,8 +447,10 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
             else if (edge == "bottomLeft") ht = HTBOTTOMLEFT;
             else if (edge == "bottomRight") ht = HTBOTTOMRIGHT;
             if (ht != 0) {
+              POINT pt = {};
+              GetCursorPos(&pt);
               ReleaseCapture();
-              SendMessage(hwnd, WM_NCLBUTTONDOWN, ht, 0);
+              PostMessage(hwnd, WM_NCLBUTTONDOWN, ht, MAKELPARAM(pt.x, pt.y));
             }
           }
           result->Success();
@@ -468,6 +556,26 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
           COLORREF txt_rgb = RGB((fg_argb >> 16) & 0xFF, (fg_argb >> 8) & 0xFF, fg_argb & 0xFF);
           VedroApplyWin32WindowChrome(hwnd, is_light, cap_rgb, txt_rgb);
           result->Success();
+        } else if (method == "saveScreenshotToGallery") {
+          std::string saved;
+          if (const auto* args = std::get_if<flutter::EncodableMap>(call.arguments())) {
+            auto bit = args->find(flutter::EncodableValue("bytes"));
+            auto nit = args->find(flutter::EncodableValue("file_name"));
+            std::string name = "vedro_screenshot.png";
+            if (nit != args->end()) {
+              if (const auto* s = std::get_if<std::string>(&nit->second)) name = *s;
+            }
+            if (bit != args->end()) {
+              if (const auto* vec = std::get_if<std::vector<uint8_t>>(&bit->second)) {
+                saved = SaveScreenshotWindows(*vec, name);
+              }
+            }
+          }
+          if (saved.empty()) {
+            result->Success();
+          } else {
+            result->Success(flutter::EncodableValue(saved));
+          }
         } else if (method == "openUrl" || method == "launchExternalPlayer") {
           std::string url;
           std::string player;
@@ -484,17 +592,26 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
           if (!IsAllowedHttpUrl(url)) {
             result->Success(flutter::EncodableValue(false));
           } else {
-            std::string target_uri = url;
-            if (method == "launchExternalPlayer" && player == "potplayer") {
-              target_uri = "potplayer://" + url;
-            }
-            std::wstring wurl = Utf8ToWide(target_uri);
-            HINSTANCE inst = ShellExecuteW(hwnd, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-            bool ok = reinterpret_cast<INT_PTR>(inst) > 32;
-            if (!ok && target_uri != url) {
-              std::wstring wfallback = Utf8ToWide(url);
-              inst = ShellExecuteW(hwnd, L"open", wfallback.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            bool ok = false;
+            if (method == "launchExternalPlayer" && (player == "mpv" || player == "vlc")) {
+              std::wstring exe = player == "mpv" ? L"mpv.exe" : L"vlc.exe";
+              std::wstring params = L"\"" + Utf8ToWide(url) + L"\"";
+              HINSTANCE inst = ShellExecuteW(hwnd, L"open", exe.c_str(), params.c_str(), nullptr, SW_SHOWNORMAL);
               ok = reinterpret_cast<INT_PTR>(inst) > 32;
+            }
+            if (!ok) {
+              std::string target_uri = url;
+              if (method == "launchExternalPlayer" && player == "potplayer") {
+                target_uri = "potplayer://" + url;
+              }
+              std::wstring wurl = Utf8ToWide(target_uri);
+              HINSTANCE inst = ShellExecuteW(hwnd, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+              ok = reinterpret_cast<INT_PTR>(inst) > 32;
+              if (!ok && target_uri != url) {
+                std::wstring wfallback = Utf8ToWide(url);
+                inst = ShellExecuteW(hwnd, L"open", wfallback.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                ok = reinterpret_cast<INT_PTR>(inst) > 32;
+              }
             }
             result->Success(flutter::EncodableValue(ok));
           }
@@ -503,7 +620,7 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
         }
       });
 
-  channel.release();
+  g_hw_channel = std::move(channel);
 }
 
 }  // namespace vedro

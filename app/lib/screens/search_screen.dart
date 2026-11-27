@@ -26,6 +26,7 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   final _ctrl = TextEditingController();
+  final FocusScopeNode _resultsScope = FocusScopeNode(debugLabel: 'search-results-scope');
   Timer? _debounce;
   List<AggregatedSearchHit> _hits = [];
   List<Map<String, dynamic>> _servers = [];
@@ -37,6 +38,7 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   void dispose() {
     _debounce?.cancel();
+    _resultsScope.dispose();
     _ctrl.dispose();
     super.dispose();
   }
@@ -56,7 +58,11 @@ class _SearchScreenState extends State<SearchScreen> {
     _debounce = Timer(const Duration(milliseconds: 240), () => _runSearch(val.trim()));
   }
 
-  Future<void> _runSearch(String term, {bool saveHistory = false}) async {
+  Future<void> _runSearch(
+    String term, {
+    bool saveHistory = false,
+    bool focusResults = false,
+  }) async {
     final gen = ++_searchGen;
     setState(() => _searching = true);
     if (saveHistory) {
@@ -73,6 +79,13 @@ class _SearchScreenState extends State<SearchScreen> {
             _filterServerId = null;
           }
         });
+        if (focusResults && res.hits.isNotEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _resultsScope.canRequestFocus) {
+              _resultsScope.requestFocus();
+            }
+          });
+        }
       }
     } catch (_) {
       // Keep previous/empty state gracefully
@@ -130,9 +143,12 @@ class _SearchScreenState extends State<SearchScreen> {
                 padding: EdgeInsets.fromLTRB(padX, 0, padX, 10),
                 child: TextField(
                   controller: _ctrl,
+                  textInputAction: TextInputAction.search,
                   onChanged: _onChanged,
                   onSubmitted: (v) {
-                    if (v.trim().isNotEmpty) _runSearch(v.trim(), saveHistory: true);
+                    if (v.trim().isNotEmpty) {
+                      _runSearch(v.trim(), saveHistory: true, focusResults: true);
+                    }
                   },
                   style: TextStyle(color: skin.fg, fontSize: 14.5),
                   decoration: InputDecoration(
@@ -251,12 +267,15 @@ class _SearchScreenState extends State<SearchScreen> {
                           style: TextStyle(color: skin.fg3, fontSize: 13.5),
                         ),
                       )
-                    : ListView(
+                    : FocusScope(
+                        node: _resultsScope,
+                        child: ListView(
                         padding: EdgeInsets.fromLTRB(0, 10, 0, wide ? 44 : 112),
                         children: grouped.values.map((group) {
                           final profile = DisplayMetricsProfile.of(context);
                           final prefs = widget.appState.prefs;
                           final posterW = prefs.posterCardWidth(wide, profile);
+                          final decodeW = (posterW * profile.devicePixelRatio).round().clamp(160, 480);
                           final cardMetrics = PosterCardLayout.forCardWidth(
                             cardWidth: posterW,
                             aspectRatio: 2 / 3,
@@ -306,10 +325,11 @@ class _SearchScreenState extends State<SearchScreen> {
                                               hit.id,
                                               type: 'Primary',
                                               tag: hit.primaryImageTag,
-                                              maxWidth: 320,
+                                              maxWidth: decodeW.clamp(240, 480),
                                             )
                                           : '';
-                                      return SizedBox(
+                                      return RepaintBoundary(
+                                        child: SizedBox(
                                         width: posterW,
                                         child: PressableScale(
                                           onTap: () {
@@ -336,7 +356,7 @@ class _SearchScreenState extends State<SearchScreen> {
                                                   child: url.isNotEmpty
                                                       ? FadeNetworkImage(
                                                           url: url,
-                                                          cacheWidth: 320,
+                                                          cacheWidth: decodeW,
                                                           placeholder: GeneratedArt(
                                                             seed: hit.id,
                                                             label: hit.name,
@@ -386,6 +406,7 @@ class _SearchScreenState extends State<SearchScreen> {
                                             ],
                                           ),
                                         ),
+                                      ),
                                       );
                                     },
                                   ),
@@ -394,6 +415,7 @@ class _SearchScreenState extends State<SearchScreen> {
                             ),
                           );
                         }).toList(),
+                      ),
                       ),
           ),
         ],

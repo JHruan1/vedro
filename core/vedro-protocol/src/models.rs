@@ -313,6 +313,8 @@ pub struct MediaSourceInfo {
     #[serde(default)]
     pub direct_stream_url: Option<String>,
     #[serde(default)]
+    pub transcoding_url: Option<String>,
+    #[serde(default)]
     pub supports_direct_play: bool,
     #[serde(default)]
     pub supports_direct_stream: bool,

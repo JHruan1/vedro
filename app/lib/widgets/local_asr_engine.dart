@@ -45,9 +45,15 @@ class LocalAsrModelSpec {
           'https://hf-mirror.com/$_repoPath/$tokensFileName',
         ];
 
-  static const List<String> vadUrls = [
-    'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx',
-  ];
+  static List<String> vadUrls({required bool preferChinaMirror}) => preferChinaMirror
+      ? const [
+          'https://hf-mirror.com/csukuangfj/sherpa-onnx-vad/resolve/main/silero_vad.onnx',
+          'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx',
+        ]
+      : const [
+          'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx',
+          'https://hf-mirror.com/csukuangfj/sherpa-onnx-vad/resolve/main/silero_vad.onnx',
+        ];
 }
 
 /// Manages local offline ASR model downloads, storage stats, and persistent Isolate inference.
@@ -67,6 +73,7 @@ class LocalAsrManager extends ChangeNotifier {
   String? downloadError;
 
   HttpClient? _activeClient;
+  Future<void>? _activeDownloadFuture;
   bool _cancelRequested = false;
 
   // Persistent background Isolate so the 228 MB ONNX model is loaded ONCE per playback session
@@ -74,9 +81,12 @@ class LocalAsrManager extends ChangeNotifier {
   Isolate? _workerIsolate;
   SendPort? _workerSendPort;
   ReceivePort? _workerExitPort;
+  ReceivePort? _workerErrorPort;
   String _loadedModelSig = '';
   Future<void>? _startingWorker;
+  Future<void> _opChain = Future<void>.value();
   int _activeTranscriptions = 0;
+  final Set<Completer<dynamic>> _pendingReplies = <Completer<dynamic>>{};
 
   bool get isWorkerLoaded => _workerIsolate != null;
   bool get isTranscribing => _activeTranscriptions > 0;
@@ -85,36 +95,36 @@ class LocalAsrManager extends ChangeNotifier {
     if (modelDirPath != null && modelDirPath!.isNotEmpty) {
       return Directory(modelDirPath!);
     }
-    String base;
-    try {
-      final dir = await getApplicationSupportDirectory();
-      base = dir.path;
-    } catch (_) {
-      base = Directory.systemTemp.path;
-    }
-    final dir = Directory('$base/asr_models/${LocalAsrModelSpec.id}');
-    modelDirPath = dir.path;
-    return dir;
+    final dir = await getApplicationSupportDirectory();
+    final out = Directory('${dir.path}/asr_models/${LocalAsrModelSpec.id}');
+    modelDirPath = out.path;
+    return out;
   }
 
   Future<void> refreshStatus() async {
-    final dir = await _resolveModelDir();
-    final modelFile = File('${dir.path}/${LocalAsrModelSpec.modelFileName}');
-    final tokensFile = File('${dir.path}/${LocalAsrModelSpec.tokensFileName}');
-    final vadFile = File('${dir.path}/${LocalAsrModelSpec.vadFileName}');
+    try {
+      final dir = await _resolveModelDir();
+      final modelFile = File('${dir.path}/${LocalAsrModelSpec.modelFileName}');
+      final tokensFile = File('${dir.path}/${LocalAsrModelSpec.tokensFileName}');
+      final vadFile = File('${dir.path}/${LocalAsrModelSpec.vadFileName}');
 
-    final modelOk = modelFile.existsSync() && modelFile.lengthSync() > 10 * 1024 * 1024;
-    final tokensOk = tokensFile.existsSync() && tokensFile.lengthSync() > 1024;
-    final vadOk = vadFile.existsSync() && vadFile.lengthSync() > 100 * 1024;
+      final modelOk = modelFile.existsSync() && modelFile.lengthSync() > 10 * 1024 * 1024;
+      final tokensOk = tokensFile.existsSync() && tokensFile.lengthSync() > 1024;
+      final vadOk = vadFile.existsSync() && vadFile.lengthSync() > 100 * 1024;
 
-    var total = 0;
-    if (modelFile.existsSync()) total += modelFile.lengthSync();
-    if (tokensFile.existsSync()) total += tokensFile.lengthSync();
-    if (vadFile.existsSync()) total += vadFile.lengthSync();
+      var total = 0;
+      if (modelFile.existsSync()) total += modelFile.lengthSync();
+      if (tokensFile.existsSync()) total += tokensFile.lengthSync();
+      if (vadFile.existsSync()) total += vadFile.lengthSync();
 
-    isModelDownloaded = modelOk && tokensOk;
-    hasVadModel = vadOk;
-    downloadedBytes = total;
+      isModelDownloaded = modelOk && tokensOk;
+      hasVadModel = vadOk;
+      downloadedBytes = total;
+    } catch (_) {
+      isModelDownloaded = false;
+      hasVadModel = false;
+      downloadedBytes = 0;
+    }
     notifyListeners();
   }
 
@@ -127,8 +137,16 @@ class LocalAsrManager extends ChangeNotifier {
     _activeClient = null;
   }
 
-  Future<void> downloadModel({bool useChinaMirror = true}) async {
-    if (isDownloading) return;
+  Future<void> downloadModel({bool useChinaMirror = true}) {
+    if (isDownloading && _activeDownloadFuture != null) {
+      return _activeDownloadFuture!;
+    }
+    final fut = _downloadModelImpl(useChinaMirror: useChinaMirror);
+    _activeDownloadFuture = fut;
+    return fut;
+  }
+
+  Future<void> _downloadModelImpl({required bool useChinaMirror}) async {
     isDownloading = true;
     _cancelRequested = false;
     downloadProgress = 0.0;
@@ -159,7 +177,7 @@ class LocalAsrManager extends ChangeNotifier {
       notifyListeners();
       try {
         await _downloadWithMirrors(
-          urls: LocalAsrModelSpec.vadUrls,
+          urls: LocalAsrModelSpec.vadUrls(preferChinaMirror: useChinaMirror),
           destPath: '${dir.path}/${LocalAsrModelSpec.vadFileName}',
           minBytes: 100 * 1024,
           onProgress: (_, __) {},
@@ -169,7 +187,7 @@ class LocalAsrManager extends ChangeNotifier {
       }
       if (_cancelRequested) throw Exception('已取消下载');
 
-      // 3. Download SenseVoice-Small INT8 ONNX model (~228 MB) with live progress
+      // 3. Download SenseVoice-Small INT8 ONNX model (~228 MB) with live progress & Range resume
       downloadStage = '下载 SenseVoice 语音模型…';
       notifyListeners();
       await _downloadWithMirrors(
@@ -195,12 +213,19 @@ class LocalAsrManager extends ChangeNotifier {
       downloadStage = '';
     } finally {
       _activeClient = null;
+      _activeDownloadFuture = null;
       isDownloading = false;
       notifyListeners();
     }
   }
 
   Future<void> deleteModel() async {
+    if (isDownloading) {
+      cancelDownload();
+      try {
+        await _activeDownloadFuture;
+      } catch (_) {}
+    }
     await unloadEngine();
     final dir = await _resolveModelDir();
     if (dir.existsSync()) {
@@ -232,6 +257,7 @@ class LocalAsrManager extends ChangeNotifier {
       _activeClient = client;
       IOSink? sink;
       try {
+        var existingBytes = partFile.existsSync() ? partFile.lengthSync() : 0;
         var uri = Uri.parse(rawUrl);
         HttpClientResponse? resp;
         for (var hop = 0; hop < 8; hop++) {
@@ -240,7 +266,10 @@ class LocalAsrManager extends ChangeNotifier {
           }
           final req = await client.getUrl(uri);
           req.followRedirects = false;
-          req.headers.set(HttpHeaders.userAgentHeader, 'Vedro-ASR/0.4');
+          req.headers.set(HttpHeaders.userAgentHeader, 'Vedro-ASR/1.0');
+          if (existingBytes > 0) {
+            req.headers.set(HttpHeaders.rangeHeader, 'bytes=$existingBytes-');
+          }
           final r = await req.close().timeout(const Duration(seconds: 25));
           if (r.isRedirect && r.headers.value(HttpHeaders.locationHeader) != null) {
             final loc = r.headers.value(HttpHeaders.locationHeader)!;
@@ -251,13 +280,27 @@ class LocalAsrManager extends ChangeNotifier {
           resp = r;
           break;
         }
-        if (resp == null || resp.statusCode < 200 || resp.statusCode >= 300) {
-          throw Exception('HTTP ${resp?.statusCode ?? 0}');
+        if (resp == null) {
+          throw Exception('HTTP 0');
+        }
+        if (resp.statusCode == 416 && existingBytes >= minBytes) {
+          await resp.drain<void>();
+          if (destFile.existsSync()) destFile.deleteSync();
+          partFile.renameSync(destPath);
+          return;
+        }
+        if (resp.statusCode < 200 || resp.statusCode >= 300) {
+          throw Exception('HTTP ${resp.statusCode}');
         }
 
-        final total = resp.contentLength;
-        sink = partFile.openWrite(mode: FileMode.writeOnly);
-        var received = 0;
+        final isPartial = resp.statusCode == 206 && existingBytes > 0;
+        if (!isPartial) {
+          existingBytes = 0;
+        }
+        final respLen = resp.contentLength;
+        final expectedTotal = respLen > 0 ? existingBytes + respLen : -1;
+        sink = partFile.openWrite(mode: isPartial ? FileMode.append : FileMode.writeOnly);
+        var received = existingBytes;
         var lastEmitMs = 0;
 
         await for (final chunk in resp.timeout(const Duration(seconds: 30))) {
@@ -269,17 +312,20 @@ class LocalAsrManager extends ChangeNotifier {
           final nowMs = DateTime.now().millisecondsSinceEpoch;
           if (nowMs - lastEmitMs >= 180) {
             lastEmitMs = nowMs;
-            onProgress(received, total);
+            onProgress(received, expectedTotal);
           }
         }
         await sink.flush();
         await sink.close();
         sink = null;
 
+        if (expectedTotal > 0 && received != expectedTotal) {
+          throw Exception('文件下载不完整 ($received / $expectedTotal B)');
+        }
         if (received < minBytes) {
           throw Exception('文件下载不完整 ($received B)');
         }
-        onProgress(received, total);
+        onProgress(received, expectedTotal);
         if (destFile.existsSync()) destFile.deleteSync();
         partFile.renameSync(destPath);
         return;
@@ -288,15 +334,33 @@ class LocalAsrManager extends ChangeNotifier {
         try {
           await sink?.close();
         } catch (_) {}
-        try {
-          if (partFile.existsSync()) partFile.deleteSync();
-        } catch (_) {}
-        if (_cancelRequested) rethrow;
+        if (_cancelRequested) {
+          // Keep `.part` file on user cancel so next click resumes seamlessly!
+          rethrow;
+        }
       } finally {
         client.close(force: true);
       }
     }
     throw Exception('模型下载失败（所有镜像源均不可达）：$lastErr');
+  }
+
+  /// Serialize isolate lifecycle ops (`transcribeWavSlice` / `unloadEngine`) so `unloadEngine`
+  /// never kills a live ONNX inference mid-call and leaks 230+ MB of native C++ memory.
+  Future<T> _serialized<T>(Future<T> Function() action) {
+    final next = _opChain.catchError((_) {}).then((_) => action());
+    _opChain = next.then<void>((_) {}, onError: (_) {});
+    return next;
+  }
+
+  void _failPendingReplies(String reason) {
+    if (_pendingReplies.isEmpty) return;
+    final list = List<Completer<dynamic>>.from(_pendingReplies);
+    _pendingReplies.clear();
+    final err = Exception(reason);
+    for (final c in list) {
+      if (!c.isCompleted) c.completeError(err);
+    }
   }
 
   /// Transcribe a 16 kHz Mono 16-bit PCM WAV slice locally on-device using `sherpa_onnx`
@@ -306,9 +370,28 @@ class LocalAsrManager extends ChangeNotifier {
     required String wavPath,
     required double sliceStartSecs,
     String language = 'auto',
+  }) {
+    return _serialized(() => _transcribeWavSliceImpl(
+          wavPath: wavPath,
+          sliceStartSecs: sliceStartSecs,
+          language: language,
+        ));
+  }
+
+  Future<List<Map<String, dynamic>>> _transcribeWavSliceImpl({
+    required String wavPath,
+    required double sliceStartSecs,
+    required String language,
   }) async {
     _activeTranscriptions += 1;
     final reply = ReceivePort();
+    final replyCompleter = Completer<dynamic>();
+    _pendingReplies.add(replyCompleter);
+    final replySub = reply.listen((msg) {
+      if (!replyCompleter.isCompleted) {
+        replyCompleter.complete(msg);
+      }
+    });
     try {
       await refreshStatus();
       if (!isModelDownloaded) {
@@ -344,7 +427,7 @@ class LocalAsrManager extends ChangeNotifier {
         'slice_start_ms': (sliceStartSecs * 1000).round(),
         'reply': reply.sendPort,
       });
-      final resp = await reply.first.timeout(const Duration(seconds: 60));
+      final resp = await replyCompleter.future.timeout(const Duration(seconds: 60));
 
       if (resp is Map && resp['error'] != null) {
         throw Exception(resp['error'].toString());
@@ -354,8 +437,10 @@ class LocalAsrManager extends ChangeNotifier {
       }
       return const [];
     } finally {
-      _activeTranscriptions = (_activeTranscriptions - 1).clamp(0, 1 << 20);
+      _pendingReplies.remove(replyCompleter);
+      await replySub.cancel();
       reply.close();
+      _activeTranscriptions = (_activeTranscriptions - 1).clamp(0, 1 << 20);
       try {
         final f = File(wavPath);
         if (f.existsSync()) f.deleteSync();
@@ -378,12 +463,16 @@ class LocalAsrManager extends ChangeNotifier {
     }
 
     final completer = Completer<void>();
+    // Prevent unhandled-error crash if caller times out before awaiting `_startingWorker`
+    completer.future.ignore();
     _startingWorker = completer.future;
     final readyPort = ReceivePort();
     try {
-      await unloadEngine();
+      await _unloadEngineImpl();
       final exitPort = ReceivePort();
+      final errorPort = ReceivePort();
       _workerExitPort = exitPort;
+      _workerErrorPort = errorPort;
       final isolate = await Isolate.spawn(
         _localAsrIsolateEntry,
         <String, dynamic>{
@@ -395,33 +484,41 @@ class LocalAsrManager extends ChangeNotifier {
           'num_threads': numThreads,
         },
         onExit: exitPort.sendPort,
+        onError: errorPort.sendPort,
+        errorsAreFatal: false,
       );
       _workerIsolate = isolate;
-      exitPort.listen((_) {
+      void onCrash(String reason) {
         if (_workerIsolate == isolate) {
           _workerIsolate = null;
           _workerSendPort = null;
           _loadedModelSig = '';
           _workerExitPort?.close();
           _workerExitPort = null;
+          _workerErrorPort?.close();
+          _workerErrorPort = null;
+          _failPendingReplies(reason);
         }
-      });
+      }
+
+      exitPort.listen((_) => onCrash('本地语音识别进程意外退出'));
+      errorPort.listen((e) => onCrash('本地语音识别进程错误: $e'));
 
       final initMsg = await readyPort.first.timeout(const Duration(seconds: 30));
       if (initMsg is Map && initMsg['error'] != null) {
-        await unloadEngine();
+        await _unloadEngineImpl();
         throw Exception(initMsg['error'].toString());
       }
       if (initMsg is Map && initMsg['send_port'] is SendPort) {
         _workerSendPort = initMsg['send_port'] as SendPort;
         _loadedModelSig = sig;
       } else {
-        await unloadEngine();
+        await _unloadEngineImpl();
         throw Exception('本地语音识别引擎启动异常');
       }
       completer.complete();
     } catch (e) {
-      await unloadEngine();
+      await _unloadEngineImpl();
       if (!completer.isCompleted) completer.completeError(e);
       rethrow;
     } finally {
@@ -431,15 +528,20 @@ class LocalAsrManager extends ChangeNotifier {
   }
 
   /// Gracefully free ONNX recognizer + VAD native C++ memory BEFORE terminating the worker isolate.
-  /// Avoids leaking 230–400 MB of native ONNX heap on `Isolate.immediate` termination.
-  Future<void> unloadEngine() async {
+  /// Serialized after any active transcription so native ONNX heap is never leaked.
+  Future<void> unloadEngine() => _serialized(_unloadEngineImpl);
+
+  Future<void> _unloadEngineImpl() async {
     final sp = _workerSendPort;
     final iso = _workerIsolate;
     final exitPort = _workerExitPort;
+    final errorPort = _workerErrorPort;
     _workerSendPort = null;
     _workerIsolate = null;
     _workerExitPort = null;
+    _workerErrorPort = null;
     _loadedModelSig = '';
+    _failPendingReplies('本地语音识别引擎已释放');
 
     if (sp != null) {
       final ackPort = ReceivePort();
@@ -459,6 +561,7 @@ class LocalAsrManager extends ChangeNotifier {
       iso?.kill(priority: Isolate.immediate);
     } catch (_) {}
     exitPort?.close();
+    errorPort?.close();
   }
 }
 

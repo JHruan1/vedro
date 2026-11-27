@@ -551,6 +551,7 @@ class _ResumeCardState extends State<ResumeCard> {
     final skin = VedroSkin.of(context);
     final radius = widget.appState.prefs.effectiveCardRadius(skin);
     final item = widget.item;
+    final touchPrimary = DisplayMetricsProfile.of(context).isTouchPrimary;
     final hasLightNoBackdrop = skin.isLight && widget.appState.backdropArt(item) == null;
     final left = item.remainingText;
     final sub = item.type == 'Episode'
@@ -561,6 +562,101 @@ class _ResumeCardState extends State<ResumeCard> {
               fmtDurationTicks(item.runTimeTicks),
           ].join(' · ');
 
+    final cardDecoration = BoxDecoration(
+      borderRadius: BorderRadius.circular(radius),
+      color: skin.surface2,
+      boxShadow: skin.posterShadow(hovered: !touchPrimary && _highlighted),
+    );
+    final cardForeground = BoxDecoration(
+      borderRadius: BorderRadius.circular(radius),
+      border: skin.cardBorder(hovered: !touchPrimary && _highlighted),
+    );
+    final cardBody = Stack(
+      fit: StackFit.expand,
+      children: [
+        VedroArtwork(
+          item: item,
+          appState: widget.appState,
+          landscape: true,
+          width: 680,
+          displayWidth: widget.width,
+        ),
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: 44,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: hasLightNoBackdrop
+                    ? [Colors.transparent, Colors.white.withValues(alpha: 0.72)]
+                    : const [Colors.transparent, Color(0xBD000000)],
+              ),
+            ),
+          ),
+        ),
+        Center(
+          child: PressableScale(
+            onTap: widget.onResumePlay,
+            canRequestFocus: false,
+            hoverScale: 1.1,
+            pressScale: 0.9,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: hasLightNoBackdrop
+                    ? Colors.white.withValues(alpha: _highlighted ? 0.96 : 0.86)
+                    : (_highlighted
+                        ? const Color(0x66000000)
+                        : const Color(0x42000000)),
+                border: Border.all(
+                  color: hasLightNoBackdrop
+                      ? skin.accent.withValues(alpha: 0.35)
+                      : (_highlighted ? Colors.white : const Color(0xD9FFFFFF)),
+                  width: 2.0,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: skin.isLight ? 0.12 : 0.34),
+                    blurRadius: 12,
+                  ),
+                ],
+              ),
+              child: Icon(
+                Icons.play_arrow_rounded,
+                size: 26,
+                color: hasLightNoBackdrop ? skin.accent : Colors.white,
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          left: 10,
+          right: 10,
+          bottom: 8,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: item.resumeProgress.clamp(0.02, 1.0),
+              minHeight: 3.5,
+              backgroundColor: hasLightNoBackdrop
+                  ? Colors.black.withValues(alpha: 0.12)
+                  : const Color(0x45FFFFFF),
+              color: hasLightNoBackdrop
+                  ? skin.accent
+                  : (skin.ctaStyle == 'contrast' ? Colors.white : skin.accent),
+            ),
+          ),
+        ),
+      ],
+    );
+
     return RepaintBoundary(
       child: SizedBox(
         width: widget.width,
@@ -568,113 +664,31 @@ class _ResumeCardState extends State<ResumeCard> {
           onTap: widget.onTap,
           onLongPress: widget.onLongPress,
           onSecondaryTap: widget.onLongPress,
-          onHoverChanged: (v) => setState(() => _hovered = v),
+          onHoverChanged: touchPrimary ? null : (v) => setState(() => _hovered = v),
           onFocusChanged: (v) => setState(() => _focused = v),
           borderRadius: BorderRadius.circular(radius),
-          hoverScale: 1.014,
+          hoverScale: touchPrimary ? 1.0 : 1.014,
           pressScale: 0.98,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               AspectRatio(
                 aspectRatio: 16 / 9,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  curve: VedroTheme.easeOut,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(radius),
-                    color: skin.surface2,
-                    boxShadow: skin.posterShadow(hovered: _highlighted),
-                  ),
-                  foregroundDecoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(radius),
-                    border: skin.cardBorder(hovered: _highlighted),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      VedroArtwork(
-                        item: item,
-                        appState: widget.appState,
-                        landscape: true,
-                        width: 680,
-                        displayWidth: widget.width,
+                child: touchPrimary
+                    ? Container(
+                        decoration: cardDecoration,
+                        foregroundDecoration: cardForeground,
+                        clipBehavior: Clip.antiAlias,
+                        child: cardBody,
+                      )
+                    : AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        curve: VedroTheme.easeOut,
+                        decoration: cardDecoration,
+                        foregroundDecoration: cardForeground,
+                        clipBehavior: Clip.antiAlias,
+                        child: cardBody,
                       ),
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        height: 44,
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: hasLightNoBackdrop
-                                  ? [Colors.transparent, Colors.white.withValues(alpha: 0.72)]
-                                  : const [Colors.transparent, Color(0xBD000000)],
-                            ),
-                          ),
-                        ),
-                      ),
-                      Center(
-                        child: PressableScale(
-                          onTap: widget.onResumePlay,
-                          canRequestFocus: false,
-                          hoverScale: 1.1,
-                          pressScale: 0.9,
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 180),
-                            width: 44,
-                            height: 44,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: hasLightNoBackdrop
-                                  ? Colors.white.withValues(alpha: _highlighted ? 0.96 : 0.86)
-                                  : (_highlighted
-                                      ? const Color(0x66000000)
-                                      : const Color(0x42000000)),
-                              border: Border.all(
-                                color: hasLightNoBackdrop
-                                    ? skin.accent.withValues(alpha: 0.35)
-                                    : (_highlighted ? Colors.white : const Color(0xD9FFFFFF)),
-                                width: 2.0,
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: skin.isLight ? 0.12 : 0.34),
-                                  blurRadius: 12,
-                                ),
-                              ],
-                            ),
-                            child: Icon(
-                              Icons.play_arrow_rounded,
-                              size: 26,
-                              color: hasLightNoBackdrop ? skin.accent : Colors.white,
-                            ),
-                          ),
-                        ),
-                      ),
-                      Positioned(
-                        left: 10,
-                        right: 10,
-                        bottom: 8,
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(2),
-                          child: LinearProgressIndicator(
-                            value: item.resumeProgress.clamp(0.02, 1.0),
-                            minHeight: 3.5,
-                            backgroundColor: hasLightNoBackdrop
-                                ? Colors.black.withValues(alpha: 0.12)
-                                : const Color(0x45FFFFFF),
-                            color: skin.ctaStyle == 'contrast' ? Colors.white : skin.accent,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
               ),
               SizedBox(height: widget.width < 128 ? 6 : 8),
               Text(
@@ -753,18 +767,29 @@ class _LibraryCardState extends State<LibraryCard> {
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
     final radius = widget.appState.prefs.effectiveCardRadius(skin);
+    final touchPrimary = DisplayMetricsProfile.of(context).isTouchPrimary;
     final serverCover = widget.appState.libraryCoverUrl(widget.library, width: 720);
     final hasServerCover = serverCover != null && serverCover.isNotEmpty;
+
+    final cardDecoration = BoxDecoration(
+      borderRadius: BorderRadius.circular(radius),
+      color: skin.surface2,
+      boxShadow: skin.posterShadow(hovered: !touchPrimary && _highlighted),
+    );
+    final cardForeground = BoxDecoration(
+      borderRadius: BorderRadius.circular(radius),
+      border: skin.cardBorder(hovered: !touchPrimary && _highlighted),
+    );
 
     return RepaintBoundary(
       child: SizedBox(
         width: widget.width,
         child: PressableScale(
           onTap: widget.onTap,
-          onHoverChanged: (v) => setState(() => _hovered = v),
+          onHoverChanged: touchPrimary ? null : (v) => setState(() => _hovered = v),
           onFocusChanged: (v) => setState(() => _focused = v),
           borderRadius: BorderRadius.circular(radius),
-          hoverScale: 1.014,
+          hoverScale: touchPrimary ? 1.0 : 1.014,
           pressScale: 0.98,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -772,17 +797,10 @@ class _LibraryCardState extends State<LibraryCard> {
               AspectRatio(
                 aspectRatio: 16 / 9,
                 child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
+                  duration: touchPrimary ? Duration.zero : const Duration(milliseconds: 200),
                   curve: VedroTheme.easeOut,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(radius),
-                    color: skin.surface2,
-                    boxShadow: skin.posterShadow(hovered: _highlighted),
-                  ),
-                  foregroundDecoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(radius),
-                    border: skin.cardBorder(hovered: _highlighted),
-                  ),
+                  decoration: cardDecoration,
+                  foregroundDecoration: cardForeground,
                   clipBehavior: Clip.antiAlias,
                   child: Stack(
                     fit: StackFit.expand,

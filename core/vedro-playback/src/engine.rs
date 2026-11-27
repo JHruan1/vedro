@@ -203,21 +203,37 @@ impl PlaybackEngine {
     }
 
     pub fn seek_absolute(&self, seconds: f64) -> Result<()> {
+        if !seconds.is_finite() {
+            return Err(PlaybackError::CommandFailed(
+                "non-finite seek target".into(),
+            ));
+        }
         self.run_command(&["seek", &format!("{:.3}", seconds.max(0.0)), "absolute"])
     }
 
     pub fn seek_relative(&self, delta_seconds: f64) -> Result<()> {
+        if !delta_seconds.is_finite() {
+            return Err(PlaybackError::CommandFailed("non-finite seek delta".into()));
+        }
         self.run_command(&["seek", &format!("{delta_seconds:.3}"), "relative"])
     }
 
     pub fn set_speed(&self, speed: f64) -> Result<()> {
+        if !speed.is_finite() {
+            return Err(PlaybackError::CommandFailed(
+                "non-finite playback speed".into(),
+            ));
+        }
         let clamped = speed.clamp(0.25, 4.0);
         self.set_property("speed", &format!("{clamped:.2}"))
     }
 
     pub fn set_volume(&self, volume: f64) -> Result<()> {
-        let clamped = volume.clamp(0.0, 200.0);
-        let _ = self.set_property("volume-max", "200");
+        if !volume.is_finite() {
+            return Err(PlaybackError::CommandFailed("non-finite volume".into()));
+        }
+        let clamped = volume.clamp(0.0, 300.0);
+        let _ = self.set_property("volume-max", "300");
         self.set_property("volume", &format!("{clamped:.1}"))
     }
 
@@ -258,11 +274,27 @@ impl PlaybackEngine {
     }
 
     pub fn set_subtitle_delay(&self, delay_secs: f64) -> Result<()> {
-        self.set_property("sub-delay", &format!("{delay_secs:.3}"))
+        if !delay_secs.is_finite() {
+            return Err(PlaybackError::CommandFailed(
+                "non-finite subtitle delay".into(),
+            ));
+        }
+        self.set_property(
+            "sub-delay",
+            &format!("{:.3}", delay_secs.clamp(-60.0, 60.0)),
+        )
     }
 
     pub fn set_audio_delay(&self, delay_secs: f64) -> Result<()> {
-        self.set_property("audio-delay", &format!("{delay_secs:.3}"))
+        if !delay_secs.is_finite() {
+            return Err(PlaybackError::CommandFailed(
+                "non-finite audio delay".into(),
+            ));
+        }
+        self.set_property(
+            "audio-delay",
+            &format!("{:.3}", delay_secs.clamp(-15.0, 15.0)),
+        )
     }
 
     pub fn set_tone_mapping(&self, algo: ToneMappingAlgorithm) -> Result<()> {

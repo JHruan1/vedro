@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../core/models/models.dart';
 import '../core/models/preferences.dart';
@@ -13,6 +14,7 @@ import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import '../widgets/admin_console_pane.dart';
+import '../widgets/app_lock_gate.dart' show PinLockoutController;
 import '../widgets/beauty_filter.dart';
 import '../widgets/local_asr_engine.dart';
 import '../widgets/server_card_grid.dart';
@@ -62,6 +64,7 @@ enum _SettingsSection {
   danmaku,
   ai,
   privacy,
+  about,
   admin,
 }
 
@@ -89,6 +92,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late _SettingsSection _active;
   final _filterCtrl = TextEditingController();
   final _detailScrollCtrl = ScrollController();
+  final FocusScopeNode _sidebarScope = FocusScopeNode(debugLabel: 'settings-sidebar-scope');
+  final FocusScopeNode _detailScope = FocusScopeNode(debugLabel: 'settings-detail-scope');
+  bool _detailFocused = false;
   String _filter = '';
 
   @override
@@ -256,7 +262,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       tintTop: Color(0xFFFB7185),
       tintBottom: Color(0xFFE11D48),
       group: '智能与安全',
-      keywords: 'pin passcode lock 密码 模糊',
+      keywords: 'pin passcode lock 密码 锁',
+    ),
+    _NavItemMeta(
+      section: _SettingsSection.about,
+      title: '备份与关于',
+      icon: Icons.info_outline_rounded,
+      tintTop: Color(0xFF60A5FA),
+      tintBottom: Color(0xFF4F46E5),
+      group: '系统与关于',
+      keywords: 'backup restore export import reset about license diagnostics 备份 恢复 重置 关于 诊断 开源 版本',
     ),
   ];
 
@@ -272,6 +287,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
+    _sidebarScope.dispose();
+    _detailScope.dispose();
     _filterCtrl.dispose();
     _detailScrollCtrl.dispose();
     super.dispose();
@@ -338,7 +355,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case _SettingsSection.video:
         return p.anime4kEnabled ? 'Anime4K ${p.anime4kMode}' : (app.settings['tone_mapping'] ?? 'BT.2446a').toString().toUpperCase();
       case _SettingsSection.audio:
-        return (app.settings['audio_mode'] ?? 'auto').toString();
+        return switch ((app.settings['audio_mode'] ?? 'auto').toString()) {
+          'passthrough_bitstream' => '源码直通',
+          'spatial_audio' => '空间音频',
+          'headphone_binaural' => '双耳空间化',
+          'pcm_stereo' => '立体声 PCM',
+          _ => '自动',
+        };
       case _SettingsSection.subtitles:
         return '${(p.subtitleFontScale * 100).round()}%';
       case _SettingsSection.danmaku:
@@ -347,6 +370,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return p.isAiReady ? p.aiModel : '未启用';
       case _SettingsSection.privacy:
         return p.passcodeEnabled ? '已上锁' : '未锁定';
+      case _SettingsSection.about:
+        return 'v${app.core.coreVersion}';
       case _SettingsSection.admin:
         return '管理员';
     }
@@ -371,135 +396,161 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     if (wide) {
-      return Scaffold(
-        backgroundColor: skin.canvas,
-        body: VedroSkinCanvas(
-          child: Padding(
-            padding: EdgeInsets.only(top: widget.topInset),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // Skin-adaptive Sidebar
-                Container(
-                  width: 268,
-                  decoration: BoxDecoration(
-                    color: skin.unifiedPanelColor,
-                    border: Border(right: BorderSide(color: skin.border, width: 0.8)),
-                  ),
-                  child: Column(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
-                        child: Column(
-                          children: [
-                            Container(
-                              height: 34,
-                              decoration: BoxDecoration(
-                                color: skin.unifiedTileColor(),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: skin.border, width: 0.7),
-                              ),
-                              child: TextField(
-                                controller: _filterCtrl,
-                                onChanged: (v) => setState(() => _filter = v),
-                                style: TextStyle(color: skin.fg, fontSize: 13),
-                                decoration: InputDecoration(
-                                  hintText: '筛选设置…',
-                                  hintStyle: TextStyle(color: skin.fg3, fontSize: 12.5),
-                                  prefixIcon: Icon(Icons.search_rounded, size: 16, color: skin.fg3),
-                                  prefixIconConstraints: const BoxConstraints(minWidth: 34),
-                                  suffixIcon: _filter.isNotEmpty
-                                      ? GestureDetector(
-                                          onTap: () {
-                                            _filterCtrl.clear();
-                                            setState(() => _filter = '');
-                                          },
-                                          child: Icon(Icons.close_rounded, size: 15, color: skin.fg3),
-                                        )
-                                      : null,
-                                  border: InputBorder.none,
-                                  enabledBorder: InputBorder.none,
-                                  focusedBorder: InputBorder.none,
-                                  filled: false,
-                                  contentPadding: const EdgeInsets.symmetric(vertical: 8),
+      return PopScope(
+        canPop: !(PlatformPerfProfile.isTv && _detailFocused),
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop && PlatformPerfProfile.isTv && _detailFocused) {
+            _sidebarScope.requestFocus();
+          }
+        },
+        child: Scaffold(
+          backgroundColor: skin.canvas,
+          body: VedroSkinCanvas(
+            child: Padding(
+              padding: EdgeInsets.only(top: widget.topInset),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Skin-adaptive Sidebar
+                  FocusScope(
+                    node: _sidebarScope,
+                    child: Container(
+                      width: 268,
+                      decoration: BoxDecoration(
+                        color: skin.unifiedPanelColor,
+                        border: Border(right: BorderSide(color: skin.border, width: 0.8)),
+                      ),
+                      child: Column(
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
+                            child: Column(
+                              children: [
+                                Container(
+                                  height: 34,
+                                  decoration: BoxDecoration(
+                                    color: skin.unifiedTileColor(),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(color: skin.border, width: 0.7),
+                                  ),
+                                  child: TextField(
+                                    controller: _filterCtrl,
+                                    textInputAction: TextInputAction.search,
+                                    onChanged: (v) => setState(() => _filter = v),
+                                    style: TextStyle(color: skin.fg, fontSize: 13),
+                                    decoration: InputDecoration(
+                                      hintText: '筛选设置…',
+                                      hintStyle: TextStyle(color: skin.fg3, fontSize: 12.5),
+                                      prefixIcon: Icon(Icons.search_rounded, size: 16, color: skin.fg3),
+                                      prefixIconConstraints: const BoxConstraints(minWidth: 34),
+                                      suffixIcon: _filter.isNotEmpty
+                                          ? IconButton(
+                                              tooltip: '清除筛选',
+                                              padding: EdgeInsets.zero,
+                                              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                                              onPressed: () {
+                                                _filterCtrl.clear();
+                                                setState(() => _filter = '');
+                                              },
+                                              icon: Icon(Icons.close_rounded, size: 15, color: skin.fg3),
+                                            )
+                                          : null,
+                                      border: InputBorder.none,
+                                      enabledBorder: InputBorder.none,
+                                      focusedBorder: InputBorder.none,
+                                      filled: false,
+                                      contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                                    ),
+                                  ),
                                 ),
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            _SidebarServerMiniCard(
-                              appState: widget.appState,
-                              selected: _active == _SettingsSection.servers,
-                              onTap: () => _selectSection(_SettingsSection.servers),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Divider(height: 1, color: skin.border),
-                      Expanded(
-                        child: ListView(
-                          padding: const EdgeInsets.fromLTRB(12, 6, 12, 16),
-                          children: _buildGroupedSidebar(items, skin),
-                        ),
-                      ),
-                      Divider(height: 1, color: skin.border),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-                        child: UpdateCheckBadgeTile(
-                          currentVersion: widget.appState.core.coreVersion,
-                          compact: true,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                // Right Detail Pane:
-                // - When `应用风格` (`style`) is active, `SkinStudioPane` pins its Smart Preview Stage
-                //   at the top and scrolls presets/options independently so the preview NEVER scrolls away!
-                Expanded(
-                  child: _active == _SettingsSection.style
-                      ? Padding(
-                          padding: const EdgeInsets.fromLTRB(32, 20, 32, 0),
-                          child: Align(
-                            alignment: Alignment.topCenter,
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 1180),
-                              child: SkinStudioPane(
-                                key: const ValueKey('desktop-sticky-skin-studio'),
-                                appState: widget.appState,
-                                stickyDesktop: true,
-                              ),
-                            ),
-                          ),
-                        )
-                      : SingleChildScrollView(
-                          controller: _detailScrollCtrl,
-                          padding: const EdgeInsets.fromLTRB(36, 26, 36, 64),
-                          child: Align(
-                            alignment: Alignment.topCenter,
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 840),
-                              child: KeyedSubtree(
-                                key: ValueKey(_active),
-                                child: _SettingsDetailPane(
-                                  section: _active,
+                                const SizedBox(height: 10),
+                                _SidebarServerMiniCard(
                                   appState: widget.appState,
-                                  onOpenServerHub: widget.onOpenServerHub,
-                                  onOpenAddServer: widget.onOpenAddServer,
+                                  selected: _active == _SettingsSection.servers,
+                                  onTap: () => _selectSection(_SettingsSection.servers),
                                 ),
-                              ),
+                              ],
                             ),
                           ),
-                        ),
-                ),
-              ],
+                          Divider(height: 1, color: skin.border),
+                          Expanded(
+                            child: ListView(
+                              padding: const EdgeInsets.fromLTRB(12, 6, 12, 16),
+                              children: _buildGroupedSidebar(items, skin),
+                            ),
+                          ),
+                          Divider(height: 1, color: skin.border),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                            child: UpdateCheckBadgeTile(
+                              currentVersion: widget.appState.core.coreVersion,
+                              compact: true,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // Right Detail Pane:
+                  // - When `应用风格` (`style`) is active, `SkinStudioPane` pins its Smart Preview Stage
+                  //   at the top and scrolls presets/options independently so the preview NEVER scrolls away!
+                  Expanded(
+                    child: FocusScope(
+                      node: _detailScope,
+                      child: Focus(
+                        canRequestFocus: false,
+                        onFocusChange: (focused) {
+                          if (_detailFocused != focused && mounted) {
+                            setState(() => _detailFocused = focused);
+                          }
+                        },
+                        child: _active == _SettingsSection.style
+                            ? Padding(
+                                padding: const EdgeInsets.fromLTRB(32, 20, 32, 0),
+                                child: Align(
+                                  alignment: Alignment.topCenter,
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(maxWidth: 1180),
+                                    child: SkinStudioPane(
+                                      key: const ValueKey('desktop-sticky-skin-studio'),
+                                      appState: widget.appState,
+                                      stickyDesktop: true,
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : SingleChildScrollView(
+                                controller: _detailScrollCtrl,
+                                padding: const EdgeInsets.fromLTRB(36, 26, 36, 64),
+                                child: Align(
+                                  alignment: Alignment.topCenter,
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(maxWidth: 840),
+                                    child: KeyedSubtree(
+                                      key: ValueKey(_active),
+                                      child: _SettingsDetailPane(
+                                        section: _active,
+                                        appState: widget.appState,
+                                        onOpenServerHub: widget.onOpenServerHub,
+                                        onOpenAddServer: widget.onOpenAddServer,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       );
     }
 
-    // Mobile: Grouped Inset Settings List
+    // Mobile: Grouped Inset Settings List (with live search filter)
     final grouped = <String, List<_NavItemMeta>>{};
     for (final item in items) {
       grouped.putIfAbsent(item.group, () => []).add(item);
@@ -512,6 +563,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 112),
           children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                height: 38,
+                decoration: BoxDecoration(
+                  color: skin.unifiedTileColor(),
+                  borderRadius: BorderRadius.circular(11),
+                  border: Border.all(color: skin.border, width: 0.7),
+                ),
+                child: TextField(
+                  controller: _filterCtrl,
+                  textInputAction: TextInputAction.search,
+                  onChanged: (v) => setState(() => _filter = v),
+                  style: TextStyle(color: skin.fg, fontSize: 13.5),
+                  decoration: InputDecoration(
+                    hintText: '搜索设置项…',
+                    hintStyle: TextStyle(color: skin.fg3, fontSize: 13),
+                    prefixIcon: Icon(Icons.search_rounded, size: 17, color: skin.fg3),
+                    prefixIconConstraints: const BoxConstraints(minWidth: 36),
+                    suffixIcon: _filter.isNotEmpty
+                        ? IconButton(
+                            tooltip: '清除搜索',
+                            padding: EdgeInsets.zero,
+                            icon: Icon(Icons.close_rounded, size: 16, color: skin.fg3),
+                            onPressed: () {
+                              _filterCtrl.clear();
+                              setState(() => _filter = '');
+                            },
+                          )
+                        : null,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    filled: false,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 9),
+                  ),
+                ),
+              ),
+            ),
+            if (grouped.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 36),
+                child: Center(
+                  child: Text('未找到匹配的设置项', style: TextStyle(color: skin.fg3, fontSize: 13.5)),
+                ),
+              ),
             for (final entry in grouped.entries) ...[
               _GroupHeader(entry.key),
               _GroupedCard(
@@ -772,6 +869,8 @@ class _MobileSettingsSubPage extends StatefulWidget {
 
 class _MobileSettingsSubPageState extends State<_MobileSettingsSubPage> {
   final _scrollCtrl = ScrollController();
+  VedroSkin? _cachedSkin;
+  ThemeData? _cachedTheme;
 
   @override
   void initState() {
@@ -796,8 +895,12 @@ class _MobileSettingsSubPageState extends State<_MobileSettingsSubPage> {
           systemBrightness: sysBrightness,
           dynamicSeedOverride: widget.appState.dynamicPageSeedColor,
         );
+        if (_cachedTheme == null || _cachedSkin != skin) {
+          _cachedSkin = skin;
+          _cachedTheme = VedroTheme.fromSkin(skin);
+        }
         return Theme(
-          data: VedroTheme.fromSkin(skin),
+          data: _cachedTheme!,
           child: Scaffold(
             backgroundColor: skin.canvas,
             appBar: AppBar(title: Text(widget.title)),
@@ -948,6 +1051,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           _SettingsSection.danmaku => _buildDanmaku(p),
           _SettingsSection.ai => _buildAi(app, p),
           _SettingsSection.privacy => _buildPrivacy(p),
+          _SettingsSection.about => _buildAboutAndBackup(app),
           _SettingsSection.admin => AdminConsolePane(appState: app),
         };
       },
@@ -1040,8 +1144,11 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     final liveMbps = app.liveSpeedTestMbps;
     final effectiveMbps = (res?['effective_mbps'] as num?)?.toDouble();
     final measuredMbps = (res?['measured_mbps'] as num?)?.toDouble();
-    final latencyMs = (res?['latency_ms'] as num?)?.toDouble() ?? app.speedTestLatencyMs;
-    final clientIp = (res?['client_ip']?.toString() ?? app.speedTestClientIp ?? '').trim();
+    final latencyMs =
+        running ? app.speedTestLatencyMs : ((res?['latency_ms'] as num?)?.toDouble() ?? app.speedTestLatencyMs);
+    final clientIp = running
+        ? (app.speedTestClientIp ?? '').trim()
+        : (res?['client_ip']?.toString() ?? app.speedTestClientIp ?? '').trim();
     final accountLimitBps = (res?['account_limit_bps'] as num?)?.toInt() ?? 0;
     final remHour = (res?['remaining_this_hour'] as num?)?.toInt() ?? -1;
     final remDay = (res?['remaining_today'] as num?)?.toInt() ?? -1;
@@ -1681,7 +1788,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                               allowDirectory: true,
                               title: '选择离线下载目录',
                             );
-                            if (picked.isNotEmpty) {
+                            if (picked.isNotEmpty && mounted) {
                               _downloadDirCtrl.text = picked.first;
                               await _updatePrefs(
                                 p.copyWith(downloadCustomDir: picked.first.trim()),
@@ -1862,10 +1969,12 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                                   name: task.subtitle.isNotEmpty
                                       ? '${task.title} · ${task.subtitle}'
                                       : task.title,
-                                  type: 'Movie',
+                                  seriesName: task.subtitle.isNotEmpty ? task.title : null,
+                                  type: task.subtitle.isNotEmpty ? 'Episode' : 'Movie',
                                 ),
                                 appState: app,
                                 localFilePath: task.filePath,
+                                localPlaylistPaths: [task.filePath],
                               )),
                             ),
                           ),
@@ -3008,8 +3117,10 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               items: const {
                 'fit': '原始比例（适应）',
                 'fill': '铺满屏幕（裁切黑边）',
+                'stretch': '拉伸铺满',
                 '16:9': '16:9',
                 '21:9': '21:9',
+                '2.35:1': '2.35:1',
                 '4:3': '4:3',
               },
               onChanged: (v) => _updatePrefs(p.copyWith(defaultAspect: v)),
@@ -3214,7 +3325,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
             _InlineSegmentedRow<int>(
               title: '最大音量增益',
               value: p.maxVolumePercent,
-              items: const [(100, '100%'), (150, '150%'), (200, '200%')],
+              items: const [(100, '100%'), (150, '150%'), (200, '200%'), (300, '300%')],
               onChanged: (v) => _updatePrefs(p.copyWith(maxVolumePercent: v)),
             ),
             _SwitchRow(
@@ -3309,17 +3420,15 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text('字幕颜色', style: TextStyle(color: skin.fg, fontSize: 14)),
-                  ),
-                  ...colors.map((entry) {
-                    final (hex, label, c) = entry;
-                    final on = p.subtitleColorHex == hex;
-                    return Padding(
-                      padding: const EdgeInsets.only(left: 8),
-                      child: PressableScale(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final chips = Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: colors.map((entry) {
+                      final (hex, label, c) = entry;
+                      final on = p.subtitleColorHex == hex;
+                      return PressableScale(
                         onTap: () => _updatePrefs(p.copyWith(subtitleColorHex: hex)),
                         borderRadius: BorderRadius.circular(8),
                         child: Container(
@@ -3349,10 +3458,28 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                             ],
                           ),
                         ),
-                      ),
+                      );
+                    }).toList(),
+                  );
+                  if (constraints.maxWidth < 380) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('字幕颜色', style: TextStyle(color: skin.fg, fontSize: 14)),
+                        const SizedBox(height: 8),
+                        chips,
+                      ],
                     );
-                  }),
-                ],
+                  }
+                  return Row(
+                    children: [
+                      Expanded(
+                        child: Text('字幕颜色', style: TextStyle(color: skin.fg, fontSize: 14)),
+                      ),
+                      chips,
+                    ],
+                  );
+                },
               ),
             ),
           ],
@@ -3463,14 +3590,17 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
       required bool directIp,
       bool clearKey = false,
     }) async {
+      final oldHost = Uri.tryParse(p.aiBaseUrl)?.host.toLowerCase() ?? '';
+      final newHost = Uri.tryParse(baseUrl)?.host.toLowerCase() ?? '';
+      final shouldClearKey = clearKey || (oldHost.isNotEmpty && newHost.isNotEmpty && oldHost != newHost);
       _aiUrlCtrl.text = baseUrl;
       _aiModelCtrl.text = model;
-      if (clearKey) _aiKeyCtrl.clear();
+      if (shouldClearKey) _aiKeyCtrl.clear();
       await _updatePrefs(p.copyWith(
         aiEnabled: true,
         aiBaseUrl: baseUrl,
         aiModel: model,
-        aiApiKey: clearKey ? '' : _aiKeyCtrl.text.trim(),
+        aiApiKey: shouldClearKey ? '' : _aiKeyCtrl.text.trim(),
         aiDirectClientIp: directIp,
         aiCachedModels: const [],
       ));
@@ -3482,14 +3612,17 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
       required bool directIp,
       bool clearKey = false,
     }) async {
+      final oldHost = Uri.tryParse(p.asrBaseUrl)?.host.toLowerCase() ?? '';
+      final newHost = Uri.tryParse(baseUrl)?.host.toLowerCase() ?? '';
+      final shouldClearKey = clearKey || (oldHost.isNotEmpty && newHost.isNotEmpty && oldHost != newHost);
       _asrUrlCtrl.text = baseUrl;
       _asrModelCtrl.text = model;
-      if (clearKey) _asrKeyCtrl.clear();
+      if (shouldClearKey) _asrKeyCtrl.clear();
       await _updatePrefs(p.copyWith(
         asrEnabled: true,
         asrBaseUrl: baseUrl,
         asrModel: model,
-        asrApiKey: clearKey ? '' : _asrKeyCtrl.text.trim(),
+        asrApiKey: shouldClearKey ? '' : _asrKeyCtrl.text.trim(),
         asrDirectClientIp: directIp,
       ));
     }
@@ -3781,6 +3914,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                                   aiApiKey: _aiKeyCtrl.text.trim(),
                                   aiModel: _aiModelCtrl.text.trim(),
                                 ));
+                                if (!mounted) return;
                                 setState(() {
                                   _testingAi = true;
                                   _aiTestResult = null;
@@ -3928,7 +4062,10 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                             ],
                           ),
                           const SizedBox(height: 10),
-                          Row(
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 6,
+                            crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
                               Text('下载源：', style: TextStyle(color: skin.fg2, fontSize: 12)),
                               ChoiceChip(
@@ -3937,7 +4074,6 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                                 onSelected: (_) =>
                                     _updatePrefs(p.copyWith(asrUseChinaMirror: true)),
                               ),
-                              const SizedBox(width: 8),
                               ChoiceChip(
                                 selected: !p.asrUseChinaMirror,
                                 label: const Text('HuggingFace 官方', style: TextStyle(fontSize: 12)),
@@ -4171,7 +4307,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 } else {
                   final verified = await _verifyCurrentPin(p, title: '输入当前密码以关闭应用锁');
                   if (verified && mounted) {
-                    await _updatePrefs(p.copyWith(passcodeEnabled: false));
+                    await _updatePrefs(p.copyWith(passcodeEnabled: false, passcodeHash: ''));
                   }
                 }
               },
@@ -4199,46 +4335,294 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     );
   }
 
-  Future<bool> _verifyCurrentPin(VedroPreferences p, {required String title}) async {
-    if (p.passcodeHash.isEmpty) return true;
-    final ctrl = TextEditingController();
-    String? err;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModal) => AlertDialog(
-          title: Text(title),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: ctrl,
-                autofocus: true,
-                obscureText: true,
-                maxLength: 4,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: '请输入当前 4 位数字密码', counterText: ''),
-              ),
-              if (err != null) ...[
-                const SizedBox(height: 8),
-                Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12.5)),
+  // 15. 备份与关于
+  Widget _buildAboutAndBackup(VedroAppState app) {
+    final skin = VedroSkin.of(context);
+    final version = app.core.coreVersion;
+
+    Future<void> exportBackup() async {
+      final jsonText = app.exportConfigJson();
+      await Clipboard.setData(ClipboardData(text: jsonText));
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: skin.surface,
+          title: Text('已导出配置备份', style: TextStyle(color: skin.fg, fontSize: 16)),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  '已自动复制到剪贴板（已自动剔除 API Key、应用密码哈希与登录令牌等敏感字段）。',
+                  style: TextStyle(color: skin.fg2, fontSize: 12.5, height: 1.45),
+                ),
+                const SizedBox(height: 10),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 220),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: skin.surface2,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: skin.border, width: 0.7),
+                    ),
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        jsonText,
+                        style: TextStyle(color: skin.fg2, fontFamily: 'monospace', fontSize: 11.5),
+                      ),
+                    ),
+                  ),
+                ),
               ],
-            ],
+            ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-            FilledButton(
-              onPressed: () {
-                if (hashPasscode(ctrl.text.trim()) != p.passcodeHash) {
-                  setModal(() => err = '密码不正确');
-                  return;
-                }
-                Navigator.pop(ctx, true);
+            TextButton(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: jsonText));
+                if (ctx.mounted) Navigator.pop(ctx);
               },
-              child: const Text('验证'),
+              child: const Text('再次复制'),
+            ),
+            FilledButton(
+              autofocus: true,
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('完成'),
             ),
           ],
         ),
+      );
+    }
+
+    Future<void> importBackup() async {
+      final ctrl = TextEditingController();
+      String? err;
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setModal) => AlertDialog(
+            backgroundColor: skin.surface,
+            title: Text('导入配置备份', style: TextStyle(color: skin.fg, fontSize: 16)),
+            content: SizedBox(
+              width: 460,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    '粘贴由 Vedro 导出的 JSON 配置，将恢复外观、播放、字幕、弹幕及首页布局（不影响已登录服务器与安全密码）。',
+                    style: TextStyle(color: skin.fg2, fontSize: 12.5, height: 1.4),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: ctrl,
+                    minLines: 4,
+                    maxLines: 8,
+                    style: TextStyle(color: skin.fg, fontFamily: 'monospace', fontSize: 12),
+                    decoration: const InputDecoration(hintText: '{"format":"vedro-backup-v1", ...}'),
+                  ),
+                  if (err != null) ...[
+                    const SizedBox(height: 8),
+                    Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12)),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  final data = await Clipboard.getData('text/plain');
+                  if (data?.text != null) {
+                    ctrl.text = data!.text!;
+                    setModal(() => err = null);
+                  }
+                },
+                child: const Text('从剪贴板粘贴'),
+              ),
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+              FilledButton(
+                onPressed: () async {
+                  try {
+                    await app.importConfigJson(ctrl.text);
+                    if (ctx.mounted) Navigator.pop(ctx, true);
+                  } catch (e) {
+                    setModal(() => err = VedroErrorFormatter.friendly(e));
+                  }
+                },
+                child: const Text('导入'),
+              ),
+            ],
+          ),
+        ),
+      );
+      ctrl.dispose();
+      if (ok == true && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已成功导入配置备份')),
+        );
+      }
+    }
+
+    Future<void> confirmResetPrefs() async {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: skin.surface,
+          title: Text('恢复默认偏好设置？', style: TextStyle(color: skin.fg, fontSize: 16)),
+          content: Text(
+            '将重置外观皮肤、播放、视频、字幕、弹幕及界面偏好为出厂默认值，不会删除已保存的服务器、账号或离线下载文件。',
+            style: TextStyle(color: skin.fg2, fontSize: 13),
+          ),
+          actions: [
+            TextButton(
+              autofocus: true,
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: VedroTheme.danger),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('恢复默认'),
+            ),
+          ],
+        ),
+      );
+      if (ok == true) {
+        await app.resetPreferencesToDefaults();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('已恢复默认偏好设置')),
+          );
+        }
+      }
+    }
+
+    Future<void> copyDiagnostics() async {
+      final diag = [
+        'Vedro v$version',
+        'OS: ${kIsWeb ? 'web' : Platform.operatingSystem} ${kIsWeb ? '' : Platform.operatingSystemVersion}',
+        'TV Mode: ${PlatformPerfProfile.isTv} (override=${app.prefs.tvModeOverride})',
+        'Skin: ${app.prefs.skinId} (${app.prefs.themeMode})',
+        'Server: ${app.isSignedIn ? (app.capabilities?.dialect ?? 'connected') : 'signed_out'} (${app.savedServers.length} saved)',
+        'Video: hwdec=${app.settings['hwdec'] ?? 'auto_zero_copy'}, tone=${app.settings['tone_mapping'] ?? 'bt2446a'}, anime4k=${app.prefs.anime4kEnabled}, beauty=${app.prefs.beautyFilterPreset}',
+        'Audio: mode=${app.settings['audio_mode'] ?? 'auto'}, maxVol=${app.prefs.maxVolumePercent}%',
+        'AI/ASR: ai=${app.prefs.aiEnabled ? app.prefs.aiModel : 'off'}, asr=${app.prefs.asrEngine} (localReady=${LocalAsrManager.instance.isModelDownloaded})',
+        'Downloads: ${app.downloads.length} tasks',
+      ].join('\n');
+      await Clipboard.setData(ClipboardData(text: diag));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已复制脱敏诊断信息到剪贴板')),
+        );
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _heading('备份与关于', '配置导出恢复、诊断信息与版本更新'),
+        const _GroupHeader('配置备份与恢复'),
+        _GroupedCard(
+          children: [
+            _ActionRow(
+              title: '导出配置备份 (JSON)',
+              trailing: Icon(Icons.ios_share_rounded, size: 17, color: skin.fg3),
+              onTap: exportBackup,
+            ),
+            _ActionRow(
+              title: '导入配置备份 (JSON)',
+              trailing: Icon(Icons.download_for_offline_outlined, size: 18, color: skin.fg3),
+              onTap: importBackup,
+            ),
+            _ActionRow(
+              title: '恢复默认偏好设置',
+              trailing: const Icon(Icons.restart_alt_rounded, size: 18, color: VedroTheme.danger),
+              onTap: confirmResetPrefs,
+            ),
+          ],
+        ),
+        const SizedBox(height: 18),
+        const _GroupHeader('关于 Vedro'),
+        _GroupedCard(
+          children: [
+            _InfoKVRow('当前版本', 'v$version', mono: true, highlight: true),
+            _InfoKVRow('运行平台', kIsWeb ? 'Web' : Platform.operatingSystem),
+            UpdateCheckBadgeTile(currentVersion: version),
+            _ActionRow(
+              title: '复制脱敏诊断信息',
+              trailing: Icon(Icons.copy_rounded, size: 17, color: skin.fg3),
+              onTap: copyDiagnostics,
+            ),
+            _ActionRow(
+              title: 'GitHub 开源主页',
+              trailing: Icon(Icons.open_in_new_rounded, size: 17, color: skin.fg3),
+              onTap: () => NativePlaybackChannel.openUrl('https://github.com/JHruan1/vedro'),
+            ),
+            _ActionRow(
+              title: '开源软件许可声明',
+              trailing: Icon(Icons.chevron_right_rounded, size: 18, color: skin.fg3),
+              onTap: () => showLicensePage(
+                context: context,
+                applicationName: 'Vedro',
+                applicationVersion: 'v$version',
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<bool> _verifyCurrentPin(VedroPreferences p, {required String title}) async {
+    if (p.passcodeHash.isEmpty) return true;
+    final lockout = PinLockoutController.forState(widget.appState);
+    final ctrl = TextEditingController();
+    final initRem = lockout.remainingLockoutSecs;
+    String? err = initRem > 0 ? '尝试次数过多，请 $initRem 秒后重试' : null;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) {
+          void submit() {
+            final res = lockout.verify(ctrl.text.trim(), p.passcodeHash);
+            if (!res.ok) {
+              setModal(() => err = res.error ?? '密码不正确');
+              return;
+            }
+            Navigator.pop(ctx, true);
+          }
+
+          return AlertDialog(
+            title: Text(title),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: ctrl,
+                  autofocus: true,
+                  obscureText: true,
+                  maxLength: 4,
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => submit(),
+                  decoration: const InputDecoration(labelText: '请输入当前 4 位数字密码', counterText: ''),
+                ),
+                if (err != null) ...[
+                  const SizedBox(height: 8),
+                  Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12.5)),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+              FilledButton(onPressed: submit, child: const Text('验证')),
+            ],
+          );
+        },
       ),
     );
     ctrl.dispose();
@@ -4252,59 +4636,64 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     final saved = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModal) => AlertDialog(
-          title: const Text('设置 4 位应用密码'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: pin1,
-                autofocus: true,
-                obscureText: true,
-                maxLength: 4,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: '输入 4 位数字密码', counterText: ''),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: pin2,
-                obscureText: true,
-                maxLength: 4,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: '再次确认密码', counterText: ''),
-              ),
-              if (err != null) ...[
-                const SizedBox(height: 10),
-                Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12.5)),
+        builder: (ctx, setModal) {
+          void submit() {
+            final a = pin1.text.trim();
+            final b = pin2.text.trim();
+            if (!RegExp(r'^\d{4}$').hasMatch(a)) {
+              setModal(() => err = '请输入 4 位纯数字');
+              return;
+            }
+            if (a != b) {
+              setModal(() => err = '两次输入的密码不一致');
+              return;
+            }
+            Navigator.pop(ctx, true);
+          }
+
+          return AlertDialog(
+            title: const Text('设置 4 位应用密码'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: pin1,
+                  autofocus: true,
+                  obscureText: true,
+                  maxLength: 4,
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(labelText: '输入 4 位数字密码', counterText: ''),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: pin2,
+                  obscureText: true,
+                  maxLength: 4,
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => submit(),
+                  decoration: const InputDecoration(labelText: '再次确认密码', counterText: ''),
+                ),
+                if (err != null) ...[
+                  const SizedBox(height: 10),
+                  Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12.5)),
+                ],
               ],
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-            FilledButton(
-              onPressed: () {
-                final a = pin1.text.trim();
-                final b = pin2.text.trim();
-                if (!RegExp(r'^\d{4}$').hasMatch(a)) {
-                  setModal(() => err = '请输入 4 位纯数字');
-                  return;
-                }
-                if (a != b) {
-                  setModal(() => err = '两次输入的密码不一致');
-                  return;
-                }
-                Navigator.pop(ctx, true);
-              },
-              child: const Text('保存密码'),
             ),
-          ],
-        ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+              FilledButton(onPressed: submit, child: const Text('保存密码')),
+            ],
+          );
+        },
       ),
     );
-    if (saved == true) {
+    if (saved == true && mounted) {
+      PinLockoutController.forState(widget.appState).reset();
       await _updatePrefs(p.copyWith(
         passcodeEnabled: true,
-        passcodeHash: hashPasscode(pin1.text.trim()),
+        passcodeHash: createSaltedPasscodeHash(pin1.text.trim()),
       ));
     }
     pin1.dispose();
@@ -4666,32 +5055,40 @@ class _SwitchRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: TextStyle(color: skin.fg, fontSize: 14)),
-                if (subtitle != null) ...[
-                  const SizedBox(height: 2),
-                  Text(subtitle!, style: TextStyle(color: skin.fg3, fontSize: 12)),
+    return PressableScale(
+      onTap: () => onChanged(!value),
+      hoverScale: 1.0,
+      pressScale: 0.99,
+      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 18.0)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: TextStyle(color: skin.fg, fontSize: 14)),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(subtitle!, style: TextStyle(color: skin.fg3, fontSize: 12)),
+                  ],
                 ],
-              ],
+              ),
             ),
-          ),
-          const SizedBox(width: 12),
-          Transform.scale(
-            scale: 0.78,
-            child: CupertinoSwitch(
-              value: value,
-              activeTrackColor: skin.accent,
-              onChanged: onChanged,
+            const SizedBox(width: 12),
+            ExcludeFocus(
+              child: Transform.scale(
+                scale: 0.78,
+                child: CupertinoSwitch(
+                  value: value,
+                  activeTrackColor: skin.accent,
+                  onChanged: onChanged,
+                ),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

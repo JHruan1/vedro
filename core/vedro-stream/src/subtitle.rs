@@ -15,6 +15,68 @@ pub enum SubtitleFormat {
     Ass,
 }
 
+/// Decode raw subtitle bytes supporting UTF-8 (with/without BOM), UTF-16 LE/BE BOM,
+/// and legacy CJK charsets (GB18030, Big5, Shift_JIS) so non-UTF-8 fansubs never
+/// produce gibberish or zero cues.
+pub fn decode_subtitle_bytes(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        if let Ok(s) = std::str::from_utf8(&bytes[3..]) {
+            return s.to_string();
+        }
+    }
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let (cow, _, _) = encoding_rs::UTF_16LE.decode(&bytes[2..]);
+        return cow.into_owned();
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let (cow, _, _) = encoding_rs::UTF_16BE.decode(&bytes[2..]);
+        return cow.into_owned();
+    }
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    // Check UTF-16 without BOM heuristic (high proportion of alternating NUL bytes)
+    if bytes.len() >= 16 {
+        let sample = &bytes[..bytes.len().min(512)];
+        let even_nul = sample.iter().step_by(2).filter(|&&b| b == 0).count();
+        let odd_nul = sample
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .filter(|&&b| b == 0)
+            .count();
+        let half = sample.len() / 2;
+        if odd_nul > half / 3 && even_nul < half / 8 {
+            let (cow, _, _) = encoding_rs::UTF_16LE.decode(bytes);
+            return cow.into_owned();
+        }
+        if even_nul > half / 3 && odd_nul < half / 8 {
+            let (cow, _, _) = encoding_rs::UTF_16BE.decode(bytes);
+            return cow.into_owned();
+        }
+    }
+    // Try CJK legacy encodings and pick the cleanest decode (fewest replacement chars)
+    let candidates = [
+        encoding_rs::GB18030,
+        encoding_rs::BIG5,
+        encoding_rs::SHIFT_JIS,
+        encoding_rs::WINDOWS_1252,
+    ];
+    let mut best: Option<(usize, String)> = None;
+    for enc in candidates {
+        let (cow, _, had_errors) = enc.decode(bytes);
+        if !had_errors {
+            return cow.into_owned();
+        }
+        let rep_count = cow.chars().filter(|&c| c == '\u{FFFD}').count();
+        if best.as_ref().map(|(b, _)| rep_count < *b).unwrap_or(true) {
+            best = Some((rep_count, cow.into_owned()));
+        }
+    }
+    best.map(|(_, s)| s)
+        .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned())
+}
+
 /// Detect subtitle format from filename extension or file header.
 pub fn detect_format(filename_or_ext: &str, content: &str) -> SubtitleFormat {
     let lower = filename_or_ext.to_lowercase();
@@ -77,7 +139,8 @@ fn parse_srt_or_vtt(content: &str) -> Vec<SubtitleCue> {
         if !lines[0].starts_with("WEBVTT") && !lines[0].starts_with("NOTE") {
             if let Some(idx) = lines.iter().position(|l| l.contains("-->")) {
                 if let Some((start_ms, end_ms)) = parse_arrow_timing(lines[idx]) {
-                    let text = lines[idx + 1..].join("\n").trim().to_string();
+                    let raw = lines[idx + 1..].join("\n");
+                    let text = clean_srt_or_vtt_text(&raw);
                     if !text.is_empty() {
                         cues.push(SubtitleCue {
                             start_ms,
@@ -161,7 +224,11 @@ fn parse_ass(content: &str) -> Vec<SubtitleCue> {
         if !in_events {
             continue;
         }
-        if line.len() >= 7 && line[..7].eq_ignore_ascii_case("format:") {
+        if line
+            .as_bytes()
+            .get(..7)
+            .is_some_and(|b| b.eq_ignore_ascii_case(b"format:"))
+        {
             let rest = &line[7..];
             format_cols = rest
                 .split(',')
@@ -169,7 +236,11 @@ fn parse_ass(content: &str) -> Vec<SubtitleCue> {
                 .collect();
             continue;
         }
-        if line.len() >= 9 && line[..9].eq_ignore_ascii_case("dialogue:") {
+        if line
+            .as_bytes()
+            .get(..9)
+            .is_some_and(|b| b.eq_ignore_ascii_case(b"dialogue:"))
+        {
             let rest = &line[9..];
             let start_col = format_cols.iter().position(|c| c == "start").unwrap_or(1);
             let end_col = format_cols.iter().position(|c| c == "end").unwrap_or(2);
@@ -233,28 +304,85 @@ fn parse_ass_ts(ts: &str) -> Option<i64> {
     )
 }
 
+fn clean_srt_or_vtt_text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut in_angle = false;
+    let mut in_brace = false;
+    for ch in raw.chars() {
+        match ch {
+            '<' if !in_brace => in_angle = true,
+            '>' if in_angle => in_angle = false,
+            '{' if !in_angle => in_brace = true,
+            '}' if in_brace => in_brace = false,
+            _ if !in_angle && !in_brace => out.push(ch),
+            _ => {}
+        }
+    }
+    out.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .trim()
+        .to_string()
+}
+
 fn clean_ass_text(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut in_brace = false;
+    let mut drawing_mode = false;
+    let mut brace_buf = String::new();
     let chars: Vec<char> = raw.chars().collect();
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
         if c == '{' {
             in_brace = true;
+            brace_buf.clear();
             i += 1;
             continue;
         }
         if c == '}' {
             in_brace = false;
+            // Detect ASS vector drawing commands like \p1, \p2, ... and \p0 (exit)
+            let bytes = brace_buf.as_bytes();
+            let mut k = 0;
+            while k + 2 < bytes.len() {
+                if bytes[k] == b'\\' && bytes[k + 1] == b'p' && bytes[k + 2].is_ascii_digit() {
+                    let prev_ok = k + 3 >= bytes.len() || !bytes[k + 3].is_ascii_alphabetic();
+                    if prev_ok {
+                        drawing_mode = bytes[k + 2] != b'0';
+                    }
+                }
+                k += 1;
+            }
             i += 1;
             continue;
         }
-        if !in_brace {
-            if c == '\\' && i + 1 < chars.len() && matches!(chars[i + 1], 'N' | 'n') {
-                out.push('\n');
-                i += 2;
-                continue;
+        if in_brace {
+            if brace_buf.len() < 256 {
+                brace_buf.push(c);
+            }
+            i += 1;
+            continue;
+        }
+        if !drawing_mode {
+            if c == '\\' && i + 1 < chars.len() {
+                match chars[i + 1] {
+                    'N' | 'n' => {
+                        out.push('\n');
+                        i += 2;
+                        continue;
+                    }
+                    'h' => {
+                        out.push(' ');
+                        i += 2;
+                        continue;
+                    }
+                    _ => {}
+                }
             }
             out.push(c);
         }
@@ -484,5 +612,30 @@ mod tests {
         let fallback = parse_subtitle_batch_response(plain, &[10, 11, 12]);
         assert_eq!(fallback.len(), 3);
         assert_eq!(fallback.get(&12).map(String::as_str), Some("我们走吧！"));
+    }
+
+    #[test]
+    fn handles_utf8_ass_comments_vector_drawings_srt_html_and_legacy_encodings() {
+        // Multi-byte UTF-8 comment inside [Events] at byte offset 7/9 must NEVER panic!
+        let ass = "[Events]\n; 中文注释边界测试\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\p1}m 0 0 l 100 0 100 100{\\p0}Hello\\hWorld\nDialogue: 0,0:00:04.00,0:00:05.00,Default,,0,0,0,,{\\p1}m 0 0 l 50 50\n";
+        let cues = parse_subtitles(ass, SubtitleFormat::Ass);
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].text, "Hello World");
+
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\n<i>{\\an8}<font color=\"#fff\">Hi &amp; Bye</font></i>\n";
+        let srt_cues = parse_subtitles(srt, SubtitleFormat::Srt);
+        assert_eq!(srt_cues.len(), 1);
+        assert_eq!(srt_cues[0].text, "Hi & Bye");
+
+        // UTF-16LE BOM decode
+        let mut utf16 = vec![0xFFu8, 0xFE];
+        for u in "你好世界".encode_utf16() {
+            utf16.extend_from_slice(&u.to_le_bytes());
+        }
+        assert_eq!(decode_subtitle_bytes(&utf16), "你好世界");
+
+        // GB18030 decode
+        let (gb, _, _) = encoding_rs::GB18030.encode("中文测试字幕");
+        assert_eq!(decode_subtitle_bytes(&gb), "中文测试字幕");
     }
 }

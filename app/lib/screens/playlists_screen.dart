@@ -45,6 +45,8 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         content: TextField(
           controller: ctrl,
           autofocus: true,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) => Navigator.pop(ctx, ctrl.text.trim()),
           decoration: const InputDecoration(hintText: '片单名称'),
         ),
         actions: [
@@ -273,6 +275,7 @@ class _PlaylistDetailPage extends StatefulWidget {
 class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
   List<MediaItemModel> _items = [];
   bool _loading = true;
+  bool _editMode = false;
   String? _loadError;
 
   @override
@@ -282,6 +285,7 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
   }
 
   Future<void> _load() async {
+    if (!mounted) return;
     setState(() {
       _loading = true;
       _loadError = null;
@@ -299,7 +303,7 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
       });
     } catch (e) {
       if (mounted) {
-        setState(() => _loadError = e.toString().replaceFirst('VedroCoreException: ', ''));
+        setState(() => _loadError = VedroErrorFormatter.friendly(e));
       }
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -313,7 +317,11 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
         title: Text('移出片单「${item.displayName}」？'),
         content: const Text('仅从此片单移出，不会删除服务器中的影片文件。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            autofocus: true,
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: VedroTheme.danger),
             onPressed: () => Navigator.pop(ctx, true),
@@ -333,7 +341,7 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('移出失败：$e')),
+          SnackBar(content: Text('移出失败：${VedroErrorFormatter.friendly(e)}')),
         );
       }
     }
@@ -346,7 +354,11 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
         title: Text('删除片单「${widget.playlist.name}」？'),
         content: const Text('仅删除片单本身，不会删除服务器中的影片文件。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            autofocus: true,
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: VedroTheme.danger),
             onPressed: () => Navigator.pop(ctx, true),
@@ -362,7 +374,7 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('删除片单失败：$e')),
+            SnackBar(content: Text('删除片单失败：${VedroErrorFormatter.friendly(e)}')),
           );
         }
       }
@@ -428,12 +440,50 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
                             ),
                           ),
                           Text(
-                            '共 ${_items.length} 项 · 长按/右键卡片可移出片单',
-                            style: TextStyle(color: skin.fg3, fontSize: 12),
+                            _editMode
+                                ? '编辑模式 · 点击卡片即可移出片单'
+                                : '共 ${_items.length} 项 · 长按/右键或点击管理可移出',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: _editMode ? VedroTheme.danger : skin.fg3,
+                              fontSize: 12,
+                            ),
                           ),
                         ],
                       ),
                     ),
+                    if (_items.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: PressableScale(
+                          onTap: () => setState(() => _editMode = !_editMode),
+                          borderRadius: BorderRadius.circular(18),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: _editMode
+                                  ? VedroTheme.danger.withValues(alpha: 0.16)
+                                  : skin.surface2,
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: _editMode
+                                    ? VedroTheme.danger.withValues(alpha: 0.5)
+                                    : skin.border,
+                                width: 0.8,
+                              ),
+                            ),
+                            child: Text(
+                              _editMode ? '完成' : '管理',
+                              style: TextStyle(
+                                color: _editMode ? VedroTheme.danger : skin.fg,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     IconButton(
                       tooltip: '删除片单',
                       icon: const Icon(Icons.delete_outline_rounded, color: VedroTheme.danger),
@@ -493,15 +543,41 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
                               itemCount: _items.length,
                               itemBuilder: (_, idx) {
                                 final item = _items[idx];
-                                return MediaCard(
+                                final card = MediaCard(
                                   width: gridLayout.cardWidth,
                                   item: item,
                                   appState: widget.appState,
-                                  onTap: () => widget.onItemTap(item),
-                                  onQuickPlay: widget.onQuickPlay == null
+                                  onTap: _editMode
+                                      ? () => _removeEntry(item)
+                                      : () => widget.onItemTap(item),
+                                  onQuickPlay: _editMode || widget.onQuickPlay == null
                                       ? null
                                       : () => widget.onQuickPlay!(item),
                                   onLongPress: () => _removeEntry(item),
+                                );
+                                if (!_editMode) return card;
+                                return Stack(
+                                  children: [
+                                    card,
+                                    Positioned(
+                                      top: 6,
+                                      right: 6,
+                                      child: IgnorePointer(
+                                        child: Container(
+                                          padding: const EdgeInsets.all(4),
+                                          decoration: const BoxDecoration(
+                                            color: VedroTheme.danger,
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: const Icon(
+                                            Icons.remove_rounded,
+                                            size: 14,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 );
                               },
                             );

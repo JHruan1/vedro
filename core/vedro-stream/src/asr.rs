@@ -111,6 +111,11 @@ impl HttpRangeMediaSource {
                     status.as_u16()
                 )));
             }
+            if offset > 0 && status == reqwest::StatusCode::OK {
+                return Err(std::io::Error::other(
+                    "upstream ignored Range header on audio seek",
+                ));
+            }
             let total = resp
                 .headers()
                 .get(reqwest::header::CONTENT_RANGE)
@@ -157,11 +162,11 @@ impl Read for HttpRangeMediaSource {
         if out.is_empty() {
             return Ok(0);
         }
-        let buf_end = self.buf_start + self.buf.len() as u64;
+        let buf_end = self.buf_start.saturating_add(self.buf.len() as u64);
         if self.pos < self.buf_start || self.pos >= buf_end {
             self.fill_window(self.pos)?;
         }
-        let available = self.buf_start + self.buf.len() as u64;
+        let available = self.buf_start.saturating_add(self.buf.len() as u64);
         if self.pos >= available {
             return Ok(0);
         }
@@ -325,8 +330,14 @@ fn extract_via_symphonia(
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
     let mut mono_scratch: Vec<f32> = Vec::with_capacity(4096);
     let mut decoded_packets: usize = 0;
+    let mut total_packets: usize = 0;
+    let mut consecutive_errors: usize = 0;
 
     loop {
+        total_packets += 1;
+        if total_packets > 50_000 {
+            break;
+        }
         let packet = match format.next_packet() {
             Ok(p) => p,
             Err(SymphoniaError::IoError(ref e))
@@ -335,6 +346,10 @@ fn extract_via_symphonia(
                 break;
             }
             Err(SymphoniaError::ResetRequired) => {
+                consecutive_errors += 1;
+                if consecutive_errors > 64 {
+                    break;
+                }
                 decoder.reset();
                 continue;
             }
@@ -359,8 +374,17 @@ fn extract_via_symphonia(
         }
 
         let decoded = match decoder.decode(&packet) {
-            Ok(d) => d,
-            Err(SymphoniaError::DecodeError(_)) => continue,
+            Ok(d) => {
+                consecutive_errors = 0;
+                d
+            }
+            Err(SymphoniaError::DecodeError(_)) => {
+                consecutive_errors += 1;
+                if consecutive_errors > 256 {
+                    break;
+                }
+                continue;
+            }
             Err(_) => break,
         };
         decoded_packets += 1;
@@ -385,7 +409,8 @@ fn extract_via_symphonia(
 
         let buf = sample_buf
             .get_or_insert_with(|| SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
-        if buf.capacity() < frames * channels {
+        let needed_samples = frames.saturating_mul(channels);
+        if buf.capacity() < needed_samples {
             *buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
         }
         buf.copy_interleaved_ref(decoded);
@@ -475,7 +500,8 @@ fn extract_via_ffmpeg_fallback(
         "pipe:1",
     ])
     .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped());
+    // Discard stderr to prevent a 64 KiB OS pipe deadlock on verbose decoder warnings!
+    .stderr(std::process::Stdio::null());
 
     let mut child = cmd
         .spawn()
@@ -492,9 +518,23 @@ fn extract_via_ffmpeg_fallback(
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stdout_buf = reader_handle.join().unwrap_or_default();
+                let mut stdout_buf = reader_handle.join().unwrap_or_default();
                 if !status.success() || stdout_buf.len() <= 44 {
                     return Err("ffmpeg audio slice extraction failed".to_string());
+                }
+                // Patch non-seekable pipe WAV RIFF & data chunk sizes so cloud Whisper APIs accept it
+                if stdout_buf.len() >= 44 && &stdout_buf[0..4] == b"RIFF" {
+                    let riff_size =
+                        (stdout_buf.len().saturating_sub(8)).min(u32::MAX as usize) as u32;
+                    stdout_buf[4..8].copy_from_slice(&riff_size.to_le_bytes());
+                    if let Some(pos) = stdout_buf.windows(4).position(|w| w == b"data") {
+                        if pos + 8 <= stdout_buf.len() {
+                            let data_size = (stdout_buf.len().saturating_sub(pos + 8))
+                                .min(u32::MAX as usize)
+                                as u32;
+                            stdout_buf[pos + 4..pos + 8].copy_from_slice(&data_size.to_le_bytes());
+                        }
+                    }
                 }
                 return Ok(stdout_buf);
             }
@@ -639,18 +679,30 @@ pub fn parse_asr_response(
     let mut cues = Vec::new();
     if let Some(segments) = body.get("segments").and_then(Value::as_array) {
         for seg in segments {
-            let start = seg.get("start").and_then(Value::as_f64).unwrap_or(0.0);
-            let end = seg
+            let raw_start = seg.get("start").and_then(Value::as_f64).unwrap_or(0.0);
+            let start = if raw_start.is_finite() {
+                raw_start.clamp(0.0, 86_400.0)
+            } else {
+                0.0
+            };
+            let raw_end = seg
                 .get("end")
                 .and_then(Value::as_f64)
                 .unwrap_or(start + 2.5);
+            let end = if raw_end.is_finite() {
+                raw_end.clamp(start, 86_400.0)
+            } else {
+                start + 2.5
+            };
             let raw_text = seg.get("text").and_then(Value::as_str).unwrap_or("");
             let text = clean_asr_text(raw_text);
             if text.is_empty() {
                 continue;
             }
-            let start_ms = slice_start_ms + (start * 1000.0).round() as i64;
-            let end_ms = (slice_start_ms + (end * 1000.0).round() as i64).max(start_ms + 800);
+            let start_ms = slice_start_ms.saturating_add((start * 1000.0).round() as i64);
+            let end_ms = slice_start_ms
+                .saturating_add((end * 1000.0).round() as i64)
+                .max(start_ms.saturating_add(800));
             cues.push(SubtitleCue {
                 start_ms,
                 end_ms,
@@ -668,18 +720,18 @@ pub fn parse_asr_response(
                 let total_chars: usize = parts.iter().map(|p| p.chars().count().max(1)).sum();
                 let mut cursor_ms = slice_start_ms;
                 for (i, part) in parts.iter().enumerate() {
+                    let slice_end = slice_start_ms.saturating_add(slice_duration_ms.max(1000));
                     let share = if i + 1 == parts.len() {
-                        (slice_start_ms + slice_duration_ms).saturating_sub(cursor_ms)
+                        slice_end.saturating_sub(cursor_ms)
                     } else {
                         ((part.chars().count().max(1) as f64 / total_chars.max(1) as f64)
-                            * slice_duration_ms as f64)
+                            * slice_duration_ms.max(1000) as f64)
                             .round() as i64
                     };
-                    let end_ms =
-                        (cursor_ms + share.max(900)).min(slice_start_ms + slice_duration_ms);
+                    let end_ms = cursor_ms.saturating_add(share.max(900)).min(slice_end);
                     cues.push(SubtitleCue {
                         start_ms: cursor_ms,
-                        end_ms: end_ms.max(cursor_ms + 600),
+                        end_ms: end_ms.max(cursor_ms.saturating_add(600)),
                         text: part.clone(),
                     });
                     cursor_ms = end_ms;

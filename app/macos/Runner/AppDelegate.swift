@@ -14,7 +14,7 @@ class AppDelegate: FlutterAppDelegate {
   override func application(_ application: NSApplication, open urls: [URL]) {
     let paths = urls.filter { $0.isFileURL }.map { $0.path }.filter { !$0.isEmpty }
     if !paths.isEmpty {
-      VedroHardwarePlugin.shared?.emitDroppedFiles(paths)
+      VedroHardwarePlugin.enqueueOrEmitDroppedFiles(paths)
     }
   }
 }

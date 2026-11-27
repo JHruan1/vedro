@@ -212,6 +212,14 @@ class _WindowsImmersiveFrameState extends State<WindowsImmersiveFrame>
                       ),
                       _buildResizeEdge(
                         right: 0,
+                        top: 0,
+                        width: 6,
+                        height: 6,
+                        cursor: SystemMouseCursors.resizeUpRightDownLeft,
+                        edge: 'topRight',
+                      ),
+                      _buildResizeEdge(
+                        right: 0,
                         bottom: 0,
                         width: 10,
                         height: 10,

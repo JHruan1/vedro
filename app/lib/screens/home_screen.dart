@@ -15,6 +15,7 @@ import '../widgets/media_card.dart';
 import '../widgets/server_card_grid.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
+import 'player_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -296,9 +297,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   isResume: true,
                   onItemTap: (item) => widget.onItemTap(item),
                   onItemQuickPlay: widget.onQuickPlay,
-                  onItemLongPress: caps?.supportsHideFromResume == true
-                      ? (item) => _confirmHideFromResume(context, item)
-                      : null,
+                  onItemLongPress: (item) => showMediaItemContextSheet(
+                    context: context,
+                    item: item,
+                    appState: app,
+                    onOpenDetail: () => widget.onItemTap(item),
+                    onQuickPlay: () => widget.onQuickPlay(item),
+                    allowHideFromResume: caps?.supportsHideFromResume == true,
+                  ),
                 ),
               ),
             );
@@ -315,6 +321,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   landscape: true,
                   onItemTap: (item) => widget.onItemTap(item),
                   onItemQuickPlay: widget.onQuickPlay,
+                  onItemLongPress: (item) => showMediaItemContextSheet(
+                    context: context,
+                    item: item,
+                    appState: app,
+                    onOpenDetail: () => widget.onItemTap(item),
+                    onQuickPlay: () => widget.onQuickPlay(item),
+                  ),
                 ),
               ),
             );
@@ -331,6 +344,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   heroPrefix: 'fav',
                   onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'fav'),
                   onItemQuickPlay: widget.onQuickPlay,
+                  onItemLongPress: (item) => showMediaItemContextSheet(
+                    context: context,
+                    item: item,
+                    appState: app,
+                    onOpenDetail: () => widget.onItemTap(item, heroPrefix: 'fav'),
+                    onQuickPlay: () => widget.onQuickPlay(item),
+                  ),
                 ),
               ),
             );
@@ -350,6 +370,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   heroPrefix: 'lat-${lib.id}',
                   onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'lat-${lib.id}'),
                   onItemQuickPlay: widget.onQuickPlay,
+                  onItemLongPress: (item) => showMediaItemContextSheet(
+                    context: context,
+                    item: item,
+                    appState: app,
+                    onOpenDetail: () => widget.onItemTap(item, heroPrefix: 'lat-${lib.id}'),
+                    onQuickPlay: () => widget.onQuickPlay(item),
+                  ),
                   onSeeAll: () => widget.onLibraryTap(lib),
                 ),
               ),
@@ -367,6 +394,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   heroPrefix: 'sug',
                   onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'sug'),
                   onItemQuickPlay: widget.onQuickPlay,
+                  onItemLongPress: (item) => showMediaItemContextSheet(
+                    context: context,
+                    item: item,
+                    appState: app,
+                    onOpenDetail: () => widget.onItemTap(item, heroPrefix: 'sug'),
+                    onQuickPlay: () => widget.onQuickPlay(item),
+                  ),
                 ),
               ),
             );
@@ -477,49 +511,222 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _confirmHideFromResume(BuildContext context, MediaItemModel item) {
-    final skin = VedroSkin.of(context);
+}
+
+/// Universal long-press / right-click / TV context-menu action sheet for media cards.
+void showMediaItemContextSheet({
+  required BuildContext context,
+  required MediaItemModel item,
+  required VedroAppState appState,
+  required VoidCallback onOpenDetail,
+  VoidCallback? onQuickPlay,
+  bool allowHideFromResume = false,
+  VoidCallback? onMutated,
+}) {
+  final skin = VedroSkin.of(context);
+  final messenger = ScaffoldMessenger.of(context);
+  final navigator = Navigator.of(context);
+
+  Future<void> openAddToPlaylistSheet() async {
+    await appState.refreshPlaylists();
+    if (!context.mounted) return;
     showGlassSheet<void>(
       context: context,
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+      builder: (ctx) {
+        final s = VedroSkin.of(ctx);
+        final lists = appState.playlists;
+        return ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
           children: [
-            Text(
-              item.cardTitle,
-              style: TextStyle(
-                color: skin.fg,
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Text(
+                '加入片单',
+                style: TextStyle(color: s.fg, fontSize: 16, fontWeight: FontWeight.w600),
               ),
             ),
-            const SizedBox(height: 4),
-            Text(
-              '从「继续观看」移除，保留已同步的播放进度。',
-              style: TextStyle(color: skin.fg3, fontSize: 13),
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 44,
-              child: FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: skin.surface3,
-                  foregroundColor: skin.fg,
+            if (lists.isEmpty)
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text('暂无片单，请先在片单页新建', style: TextStyle(color: s.fg3, fontSize: 13)),
+              )
+            else
+              for (var i = 0; i < lists.length; i++)
+                ListTile(
+                  autofocus: i == 0,
+                  leading: Icon(Icons.bookmark_outline_rounded, color: s.fg2),
+                  title: Text(lists[i].name, style: TextStyle(color: s.fg, fontSize: 14)),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    try {
+                      await appState.core.invoke('add_to_playlist', {
+                        'playlist_id': lists[i].id,
+                        'item_ids': [item.id],
+                      });
+                      messenger.showSnackBar(
+                        SnackBar(content: Text('已加入片单「${lists[i].name}」')),
+                      );
+                    } catch (e) {
+                      messenger.showSnackBar(
+                        SnackBar(content: Text('加入片单失败：${VedroErrorFormatter.friendly(e)}')),
+                      );
+                    }
+                  },
                 ),
-                onPressed: () {
-                  Navigator.pop(ctx);
-                  widget.appState.hideFromResume(item.id);
-                },
-                child: const Text('从继续观看移除'),
-              ),
-            ),
           ],
-        ),
-      ),
+        );
+      },
     );
   }
+
+  showGlassSheet<void>(
+    context: context,
+    builder: (ctx) => ListView(
+      shrinkWrap: true,
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 2, 8, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item.cardTitle,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+              if (item.cardSubtitle.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(
+                  item.cardSubtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: skin.fg3, fontSize: 12.5),
+                ),
+              ],
+            ],
+          ),
+        ),
+        if (onQuickPlay != null && item.isPlayable)
+          ListTile(
+            autofocus: true,
+            leading: Icon(Icons.play_arrow_rounded, color: skin.accent),
+            title: Text(
+              item.playbackPositionTicks > 0 ? '继续播放' : '立即播放',
+              style: TextStyle(color: skin.fg, fontSize: 14.5, fontWeight: FontWeight.w500),
+            ),
+            onTap: () {
+              Navigator.pop(ctx);
+              onQuickPlay();
+            },
+          ),
+        if (item.isPlayable && item.playbackPositionTicks > 0)
+          ListTile(
+            leading: Icon(Icons.replay_rounded, color: skin.fg2),
+            title: Text('从头播放', style: TextStyle(color: skin.fg, fontSize: 14.5)),
+            onTap: () {
+              Navigator.pop(ctx);
+              final restartItem = MediaItemModel(
+                id: item.id,
+                name: item.name,
+                type: item.type,
+                seriesId: item.seriesId,
+                seriesName: item.seriesName,
+                parentIndexNumber: item.parentIndexNumber,
+                indexNumber: item.indexNumber,
+                runTimeTicks: item.runTimeTicks,
+                playbackPositionTicks: 0,
+                mediaSources: item.mediaSources,
+                chapters: item.chapters,
+              );
+              navigator.push(vedroRoute(PlayerScreen(item: restartItem, appState: appState)));
+            },
+          ),
+        ListTile(
+          autofocus: !(onQuickPlay != null && item.isPlayable),
+          leading: Icon(Icons.info_outline_rounded, color: skin.fg2),
+          title: Text('查看详情', style: TextStyle(color: skin.fg, fontSize: 14.5)),
+          onTap: () {
+            Navigator.pop(ctx);
+            onOpenDetail();
+          },
+        ),
+        if (item.type != 'Person' && item.type != 'Folder') ...[
+          ListTile(
+            leading: Icon(
+              item.played ? Icons.check_circle_rounded : Icons.check_circle_outline_rounded,
+              color: item.played ? skin.accent : skin.fg2,
+            ),
+            title: Text(
+              item.played ? '标为未看' : '标为已看',
+              style: TextStyle(color: skin.fg, fontSize: 14.5),
+            ),
+            onTap: () async {
+              Navigator.pop(ctx);
+              try {
+                await appState.togglePlayed(item);
+                onMutated?.call();
+                messenger.showSnackBar(
+                  SnackBar(content: Text(item.played ? '已标为未看' : '已标为已看')),
+                );
+              } catch (e) {
+                messenger.showSnackBar(
+                  SnackBar(content: Text('操作失败：${VedroErrorFormatter.friendly(e)}')),
+                );
+              }
+            },
+          ),
+          ListTile(
+            leading: Icon(
+              item.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+              color: item.isFavorite ? VedroTheme.danger : skin.fg2,
+            ),
+            title: Text(
+              item.isFavorite ? '取消收藏' : '加入收藏',
+              style: TextStyle(color: skin.fg, fontSize: 14.5),
+            ),
+            onTap: () async {
+              Navigator.pop(ctx);
+              try {
+                await appState.toggleFavorite(item);
+                onMutated?.call();
+                messenger.showSnackBar(
+                  SnackBar(content: Text(item.isFavorite ? '已取消收藏' : '已加入收藏')),
+                );
+              } catch (e) {
+                messenger.showSnackBar(
+                  SnackBar(content: Text('操作失败：${VedroErrorFormatter.friendly(e)}')),
+                );
+              }
+            },
+          ),
+          ListTile(
+            leading: Icon(Icons.playlist_add_rounded, color: skin.fg2),
+            title: Text('加入片单', style: TextStyle(color: skin.fg, fontSize: 14.5)),
+            onTap: () {
+              Navigator.pop(ctx);
+              unawaited(openAddToPlaylistSheet());
+            },
+          ),
+        ],
+        if (allowHideFromResume)
+          ListTile(
+            leading: const Icon(Icons.visibility_off_outlined, color: VedroTheme.danger),
+            title: const Text(
+              '从继续观看移除',
+              style: TextStyle(color: VedroTheme.danger, fontSize: 14.5),
+            ),
+            onTap: () {
+              Navigator.pop(ctx);
+              appState.hideFromResume(item.id);
+              onMutated?.call();
+            },
+          ),
+      ],
+    ),
+  );
 }
 
 /// SenPlayer / Forward Home Server Hub shown on startup when no server is active yet.
@@ -880,18 +1087,39 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
   }
 
   /// Borderless floating preview thumbnails (ZERO white border boxes!) + sleek active indicator bar.
-  Widget _buildBorderlessPreviewStrip(VedroSkin skin, {bool onLightSurface = false}) {
+  /// Width-aware so 960dp TV and split_showcase narrow columns NEVER overflow or collide with CTAs.
+  Widget _buildBorderlessPreviewStrip(
+    VedroSkin skin, {
+    bool onLightSurface = false,
+    double? maxWidth,
+  }) {
+    final count = widget.featured.length;
+    if (count == 0) return const SizedBox.shrink();
+    double thumbW = 92;
+    double spacing = 10;
+    if (maxWidth != null && maxWidth.isFinite) {
+      final fullNeed = count * thumbW + (count - 1) * spacing;
+      if (fullNeed > maxWidth) {
+        spacing = 7;
+        final fitW = (maxWidth - (count - 1) * spacing) / count;
+        if (fitW < 54) {
+          return _buildCapsuleDots(skin: skin, onLightSurface: onLightSurface);
+        }
+        thumbW = fitW.clamp(54.0, 92.0);
+      }
+    }
+    final thumbH = (thumbW * 9 / 16).roundToDouble();
     final barActiveColor = skin.ctaStyle == 'contrast'
         ? (onLightSurface ? skin.fg : Colors.white)
         : skin.accent;
     return Row(
       key: const ValueKey('hero-preview-strip'),
       mainAxisSize: MainAxisSize.min,
-      children: List.generate(widget.featured.length, (i) {
+      children: List.generate(count, (i) {
         final active = i == _active;
         final entry = widget.featured[i];
         return Padding(
-          padding: EdgeInsets.only(left: i == 0 ? 0 : 10),
+          padding: EdgeInsets.only(left: i == 0 ? 0 : spacing),
           child: PressableScale(
             onTap: () => _select(i),
             hoverScale: 1.05,
@@ -904,8 +1132,8 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                   duration: const Duration(milliseconds: 220),
                   curve: VedroTheme.easeOut,
                   child: Container(
-                    width: 92,
-                    height: 52,
+                    width: thumbW,
+                    height: thumbH,
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 11.0)),
                       boxShadow: active
@@ -941,7 +1169,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 220),
                   curve: VedroTheme.easeOut,
-                  width: active ? 28 : 8,
+                  width: active ? (thumbW * 0.30).clamp(18.0, 28.0) : 8,
                   height: 3,
                   decoration: BoxDecoration(
                     color: active
@@ -1113,7 +1341,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
             ),
           ),
           const SizedBox(height: 8),
-          if (logoUrl != null && skin.preferClearLogo)
+          if (logoUrl != null && skin.preferClearLogo && (onPhoto || !skin.isLight))
             ConstrainedBox(
               constraints: BoxConstraints(
                 maxHeight: wide ? 104 : 74,
@@ -1325,23 +1553,42 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     final item = current.item;
     final logoUrl = widget.appState.logoArtUrl(item);
 
+    Widget wrapHeroInteraction(Widget child) {
+      return Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onFocusChange: (focused) {
+          if (focused) {
+            _paused = true;
+            _autoTimer?.cancel();
+          } else if (!_hovered) {
+            _paused = false;
+            _armTimer();
+          }
+        },
+        child: MouseRegion(
+          onEnter: (_) {
+            setState(() => _hovered = true);
+            _paused = true;
+            _autoTimer?.cancel();
+          },
+          onExit: (_) {
+            setState(() => _hovered = false);
+            _paused = false;
+            _armTimer();
+          },
+          child: child,
+        ),
+      );
+    }
+
     // -------------------------------------------------------------------------
     // Layout Mode B: Criterion / Kinfolk 2-Column Editorial Split Showcase
     // -------------------------------------------------------------------------
     if (wide && skin.heroStyle == 'split_showcase') {
       final cardR = skin.cardRadius.clamp(8.0, 24.0);
-      return MouseRegion(
-        onEnter: (_) {
-          setState(() => _hovered = true);
-          _paused = true;
-          _autoTimer?.cancel();
-        },
-        onExit: (_) {
-          setState(() => _hovered = false);
-          _paused = false;
-          _armTimer();
-        },
-        child: Padding(
+      return wrapHeroInteraction(
+        Padding(
           key: const ValueKey('hero-split-showcase'),
           padding: EdgeInsets.fromLTRB(padX, widget.topNavClearance + 14, padX, 12),
           child: Container(
@@ -1370,46 +1617,52 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 const SizedBox(width: 28),
                 Expanded(
                   flex: 6,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      AspectRatio(
-                        aspectRatio: 16 / 9,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(cardR),
-                            boxShadow: skin.posterShadow(hovered: true),
-                          ),
-                          foregroundDecoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(cardR),
-                            border: skin.cardBorder(),
-                          ),
-                          clipBehavior: Clip.antiAlias,
-                          child: Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              for (var i = 0; i < widget.featured.length; i++)
-                                AnimatedOpacity(
-                                  opacity: i == _active ? 1.0 : 0.0,
-                                  duration: const Duration(milliseconds: 480),
-                                  curve: Curves.easeOutCubic,
-                                  child: VedroArtwork(
-                                    item: widget.featured[i].item,
-                                    appState: widget.appState,
-                                    isHero: true,
-                                    showInitials: false,
+                  child: LayoutBuilder(
+                    builder: (_, colConstraints) => Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        AspectRatio(
+                          aspectRatio: 16 / 9,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(cardR),
+                              boxShadow: skin.posterShadow(hovered: true),
+                            ),
+                            foregroundDecoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(cardR),
+                              border: skin.cardBorder(),
+                            ),
+                            clipBehavior: Clip.antiAlias,
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                for (var i = 0; i < widget.featured.length; i++)
+                                  AnimatedOpacity(
+                                    opacity: i == _active ? 1.0 : 0.0,
+                                    duration: const Duration(milliseconds: 480),
+                                    curve: Curves.easeOutCubic,
+                                    child: VedroArtwork(
+                                      item: widget.featured[i].item,
+                                      appState: widget.appState,
+                                      isHero: true,
+                                      showInitials: false,
+                                    ),
                                   ),
-                                ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                      if (widget.featured.length > 1) ...[
-                        const SizedBox(height: 14),
-                        _buildBorderlessPreviewStrip(skin, onLightSurface: skin.isLight),
+                        if (widget.featured.length > 1) ...[
+                          const SizedBox(height: 14),
+                          _buildBorderlessPreviewStrip(
+                            skin,
+                            onLightSurface: skin.isLight,
+                            maxWidth: colConstraints.maxWidth,
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
               ],
@@ -1425,18 +1678,9 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     if (skin.heroStyle == 'framed_stage') {
       final stageR = skin.cardRadius.clamp(10.0, 26.0);
       final stageH = (size.height * (wide ? 0.56 : 0.44)).clamp(310.0, 560.0);
-      return MouseRegion(
-        onEnter: (_) {
-          setState(() => _hovered = true);
-          _paused = true;
-          _autoTimer?.cancel();
-        },
-        onExit: (_) {
-          setState(() => _hovered = false);
-          _paused = false;
-          _armTimer();
-        },
-        child: Column(
+      final stageStripMaxW = (size.width - padX * 2 - 420).clamp(180.0, 620.0);
+      return wrapHeroInteraction(
+        Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (widget.showMobileHeader) _buildMobileTopBar(),
@@ -1561,7 +1805,11 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                         left: wide ? null : 16,
                         bottom: wide ? 26 : 10,
                         child: wide
-                            ? _buildBorderlessPreviewStrip(skin, onLightSurface: skin.isLight)
+                            ? _buildBorderlessPreviewStrip(
+                                skin,
+                                onLightSurface: skin.isLight,
+                                maxWidth: stageStripMaxW,
+                              )
                             : _buildCapsuleDots(skin: skin, onLightSurface: skin.isLight),
                       ),
                   ],
@@ -1576,39 +1824,16 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
     // -------------------------------------------------------------------------
     // Layout Mode A (Default): Apple TV+ Full-Bleed Cinema Hero
     // - Horizontal `PageView.builder` swipeable left/right with 1:1 finger physics!
-    // - `ShaderMask(blendMode: BlendMode.dstIn)` dissolves Hero photo + scrim alpha to
-    //   exact `0.0` BEFORE `y = heroH` (`stop: 0.965 -> 1.0`), making a bottom 1px seam
-    //   mathematically impossible on ANY theme (`solid`, `blurred_fanart`, `aurora_mesh`)!
+    // - `ClipRect` + direct canvas gradient dissolve (zero offscreen saveLayer!)
     // -------------------------------------------------------------------------
     final heroH = wide
         ? (size.height * 0.70).clamp(460.0, 740.0)
         : (size.height * 0.49).clamp(328.0, 420.0);
     final canvasColor = skin.canvas;
+    final fullBleedStripMaxW = (size.width - padX * 2 - 420).clamp(180.0, 620.0);
 
-    return Focus(
-      canRequestFocus: false,
-      skipTraversal: true,
-      onFocusChange: (focused) {
-        if (focused) {
-          _paused = true;
-          _autoTimer?.cancel();
-        } else if (!_hovered) {
-          _paused = false;
-          _armTimer();
-        }
-      },
-      child: MouseRegion(
-      onEnter: (_) {
-        setState(() => _hovered = true);
-        _paused = true;
-        _autoTimer?.cancel();
-      },
-      onExit: (_) {
-        setState(() => _hovered = false);
-        _paused = false;
-        _armTimer();
-      },
-      child: SizedBox(
+    return wrapHeroInteraction(
+      SizedBox(
         key: const ValueKey('hero-full-bleed'),
         height: heroH,
         child: Stack(
@@ -1684,13 +1909,15 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                                     gradient: LinearGradient(
                                       begin: Alignment.topCenter,
                                       end: Alignment.bottomCenter,
-                                      stops: const [0.0, 0.28, 0.62, 0.90, 1.0],
+                                      stops: (!wide && skin.isLight)
+                                          ? const [0.0, 0.22, 0.48, 0.78, 1.0]
+                                          : const [0.0, 0.28, 0.62, 0.90, 1.0],
                                       colors: skin.isLight
                                           ? [
                                               canvasColor.withValues(alpha: 0.36),
                                               Colors.transparent,
-                                              canvasColor.withValues(alpha: 0.46),
-                                              canvasColor.withValues(alpha: 0.94),
+                                              canvasColor.withValues(alpha: wide ? 0.46 : 0.72),
+                                              canvasColor.withValues(alpha: 0.96),
                                               canvasColor,
                                             ]
                                           : [
@@ -1742,22 +1969,28 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 top: 0,
                 bottom: 0,
                 child: Center(
-                  child: AnimatedOpacity(
-                    opacity: _hovered ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 180),
-                    child: PressableScale(
-                      onTap: () =>
-                          _select((_active - 1 + widget.featured.length) % widget.featured.length),
-                      child: GlassSurface(
-                        borderRadius: 20,
-                        blur: 18,
-                        color: skin.isLight ? const Color(0xCCFFFFFF) : const Color(0x66141418),
-                        borderColor: skin.isLight ? skin.border : Colors.transparent,
-                        padding: const EdgeInsets.all(8),
-                        child: Icon(
-                          Icons.chevron_left_rounded,
-                          size: 22,
-                          color: skin.isLight ? skin.fg : Colors.white,
+                  child: ExcludeFocus(
+                    excluding: !_hovered,
+                    child: IgnorePointer(
+                      ignoring: !_hovered,
+                      child: AnimatedOpacity(
+                        opacity: _hovered ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 180),
+                        child: PressableScale(
+                          onTap: () => _select(
+                              (_active - 1 + widget.featured.length) % widget.featured.length),
+                          child: GlassSurface(
+                            borderRadius: 20,
+                            blur: 18,
+                            color: skin.isLight ? const Color(0xCCFFFFFF) : const Color(0x66141418),
+                            borderColor: skin.isLight ? skin.border : Colors.transparent,
+                            padding: const EdgeInsets.all(8),
+                            child: Icon(
+                              Icons.chevron_left_rounded,
+                              size: 22,
+                              color: skin.isLight ? skin.fg : Colors.white,
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -1769,21 +2002,27 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 top: 0,
                 bottom: 0,
                 child: Center(
-                  child: AnimatedOpacity(
-                    opacity: _hovered ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 180),
-                    child: PressableScale(
-                      onTap: () => _select((_active + 1) % widget.featured.length),
-                      child: GlassSurface(
-                        borderRadius: 20,
-                        blur: 18,
-                        color: skin.isLight ? const Color(0xCCFFFFFF) : const Color(0x66141418),
-                        borderColor: skin.isLight ? skin.border : Colors.transparent,
-                        padding: const EdgeInsets.all(8),
-                        child: Icon(
-                          Icons.chevron_right_rounded,
-                          size: 22,
-                          color: skin.isLight ? skin.fg : Colors.white,
+                  child: ExcludeFocus(
+                    excluding: !_hovered,
+                    child: IgnorePointer(
+                      ignoring: !_hovered,
+                      child: AnimatedOpacity(
+                        opacity: _hovered ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 180),
+                        child: PressableScale(
+                          onTap: () => _select((_active + 1) % widget.featured.length),
+                          child: GlassSurface(
+                            borderRadius: 20,
+                            blur: 18,
+                            color: skin.isLight ? const Color(0xCCFFFFFF) : const Color(0x66141418),
+                            borderColor: skin.isLight ? skin.border : Colors.transparent,
+                            padding: const EdgeInsets.all(8),
+                            child: Icon(
+                              Icons.chevron_right_rounded,
+                              size: 22,
+                              color: skin.isLight ? skin.fg : Colors.white,
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -1798,12 +2037,15 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 left: wide ? null : padX,
                 bottom: wide ? 40 : 10,
                 child: wide
-                    ? _buildBorderlessPreviewStrip(skin, onLightSurface: skin.isLight)
-                    : _buildCapsuleDots(skin: skin),
+                    ? _buildBorderlessPreviewStrip(
+                        skin,
+                        onLightSurface: skin.isLight,
+                        maxWidth: fullBleedStripMaxW,
+                      )
+                    : _buildCapsuleDots(skin: skin, onLightSurface: skin.isLight),
               ),
           ],
         ),
-      ),
       ),
     );
   }

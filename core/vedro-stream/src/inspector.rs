@@ -420,7 +420,7 @@ fn read_ebml_size(buf: &[u8]) -> Option<(Option<usize>, usize)> {
     if all_ones {
         Some((None, len))
     } else {
-        Some((Some(val as usize), len))
+        Some((usize::try_from(val).ok(), len))
     }
 }
 

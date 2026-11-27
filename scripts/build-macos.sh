@@ -12,7 +12,8 @@ DIST_DIR="$ROOT_DIR/dist"
 mkdir -p "$OUT_DIR" "$DIST_DIR"
 
 cd "$ROOT_DIR"
-echo "==> Building Rust vedro-ffi universal dylib (arm64 + x86_64)..."
+export MACOSX_DEPLOYMENT_TARGET=12.0
+echo "==> Building Rust vedro-ffi universal dylib (arm64 + x86_64, min macOS $MACOSX_DEPLOYMENT_TARGET)..."
 cargo build --release -p vedro-ffi --target aarch64-apple-darwin
 cargo build --release -p vedro-ffi --target x86_64-apple-darwin
 
@@ -32,7 +33,11 @@ flutter build macos --release
 APP_BUNDLE="$ROOT_DIR/app/build/macos/Build/Products/Release/Vedro.app"
 mkdir -p "$APP_BUNDLE/Contents/Frameworks"
 cp -f "$OUT_DIR/libvedro_ffi.dylib" "$APP_BUNDLE/Contents/Frameworks/libvedro_ffi.dylib"
-codesign --force --deep --sign - "$APP_BUNDLE" || true
+# Inside-out ad-hoc signing that preserves Release.entitlements and keeps nested framework seals valid
+codesign --force --sign - "$APP_BUNDLE/Contents/Frameworks/libvedro_ffi.dylib"
+codesign --force --entitlements "$ROOT_DIR/app/macos/Runner/Release.entitlements" --sign - "$APP_BUNDLE"
+codesign --verify --deep --strict "$APP_BUNDLE"
+lipo -info "$APP_BUNDLE/Contents/MacOS/Vedro" "$APP_BUNDLE/Contents/Frameworks/libvedro_ffi.dylib"
 
 echo "==> Packaging macOS DMG..."
 DMG_STAGE="$(mktemp -d)"

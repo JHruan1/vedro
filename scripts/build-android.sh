@@ -24,8 +24,10 @@ JNI_DIR="$ROOT_DIR/app/android/app/src/main/jniLibs"
 DIST_DIR="$ROOT_DIR/dist"
 mkdir -p "$JNI_DIR" "$DIST_DIR"
 
-echo "==> Building Rust vedro-ffi for Android (NDK: ${ANDROID_NDK_HOME:-auto})..."
+echo "==> Building Rust vedro-ffi for Android (NDK: ${ANDROID_NDK_HOME:-auto}, 16KB page aligned)..."
 cd "$ROOT_DIR"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
+export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
 cargo ndk \
   -P 24 \
   -t arm64-v8a \

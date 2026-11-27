@@ -16,6 +16,8 @@ class NativePlaybackChannel {
   static final ValueNotifier<bool> playerHudAutoHideNotifier = ValueNotifier<bool>(false);
   static final ValueNotifier<bool> pipModeNotifier = ValueNotifier<bool>(false);
   static final ValueNotifier<int> audioInterruptCountNotifier = ValueNotifier<int>(0);
+  static final ValueNotifier<Map<String, dynamic>?> mediaActionNotifier =
+      ValueNotifier<Map<String, dynamic>?>(null);
   static final ValueNotifier<List<String>> droppedFilesNotifier = ValueNotifier<List<String>>(const []);
   static bool detectedAndroidTv = false;
   static bool supportsNativePip = false;
@@ -26,12 +28,25 @@ class NativePlaybackChannel {
   static bool isAllowedHttpUrl(String raw) {
     final trimmed = raw.trim();
     if (trimmed.isEmpty) return false;
+    if (trimmed.contains(RegExp(r'[\s\x00-\x1F\x7F]'))) return false;
     final uri = Uri.tryParse(trimmed);
     if (uri == null) return false;
     final scheme = uri.scheme.toLowerCase();
     if (scheme != 'http' && scheme != 'https') return false;
-    if (uri.host.isEmpty) return false;
-    return !trimmed.contains('\r') && !trimmed.contains('\n') && !trimmed.contains('\x00');
+    return uri.host.isNotEmpty;
+  }
+
+  /// Media stream URL validator supporting HTTP(S), RTSP(S), RTMP(S), MMS, UDP, RTP.
+  static bool isAllowedMediaUrl(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return false;
+    if (trimmed.contains(RegExp(r'[\s\x00-\x1F\x7F]'))) return false;
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return false;
+    final scheme = uri.scheme.toLowerCase();
+    const allowed = {'http', 'https', 'rtsp', 'rtsps', 'rtmp', 'rtmps', 'mms', 'udp', 'rtp'};
+    if (!allowed.contains(scheme)) return false;
+    return uri.host.isNotEmpty;
   }
 
   /// Syncs native OS window titlebar / frame / status-bar / nav-bar colors with the active Vedro page skin.
@@ -142,6 +157,10 @@ class NativePlaybackChannel {
         }
       } else if (call.method == 'audioInterrupted') {
         audioInterruptCountNotifier.value = audioInterruptCountNotifier.value + 1;
+      } else if (call.method == 'mediaAction' && call.arguments is Map) {
+        final raw = Map<String, dynamic>.from(call.arguments as Map);
+        raw['_ts'] = DateTime.now().microsecondsSinceEpoch;
+        mediaActionNotifier.value = raw;
       } else if (call.method == 'filesDropped' && call.arguments is Map) {
         final raw = (call.arguments as Map)['paths'];
         if (raw is List) {
@@ -257,6 +276,61 @@ class NativePlaybackChannel {
     } catch (_) {
       return false;
     }
+  }
+
+  static Future<void> setAutoPipEnabled(bool enabled, {int aspectW = 16, int aspectH = 9}) async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    ensureWindowListener();
+    try {
+      await _channel.invokeMethod<void>('setAutoPipEnabled', {
+        'enabled': enabled,
+        'aspect_w': aspectW,
+        'aspect_h': aspectH,
+      });
+    } catch (_) {}
+  }
+
+  /// Sync OS lock-screen / Bluetooth / AirPods / TV CEC Now Playing metadata & playback state.
+  static Future<void> updateNowPlaying({
+    required String title,
+    String subtitle = '',
+    bool playing = false,
+    double positionSecs = 0.0,
+    double durationSecs = 0.0,
+    double speed = 1.0,
+    bool hasNext = false,
+    bool hasPrevious = false,
+    bool active = true,
+  }) async {
+    if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS && !Platform.isMacOS)) return;
+    ensureWindowListener();
+    try {
+      await _channel.invokeMethod<void>('updateNowPlaying', {
+        'title': title,
+        'subtitle': subtitle,
+        'playing': playing,
+        'position_secs': positionSecs.isFinite ? positionSecs : 0.0,
+        'duration_secs': durationSecs.isFinite ? durationSecs : 0.0,
+        'speed': speed.isFinite ? speed : 1.0,
+        'has_next': hasNext,
+        'has_previous': hasPrevious,
+        'active': active,
+      });
+    } catch (_) {}
+  }
+
+  /// Export a PNG screenshot to the OS Photos/Gallery (mobile) or Pictures/Vedro folder (desktop).
+  static Future<String?> saveScreenshotToGallery(Uint8List bytes, String fileName) async {
+    if (bytes.isEmpty) return null;
+    try {
+      final res = await _channel.invokeMethod<dynamic>('saveScreenshotToGallery', {
+        'bytes': bytes,
+        'file_name': fileName,
+      });
+      if (res is String && res.isNotEmpty) return res;
+      if (res == true) return fileName;
+    } catch (_) {}
+    return null;
   }
 
   static Future<void> setKeepScreenOn(bool enabled) async {
@@ -391,12 +465,29 @@ class NativePlaybackChannel {
 
   static Future<bool> openUrl(String url) async {
     if (!isAllowedHttpUrl(url)) return false;
+    final clean = url.trim();
     try {
-      final ok = await _channel.invokeMethod<bool>('openUrl', {'url': url.trim()});
-      if (ok != null) return ok;
+      final ok = await _channel.invokeMethod<bool>('openUrl', {'url': clean});
+      if (ok == true) return true;
     } on MissingPluginException {
-      return false;
+      // Fallback below on desktop hosts without plugin handler
     } catch (_) {}
+    if (!kIsWeb) {
+      try {
+        if (Platform.isMacOS) {
+          await Process.start('open', [clean], mode: ProcessStartMode.detached);
+          return true;
+        }
+        if (Platform.isLinux) {
+          await Process.start('xdg-open', [clean], mode: ProcessStartMode.detached);
+          return true;
+        }
+        if (Platform.isWindows) {
+          await Process.start('explorer.exe', [clean], mode: ProcessStartMode.detached);
+          return true;
+        }
+      } catch (_) {}
+    }
     return false;
   }
 

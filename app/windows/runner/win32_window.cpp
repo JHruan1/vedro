@@ -2,9 +2,13 @@
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
+#include <shellapi.h>
 #include <windowsx.h>
+#include <string>
+#include <vector>
 
 #include "resource.h"
+#include "vedro_hardware_plugin.h"
 
 namespace {
 
@@ -125,6 +129,10 @@ const wchar_t* WindowClassRegistrar::GetWindowClass() {
 
 void WindowClassRegistrar::UnregisterWindowClass() {
   UnregisterClass(kWindowClassName, nullptr);
+  if (g_vedro_bg_brush) {
+    DeleteObject(g_vedro_bg_brush);
+    g_vedro_bg_brush = nullptr;
+  }
   class_registered_ = false;
 }
 
@@ -169,6 +177,7 @@ bool Win32Window::Create(const std::wstring& title,
   const DWORD corner_pref = 2;  // DWMWCP_ROUND
   DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE, &corner_pref,
                         sizeof(corner_pref));
+  DragAcceptFiles(window, TRUE);
   UpdateTheme(window);
   SetWindowPos(window, nullptr, 0, 0, 0, 0,
                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
@@ -215,11 +224,51 @@ Win32Window::MessageHandler(HWND hwnd,
           MONITORINFO mi = {sizeof(MONITORINFO)};
           if (GetMonitorInfo(monitor, &mi)) {
             params->rgrc[0] = mi.rcWork;
+            // Preserve 1px edge when an auto-hide taskbar is enabled so users can summon it
+            APPBARDATA abd = {sizeof(APPBARDATA)};
+            if ((SHAppBarMessage(ABM_GETSTATE, &abd) & ABS_AUTOHIDE) != 0) {
+              params->rgrc[0].bottom -= 1;
+            }
           }
         }
         return 0;
       }
       break;
+    }
+
+    case WM_GETMINMAXINFO: {
+      auto* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
+      HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+      UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
+      double scale = dpi / 96.0;
+      mmi->ptMinTrackSize.x = static_cast<LONG>(760.0 * scale);
+      mmi->ptMinTrackSize.y = static_cast<LONG>(500.0 * scale);
+      return 0;
+    }
+
+    case WM_DROPFILES: {
+      HDROP hdrop = reinterpret_cast<HDROP>(wparam);
+      UINT count = DragQueryFileW(hdrop, 0xFFFFFFFF, nullptr, 0);
+      std::vector<std::string> paths;
+      paths.reserve(count);
+      for (UINT i = 0; i < count; ++i) {
+        UINT len = DragQueryFileW(hdrop, i, nullptr, 0);
+        if (len > 0 && len < 4096) {
+          std::wstring buf(len + 1, L'\0');
+          DragQueryFileW(hdrop, i, buf.data(), len + 1);
+          int utf8_len = WideCharToMultiByte(CP_UTF8, 0, buf.c_str(), -1, nullptr, 0, nullptr, nullptr);
+          if (utf8_len > 1) {
+            std::string utf8(static_cast<size_t>(utf8_len - 1), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, buf.c_str(), -1, utf8.data(), utf8_len, nullptr, nullptr);
+            paths.push_back(std::move(utf8));
+          }
+        }
+      }
+      DragFinish(hdrop);
+      if (!paths.empty()) {
+        vedro::NotifyWindowsDroppedFiles(paths);
+      }
+      return 0;
     }
 
     case WM_NCHITTEST: {
@@ -283,9 +332,12 @@ Win32Window::MessageHandler(HWND hwnd,
     case WM_DWMCOLORIZATIONCOLORCHANGED:
       UpdateTheme(hwnd);
       return 0;
+    case WM_NCDESTROY:
+      SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+      return DefWindowProc(hwnd, message, wparam, lparam);
   }
 
-  return DefWindowProc(window_handle_, message, wparam, lparam);
+  return DefWindowProc(hwnd, message, wparam, lparam);
 }
 
 void Win32Window::Destroy() {

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/models/preferences.dart';
+import '../core/platform/platform_perf.dart';
 import '../core/theme/display_profile.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
@@ -141,6 +142,8 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
         content: TextField(
           controller: ctrl,
           autofocus: true,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
           style: TextStyle(color: skin.fg, fontSize: 14, fontFamily: 'monospace'),
           decoration: const InputDecoration(
             hintText: '#0A84FF',
@@ -286,36 +289,44 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                 ),
               ),
               Divider(height: 1, indent: 16, endIndent: 16, color: uiSkin.border),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '莫奈动态取色',
-                            style: TextStyle(color: uiSkin.fg, fontSize: 14),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '随当前页面海报自动沉浸变色',
-                            style: TextStyle(color: uiSkin.fg3, fontSize: 12),
-                          ),
-                        ],
+              PressableScale(
+                onTap: () => appState.updatePrefs(p.copyWith(dynamicMonet: !p.dynamicMonet)),
+                hoverScale: 1.0,
+                pressScale: 0.99,
+                borderRadius: BorderRadius.circular(10),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '莫奈动态取色',
+                              style: TextStyle(color: uiSkin.fg, fontSize: 14),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              '随当前页面海报自动沉浸变色',
+                              style: TextStyle(color: uiSkin.fg3, fontSize: 12),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    Transform.scale(
-                      scale: 0.80,
-                      child: CupertinoSwitch(
-                        key: const ValueKey('theme-monet-switch'),
-                        value: p.dynamicMonet,
-                        activeTrackColor: uiSkin.accent,
-                        onChanged: (v) => appState.updatePrefs(p.copyWith(dynamicMonet: v)),
+                      ExcludeFocus(
+                        child: Transform.scale(
+                          scale: 0.80,
+                          child: CupertinoSwitch(
+                            key: const ValueKey('theme-monet-switch'),
+                            value: p.dynamicMonet,
+                            activeTrackColor: uiSkin.accent,
+                            onChanged: (v) => appState.updatePrefs(p.copyWith(dynamicMonet: v)),
+                          ),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
               Divider(height: 1, indent: 16, endIndent: 16, color: uiSkin.border),
@@ -330,12 +341,17 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                           '主题颜色',
                           style: TextStyle(color: uiSkin.fg, fontSize: 14),
                         ),
-                        const Spacer(),
-                        Text(
-                          p.dynamicMonet
-                              ? '动态生效中 · 默认色：${p.accentId == 'custom' ? p.customAccentHex : p.accentPalette.label}'
-                              : (p.accentId == 'custom' ? p.customAccentHex : p.accentPalette.label),
-                          style: TextStyle(color: uiSkin.fg3, fontSize: 12),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            p.dynamicMonet
+                                ? '动态生效中 · 默认色：${p.accentId == 'custom' ? p.customAccentHex : p.accentPalette.label}'
+                                : (p.accentId == 'custom' ? p.customAccentHex : p.accentPalette.label),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.end,
+                            style: TextStyle(color: uiSkin.fg3, fontSize: 12),
+                          ),
                         ),
                       ],
                     ),
@@ -486,7 +502,13 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
       ],
     );
 
-    if (widget.stickyDesktop && !isMobile) {
+    final viewportH = MediaQuery.sizeOf(context).height;
+    final canStickyDesktop = widget.stickyDesktop &&
+        !isMobile &&
+        !PlatformPerfProfile.isTv &&
+        viewportH >= 640;
+
+    if (canStickyDesktop) {
       return Column(
         key: const ValueKey('skin-studio-pane'),
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -578,15 +600,28 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
         Padding(
           key: const ValueKey('glass-blur-radius-slider-row'),
           padding: const EdgeInsets.fromLTRB(10, 4, 10, 8),
-          child: VedroPrecisionSlider(
-            label: '模糊半径',
-            value: skin.backdropBlur.clamp(12.0, 60.0),
-            min: 12,
-            max: 60,
-            step: 2,
-            defaultValue: activeMasterId == 'ios_liquid_glass' ? 30 : 38,
-            valueText: '${skin.backdropBlur.round()} px',
-            onChanged: (sigma) => _setOverride('backdrop_blur', sigma, isMobile: isMobile),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              VedroPrecisionSlider(
+                label: '模糊半径',
+                value: skin.backdropBlur.clamp(12.0, 60.0),
+                min: 12,
+                max: 60,
+                step: 2,
+                defaultValue: activeMasterId == 'ios_liquid_glass' ? 30 : 38,
+                valueText: '${skin.backdropBlur.round()} px',
+                onChanged: (sigma) => _setOverride('backdrop_blur', sigma, isMobile: isMobile),
+              ),
+              if (PlatformPerfProfile.isMobile || PlatformPerfProfile.isTv)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 2),
+                  child: Text(
+                    '提示：移动端与电视端为保证高帧率与低发热，会自动限制实时高斯模糊半径。',
+                    style: TextStyle(color: uiSkin.fg3, fontSize: 11),
+                  ),
+                ),
+            ],
           ),
         ),
         if (activeMasterId == 'ios_liquid_glass') ...[
@@ -917,7 +952,10 @@ class _ResponsiveStagePreviewCard extends StatelessWidget {
                                     style: TextStyle(color: skin.fg2, fontSize: 11.5),
                                   ),
                                   const SizedBox(height: 8),
-                                  Row(
+                                  Wrap(
+                                    spacing: 6,
+                                    runSpacing: 6,
+                                    crossAxisAlignment: WrapCrossAlignment.center,
                                     children: [
                                       Container(
                                         height: 28,
@@ -943,12 +981,9 @@ class _ResponsiveStagePreviewCard extends StatelessWidget {
                                           ],
                                         ),
                                       ),
-                                      const SizedBox(width: 8),
                                       _MiniDropdownBadge(label: '4K REMUX', skin: skin),
                                       if (!isMobile) ...[
-                                        const SizedBox(width: 6),
                                         _MiniDropdownBadge(label: 'Atmos', skin: skin),
-                                        const SizedBox(width: 6),
                                         _MiniDropdownBadge(label: '中英 ASS', skin: skin),
                                       ],
                                     ],
@@ -1390,23 +1425,31 @@ class _SimpleSwitchRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(title, style: TextStyle(color: fg, fontSize: 14)),
-          ),
-          Transform.scale(
-            scale: 0.80,
-            child: CupertinoSwitch(
-              key: switchKey,
-              value: value,
-              activeTrackColor: accent,
-              onChanged: onChanged,
+    return PressableScale(
+      onTap: () => onChanged(!value),
+      hoverScale: 1.0,
+      pressScale: 0.99,
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(title, style: TextStyle(color: fg, fontSize: 14)),
             ),
-          ),
-        ],
+            ExcludeFocus(
+              child: Transform.scale(
+                scale: 0.80,
+                child: CupertinoSwitch(
+                  key: switchKey,
+                  value: value,
+                  activeTrackColor: accent,
+                  onChanged: onChanged,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

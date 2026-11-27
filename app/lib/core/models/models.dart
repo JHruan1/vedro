@@ -2,6 +2,36 @@
 
 const int kEmbyTicksPerSecond = 10000000;
 
+Map<String, dynamic> asJsonMap(dynamic raw) {
+  if (raw is Map<String, dynamic>) return raw;
+  if (raw is Map) return Map<String, dynamic>.from(raw);
+  return const {};
+}
+
+Map<String, dynamic>? asJsonMapOrNull(dynamic raw) {
+  if (raw is Map<String, dynamic>) return raw;
+  if (raw is Map) return Map<String, dynamic>.from(raw);
+  return null;
+}
+
+List<dynamic> asJsonList(dynamic raw) => raw is List ? raw : const [];
+
+int? asJsonInt(dynamic raw) {
+  if (raw is int) return raw;
+  if (raw is num && raw.isFinite) return raw.toInt();
+  if (raw is String) return int.tryParse(raw.trim());
+  return null;
+}
+
+double? asJsonDouble(dynamic raw) {
+  if (raw is num && raw.isFinite) return raw.toDouble();
+  if (raw is String) {
+    final parsed = double.tryParse(raw.trim());
+    if (parsed != null && parsed.isFinite) return parsed;
+  }
+  return null;
+}
+
 /// Deterministic low-chroma hue pair matching embygo Web's `GeneratedArt`,
 /// so an item without cover art gets a calm, permanent two-tone gradient.
 (double, double) deterministicHues(String seed) {
@@ -462,7 +492,7 @@ class AggregatedSearchHit {
         id: (j['id'] ?? j['ItemId'] ?? j['Id'] ?? '').toString(),
         name: (j['name'] ?? j['Name'] ?? '').toString(),
         type: (j['type'] ?? j['Type'] ?? 'Movie').toString(),
-        productionYear: (j['production_year'] ?? j['ProductionYear'] as num?)?.toInt(),
+        productionYear: asJsonInt(j['production_year'] ?? j['ProductionYear']),
         primaryImageTag: (j['primary_image_tag'] ?? j['PrimaryImageTag'])?.toString(),
         series: (j['series'] ?? j['Series'])?.toString(),
       );
@@ -1217,9 +1247,11 @@ class MediaItemModel {
 
   String get cleanOverview => cleanOverviewText(overview);
 
-  bool get isPlayable => type == 'Movie' || type == 'Episode' || type == 'Video';
+  bool get isPlayable =>
+      type == 'Movie' || type == 'Episode' || type == 'Video' || type == 'MusicVideo';
   bool get isSeries => type == 'Series';
-  bool get isFolderish => type == 'Series' || type == 'Season';
+  bool get isFolderish =>
+      type == 'Series' || type == 'Season' || type == 'BoxSet' || type == 'Folder';
   int get versionCount => mediaSourceCount ?? mediaSources.length;
 
   /// Localises scraper fallback `"Episode 3"` into `"第 3 集"` just like embygo Web.
@@ -1310,15 +1342,17 @@ class MediaItemModel {
   }
 
   factory MediaItemModel.fromJson(Map<String, dynamic> j) {
-    final userData = (j['UserData'] as Map<String, dynamic>?) ?? const {};
-    final imageTags = (j['ImageTags'] as Map<String, dynamic>?) ?? const {};
-    final backdrops = (j['BackdropImageTags'] as List<dynamic>?) ?? const [];
-    final parentBackdrops = (j['ParentBackdropImageTags'] as List<dynamic>?) ?? const [];
-    final sources = ((j['MediaSources'] as List<dynamic>?) ?? const [])
+    final userData = asJsonMap(j['UserData']);
+    final imageTags = asJsonMap(j['ImageTags']);
+    final backdrops = asJsonList(j['BackdropImageTags']);
+    final parentBackdrops = asJsonList(j['ParentBackdropImageTags']);
+    final sources = asJsonList(j['MediaSources'])
+        .map(asJsonMapOrNull)
         .whereType<Map<String, dynamic>>()
         .map(MediaSourceModel.fromJson)
         .toList();
-    final people = ((j['People'] as List<dynamic>?) ?? const [])
+    final people = asJsonList(j['People'])
+        .map(asJsonMapOrNull)
         .whereType<Map<String, dynamic>>()
         .map(PersonCreditModel.fromJson)
         .toList();
@@ -1331,66 +1365,68 @@ class MediaItemModel {
       originalTitle: j['OriginalTitle']?.toString(),
       collectionType: j['CollectionType']?.toString(),
       overview: j['Overview']?.toString(),
-      taglines: ((j['Taglines'] as List<dynamic>?) ?? const [])
+      taglines: asJsonList(j['Taglines'])
           .map((e) => e.toString().trim())
           .where((s) => s.isNotEmpty)
           .toList(),
-      productionYear: (j['ProductionYear'] as num?)?.toInt(),
+      productionYear: asJsonInt(j['ProductionYear']),
       premiereDate: j['PremiereDate']?.toString(),
       endDate: j['EndDate']?.toString(),
       status: j['Status']?.toString(),
       dateCreated: j['DateCreated']?.toString(),
       path: j['Path']?.toString(),
       airTime: j['AirTime']?.toString(),
-      airDays: ((j['AirDays'] as List<dynamic>?) ?? const []).map((e) => e.toString()).toList(),
-      productionLocations: ((j['ProductionLocations'] as List<dynamic>?) ?? const [])
+      airDays: asJsonList(j['AirDays']).map((e) => e.toString()).toList(),
+      productionLocations: asJsonList(j['ProductionLocations'])
           .map((e) => e.toString().trim())
           .where((s) => s.isNotEmpty)
           .toList(),
       providerIds: j['ProviderIds'] is Map
           ? (j['ProviderIds'] as Map).map((k, v) => MapEntry(k.toString(), v.toString()))
           : const {},
-      externalUrls: ((j['ExternalUrls'] as List<dynamic>?) ?? const [])
+      externalUrls: asJsonList(j['ExternalUrls'])
+          .map(asJsonMapOrNull)
           .whereType<Map<String, dynamic>>()
           .map(ExternalLinkModel.fromJson)
           .where((e) => e.url.isNotEmpty)
           .toList(),
-      remoteTrailers: ((j['RemoteTrailers'] as List<dynamic>?) ?? const [])
+      remoteTrailers: asJsonList(j['RemoteTrailers'])
+          .map(asJsonMapOrNull)
           .whereType<Map<String, dynamic>>()
           .map(ExternalLinkModel.fromJson)
           .where((e) => e.url.isNotEmpty)
           .toList(),
-      chapters: ((j['Chapters'] as List<dynamic>?) ?? const [])
+      chapters: asJsonList(j['Chapters'])
+          .map(asJsonMapOrNull)
           .whereType<Map<String, dynamic>>()
           .map(ChapterModel.fromJson)
           .toList(),
       aspectRatio: j['AspectRatio']?.toString(),
       customRating: j['CustomRating']?.toString(),
-      budget: (j['Budget'] as num?)?.toInt(),
-      revenue: (j['Revenue'] as num?)?.toInt(),
+      budget: asJsonInt(j['Budget']),
+      revenue: asJsonInt(j['Revenue']),
       awardSummary: j['AwardSummary']?.toString(),
-      airsBeforeSeasonNumber: (j['AirsBeforeSeasonNumber'] as num?)?.toInt(),
-      airsBeforeEpisodeNumber: (j['AirsBeforeEpisodeNumber'] as num?)?.toInt(),
-      communityRating: (j['CommunityRating'] as num?)?.toDouble(),
-      criticRating: (j['CriticRating'] as num?)?.toDouble(),
+      airsBeforeSeasonNumber: asJsonInt(j['AirsBeforeSeasonNumber']),
+      airsBeforeEpisodeNumber: asJsonInt(j['AirsBeforeEpisodeNumber']),
+      communityRating: asJsonDouble(j['CommunityRating']),
+      criticRating: asJsonDouble(j['CriticRating']),
       officialRating: j['OfficialRating']?.toString(),
-      runTimeTicks: (j['RunTimeTicks'] as num?)?.toInt(),
+      runTimeTicks: asJsonInt(j['RunTimeTicks']),
       seriesId: j['SeriesId']?.toString(),
       seriesName: j['SeriesName']?.toString(),
       seasonId: j['SeasonId']?.toString(),
       seasonName: j['SeasonName']?.toString(),
-      parentIndexNumber:
-          (j['ParentIndexNumber'] as num?)?.toInt() ?? (j['SeasonNumber'] as num?)?.toInt(),
-      indexNumber: (j['IndexNumber'] as num?)?.toInt(),
-      indexNumberEnd: (j['IndexNumberEnd'] as num?)?.toInt(),
-      childCount: (j['ChildCount'] as num?)?.toInt(),
-      recursiveItemCount: (j['RecursiveItemCount'] as num?)?.toInt(),
-      mediaSourceCount: (j['MediaSourceCount'] as num?)?.toInt(),
-      sourceFolderCount: (j['SourceFolderCount'] as num?)?.toInt(),
+      parentIndexNumber: asJsonInt(j['ParentIndexNumber']) ?? asJsonInt(j['SeasonNumber']),
+      indexNumber: asJsonInt(j['IndexNumber']),
+      indexNumberEnd: asJsonInt(j['IndexNumberEnd']),
+      childCount: asJsonInt(j['ChildCount']),
+      recursiveItemCount: asJsonInt(j['RecursiveItemCount']),
+      mediaSourceCount: asJsonInt(j['MediaSourceCount']),
+      sourceFolderCount: asJsonInt(j['SourceFolderCount']),
       played: userData['Played'] == true,
-      playedPercentage: (userData['PlayedPercentage'] as num?)?.toDouble(),
-      playbackPositionTicks: (userData['PlaybackPositionTicks'] as num?)?.toInt() ?? 0,
-      unplayedItemCount: (userData['UnplayedItemCount'] as num?)?.toInt(),
+      playedPercentage: asJsonDouble(userData['PlayedPercentage']),
+      playbackPositionTicks: asJsonInt(userData['PlaybackPositionTicks']) ?? 0,
+      unplayedItemCount: asJsonInt(userData['UnplayedItemCount']),
       isFavorite: userData['IsFavorite'] == true,
       primaryImageTag: imageTags['Primary']?.toString(),
       thumbImageTag: imageTags['Thumb']?.toString(),
@@ -1407,9 +1443,9 @@ class MediaItemModel {
       parentLogoImageTag: j['ParentLogoImageTag']?.toString(),
       parentBackdropItemId: j['ParentBackdropItemId']?.toString(),
       parentBackdropImageTag: parentBackdrops.isNotEmpty ? parentBackdrops.first.toString() : null,
-      genres: ((j['Genres'] as List<dynamic>?) ?? const []).map((e) => e.toString()).toList(),
-      tags: ((j['Tags'] as List<dynamic>?) ?? const []).map((e) => e.toString()).toList(),
-      studios: ((j['Studios'] as List<dynamic>?) ?? const [])
+      genres: asJsonList(j['Genres']).map((e) => e.toString()).toList(),
+      tags: asJsonList(j['Tags']).map((e) => e.toString()).toList(),
+      studios: asJsonList(j['Studios'])
           .map((e) => e is Map ? (e['Name']?.toString() ?? '') : e.toString())
           .where((s) => s.isNotEmpty)
           .toList(),
@@ -1664,6 +1700,7 @@ class PreparedPlaybackModel {
     required this.itemId,
     required this.mediaSourceId,
     required this.playSessionId,
+    this.streamId,
     required this.proxyUrl,
     required this.usesStreamTicket,
     required this.hdrExplanation,
@@ -1681,6 +1718,7 @@ class PreparedPlaybackModel {
   final String itemId;
   final String mediaSourceId;
   final String playSessionId;
+  final String? streamId;
   final String proxyUrl;
   final bool usesStreamTicket;
   final String hdrExplanation;
@@ -1695,9 +1733,9 @@ class PreparedPlaybackModel {
   final String? spatialAudioLabel;
 
   factory PreparedPlaybackModel.fromJson(Map<String, dynamic> j) {
-    final hdr = (j['hdr_decision'] as Map<String, dynamic>?) ?? const {};
-    final audio = (j['audio_decision'] as Map<String, dynamic>?) ?? const {};
-    final inspected = j['inspected'] as Map<String, dynamic>?;
+    final hdr = asJsonMap(j['hdr_decision']);
+    final audio = asJsonMap(j['audio_decision']);
+    final inspected = asJsonMapOrNull(j['inspected']);
     final mpvOpts = <String, String>{};
     if (j['mpv_options'] is List) {
       for (final pair in (j['mpv_options'] as List)) {
@@ -1707,11 +1745,13 @@ class PreparedPlaybackModel {
       }
     }
     String? dvLabel;
-    if (inspected != null && inspected['dolby_vision'] is Map<String, dynamic>) {
-      final dv = inspected['dolby_vision'] as Map<String, dynamic>;
-      final p = dv['dv_profile'];
-      final c = dv['bl_signal_compatibility_id'];
-      dvLabel = c != null && c != 0 ? 'Dolby Vision P$p.$c' : 'Dolby Vision P$p';
+    if (inspected != null) {
+      final dv = asJsonMapOrNull(inspected['dolby_vision']);
+      if (dv != null) {
+        final p = dv['dv_profile'];
+        final c = dv['bl_signal_compatibility_id'];
+        dvLabel = c != null && c != 0 ? 'Dolby Vision P$p.$c' : 'Dolby Vision P$p';
+      }
     }
     String? spLabel;
     if (inspected != null && inspected['spatial_audio'] != null) {
@@ -1723,25 +1763,30 @@ class PreparedPlaybackModel {
       itemId: (j['item_id'] ?? '').toString(),
       mediaSourceId: (j['media_source_id'] ?? '').toString(),
       playSessionId: (j['play_session_id'] ?? '').toString(),
+      streamId: j['stream_id']?.toString(),
       proxyUrl: (j['proxy_url'] ?? '').toString(),
       usesStreamTicket: j['uses_stream_ticket'] == true,
       hdrExplanation: (hdr['explanation'] ?? 'Direct Play').toString(),
       audioSummary: (audio['summary'] ?? 'Auto Audio').toString(),
       backend: (hdr['backend'] ?? 'libmpv_gpu_next').toString(),
       mpvOptions: mpvOpts,
-      externalSubtitles: ((j['external_subtitles'] as List<dynamic>?) ?? const [])
+      externalSubtitles: asJsonList(j['external_subtitles'])
+          .map(asJsonMapOrNull)
           .whereType<Map<String, dynamic>>()
           .toList(),
       textSubtitles: (() {
-        final raw = ((j['text_subtitles'] as List<dynamic>?) ?? const [])
+        final raw = asJsonList(j['text_subtitles'])
+            .map(asJsonMapOrNull)
             .whereType<Map<String, dynamic>>()
             .toList();
         if (raw.isNotEmpty) return raw;
-        return ((j['external_subtitles'] as List<dynamic>?) ?? const [])
+        return asJsonList(j['external_subtitles'])
+            .map(asJsonMapOrNull)
             .whereType<Map<String, dynamic>>()
             .toList();
       })(),
-      allSources: ((j['all_sources'] as List<dynamic>?) ?? const [])
+      allSources: asJsonList(j['all_sources'])
+          .map(asJsonMapOrNull)
           .whereType<Map<String, dynamic>>()
           .map(MediaSourceModel.fromJson)
           .toList(),

@@ -16,9 +16,18 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        window.statusBarColor = Color.TRANSPARENT
-        window.navigationBarColor = Color.TRANSPARENT
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        if (Build.VERSION.SDK_INT < 35) {
+            @Suppress("DEPRECATION")
+            window.statusBarColor = Color.TRANSPARENT
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = Color.TRANSPARENT
+        }
+        if (Build.VERSION.SDK_INT >= 35) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             window.attributes = window.attributes.apply {
                 layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -29,6 +38,11 @@ class MainActivity : FlutterActivity() {
             window.isStatusBarContrastEnforced = false
         }
         VedroHardwarePlugin.applyPreferredFrameRate(this, 0f)
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        hardwarePlugin?.onUserLeaveHint()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {

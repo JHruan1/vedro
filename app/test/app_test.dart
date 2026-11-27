@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -3198,5 +3199,231 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
     }
     expect(find.textContaining('尝试次数过多'), findsOneWidget);
+  });
+
+  testWidgets(
+      'v1.0.0: Salted PIN hashing, PinLockoutController, trusted release URLs, SemVer 2.0, VedroSkin equality, slider boundary D-Pad release, 0% subtitle bg & config backup',
+      (tester) async {
+    // 1. VedroSkin value equality & hashCode (critical for ThemeData caching)
+    final skinA = const VedroPreferences(skinId: 'immersive_cinema', accentId: 'blue').activeSkin;
+    final skinB = const VedroPreferences(skinId: 'immersive_cinema', accentId: 'blue').activeSkin;
+    final skinC = const VedroPreferences(skinId: 'immersive_cinema', accentId: 'emerald').activeSkin;
+    final skinLight = const VedroPreferences(skinId: 'immersive_cinema', themeMode: 'light').activeSkin;
+    expect(skinA, equals(skinB));
+    expect(skinA.hashCode, equals(skinB.hashCode));
+    expect(skinA, isNot(equals(skinC)));
+    expect(skinA, isNot(equals(skinLight)));
+
+    // 2. Salted v2 PIN hashing + legacy v1 compatibility + PinLockoutController
+    final salted1 = createSaltedPasscodeHash('2468');
+    final salted2 = createSaltedPasscodeHash('2468');
+    expect(salted1, startsWith('vedro.lock.v2:'));
+    expect(salted2, startsWith('vedro.lock.v2:'));
+    expect(salted1, isNot(equals(salted2)));
+    expect(verifyPasscode('2468', salted1), isTrue);
+    expect(verifyPasscode('2468', salted2), isTrue);
+    expect(verifyPasscode('0000', salted1), isFalse);
+    // Legacy v1 hashes still verify seamlessly
+    final legacyHash = hashPasscode('1234');
+    expect(verifyPasscode('1234', legacyHash), isTrue);
+    expect(verifyPasscode('4321', legacyHash), isFalse);
+
+    final pinApp = VedroAppState(_MockVedroCore());
+    addTearDown(pinApp.dispose);
+    final lockout = PinLockoutController.forState(pinApp);
+    for (var i = 0; i < 4; i++) {
+      final res = lockout.verify('9999', salted1);
+      expect(res.ok, isFalse);
+      expect(res.lockoutSecs, equals(0));
+    }
+    final fifth = lockout.verify('9999', salted1);
+    expect(fifth.ok, isFalse);
+    expect(fifth.lockoutSecs, greaterThan(0));
+    expect(lockout.remainingLockoutSecs, greaterThan(0));
+    // Even correct PIN is rejected while locked out
+    expect(lockout.verify('2468', salted1).ok, isFalse);
+    lockout.reset();
+    expect(lockout.remainingLockoutSecs, equals(0));
+    expect(lockout.verify('2468', salted1).ok, isTrue);
+
+    // 3. Trusted release URL validation & SemVer 2.0 prerelease comparison
+    expect(
+      isTrustedReleaseUrl('https://github.com/JHruan1/vedro/releases/tag/v1.0.0'),
+      isTrue,
+    );
+    expect(
+      isTrustedReleaseUrl(
+          'https://github.com/JHruan1/vedro/releases/download/v1.0.0/Vedro-1.0.0-arm64-v8a.apk'),
+      isTrue,
+    );
+    expect(
+      isTrustedReleaseUrl('https://objects.githubusercontent.com/github-production-release-asset/foo'),
+      isTrue,
+    );
+    expect(isTrustedReleaseUrl('http://github.com/JHruan1/vedro/releases/tag/v1.0.0'), isFalse);
+    expect(isTrustedReleaseUrl('https://github.com/evil/vedro/releases/tag/v1.0.0'), isFalse);
+    expect(
+      isTrustedReleaseUrl('https://user:pass@github.com/JHruan1/vedro/releases/tag/v1.0.0'),
+      isFalse,
+    );
+    expect(
+      isTrustedReleaseUrl('https://github.com:8443/JHruan1/vedro/releases/tag/v1.0.0'),
+      isFalse,
+    );
+    expect(isTrustedReleaseUrl('javascript:alert(1)'), isFalse);
+
+    expect(compareSemver('1.0.0', '1.0.0-rc.1'), greaterThan(0));
+    expect(compareSemver('1.0.0-rc.1', '1.0.0'), lessThan(0));
+    expect(compareSemver('1.0.0-beta.10', '1.0.0-beta.2'), greaterThan(0));
+    expect(compareSemver('1.0.0-alpha.1', '1.0.0-alpha.beta'), lessThan(0));
+    expect(compareSemver('v1.0.0+30', '1.0.0'), equals(0));
+
+    // 4. Media stream URL validator
+    expect(NativePlaybackChannel.isAllowedMediaUrl('https://cdn.example.com/movie.mkv'), isTrue);
+    expect(NativePlaybackChannel.isAllowedMediaUrl('rtsp://192.168.1.5:554/live'), isTrue);
+    expect(NativePlaybackChannel.isAllowedMediaUrl('rtmp://live.example.com/app/stream'), isTrue);
+    expect(NativePlaybackChannel.isAllowedMediaUrl('file:///etc/passwd'), isFalse);
+    expect(NativePlaybackChannel.isAllowedMediaUrl('javascript:alert(1)'), isFalse);
+    expect(NativePlaybackChannel.isAllowedMediaUrl('smb://nas/video.mkv'), isFalse);
+    expect(NativePlaybackChannel.isAllowedMediaUrl('https://example.com/bad url'), isFalse);
+
+    // 5. VedroErrorFormatter Chinese humanization
+    expect(VedroErrorFormatter.friendly('HTTP 401 Unauthorized'), contains('用户名或密码'));
+    expect(VedroErrorFormatter.format('HTTP 403 Forbidden'), contains('403'));
+    expect(VedroErrorFormatter.format('HTTP 404 Not Found'), contains('404'));
+    expect(VedroErrorFormatter.format('HTTP 429 Too Many Requests'), contains('429'));
+    expect(VedroErrorFormatter.format('TLS certificate unknownIssuer'), contains('证书'));
+    expect(VedroErrorFormatter.format('failed to lookup address: nodename'), contains('域名解析'));
+    expect(VedroErrorFormatter.format('Connection refused (os error 111)'), contains('连接被拒绝'));
+    expect(VedroErrorFormatter.format('request timed out'), contains('超时'));
+    expect(VedroErrorFormatter.format('<!DOCTYPE html><html>502</html>'), contains('非预期页面'));
+
+    // 6. History URL sanitization & Config backup/import/reset security invariants
+    final sanitized = VedroAppState.sanitizeUrlForHistory(
+      'https://user:secret@media.example.com/stream.m3u8?api_key=abc&token=xyz&quality=4k',
+    );
+    expect(sanitized, isNot(contains('api_key')));
+    expect(sanitized, isNot(contains('token')));
+    expect(sanitized, isNot(contains('secret')));
+    expect(sanitized, contains('quality=4k'));
+
+    final cfgApp = VedroAppState(_MockVedroCore());
+    addTearDown(cfgApp.dispose);
+    await cfgApp.updatePrefs(
+      const VedroPreferences().copyWith(
+        skinId: 'liquid_glass',
+        passcodeEnabled: true,
+        passcodeHash: salted1,
+        aiApiKey: 'sk-secret-ai-key',
+        asrApiKey: 'sk-secret-asr-key',
+        maxVolumePercent: 250,
+      ),
+      immediate: true,
+    );
+    final exportedStr = cfgApp.exportConfigJson();
+    final exportedMap = jsonDecode(exportedStr) as Map<String, dynamic>;
+    final exportedPrefs = exportedMap['preferences'] as Map<String, dynamic>;
+    expect(exportedPrefs.containsKey('passcode_hash'), isFalse);
+    expect(exportedPrefs.containsKey('passcode_enabled'), isFalse);
+    expect(exportedPrefs.containsKey('ai_api_key'), isFalse);
+    expect(exportedPrefs.containsKey('asr_api_key'), isFalse);
+    expect(exportedPrefs['max_volume_percent'], equals(250));
+
+    // Resetting defaults preserves passcode lock
+    await cfgApp.resetPreferencesToDefaults();
+    expect(cfgApp.prefs.skinId, equals('immersive_cinema'));
+    expect(cfgApp.prefs.passcodeEnabled, isTrue);
+    expect(cfgApp.prefs.passcodeHash, equals(salted1));
+
+    // Importing backup restores non-secret prefs while keeping local passcode & keys intact
+    await cfgApp.updatePrefs(
+      cfgApp.prefs.copyWith(aiApiKey: 'sk-local-keep'),
+      immediate: true,
+    );
+    await cfgApp.importConfigJson(exportedStr);
+    expect(cfgApp.prefs.skinId, equals('liquid_glass'));
+    expect(cfgApp.prefs.maxVolumePercent, equals(250));
+    expect(cfgApp.prefs.passcodeHash, equals(salted1));
+    expect(cfgApp.prefs.aiApiKey, equals('sk-local-keep'));
+
+    // 7. AiBilingualSubtitleOverlay honors 0% bgOpacity (no dark pill) & live displayMode switch
+    AiSubtitleTranslatorController.resetGlobalRateLimitState();
+    final subApp = VedroAppState(_MockVedroCore());
+    addTearDown(subApp.dispose);
+    final subCtrl = AiSubtitleTranslatorController(appState: subApp, mediaTitle: 'ZeroBg');
+    addTearDown(subCtrl.dispose);
+    subCtrl.activeCueNotifier.value = const BilingualCueSnapshot(
+      original: 'Original Line',
+      translated: '译文行',
+      displayMode: 'translated_only',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Stack(
+            children: [
+              AiBilingualSubtitleOverlay(
+                controller: subCtrl,
+                subScale: 1.0,
+                subPos: 96,
+                colorHex: '#FFFFFF',
+                outlineWidth: 2.0,
+                bgOpacity: 0.0,
+                fontFamily: 'Noto Sans CJK SC',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    final subBox = tester.widget<Container>(find.byKey(const ValueKey('ai-bilingual-subtitle-box')));
+    expect(subBox.decoration, isNull);
+    expect(find.text('译文行'), findsOneWidget);
+    expect(find.text('Original Line'), findsNothing);
+
+    // 8. VedroPrecisionSlider releases D-Pad Left at min so TV focus escapes cleanly to left sidebar
+    final leftBtnFocus = FocusNode();
+    addTearDown(leftBtnFocus.dispose);
+    var sliderVal = 0.0;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(VedroSkin.obsidian),
+        home: Scaffold(
+          body: Row(
+            children: [
+              PressableScale(
+                focusNode: leftBtnFocus,
+                onTap: () {},
+                child: const SizedBox(width: 100, height: 48, child: Text('左侧栏')),
+              ),
+              Expanded(
+                child: StatefulBuilder(
+                  builder: (_, setLocal) => VedroPrecisionSlider(
+                    label: '亮度',
+                    value: sliderVal,
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.25,
+                    valueText: '${(sliderVal * 100).round()}%',
+                    onChanged: (v) => setLocal(() => sliderVal = v),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final trackFinder = find.descendant(
+      of: find.byType(VedroPrecisionSlider),
+      matching: find.byType(LayoutBuilder),
+    );
+    Focus.of(tester.element(trackFinder.first)).requestFocus();
+    await tester.pump();
+    // At min (0.0), arrowLeft is ignored by the slider and focus escapes to the left sidebar button!
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+    await tester.pump();
+    expect(leftBtnFocus.hasFocus, isTrue);
   });
 }

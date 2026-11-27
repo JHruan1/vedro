@@ -83,6 +83,88 @@ struct ActivePlaybackSession {
 
 const MAX_SUBTITLE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DANMAKU_BYTES: usize = 16 * 1024 * 1024;
+const MAX_AI_JSON_BYTES: usize = 4 * 1024 * 1024;
+
+/// Process-wide respectful rate limiter for shared public Bilibili APIs (`*.bilibili.com`).
+/// Guarantees strictly 1 concurrent request, >= 2400ms inter-completion pacing, and shared
+/// exponential cooldown on 429/5xx across ALL translation / model-list / test entrypoints.
+struct BilibiliLimiterState {
+    last_completed_at: Option<std::time::Instant>,
+    cooldown_until: Option<std::time::Instant>,
+    consecutive_errors: u32,
+}
+
+struct BilibiliRateLimiter {
+    sem: tokio::sync::Semaphore,
+    state: Mutex<BilibiliLimiterState>,
+}
+
+static BILIBILI_LIMITER: std::sync::OnceLock<BilibiliRateLimiter> = std::sync::OnceLock::new();
+
+fn bilibili_limiter() -> &'static BilibiliRateLimiter {
+    BILIBILI_LIMITER.get_or_init(|| BilibiliRateLimiter {
+        sem: tokio::sync::Semaphore::new(1),
+        state: Mutex::new(BilibiliLimiterState {
+            last_completed_at: None,
+            cooldown_until: None,
+            consecutive_errors: 0,
+        }),
+    })
+}
+
+impl BilibiliRateLimiter {
+    async fn acquire_slot(&self) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
+        let permit = self
+            .sem
+            .acquire()
+            .await
+            .map_err(|_| "限流器已关闭".to_string())?;
+        let wait_dur = {
+            let st = self.state.lock();
+            let now = std::time::Instant::now();
+            let mut wait = Duration::ZERO;
+            if let Some(until) = st.cooldown_until {
+                if until > now {
+                    wait = wait.max(until.duration_since(now));
+                }
+            }
+            if let Some(last) = st.last_completed_at {
+                let elapsed = now.duration_since(last);
+                let min_gap = Duration::from_millis(2400);
+                if elapsed < min_gap {
+                    wait = wait.max(min_gap - elapsed);
+                }
+            }
+            wait
+        };
+        if !wait_dur.is_zero() {
+            tokio::time::sleep(wait_dur).await;
+        }
+        Ok(permit)
+    }
+
+    fn record_success(&self) {
+        let mut st = self.state.lock();
+        st.last_completed_at = Some(std::time::Instant::now());
+        st.cooldown_until = None;
+        st.consecutive_errors = 0;
+    }
+
+    fn record_failure(&self, is_rate_or_server_err: bool) {
+        let mut st = self.state.lock();
+        let now = std::time::Instant::now();
+        st.last_completed_at = Some(now);
+        if is_rate_or_server_err {
+            st.consecutive_errors = st.consecutive_errors.saturating_add(1);
+            let backoff_secs = match st.consecutive_errors {
+                1 => 6,
+                2 => 15,
+                _ => 45,
+            };
+            st.cooldown_until = Some(now + Duration::from_secs(backoff_secs));
+        }
+    }
+}
 
 /// Core runtime backing both the C-ABI FFI library (`libvedro_ffi`) and native Rust hosts.
 /// Field order & explicit `Drop` ensure playback/ws/proxy stop before the Tokio runtime shuts down.
@@ -91,6 +173,10 @@ pub struct VedroRuntime {
     ws: Mutex<Option<WebSocketSession>>,
     active_session: Mutex<Option<ActivePlaybackSession>>,
     client: Mutex<Option<EmbyClient>>,
+    active_server_id: Mutex<Option<String>>,
+    session_epoch: std::sync::atomic::AtomicU64,
+    playback_epoch: std::sync::atomic::AtomicU64,
+    speedtest_epoch: std::sync::atomic::AtomicU64,
     proxy: Arc<StreamProxy>,
     store: Arc<VedroStore>,
     playback_config: Mutex<PlaybackConfig>,
@@ -113,10 +199,11 @@ impl Drop for VedroRuntime {
                 let _ = rt.block_on(tokio::time::timeout(Duration::from_millis(500), ws.stop()));
             }
         }
-        // 3. Unregister active stream
+        // 3. Unregister active stream and explicitly signal proxy listener shutdown
         if let Some(sess) = self.active_session.lock().take() {
             self.proxy.unregister_stream(&sess.stream_id);
         }
+        self.proxy.shutdown();
         // 4. Shut down Tokio runtime with bounded timeout so shutdown never hangs
         if let Some(rt) = self.rt.take() {
             rt.shutdown_timeout(Duration::from_secs(2));
@@ -132,12 +219,21 @@ fn validate_http_url(raw: &str) -> Result<url::Url, String> {
     Ok(parsed)
 }
 
+fn is_safe_path_token(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 fn is_bilibili_index_url(base_url: &str) -> bool {
     url::Url::parse(base_url.trim())
         .ok()
         .and_then(|u| {
-            u.host_str()
-                .map(|h| h.eq_ignore_ascii_case("index-translate.bilibili.com"))
+            u.host_str().map(|h| {
+                let lower = h.to_ascii_lowercase();
+                lower == "index-translate.bilibili.com" || lower.ends_with(".bilibili.com")
+            })
         })
         .unwrap_or(false)
 }
@@ -161,16 +257,17 @@ async fn read_reqwest_body_capped(
 ) -> Result<Vec<u8>, String> {
     use futures_util::StreamExt;
     if let Some(cl) = resp.content_length() {
-        if cl as usize > max_bytes {
+        if usize::try_from(cl).unwrap_or(usize::MAX) > max_bytes {
             return Err(format!(
                 "响应体积超过上限 ({} MB)",
-                max_bytes / (1024 * 1024)
+                (max_bytes / (1024 * 1024)).max(1)
             ));
         }
     }
     let mut buf = Vec::with_capacity(
         resp.content_length()
-            .map(|n| (n as usize).min(max_bytes))
+            .and_then(|n| usize::try_from(n).ok())
+            .map(|n| n.min(max_bytes))
             .unwrap_or(64 * 1024),
     );
     let mut stream = resp.bytes_stream();
@@ -179,7 +276,7 @@ async fn read_reqwest_body_capped(
         if buf.len().saturating_add(chunk.len()) > max_bytes {
             return Err(format!(
                 "响应体积超过上限 ({} MB)",
-                max_bytes / (1024 * 1024)
+                (max_bytes / (1024 * 1024)).max(1)
             ));
         }
         buf.extend_from_slice(&chunk);
@@ -218,13 +315,27 @@ impl VedroRuntime {
         let asr_temp_dir = db_dir
             .as_ref()
             .map(|d| d.join("asr_tmp"))
-            .unwrap_or_else(|| std::env::temp_dir().join("vedro_asr_tmp"));
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("vedro_asr_{}", std::process::id()))
+            });
         let _ = std::fs::create_dir_all(&asr_temp_dir);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&asr_temp_dir, std::fs::Permissions::from_mode(0o700));
         }
+        // Sweep orphaned ASR temp WAV files from previous crashes on startup
+        let startup_asr_dir = asr_temp_dir.clone();
+        rt.spawn(async move {
+            if let Ok(mut rd) = tokio::fs::read_dir(&startup_asr_dir).await {
+                while let Ok(Some(ent)) = rd.next_entry().await {
+                    let name = ent.file_name().to_string_lossy().to_string();
+                    if name.starts_with("vedro_asr_") && name.ends_with(".wav") {
+                        let _ = tokio::fs::remove_file(ent.path()).await;
+                    }
+                }
+            }
+        });
 
         let http_default = reqwest::Client::builder()
             .pool_max_idle_per_host(8)
@@ -318,6 +429,10 @@ impl VedroRuntime {
             ws: Mutex::new(None),
             active_session: Mutex::new(None),
             client: Mutex::new(None),
+            active_server_id: Mutex::new(None),
+            session_epoch: std::sync::atomic::AtomicU64::new(0),
+            playback_epoch: std::sync::atomic::AtomicU64::new(0),
+            speedtest_epoch: std::sync::atomic::AtomicU64::new(0),
             proxy,
             store,
             playback_config: Mutex::new(saved_cfg),
@@ -397,19 +512,31 @@ impl VedroRuntime {
 
     /// Batch-enrich an entire episode list with ONE single SQLite prefix query (eliminates N+1 up to 5000 queries!).
     fn enrich_items_batch_with_learned_tracks(&self, items: &mut [BaseItemDto]) {
-        let needs_any = items.iter().any(|it| {
-            !it.id.is_empty()
-                && it.media_sources.iter().any(|ms| {
-                    !ms.media_streams.iter().any(|s| {
-                        s.stream_type.eq_ignore_ascii_case("Audio")
-                            || s.stream_type.eq_ignore_ascii_case("Video")
-                    })
-                })
-        });
-        if !needs_any {
+        let mut wanted_keys: Vec<String> = Vec::new();
+        for item in items.iter() {
+            if item.id.is_empty() || item.media_sources.is_empty() {
+                continue;
+            }
+            for ms in &item.media_sources {
+                let has_av = ms.media_streams.iter().any(|s| {
+                    s.stream_type.eq_ignore_ascii_case("Audio")
+                        || s.stream_type.eq_ignore_ascii_case("Video")
+                });
+                if has_av {
+                    continue;
+                }
+                let src_id = if ms.id.is_empty() {
+                    "default"
+                } else {
+                    ms.id.as_str()
+                };
+                wanted_keys.push(format!("learned_streams_v1:{}:{}", item.id, src_id));
+            }
+        }
+        if wanted_keys.is_empty() {
             return;
         }
-        let Ok(all_learned) = self.store.get_settings_by_prefix("learned_streams_v1:") else {
+        let Ok(all_learned) = self.store.get_settings_by_keys(&wanted_keys) else {
             return;
         };
         if all_learned.is_empty() {
@@ -442,17 +569,22 @@ impl VedroRuntime {
         }
     }
 
-    fn start_websocket(&self, client: EmbyClient) {
+    fn start_websocket(&self, client: EmbyClient, expected_epoch: u64) {
         let Some(ref rt) = self.rt else {
             return;
         };
-        if let Some(mut old) = self.ws.lock().take() {
+        let mut ws_guard = self.ws.lock();
+        if self.session_epoch.load(std::sync::atomic::Ordering::SeqCst) != expected_epoch {
+            return;
+        }
+        if let Some(mut old) = ws_guard.take() {
             rt.spawn(async move {
                 old.stop().await;
             });
         }
         let (session, mut rx) = WebSocketSession::spawn(client);
-        *self.ws.lock() = Some(session);
+        *ws_guard = Some(session);
+        drop(ws_guard);
         let events = Arc::clone(&self.events);
         rt.spawn(async move {
             while let Some(ev) = rx.recv().await {
@@ -567,12 +699,14 @@ impl VedroRuntime {
                 let list = self.store.list_servers().map_err(|e| e.to_string())?;
                 let id_snap = self.identity.lock().clone();
                 for srv in &list {
+                    let route_url = srv
+                        .active_route()
+                        .map(|r| r.url.clone())
+                        .filter(|u| !u.is_empty())
+                        .unwrap_or_else(|| srv.url.clone());
                     let hdrs = id_snap.build_headers(srv.access_token.as_deref());
-                    self.proxy.register_server_image_upstream(
-                        srv.id.clone(),
-                        srv.url.clone(),
-                        hdrs,
-                    );
+                    self.proxy
+                        .register_server_image_upstream(srv.id.clone(), route_url, hdrs);
                 }
                 Ok(serde_json::to_value(list).unwrap())
             }
@@ -837,6 +971,10 @@ impl VedroRuntime {
                     .proxy
                     .configure_transport(eff_route_proxy.as_deref(), route.accept_invalid_certs);
                 let identity = self.identity.lock().clone();
+                let epoch = self
+                    .session_epoch
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
                 let client = EmbyClient::with_options(
                     &route.url,
                     identity,
@@ -849,6 +987,10 @@ impl VedroRuntime {
                 let (info, caps) = client.probe_server().await.map_err(|e| e.to_string())?;
                 client.set_credentials(token, user_id);
                 let user = client.current_user().await.map_err(|e| e.to_string())?;
+
+                if self.session_epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
+                    return Err("切换线路已被新的会话操作取代".to_string());
+                }
 
                 profile.url = route.url.clone();
                 profile.active_route_id = Some(route.id.clone());
@@ -864,8 +1006,9 @@ impl VedroRuntime {
                     client.base_url().to_string(),
                     hdrs,
                 );
+                *self.active_server_id.lock() = Some(profile.id.clone());
                 *self.client.lock() = Some(client.clone());
-                self.start_websocket(client);
+                self.start_websocket(client, epoch);
                 Ok(json!({
                     "info": info,
                     "capabilities": caps,
@@ -876,6 +1019,10 @@ impl VedroRuntime {
             }
 
             "connect_server" => {
+                let epoch = self
+                    .session_epoch
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
                 let url = str_param(&params, "url")?;
                 if let Some(dev_name) = params.get("device_name").and_then(Value::as_str) {
                     self.identity.lock().device_name = dev_name.to_string();
@@ -905,8 +1052,13 @@ impl VedroRuntime {
                 )
                 .map_err(|e| e.to_string())?;
                 let (info, caps) = client.probe_server().await.map_err(|e| e.to_string())?;
+                if self.session_epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
+                    return Err("连接操作已被新的会话操作取代".to_string());
+                }
                 self.proxy
                     .set_image_upstream(client.base_url().to_string(), client.auth_headers());
+                *self.active_server_id.lock() =
+                    (!caps.server_id.is_empty()).then(|| caps.server_id.clone());
                 *self.client.lock() = Some(client);
                 Ok(json!({
                     "info": info,
@@ -993,7 +1145,9 @@ impl VedroRuntime {
                 self.proxy
                     .register_server_image_upstream(server_id.clone(), current_url, hdrs);
                 let _ = self.store.set_setting("last_active_server_id", &server_id);
-                self.start_websocket(client.clone());
+                *self.active_server_id.lock() = Some(server_id);
+                let cur_epoch = self.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
+                self.start_websocket(client.clone(), cur_epoch);
                 Ok(json!({
                     "auth": auth,
                     "capabilities": caps,
@@ -1001,7 +1155,119 @@ impl VedroRuntime {
                 }))
             }
 
+            "quick_connect_initiate" => {
+                let client = self.require_client()?;
+                client
+                    .quick_connect_initiate()
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+
+            "quick_connect_check" => {
+                let client = self.require_client()?;
+                let secret = str_param(&params, "secret")?;
+                let state = client
+                    .quick_connect_state(&secret)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let authed = state
+                    .get("Authenticated")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if !authed {
+                    return Ok(json!({
+                        "authenticated": false,
+                        "state": state,
+                    }));
+                }
+                let auth = client
+                    .authenticate_with_quick_connect(&secret)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let caps = client.capabilities();
+                let server_id = if !caps.server_id.is_empty() {
+                    caps.server_id.clone()
+                } else {
+                    auth.server_id
+                        .clone()
+                        .unwrap_or_else(|| client.base_url().to_string())
+                };
+                let is_admin = auth
+                    .user
+                    .policy
+                    .as_ref()
+                    .map(|p| p.is_administrator)
+                    .unwrap_or(false);
+                let current_url = client.base_url().to_string();
+                let existing = self.store.get_server(&server_id).ok().flatten();
+                let mut routes = existing
+                    .as_ref()
+                    .map(|e| e.routes.clone())
+                    .unwrap_or_default();
+                let active_route_id = if let Some(found) = routes
+                    .iter()
+                    .find(|r| r.url.trim_end_matches('/') == current_url.trim_end_matches('/'))
+                {
+                    Some(found.id.clone())
+                } else {
+                    let rid = if routes.is_empty() {
+                        "default".to_string()
+                    } else {
+                        uuid::Uuid::new_v4().simple().to_string()
+                    };
+                    let transport = client.transport_options();
+                    routes.push(ServerRoute {
+                        id: rid.clone(),
+                        name: if routes.is_empty() {
+                            "默认线路".to_string()
+                        } else {
+                            format!("线路 {}", routes.len() + 1)
+                        },
+                        url: current_url.clone(),
+                        proxy_url: transport.proxy_url.clone(),
+                        accept_invalid_certs: transport.accept_invalid_certs,
+                    });
+                    Some(rid)
+                };
+                let _ = self.store.upsert_server(&ServerProfile {
+                    id: server_id.clone(),
+                    name: if caps.server_name.is_empty() {
+                        current_url.clone()
+                    } else {
+                        caps.server_name.clone()
+                    },
+                    url: current_url.clone(),
+                    dialect: caps.dialect.as_str().to_string(),
+                    user_id: Some(auth.user.id.clone()),
+                    username: Some(auth.user.name.clone()),
+                    access_token: Some(auth.access_token.clone()),
+                    is_admin,
+                    last_connected_at: chrono::Utc::now().timestamp(),
+                    routes,
+                    active_route_id,
+                });
+                let hdrs = client.auth_headers();
+                self.proxy
+                    .set_image_upstream(current_url.clone(), hdrs.clone());
+                self.proxy
+                    .register_server_image_upstream(server_id.clone(), current_url, hdrs);
+                let _ = self.store.set_setting("last_active_server_id", &server_id);
+                *self.active_server_id.lock() = Some(server_id);
+                let cur_epoch = self.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
+                self.start_websocket(client.clone(), cur_epoch);
+                Ok(json!({
+                    "authenticated": true,
+                    "auth": auth,
+                    "capabilities": caps,
+                    "proxy_addr": self.proxy.listen_addr().to_string(),
+                }))
+            }
+
             "restore_session" => {
+                let epoch = self
+                    .session_epoch
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
                 let url = str_param(&params, "url")?;
                 let explicit_server_id = params
                     .get("server_id")
@@ -1042,6 +1308,10 @@ impl VedroRuntime {
                 let (info, caps) = probe_res.map_err(|e| e.to_string())?;
                 let user = user_res.map_err(|e| e.to_string())?;
 
+                if self.session_epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
+                    return Err("会话恢复已被新的切换/退出操作取代".to_string());
+                }
+
                 // Update last_connected_at & last_active_server_id so next launch remembers this exact server
                 let resolved_sid = explicit_server_id
                     .or_else(|| (!caps.server_id.is_empty()).then(|| caps.server_id.clone()));
@@ -1063,15 +1333,16 @@ impl VedroRuntime {
                 let hdrs = client.auth_headers();
                 self.proxy
                     .set_image_upstream(client.base_url().to_string(), hdrs.clone());
-                if let Some(sid) = resolved_sid {
+                if let Some(ref sid) = resolved_sid {
                     self.proxy.register_server_image_upstream(
-                        sid,
+                        sid.clone(),
                         client.base_url().to_string(),
                         hdrs,
                     );
                 }
+                *self.active_server_id.lock() = resolved_sid;
                 *self.client.lock() = Some(client.clone());
-                self.start_websocket(client);
+                self.start_websocket(client, epoch);
                 Ok(json!({
                     "info": info,
                     "capabilities": caps,
@@ -1081,6 +1352,9 @@ impl VedroRuntime {
             }
 
             "logout" => {
+                self.session_epoch
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                *self.active_server_id.lock() = None;
                 let ws_opt = self.ws.lock().take();
                 if let Some(mut ws) = ws_opt {
                     ws.stop().await;
@@ -1094,7 +1368,9 @@ impl VedroRuntime {
             }
 
             "get_home" => {
+                let epoch = self.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
                 let client = self.require_client()?;
+                let snap_sid = self.active_server_id.lock().clone();
                 let include_suggestions = params
                     .get("include_suggestions")
                     .and_then(Value::as_bool)
@@ -1175,29 +1451,112 @@ impl VedroRuntime {
                     "latest_by_library": latest_by_library,
                 });
 
-                // Persist Home SWR snapshot asynchronously so `get_home` returns to Flutter immediately!
-                let cache_sid = self
-                    .store
-                    .get_setting::<String>("last_active_server_id")
-                    .ok()
-                    .flatten()
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or_else(|| {
-                        let cid = client.capabilities().server_id;
-                        if cid.is_empty() {
-                            client.base_url().to_string()
-                        } else {
-                            cid
-                        }
+                // Persist Home SWR snapshot asynchronously ONLY if session_epoch hasn't moved
+                // (prevents writing Server A's Home payload into Server B's SWR cache!).
+                if self.session_epoch.load(std::sync::atomic::Ordering::SeqCst) == epoch {
+                    let cache_sid =
+                        snap_sid
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or_else(|| {
+                                let cid = client.capabilities().server_id;
+                                if cid.is_empty() {
+                                    client.base_url().to_string()
+                                } else {
+                                    cid
+                                }
+                            });
+                    let store_bg = Arc::clone(&self.store);
+                    let out_bg = out.clone();
+                    let key_bg = format!("home_cache_v1:{cache_sid}");
+                    tokio::task::spawn_blocking(move || {
+                        let _ = store_bg.set_setting(&key_bg, &out_bg);
                     });
-                let store_bg = Arc::clone(&self.store);
-                let out_bg = out.clone();
-                let key_bg = format!("home_cache_v1:{cache_sid}");
-                tokio::task::spawn_blocking(move || {
-                    let _ = store_bg.set_setting(&key_bg, &out_bg);
-                });
+                }
 
                 Ok(out)
+            }
+
+            "get_next_up_for_series" => {
+                let client = self.require_client()?;
+                let series_id = str_param(&params, "series_id")?;
+                let res = client
+                    .next_up(5, Some(&series_id))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "get_track_preference" => {
+                let scope_id = str_param(&params, "scope_id")?;
+                let server_id = params
+                    .get("server_id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(ToString::to_string)
+                    .or_else(|| self.active_server_id.lock().clone())
+                    .unwrap_or_else(|| "local".to_string());
+                let pref = self
+                    .store
+                    .get_track_preference(&server_id, &scope_id)
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({ "preference": pref }))
+            }
+
+            "set_track_preference" => {
+                let scope_id = str_param(&params, "scope_id")?;
+                let server_id = params
+                    .get("server_id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(ToString::to_string)
+                    .or_else(|| self.active_server_id.lock().clone())
+                    .unwrap_or_else(|| "local".to_string());
+                let existing = self
+                    .store
+                    .get_track_preference(&server_id, &scope_id)
+                    .ok()
+                    .flatten();
+                let pref = vedro_storage::TrackPreference {
+                    server_id,
+                    scope_id,
+                    audio_lang: params
+                        .get("audio_lang")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                        .or_else(|| existing.as_ref().and_then(|e| e.audio_lang.clone())),
+                    subtitle_lang: params
+                        .get("subtitle_lang")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                        .or_else(|| existing.as_ref().and_then(|e| e.subtitle_lang.clone())),
+                    subtitle_disabled: params
+                        .get("subtitle_disabled")
+                        .and_then(Value::as_bool)
+                        .unwrap_or_else(|| {
+                            existing
+                                .as_ref()
+                                .map(|e| e.subtitle_disabled)
+                                .unwrap_or(false)
+                        }),
+                    playback_speed: params
+                        .get("playback_speed")
+                        .and_then(Value::as_f64)
+                        .filter(|v| v.is_finite())
+                        .map(|v| v.clamp(0.25, 4.0))
+                        .unwrap_or_else(|| {
+                            existing.as_ref().map(|e| e.playback_speed).unwrap_or(1.0)
+                        }),
+                    skip_intro_secs: params
+                        .get("skip_intro_secs")
+                        .and_then(Value::as_i64)
+                        .unwrap_or_else(|| {
+                            existing.as_ref().map(|e| e.skip_intro_secs).unwrap_or(0)
+                        }),
+                };
+                self.store
+                    .set_track_preference(&pref)
+                    .map_err(|e| e.to_string())?;
+                Ok(json!({ "saved": true, "preference": pref }))
             }
 
             "get_items" => {
@@ -1604,7 +1963,11 @@ impl VedroRuntime {
                         if let Ok(upstream_url) = client.resolve_media_url(&dsu) {
                             let uses_ticket =
                                 vedro_protocol::auth::url_has_stream_ticket(upstream_url.as_str());
-                            let headers = if uses_ticket {
+                            let headers = if !uses_ticket
+                                && same_origin_as_client(&client, upstream_url.as_str())
+                            {
+                                client.auth_headers()
+                            } else {
                                 let mut h = reqwest::header::HeaderMap::new();
                                 if let Ok(ua) = reqwest::header::HeaderValue::from_str(
                                     &client.identity().user_agent(),
@@ -1612,8 +1975,6 @@ impl VedroRuntime {
                                     h.insert(reqwest::header::USER_AGENT, ua);
                                 }
                                 h
-                            } else {
-                                client.auth_headers()
                             };
                             let (temp_id, _) = self.proxy.register_stream(
                                 upstream_url.to_string(),
@@ -1630,13 +1991,13 @@ impl VedroRuntime {
                                     let base_idx = chosen
                                         .media_streams
                                         .iter()
-                                        .map(|s| s.index + 1)
+                                        .map(|s| s.index.saturating_add(1))
                                         .max()
                                         .unwrap_or(0)
                                         .max(0);
                                     for (offset, t) in tracks.into_iter().enumerate() {
                                         chosen.media_streams.push(vedro_protocol::MediaStream {
-                                            index: base_idx + offset as i32,
+                                            index: base_idx.saturating_add(offset as i32),
                                             stream_type: t.stream_type,
                                             codec: Some(t.codec),
                                             language: t.language,
@@ -1691,6 +2052,10 @@ impl VedroRuntime {
             }
 
             "prepare_playback" => {
+                let pb_epoch = self
+                    .playback_epoch
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
                 let client = self.require_client()?;
                 let item_id = str_param(&params, "item_id")?;
                 let media_source_id = params.get("media_source_id").and_then(Value::as_str);
@@ -1718,8 +2083,17 @@ impl VedroRuntime {
                     .cloned()
                     .ok_or_else(|| "no media source returned".to_string())?;
 
+                let is_transcode_hls = chosen.direct_stream_url.is_none()
+                    && chosen.transcoding_url.is_some()
+                    && !chosen.supports_direct_play
+                    && !chosen.supports_direct_stream;
+
                 let upstream_url = if let Some(dsu) = &chosen.direct_stream_url {
                     client.resolve_media_url(dsu).map_err(|e| e.to_string())?
+                } else if is_transcode_hls {
+                    client
+                        .resolve_media_url(chosen.transcoding_url.as_deref().unwrap_or_default())
+                        .map_err(|e| e.to_string())?
                 } else {
                     client
                         .build_fallback_video_url(
@@ -1733,34 +2107,36 @@ impl VedroRuntime {
                 let uses_ticket =
                     vedro_protocol::auth::url_has_stream_ticket(upstream_url.as_str());
 
-                // Clean up previous stream registration if any
-                if let Some(prev) = self.active_session.lock().take() {
-                    self.proxy.unregister_stream(&prev.stream_id);
-                }
+                // Security: ONLY attach Emby auth headers when upstream matches the connected
+                // server origin AND does not already carry a StreamTicket!
+                let headers =
+                    if !uses_ticket && same_origin_as_client(&client, upstream_url.as_str()) {
+                        client.auth_headers()
+                    } else {
+                        let mut h = reqwest::header::HeaderMap::new();
+                        if let Ok(ua) =
+                            reqwest::header::HeaderValue::from_str(&client.identity().user_agent())
+                        {
+                            h.insert(reqwest::header::USER_AGENT, ua);
+                        }
+                        h
+                    };
 
-                let headers = if uses_ticket {
-                    // When embygo issues a StreamTicket, media requests don't need long-lived tokens
-                    let mut h = reqwest::header::HeaderMap::new();
-                    if let Ok(ua) =
-                        reqwest::header::HeaderValue::from_str(&client.identity().user_agent())
-                    {
-                        h.insert(reqwest::header::USER_AGENT, ua);
-                    }
-                    h
+                let (stream_id, proxy_url) = if is_transcode_hls {
+                    // HLS m3u8 transcode playlists must be read directly by libmpv (not byte-chunked)
+                    (String::new(), upstream_url.to_string())
                 } else {
-                    client.auth_headers()
+                    self.proxy.register_stream(
+                        upstream_url.to_string(),
+                        headers,
+                        chosen.size,
+                        chosen.container.as_deref().map(container_mime_type),
+                    )
                 };
-
-                let (stream_id, proxy_url) = self.proxy.register_stream(
-                    upstream_url.to_string(),
-                    headers,
-                    chosen.size,
-                    chosen.container.as_deref().map(container_mime_type),
-                );
 
                 // Inspect the first 256 KiB via our proxy (reuses chunk 0 cache — 0 extra upstream requests!)
                 // to detect Dolby Vision / Atmos AND cache embedded track table naturally while playing!
-                let inspected = if inspect_header {
+                let inspected = if inspect_header && !stream_id.is_empty() {
                     self.proxy
                         .read_range(&stream_id, 0, 256 * 1024)
                         .await
@@ -1910,15 +2286,35 @@ impl VedroRuntime {
 
                 let badges = chosen.infer_badges();
 
-                *self.active_session.lock() = Some(ActivePlaybackSession {
-                    item_id: item_id.clone(),
-                    media_source_id: chosen.id.clone(),
-                    play_session_id: pb.play_session_id.clone(),
-                    stream_id: stream_id.clone(),
-                    run_time_ticks: chosen.run_time_ticks,
-                    audio_stream_index: chosen.default_audio_stream_index,
-                    subtitle_stream_index: chosen.default_subtitle_stream_index,
-                });
+                // Atomically commit active_session ONLY if playback_epoch still matches;
+                // otherwise unregister this superseded stream immediately so zero streams leak!
+                {
+                    let mut guard = self.active_session.lock();
+                    if self
+                        .playback_epoch
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        != pb_epoch
+                    {
+                        if !stream_id.is_empty() {
+                            self.proxy.unregister_stream(&stream_id);
+                        }
+                        return Err("播放准备已被新的切换/停止操作取代".to_string());
+                    }
+                    let prev = guard.replace(ActivePlaybackSession {
+                        item_id: item_id.clone(),
+                        media_source_id: chosen.id.clone(),
+                        play_session_id: pb.play_session_id.clone(),
+                        stream_id: stream_id.clone(),
+                        run_time_ticks: chosen.run_time_ticks,
+                        audio_stream_index: audio_idx.or(chosen.default_audio_stream_index),
+                        subtitle_stream_index: sub_idx.or(chosen.default_subtitle_stream_index),
+                    });
+                    if let Some(p) = prev {
+                        if !p.stream_id.is_empty() && p.stream_id != stream_id {
+                            self.proxy.unregister_stream(&p.stream_id);
+                        }
+                    }
+                }
 
                 let prepared = PreparedPlayback {
                     item_id,
@@ -2134,11 +2530,33 @@ impl VedroRuntime {
             }
 
             "player_stop" => {
-                if let Some(eng) = self.engine.lock().as_ref() {
-                    let _ = eng.stop();
+                let target_stream_id = params
+                    .get("stream_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                if target_stream_id.is_none() {
+                    self.playback_epoch
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(eng) = self.engine.lock().as_ref() {
+                        let _ = eng.stop();
+                    }
                 }
-                if let Some(active) = self.active_session.lock().take() {
-                    self.proxy.unregister_stream(&active.stream_id);
+                let mut guard = self.active_session.lock();
+                let should_take = match (guard.as_ref(), target_stream_id) {
+                    (Some(active), Some(req_sid)) => active.stream_id == req_sid,
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+                if should_take {
+                    if let Some(active) = guard.take() {
+                        if !active.stream_id.is_empty() {
+                            self.proxy.unregister_stream(&active.stream_id);
+                        }
+                    }
+                } else if let Some(req_sid) = target_stream_id {
+                    // Explicitly unregister only the caller's stream ID without touching a newer video's active_session!
+                    self.proxy.unregister_stream(req_sid);
                 }
                 Ok(json!({"stopped": true}))
             }
@@ -2155,13 +2573,22 @@ impl VedroRuntime {
             }
 
             "get_image_cache_stats" => {
-                let stats = self.proxy.image_cache_stats();
+                let proxy = Arc::clone(&self.proxy);
+                let stats = tokio::task::spawn_blocking(move || proxy.image_cache_stats())
+                    .await
+                    .map_err(|e| format!("读取图片缓存统计失败: {e}"))?;
                 Ok(serde_json::to_value(stats).unwrap())
             }
 
             "clear_image_cache" => {
-                let (removed_files, freed_bytes) = self.proxy.clear_image_cache();
-                let after = self.proxy.image_cache_stats();
+                let proxy = Arc::clone(&self.proxy);
+                let (removed_files, freed_bytes, after) = tokio::task::spawn_blocking(move || {
+                    let (r, f) = proxy.clear_image_cache();
+                    let a = proxy.image_cache_stats();
+                    (r, f, a)
+                })
+                .await
+                .map_err(|e| format!("清理图片缓存失败: {e}"))?;
                 Ok(json!({
                     "removed_files": removed_files,
                     "freed_bytes": freed_bytes,
@@ -2342,6 +2769,8 @@ impl VedroRuntime {
             }
 
             "cancel_embygo_speedtest" => {
+                self.speedtest_epoch
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 self.speedtest_cancel
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok(json!({"cancelled": true}))
@@ -2351,6 +2780,7 @@ impl VedroRuntime {
                 use futures_util::StreamExt;
                 use std::sync::atomic::Ordering;
 
+                let st_epoch = self.speedtest_epoch.fetch_add(1, Ordering::SeqCst) + 1;
                 let client = self.require_client()?;
                 self.speedtest_cancel.store(false, Ordering::SeqCst);
                 let start = client
@@ -2367,13 +2797,16 @@ impl VedroRuntime {
                     .and_then(Value::as_str)
                     .ok_or_else(|| "服务器未返回 DownloadUrl".to_string())?;
                 let ping_url = client
-                    .base_url()
-                    .join(raw_ping)
+                    .resolve_media_url(raw_ping)
                     .map_err(|e| format!("无效测速地址: {e}"))?;
                 let dl_url = client
-                    .base_url()
-                    .join(raw_dl)
+                    .resolve_media_url(raw_dl)
                     .map_err(|e| format!("无效测速下载流地址: {e}"))?;
+                if !same_origin_as_client(&client, ping_url.as_str())
+                    || !same_origin_as_client(&client, dl_url.as_str())
+                {
+                    return Err("安全拦截：测速目标与当前服务器不同源".to_string());
+                }
 
                 let route = start
                     .get("Route")
@@ -2423,7 +2856,9 @@ impl VedroRuntime {
                 let mut ping_samples_ms: Vec<f64> = Vec::new();
                 let mut client_ip: Option<String> = None;
                 for _ in 0..5 {
-                    if self.speedtest_cancel.load(Ordering::SeqCst) {
+                    if self.speedtest_cancel.load(Ordering::SeqCst)
+                        || self.speedtest_epoch.load(Ordering::SeqCst) != st_epoch
+                    {
                         return Err("测速已取消".into());
                     }
                     let t0 = std::time::Instant::now();
@@ -2436,16 +2871,20 @@ impl VedroRuntime {
                         let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
                         if resp.status().is_success() {
                             ping_samples_ms.push(elapsed);
-                            if let Ok(Ok(body)) =
-                                tokio::time::timeout(Duration::from_secs(4), resp.json::<Value>())
-                                    .await
+                            if let Ok(Ok(raw_bytes)) = tokio::time::timeout(
+                                Duration::from_secs(4),
+                                read_reqwest_body_capped(resp, 64 * 1024),
+                            )
+                            .await
                             {
-                                if let Some(ip) = body
-                                    .get("Ip")
-                                    .and_then(Value::as_str)
-                                    .filter(|s| !s.is_empty())
-                                {
-                                    client_ip = Some(ip.to_string());
+                                if let Ok(body) = serde_json::from_slice::<Value>(&raw_bytes) {
+                                    if let Some(ip) = body
+                                        .get("Ip")
+                                        .and_then(Value::as_str)
+                                        .filter(|s| !s.is_empty())
+                                    {
+                                        client_ip = Some(ip.to_string());
+                                    }
                                 }
                             }
                         }
@@ -2516,14 +2955,22 @@ impl VedroRuntime {
                 let resp = tokio::time::timeout_at(dl_deadline, http.get(dl_url).send())
                     .await
                     .map_err(|_| "测速下载流连接超时".to_string())?
-                    .map_err(|e| format!("测速连接失败: {e}"))?;
+                    .map_err(|e| {
+                        format!(
+                            "测速连接失败: {}",
+                            vedro_protocol::error::format_transport_error(&e)
+                        )
+                    })?;
                 if !resp.status().is_success() {
                     return Err(format!("测速响应异常: HTTP {}", resp.status().as_u16()));
                 }
                 let mut stream = resp.bytes_stream();
                 let transfer_epoch = std::time::Instant::now();
+                let mut last_sample_ms: u128 = 0;
                 loop {
-                    if self.speedtest_cancel.load(Ordering::SeqCst) {
+                    if self.speedtest_cancel.load(Ordering::SeqCst)
+                        || self.speedtest_epoch.load(Ordering::SeqCst) != st_epoch
+                    {
                         return Err("测速已取消".into());
                     }
                     match tokio::time::timeout_at(dl_deadline, stream.next()).await {
@@ -2534,8 +2981,16 @@ impl VedroRuntime {
                                 if first_byte_at.is_none() {
                                     first_byte_at = Some(now);
                                 }
-                                total_bytes += chunk.len() as u64;
-                                samples.push((t_ms, total_bytes));
+                                total_bytes = total_bytes.saturating_add(chunk.len() as u64);
+                                if samples.is_empty()
+                                    || (samples.len() < 2000
+                                        && t_ms.saturating_sub(last_sample_ms) >= 25)
+                                {
+                                    last_sample_ms = t_ms;
+                                    samples.push((t_ms, total_bytes));
+                                } else if let Some(last) = samples.last_mut() {
+                                    *last = (t_ms, total_bytes);
+                                }
                                 if t_ms.saturating_sub(last_emit_ms) >= 250 {
                                     last_emit_ms = t_ms;
                                     let live = compute_mbps(&samples).or_else(|| {
@@ -2865,6 +3320,11 @@ impl VedroRuntime {
                     })
                 };
 
+                let _bili_permit = if is_bilibili_index {
+                    Some(bilibili_limiter().acquire_slot().await?)
+                } else {
+                    None
+                };
                 let mut req = http
                     .post(&endpoint)
                     .header(
@@ -2872,25 +3332,49 @@ impl VedroRuntime {
                         if is_bilibili_index {
                             "Index-Translate-Client/1.0"
                         } else {
-                            "Vedro-Translate/0.3"
+                            concat!("Vedro-Translate/", env!("CARGO_PKG_VERSION"))
                         },
                     )
                     .json(&payload);
                 if !api_key.trim().is_empty() {
                     req = req.bearer_auth(api_key.trim());
                 }
-                let resp = req.send().await.map_err(|e| e.to_string())?;
+                let resp = match req.send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if is_bilibili_index {
+                            bilibili_limiter().record_failure(true);
+                        }
+                        return Err(vedro_protocol::error::format_transport_error(&e));
+                    }
+                };
                 let status = resp.status();
-                let body: Value = resp
-                    .json()
-                    .await
+                let raw_bytes = match read_reqwest_body_capped(resp, MAX_AI_JSON_BYTES).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        if is_bilibili_index {
+                            bilibili_limiter().record_failure(true);
+                        }
+                        return Err(e);
+                    }
+                };
+                let body: Value = serde_json::from_slice(&raw_bytes)
                     .map_err(|e| format!("invalid AI response ({status}): {e}"))?;
                 if !status.is_success() {
+                    if is_bilibili_index {
+                        bilibili_limiter().record_failure(
+                            status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                                || status.is_server_error(),
+                        );
+                    }
                     let msg = body
                         .pointer("/error/message")
                         .and_then(Value::as_str)
                         .unwrap_or("AI request failed");
                     return Err(format!("HTTP {}: {msg}", status.as_u16()));
+                }
+                if is_bilibili_index {
+                    bilibili_limiter().record_success();
                 }
                 let translated = body
                     .pointer("/choices/0/message/content")
@@ -2922,14 +3406,14 @@ impl VedroRuntime {
                     let meta = tokio::fs::metadata(path)
                         .await
                         .map_err(|e| format!("无法读取本地字幕文件: {e}"))?;
-                    if meta.len() as usize > MAX_SUBTITLE_BYTES {
+                    if usize::try_from(meta.len()).unwrap_or(usize::MAX) > MAX_SUBTITLE_BYTES {
                         return Err("字幕文件超过 16 MB 限制".to_string());
                     }
                     let bytes = tokio::fs::read(path)
                         .await
                         .map_err(|e| format!("无法读取本地字幕文件: {e}"))?;
                     (
-                        String::from_utf8_lossy(&bytes).to_string(),
+                        vedro_stream::decode_subtitle_bytes(&bytes),
                         if format_hint.is_empty() {
                             path
                         } else {
@@ -2979,7 +3463,7 @@ impl VedroRuntime {
                     }
                     let bytes = read_reqwest_body_capped(resp, MAX_SUBTITLE_BYTES).await?;
                     (
-                        String::from_utf8_lossy(&bytes).to_string(),
+                        vedro_stream::decode_subtitle_bytes(&bytes),
                         if format_hint.is_empty() {
                             raw_url
                         } else {
@@ -3111,6 +3595,11 @@ impl VedroRuntime {
                     })
                 };
 
+                let _bili_permit = if is_bilibili_index {
+                    Some(bilibili_limiter().acquire_slot().await?)
+                } else {
+                    None
+                };
                 let mut req = http
                     .post(&endpoint)
                     .header(
@@ -3118,25 +3607,49 @@ impl VedroRuntime {
                         if is_bilibili_index {
                             "Index-Translate-Client/1.0"
                         } else {
-                            "Vedro-Translate/0.3"
+                            concat!("Vedro-Translate/", env!("CARGO_PKG_VERSION"))
                         },
                     )
                     .json(&payload);
                 if !api_key.trim().is_empty() {
                     req = req.bearer_auth(api_key.trim());
                 }
-                let resp = req.send().await.map_err(|e| e.to_string())?;
+                let resp = match req.send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if is_bilibili_index {
+                            bilibili_limiter().record_failure(true);
+                        }
+                        return Err(vedro_protocol::error::format_transport_error(&e));
+                    }
+                };
                 let status = resp.status();
-                let body: Value = resp
-                    .json()
-                    .await
+                let raw_bytes = match read_reqwest_body_capped(resp, MAX_AI_JSON_BYTES).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        if is_bilibili_index {
+                            bilibili_limiter().record_failure(true);
+                        }
+                        return Err(e);
+                    }
+                };
+                let body: Value = serde_json::from_slice(&raw_bytes)
                     .map_err(|e| format!("invalid AI response ({status}): {e}"))?;
                 if !status.is_success() {
+                    if is_bilibili_index {
+                        bilibili_limiter().record_failure(
+                            status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                                || status.is_server_error(),
+                        );
+                    }
                     let msg = body
                         .pointer("/error/message")
                         .and_then(Value::as_str)
                         .unwrap_or("AI request failed");
                     return Err(format!("HTTP {}: {msg}", status.as_u16()));
+                }
+                if is_bilibili_index {
+                    bilibili_limiter().record_success();
                 }
                 let content = body
                     .pointer("/choices/0/message/content")
@@ -3265,20 +3778,24 @@ impl VedroRuntime {
                         reqwest::header::CONTENT_TYPE,
                         format!("multipart/form-data; boundary={boundary}"),
                     )
-                    .header(reqwest::header::USER_AGENT, "Vedro-ASR/0.3")
+                    .header(
+                        reqwest::header::USER_AGENT,
+                        concat!("Vedro-ASR/", env!("CARGO_PKG_VERSION")),
+                    )
                     .body(multipart);
                 if !asr_api_key.trim().is_empty() {
                     req = req.bearer_auth(asr_api_key.trim());
                 }
 
-                let resp = req
-                    .send()
-                    .await
-                    .map_err(|e| format!("语音识别请求失败: {e}"))?;
+                let resp = req.send().await.map_err(|e| {
+                    format!(
+                        "语音识别请求失败: {}",
+                        vedro_protocol::error::format_transport_error(&e)
+                    )
+                })?;
                 let status = resp.status();
-                let body: Value = resp
-                    .json()
-                    .await
+                let raw_bytes = read_reqwest_body_capped(resp, MAX_AI_JSON_BYTES).await?;
+                let body: Value = serde_json::from_slice(&raw_bytes)
                     .map_err(|e| format!("语音识别返回解析失败 ({status}): {e}"))?;
                 if !status.is_success() {
                     let msg = body
@@ -3441,28 +3958,36 @@ impl VedroRuntime {
                 }
 
                 let mut models: Vec<String> = Vec::new();
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 match req.send().await {
                     Ok(resp) if resp.status().is_success() => {
-                        if let Ok(body) = resp.json::<Value>().await {
-                            let arr_opt = body
-                                .get("data")
-                                .and_then(Value::as_array)
-                                .or_else(|| body.get("models").and_then(Value::as_array))
-                                .or_else(|| body.as_array());
-                            if let Some(arr) = arr_opt {
-                                for item in arr {
-                                    let id = item
-                                        .get("id")
-                                        .and_then(Value::as_str)
-                                        .or_else(|| item.get("name").and_then(Value::as_str))
-                                        .or_else(|| item.as_str())
-                                        .map(str::trim)
-                                        .filter(|s| !s.is_empty());
-                                    if let Some(m) = id {
-                                        let clean =
-                                            m.strip_prefix("models/").unwrap_or(m).to_string();
-                                        if !models.contains(&clean) {
-                                            models.push(clean);
+                        if let Ok(raw_bytes) =
+                            read_reqwest_body_capped(resp, MAX_AI_JSON_BYTES).await
+                        {
+                            if let Ok(body) = serde_json::from_slice::<Value>(&raw_bytes) {
+                                let arr_opt = body
+                                    .get("data")
+                                    .and_then(Value::as_array)
+                                    .or_else(|| body.get("models").and_then(Value::as_array))
+                                    .or_else(|| body.as_array());
+                                if let Some(arr) = arr_opt {
+                                    for item in arr {
+                                        if models.len() >= 500 {
+                                            break;
+                                        }
+                                        let id = item
+                                            .get("id")
+                                            .and_then(Value::as_str)
+                                            .or_else(|| item.get("name").and_then(Value::as_str))
+                                            .or_else(|| item.as_str())
+                                            .map(str::trim)
+                                            .filter(|s| !s.is_empty());
+                                        if let Some(m) = id {
+                                            let clean =
+                                                m.strip_prefix("models/").unwrap_or(m).to_string();
+                                            if seen.insert(clean.clone()) {
+                                                models.push(clean);
+                                            }
                                         }
                                     }
                                 }
@@ -3472,7 +3997,10 @@ impl VedroRuntime {
                     Ok(resp) => {
                         if !is_bilibili_index {
                             let status = resp.status();
-                            let text = resp.text().await.unwrap_or_default();
+                            let raw_err = read_reqwest_body_capped(resp, 64 * 1024)
+                                .await
+                                .unwrap_or_default();
+                            let text = String::from_utf8_lossy(&raw_err);
                             let msg = serde_json::from_str::<Value>(&text)
                                 .ok()
                                 .and_then(|v| {
@@ -3486,7 +4014,10 @@ impl VedroRuntime {
                     }
                     Err(e) => {
                         if !is_bilibili_index {
-                            return Err(format!("获取模型失败: {e}"));
+                            return Err(format!(
+                                "获取模型失败: {}",
+                                vedro_protocol::error::format_transport_error(&e)
+                            ));
                         }
                     }
                 }
@@ -3523,8 +4054,14 @@ impl VedroRuntime {
                     .and_then(|sid| pb.media_sources.iter().find(|s| s.id == sid))
                     .or_else(|| pb.media_sources.first())
                     .ok_or_else(|| "no playable media source".to_string())?;
+                let prefer_proxy = params
+                    .get("use_local_proxy")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let url = if let Some(ds) = chosen.direct_stream_url.as_deref() {
-                    client.resolve_media_url(ds).map_err(|e| e.to_string())?
+                    let resolved = client.resolve_media_url(ds).map_err(|e| e.to_string())?;
+                    validate_http_url(resolved.as_str())?;
+                    resolved
                 } else {
                     let mut fallback = client
                         .build_fallback_video_url(
@@ -3534,10 +4071,20 @@ impl VedroRuntime {
                             &pb.play_session_id,
                         )
                         .map_err(|e| e.to_string())?;
-                    if let Some(tok) = client.access_token() {
-                        fallback.query_pairs_mut().append_pair("api_key", &tok);
+                    if prefer_proxy {
+                        let (_sid, proxy_url) = self.proxy.register_stream(
+                            fallback.to_string(),
+                            client.auth_headers(),
+                            chosen.size,
+                            chosen.container.as_deref().map(container_mime_type),
+                        );
+                        url::Url::parse(&proxy_url).map_err(|e| e.to_string())?
+                    } else {
+                        if let Some(tok) = client.access_token() {
+                            fallback.query_pairs_mut().append_pair("api_key", &tok);
+                        }
+                        fallback
                     }
-                    fallback
                 };
                 Ok(json!({
                     "url": url.to_string(),
@@ -3551,6 +4098,9 @@ impl VedroRuntime {
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|s| !s.is_empty());
+                if let Some(cb) = custom_base {
+                    let _ = validate_http_url(cb)?;
+                }
                 let raw_title = str_param(&params, "title")?;
                 let alt_title = params
                     .get("alt_title")
@@ -3654,6 +4204,12 @@ impl VedroRuntime {
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|s| !s.is_empty() && !s.contains("api.dandanplay.net"));
+                if let Some(cb) = custom_base {
+                    let _ = validate_http_url(cb)?;
+                }
+                if !is_safe_path_token(&target_id) {
+                    return Err("无效的弹幕目标 ID".to_string());
+                }
                 let http = self.build_danmaku_http_client()?;
 
                 match provider.as_str() {
@@ -3670,15 +4226,15 @@ impl VedroRuntime {
                         let view_url = format!(
                             "https://api.bilibili.com/x/web-interface/view?bvid={target_id}"
                         );
-                        let resp: Value = http
+                        let raw_resp = http
                             .get(&view_url)
                             .header("Referer", "https://www.bilibili.com/")
                             .send()
                             .await
-                            .map_err(|e| e.to_string())?
-                            .json()
-                            .await
-                            .map_err(|e| e.to_string())?;
+                            .map_err(|e| vedro_protocol::error::format_transport_error(&e))?;
+                        let raw_bytes = read_reqwest_body_capped(raw_resp, 2 * 1024 * 1024).await?;
+                        let resp: Value = serde_json::from_slice(&raw_bytes)
+                            .map_err(|e| format!("B 站弹幕响应解析失败: {e}"))?;
                         let cid = resp
                             .pointer("/data/cid")
                             .and_then(Value::as_u64)
@@ -3696,14 +4252,15 @@ impl VedroRuntime {
                             .unwrap_or("https://dandan-proxy.wiidede.space")
                             .trim_end_matches('/');
                         let c_url = format!("{base}/api/v2/comment/{target_id}?withRelated=true");
-                        let c_json: Value = http
+                        let raw_resp = http
                             .get(&c_url)
                             .send()
                             .await
-                            .map_err(|e| e.to_string())?
-                            .json()
-                            .await
-                            .map_err(|e| e.to_string())?;
+                            .map_err(|e| vedro_protocol::error::format_transport_error(&e))?;
+                        let raw_bytes =
+                            read_reqwest_body_capped(raw_resp, MAX_DANMAKU_BYTES).await?;
+                        let c_json: Value = serde_json::from_slice(&raw_bytes)
+                            .map_err(|e| format!("弹弹play 响应解析失败: {e}"))?;
                         Ok(json!({
                             "source": "dandan",
                             "episode_id": target_id,
@@ -3741,6 +4298,14 @@ impl VedroRuntime {
                 self.store
                     .set_setting(&key, &value)
                     .map_err(|e| e.to_string())?;
+                // Keep AI translation cache & learned probe cache bounded in SQLite
+                if key.starts_with("ai_sub_cache_v1:") || key.starts_with("ai_sub_cache_v2:") {
+                    let _ = self.store.prune_settings_prefix("ai_sub_cache_", 60);
+                } else if key.starts_with("learned_streams_v1:") {
+                    let _ = self
+                        .store
+                        .prune_settings_prefix("learned_streams_v1:", 2000);
+                }
                 Ok(json!({ "saved": true }))
             }
 
@@ -4240,8 +4805,10 @@ async fn bilibili_auto_match(
                 if raw.contains("<d ") {
                     let matched_title = if ep_label.is_empty() {
                         season_title
-                    } else {
+                    } else if ep_label.chars().all(|c| c.is_ascii_digit()) {
                         format!("{season_title} · 第{ep_label}话")
+                    } else {
+                        format!("{season_title} · {ep_label}")
                     };
                     return Ok(Some(json!({
                         "source": "bilibili",
@@ -4278,7 +4845,11 @@ async fn bilibili_auto_match(
                                 .to_lowercase();
                         t.contains(&q_lower)
                     }) {
-                        if let Some(bvid) = hit.get("bvid").and_then(Value::as_str) {
+                        if let Some(bvid) = hit
+                            .get("bvid")
+                            .and_then(Value::as_str)
+                            .filter(|b| is_safe_path_token(b))
+                        {
                             let hit_title = strip_html_tags(
                                 hit.get("title").and_then(Value::as_str).unwrap_or(query),
                             );

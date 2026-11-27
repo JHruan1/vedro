@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -18,6 +19,8 @@ class SubtitleCueModel {
   final int endMs;
   final String text;
 
+  String get stableKey => '$startMs::$text';
+
   factory SubtitleCueModel.fromJson(Map<String, dynamic> j, [int fallbackIdx = 0]) =>
       SubtitleCueModel(
         idx: (j['idx'] as num?)?.toInt() ?? fallbackIdx,
@@ -35,12 +38,14 @@ class BilingualCueSnapshot {
     this.translated,
     this.pendingTranslation = false,
     this.statusHint,
+    this.displayMode = 'bilingual_trans_top',
   });
 
   final String original;
   final String? translated;
   final bool pendingTranslation;
   final String? statusHint;
+  final String displayMode;
 
   @override
   bool operator ==(Object other) =>
@@ -48,10 +53,12 @@ class BilingualCueSnapshot {
       other.original == original &&
       other.translated == translated &&
       other.pendingTranslation == pendingTranslation &&
-      other.statusHint == statusHint;
+      other.statusHint == statusHint &&
+      other.displayMode == displayMode;
 
   @override
-  int get hashCode => Object.hash(original, translated, pendingTranslation, statusHint);
+  int get hashCode =>
+      Object.hash(original, translated, pendingTranslation, statusHint, displayMode);
 }
 
 /// Supported YouTube-style quick target languages for in-player AI subtitle translation.
@@ -169,15 +176,27 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   String? _lastError;
   String? _activeSourceLabel;
 
+  // Process-wide polite rate-limit state shared across all controller instances for Bilibili public API.
+  static DateTime? _globalBiliLastCompletedAt;
+  static DateTime? _globalBiliCooldownUntil;
+
+  @visibleForTesting
+  static void resetGlobalRateLimitState() {
+    _globalBiliLastCompletedAt = null;
+    _globalBiliCooldownUntil = null;
+  }
+
   // Subtitle cues sorted by startMs
   List<SubtitleCueModel> _cues = const [];
-  // Per-target-language cue index -> translated text cache
-  final Map<String, Map<int, String>> _translationsByLang = {};
+  // Per-target-language stable cue key (`startMs::text`) -> translated text cache
+  // (immune to ASR re-sorting & cue index shifts!).
+  final Map<String, Map<String, String>> _translationsByLang = {};
   // Per-target-language live text -> translated text cache (bounded to 1000 entries/lang)
   final Map<String, Map<String, String>> _liveCacheByLang = {};
   final Set<String> _inFlightBatchKeys = {};
+  final Set<String> _inFlightCueKeys = {};
   final Set<String> _inFlightLiveKeys = {};
-  // Cues already attempted for a language (prevents infinite loops when LLM omits a cue)
+  // Cues already attempted for a language (`lang::startMs::text`), prevents infinite loops when LLM omits a cue
   final Set<String> _attemptedCueKeys = {};
 
   // Respectful translation pacing / backoff / circuit breaker state
@@ -189,6 +208,8 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   Timer? _liveDebounceTimer;
   Timer? _cachePersistTimer;
   String? _activeCacheKey;
+  String? _pendingPersistCacheKey;
+  String? _pendingPersistLang;
 
   // ASR audio slicing state (fixed 20s slice windows keyed by slice index)
   static const double asrSliceSecs = 20.0;
@@ -202,6 +223,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   final Set<int> _asrDoneSlices = {};
   final Set<int> _asrInFlightSlices = {};
   final Map<int, int> _asrFailedAttempts = {};
+  bool _asrInitialSliceFinished = false;
   int _asrConsecutiveErrors = 0;
   bool _asrCircuitOpen = false;
   DateTime? _asrCooldownUntil;
@@ -230,8 +252,8 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   int get totalCues => _cues.length;
   int get translatedCount => _translationsByLang[_targetLang]?.length ?? 0;
 
-  Map<int, String> get _curLangMap =>
-      _translationsByLang.putIfAbsent(_targetLang, () => <int, String>{});
+  Map<String, String> get _curLangMap =>
+      _translationsByLang.putIfAbsent(_targetLang, () => <String, String>{});
 
   Map<String, String> get _curLiveMap =>
       _liveCacheByLang.putIfAbsent(_targetLang, () => <String, String>{});
@@ -240,7 +262,28 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  void _cancelTimers() {
+  void _flushPendingCachePersist() {
+    final key = _pendingPersistCacheKey;
+    final lang = _pendingPersistLang;
+    _cachePersistTimer?.cancel();
+    _cachePersistTimer = null;
+    _pendingPersistCacheKey = null;
+    _pendingPersistLang = null;
+    if (key == null || lang == null) return;
+    final map = _translationsByLang[lang];
+    if (map == null || map.isEmpty || _cues.isEmpty) return;
+    final indexed = <int, String>{};
+    for (var i = 0; i < _cues.length; i++) {
+      final tr = map[_cues[i].stableKey];
+      if (tr != null && tr.isNotEmpty) indexed[i] = tr;
+    }
+    if (indexed.isNotEmpty) {
+      unawaited(appState.saveAiTranslationCache(key, indexed));
+    }
+  }
+
+  void _cancelTimers({bool flushCache = true}) {
+    if (flushCache) _flushPendingCachePersist();
     _translateDelayTimer?.cancel();
     _translateDelayTimer = null;
     _liveDebounceTimer?.cancel();
@@ -253,28 +296,38 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
 
   String? _computeSubtitleCacheKey(String targetLang) {
     if (_cues.isEmpty || _asrMode) return null;
-    var h = 0x811c9dc5;
+    var h1 = 0x811c9dc5;
+    var h2 = 0x01000193;
     void mix(String s) {
       for (var i = 0; i < s.length; i++) {
-        h = ((h ^ s.codeUnitAt(i)) * 0x01000193) & 0xFFFFFFFF;
+        final code = s.codeUnitAt(i);
+        h1 = ((h1 ^ code) * 0x01000193) & 0xFFFFFFFF;
+        h2 = ((h2 + (code << 5) - code) ^ (h1 >> 3)) & 0xFFFFFFFF;
       }
     }
-    mix(targetLang);
-    mix('|${mediaTitle ?? ''}|${_cues.length}|');
-    mix(_cues.first.text);
-    mix('|${_cues[_cues.length ~/ 2].text}|');
-    mix(_cues.last.text);
-    return h.toRadixString(16).padLeft(8, '0');
+    mix('$targetLang|${appState.prefs.aiModel}|${mediaTitle ?? ''}|${_cues.length}|');
+    final step = math.max(1, _cues.length ~/ 24);
+    for (var i = 0; i < _cues.length; i += step) {
+      mix('${_cues[i].startMs}:${_cues[i].text}|');
+    }
+    mix('${_cues.last.startMs}:${_cues.last.text}');
+    return '${h1.toRadixString(16).padLeft(8, '0')}${h2.toRadixString(16).padLeft(8, '0')}';
   }
 
   void _scheduleCachePersist(String cacheKey, String lang) {
+    _pendingPersistCacheKey = cacheKey;
+    _pendingPersistLang = lang;
     _cachePersistTimer?.cancel();
     _cachePersistTimer = Timer(const Duration(seconds: 2), () {
       if (_disposed) return;
-      final map = _translationsByLang[lang];
-      if (map == null || map.isEmpty) return;
-      unawaited(appState.saveAiTranslationCache(cacheKey, map));
+      _flushPendingCachePersist();
     });
+  }
+
+  /// Update ASR media URL seamlessly when the player reconnects / falls back to SW decode.
+  void updateAsrMediaSource({String? sourceUrl, String? localPath}) {
+    if (sourceUrl != null && sourceUrl.isNotEmpty) _asrSourceUrl = sourceUrl;
+    if (localPath != null && localPath.isNotEmpty) _asrLocalPath = localPath;
   }
 
   /// Enable YouTube-style AI bilingual translation for an existing subtitle source (or live fallback).
@@ -301,9 +354,11 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
       _targetLang = targetLang;
     }
     _inFlightBatchKeys.clear();
+    _inFlightCueKeys.clear();
     _inFlightLiveKeys.clear();
     _attemptedCueKeys.clear();
     _asrInFlightSlices.clear();
+    _asrInitialSliceFinished = false;
     _translateConsecutiveErrors = 0;
     _translateCircuitOpen = false;
     _translateCooldownUntil = null;
@@ -369,7 +424,12 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
           final cached = await appState.loadAiTranslationCache(cacheKey);
           if (gen != _generation || _disposed) return;
           if (cached.isNotEmpty) {
-            _curLangMap.addAll(cached);
+            final map = _curLangMap;
+            cached.forEach((idx, txt) {
+              if (idx >= 0 && idx < _cues.length && txt.isNotEmpty) {
+                map[_cues[idx].stableKey] = txt;
+              }
+            });
           }
         }
         _scheduleLookaheadBatches(_lastPositionSecs);
@@ -418,10 +478,12 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     _cues = const [];
     _translationsByLang.clear();
     _inFlightBatchKeys.clear();
+    _inFlightCueKeys.clear();
     _attemptedCueKeys.clear();
     _asrDoneSlices.clear();
     _asrInFlightSlices.clear();
     _asrFailedAttempts.clear();
+    _asrInitialSliceFinished = false;
     _asrConsecutiveErrors = 0;
     _asrCircuitOpen = false;
     _asrCooldownUntil = null;
@@ -470,6 +532,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   }
 
   void disable() {
+    if (_disposed) return;
     ++_generation;
     _cancelTimers();
     _enabled = false;
@@ -478,6 +541,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     _isLiveFallbackMode = false;
     _lastError = null;
     _inFlightBatchKeys.clear();
+    _inFlightCueKeys.clear();
     _inFlightLiveKeys.clear();
     _asrInFlightSlices.clear();
     _asrCircuitOpen = false;
@@ -487,7 +551,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   }
 
   void setDisplayMode(String mode) {
-    if (_displayMode == mode) return;
+    if (_displayMode == mode || _disposed) return;
     _displayMode = mode;
     _refreshActiveCue();
     _safeNotify();
@@ -496,8 +560,9 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   /// YouTube-style instant target language switch inside the player.
   Future<void> setTargetLang(String lang) async {
     final trimmed = lang.trim();
-    if (trimmed.isEmpty || _targetLang == trimmed) return;
+    if (trimmed.isEmpty || _targetLang == trimmed || _disposed) return;
     final gen = ++_generation;
+    _flushPendingCachePersist();
     _translateDelayTimer?.cancel();
     _translateDelayTimer = null;
     _liveDebounceTimer?.cancel();
@@ -505,6 +570,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     _targetLang = trimmed;
     _lastError = null;
     _inFlightBatchKeys.clear();
+    _inFlightCueKeys.clear();
     _inFlightLiveKeys.clear();
     _attemptedCueKeys.removeWhere((k) => k.startsWith('$trimmed::'));
     _translateConsecutiveErrors = 0;
@@ -519,7 +585,12 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
         final cached = await appState.loadAiTranslationCache(cacheKey);
         if (gen != _generation || _disposed) return;
         if (cached.isNotEmpty) {
-          _curLangMap.addAll(cached);
+          final map = _curLangMap;
+          cached.forEach((idx, txt) {
+            if (idx >= 0 && idx < _cues.length && txt.isNotEmpty) {
+              map[_cues[idx].stableKey] = txt;
+            }
+          });
         }
       }
       _scheduleLookaheadBatches(_lastPositionSecs);
@@ -530,6 +601,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   }
 
   void resetForNewMedia({String? mediaTitle}) {
+    if (_disposed) return;
     this.mediaTitle = mediaTitle;
     ++_generation;
     _cancelTimers();
@@ -544,11 +616,13 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     _translationsByLang.clear();
     _liveCacheByLang.clear();
     _inFlightBatchKeys.clear();
+    _inFlightCueKeys.clear();
     _inFlightLiveKeys.clear();
     _attemptedCueKeys.clear();
     _asrDoneSlices.clear();
     _asrInFlightSlices.clear();
     _asrFailedAttempts.clear();
+    _asrInitialSliceFinished = false;
     _asrConsecutiveErrors = 0;
     _asrCircuitOpen = false;
     _asrCooldownUntil = null;
@@ -594,6 +668,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
       activeCueNotifier.value = BilingualCueSnapshot(
         original: cleaned,
         translated: cached,
+        displayMode: _displayMode,
       );
       return;
     }
@@ -602,6 +677,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
       activeCueNotifier.value = BilingualCueSnapshot(
         original: cleaned,
         pendingTranslation: false,
+        displayMode: _displayMode,
       );
       return;
     }
@@ -609,6 +685,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     activeCueNotifier.value = BilingualCueSnapshot(
       original: cleaned,
       pendingTranslation: true,
+      displayMode: _displayMode,
     );
 
     final policy = rateLimitPolicyFor(appState.prefs.aiBaseUrl);
@@ -655,6 +732,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
             activeCueNotifier.value = BilingualCueSnapshot(
               original: cleaned,
               translated: translated,
+              displayMode: _displayMode,
             );
           }
         }
@@ -664,6 +742,11 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
           _safeNotify();
         }
       } finally {
+        final completedAt = DateTime.now();
+        _lastTranslateRequestAt = completedAt;
+        if (policy.isPublicSharedApi) {
+          _globalBiliLastCompletedAt = completedAt;
+        }
         _inFlightLiveKeys.remove(key);
       }
     }());
@@ -676,8 +759,19 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
       final rem = _translateCooldownUntil!.difference(now).inMilliseconds;
       if (rem > waitMs) waitMs = rem;
     }
+    if (policy.isPublicSharedApi &&
+        _globalBiliCooldownUntil != null &&
+        _globalBiliCooldownUntil!.isAfter(now)) {
+      final rem = _globalBiliCooldownUntil!.difference(now).inMilliseconds;
+      if (rem > waitMs) waitMs = rem;
+    }
     if (_lastTranslateRequestAt != null) {
       final elapsed = now.difference(_lastTranslateRequestAt!).inMilliseconds;
+      final rem = policy.minIntervalMs - elapsed;
+      if (rem > waitMs) waitMs = rem;
+    }
+    if (policy.isPublicSharedApi && _globalBiliLastCompletedAt != null) {
+      final elapsed = now.difference(_globalBiliLastCompletedAt!).inMilliseconds;
       final rem = policy.minIntervalMs - elapsed;
       if (rem > waitMs) waitMs = rem;
     }
@@ -688,7 +782,13 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     _translateConsecutiveErrors += 1;
     final idx = (_translateConsecutiveErrors - 1).clamp(0, policy.backoffSecs.length - 1);
     final waitSecs = policy.backoffSecs[idx];
-    _translateCooldownUntil = DateTime.now().add(Duration(seconds: waitSecs));
+    final until = DateTime.now().add(Duration(seconds: waitSecs));
+    _translateCooldownUntil = until;
+    if (policy.isPublicSharedApi) {
+      if (_globalBiliCooldownUntil == null || until.isAfter(_globalBiliCooldownUntil!)) {
+        _globalBiliCooldownUntil = until;
+      }
+    }
     if (_translateConsecutiveErrors >= policy.maxConsecutiveErrors) {
       _translateCircuitOpen = true;
       _lastError = policy.isPublicSharedApi
@@ -700,7 +800,8 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   }
 
   void _refreshActiveCue() {
-    if (!_enabled || _disposed) {
+    if (_disposed) return;
+    if (!_enabled) {
       activeCueNotifier.value = null;
       return;
     }
@@ -716,19 +817,25 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
               appState.prefs.isAiReady &&
               !_translateCircuitOpen &&
               !isNonLinguisticCue(_lastLiveOriginal),
+          displayMode: _displayMode,
         );
       }
       return;
     }
     if (_cues.isEmpty) {
       // Show a single steady hint ONLY during initial load or active first-slice ASR;
-      // NEVER flicker between alternating strings or show a "0 cues" banner during quiet intros!
+      // NEVER flicker after the first slice fails/returns silence or show a "0 cues" banner!
       final showLoadingHint = _isLoadingCues ||
-          (_asrMode && _asrInFlightSlices.isNotEmpty && !_asrCircuitOpen && _asrDoneSlices.isEmpty);
+          (_asrMode &&
+              _asrInFlightSlices.isNotEmpty &&
+              !_asrCircuitOpen &&
+              !_asrInitialSliceFinished &&
+              _asrDoneSlices.isEmpty);
       activeCueNotifier.value = showLoadingHint
           ? BilingualCueSnapshot(
               original: '',
               statusHint: _asrMode ? 'AI 正在识别语音字幕…' : '正在读取字幕并预读翻译…',
+              displayMode: _displayMode,
             )
           : null;
       return;
@@ -747,10 +854,11 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     var anyPending = false;
     for (final c in active) {
       origLines.add(c.text);
-      final t = langMap[c.idx];
+      final sk = c.stableKey;
+      final t = langMap[sk];
       if (t != null && t.isNotEmpty) {
         transLines.add(t);
-      } else if (!_attemptedCueKeys.contains('$_targetLang::${c.idx}')) {
+      } else if (!_attemptedCueKeys.contains('$_targetLang::$sk')) {
         anyPending = true;
       }
     }
@@ -759,6 +867,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
       original: origLines.join('\n'),
       translated: transLines.isEmpty ? null : transLines.join('\n'),
       pendingTranslation: anyPending && appState.prefs.isAiReady && !_translateCircuitOpen,
+      displayMode: _displayMode,
     );
   }
 
@@ -799,23 +908,41 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     return (lo - 4).clamp(0, _cues.length);
   }
 
-  void _scheduleLookaheadBatches(double positionSecs, {bool fromDelayTimer = false}) {
-    if (!_enabled || _cues.isEmpty || !appState.prefs.isAiReady || _translateCircuitOpen) return;
+  void _scheduleLookaheadBatches(
+    double positionSecs, {
+    bool fromPacingTimer = false,
+    DateTime? seenGlobalAt,
+    DateTime? seenGlobalCooldown,
+  }) {
+    if (!_enabled || _disposed || _cues.isEmpty || !appState.prefs.isAiReady || _translateCircuitOpen) {
+      return;
+    }
     final policy = rateLimitPolicyFor(appState.prefs.aiBaseUrl);
     if (_inFlightBatchKeys.length >= policy.maxConcurrency) return;
 
-    if (!fromDelayTimer) {
-      final waitMs = _computeTranslateWaitMs(policy);
-      if (waitMs > 20) {
-        if (!(_translateDelayTimer?.isActive ?? false)) {
-          _translateDelayTimer = Timer(Duration(milliseconds: waitMs + 25), () {
-            if (!_disposed && _enabled) {
-              _scheduleLookaheadBatches(_lastPositionSecs, fromDelayTimer: true);
-            }
-          });
-        }
-        return;
+    // Respect per-instance and cross-controller global pacing/cooldown.
+    // When woken by our own pacing Timer, only re-defer if a newer global request or cooldown
+    // arrived while we slept (preserves both multi-controller Bilibili pacing and FakeAsync tests).
+    final globalChanged = policy.isPublicSharedApi &&
+        (_globalBiliLastCompletedAt != seenGlobalAt ||
+            _globalBiliCooldownUntil != seenGlobalCooldown);
+    final waitMs = (!fromPacingTimer || globalChanged) ? _computeTranslateWaitMs(policy) : 0;
+    if (waitMs > 20) {
+      if (!(_translateDelayTimer?.isActive ?? false)) {
+        final snapGlobalAt = _globalBiliLastCompletedAt;
+        final snapGlobalCooldown = _globalBiliCooldownUntil;
+        _translateDelayTimer = Timer(Duration(milliseconds: waitMs + 25), () {
+          if (!_disposed && _enabled) {
+            _scheduleLookaheadBatches(
+              _lastPositionSecs,
+              fromPacingTimer: true,
+              seenGlobalAt: snapGlobalAt,
+              seenGlobalCooldown: snapGlobalCooldown,
+            );
+          }
+        });
       }
+      return;
     }
 
     final batchSize =
@@ -833,10 +960,10 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
       final c = _cues[i];
       if (c.endMs < windowStartMs) continue;
       if (c.startMs > windowEndMs) break;
-      final cueKey = '$_targetLang::${c.idx}';
-      if (!langMap.containsKey(c.idx) &&
+      final cueKey = '$_targetLang::${c.stableKey}';
+      if (!langMap.containsKey(c.stableKey) &&
           !_attemptedCueKeys.contains(cueKey) &&
-          !_isCueInFlight(c.idx)) {
+          !_inFlightCueKeys.contains(cueKey)) {
         firstUntranslated = i;
         break;
       }
@@ -847,10 +974,10 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     for (var i = firstUntranslated; i < _cues.length && batchCues.length < batchSize; i++) {
       final c = _cues[i];
       if (c.startMs > windowEndMs + 15000) break;
-      final cueKey = '$_targetLang::${c.idx}';
-      if (!langMap.containsKey(c.idx) &&
+      final cueKey = '$_targetLang::${c.stableKey}';
+      if (!langMap.containsKey(c.stableKey) &&
           !_attemptedCueKeys.contains(cueKey) &&
-          !_isCueInFlight(c.idx)) {
+          !_inFlightCueKeys.contains(cueKey)) {
         batchCues.add(c);
       }
     }
@@ -863,18 +990,26 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     ];
 
     final batchKey =
-        '$_targetLang::${batchCues.first.idx}-${batchCues.last.idx}::${batchCues.length}';
+        '$_targetLang::${batchCues.first.startMs}-${batchCues.last.startMs}::${batchCues.length}';
     if (!_inFlightBatchKeys.add(batchKey)) return;
+    final cueKeysInBatch = [for (final c in batchCues) '$_targetLang::${c.stableKey}'];
+    _inFlightCueKeys.addAll(cueKeysInBatch);
     _lastTranslateRequestAt = DateTime.now();
     _safeNotify();
 
     final gen = _generation;
     final langAtStart = _targetLang;
     final cacheKeyAtStart = _activeCacheKey;
+    // Map local sequential batch index (0..N-1) back to stableKey so ASR re-sorting can NEVER misalign results!
+    final localToStable = <int, String>{
+      for (var i = 0; i < batchCues.length; i++) i: batchCues[i].stableKey,
+    };
     unawaited(() async {
       try {
         final translations = await appState.aiTranslateSubtitleBatch(
-          lines: batchCues.map((c) => {'idx': c.idx, 'text': c.text}).toList(),
+          lines: [
+            for (var i = 0; i < batchCues.length; i++) {'idx': i, 'text': batchCues[i].text},
+          ],
           context: contextLines,
           mediaTitle: mediaTitle,
           targetLang: langAtStart,
@@ -883,11 +1018,16 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
         _translateConsecutiveErrors = 0;
         _translateCooldownUntil = null;
         for (final c in batchCues) {
-          _attemptedCueKeys.add('$langAtStart::${c.idx}');
+          _attemptedCueKeys.add('$langAtStart::${c.stableKey}');
         }
         if (translations.isNotEmpty) {
-          final map = _translationsByLang.putIfAbsent(langAtStart, () => <int, String>{});
-          map.addAll(translations);
+          final map = _translationsByLang.putIfAbsent(langAtStart, () => <String, String>{});
+          translations.forEach((localIdx, text) {
+            final sk = localToStable[localIdx];
+            if (sk != null && text.isNotEmpty) {
+              map[sk] = text;
+            }
+          });
           _lastError = null;
           if (cacheKeyAtStart != null) {
             _scheduleCachePersist(cacheKeyAtStart, langAtStart);
@@ -898,7 +1038,13 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
           _recordTranslateError(e, policy);
         }
       } finally {
+        final completedAt = DateTime.now();
+        _lastTranslateRequestAt = completedAt;
+        if (policy.isPublicSharedApi) {
+          _globalBiliLastCompletedAt = completedAt;
+        }
         _inFlightBatchKeys.remove(batchKey);
+        _inFlightCueKeys.removeAll(cueKeysInBatch);
         if (gen == _generation && !_disposed) {
           _refreshActiveCue();
           _safeNotify();
@@ -908,23 +1054,6 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
         }
       }
     }());
-  }
-
-  bool _isCueInFlight(int cueIdx) {
-    final prefix = '$_targetLang::';
-    for (final key in _inFlightBatchKeys) {
-      if (!key.startsWith(prefix)) continue;
-      final rangePart = key.substring(prefix.length).split('::').first;
-      final bounds = rangePart.split('-');
-      if (bounds.length == 2) {
-        final s = int.tryParse(bounds[0]);
-        final e = int.tryParse(bounds[1]);
-        if (s != null && e != null && cueIdx >= s && cueIdx <= e) {
-          return true;
-        }
-      }
-    }
-    return false;
   }
 
   void _scheduleAsrSlices(double positionSecs) {
@@ -994,18 +1123,8 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
           }
           merged.sort((a, b) => a.startMs.compareTo(b.startMs));
 
-          final oldTextTrans = <String, Map<String, String>>{};
-          for (final entry in _translationsByLang.entries) {
-            final byKey = <String, String>{};
-            for (final oldCue in _cues) {
-              final tr = entry.value[oldCue.idx];
-              if (tr != null) {
-                byKey['${oldCue.startMs}::${oldCue.text}'] = tr;
-              }
-            }
-            oldTextTrans[entry.key] = byKey;
-          }
-
+          // Translations & attempted keys are keyed by stable `startMs::text`, so re-indexing
+          // after ASR slice merge preserves every cached translation and in-flight batch intact!
           _cues = [
             for (var i = 0; i < merged.length; i++)
               SubtitleCueModel(
@@ -1015,16 +1134,6 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
                 text: merged[i].text,
               ),
           ];
-
-          for (final entry in oldTextTrans.entries) {
-            final rebuilt = <int, String>{};
-            for (final c in _cues) {
-              final tr = entry.value['${c.startMs}::${c.text}'];
-              if (tr != null) rebuilt[c.idx] = tr;
-            }
-            _translationsByLang[entry.key] = rebuilt;
-          }
-          _attemptedCueKeys.clear();
 
           final tailText = rawCues
               .map((c) => (c['text'] ?? '').toString().trim())
@@ -1036,9 +1145,11 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
                 joined.length > 140 ? joined.substring(joined.length - 140) : joined;
           }
         }
+        _asrInitialSliceFinished = true;
         _lastError = null;
       } catch (e) {
         if (gen == _generation && !_disposed) {
+          _asrInitialSliceFinished = true;
           final attempts = (_asrFailedAttempts[sliceIdx] ?? 0) + 1;
           _asrFailedAttempts[sliceIdx] = attempts;
           if (attempts >= _maxAsrAttemptsPerSlice) {
@@ -1078,16 +1189,17 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _flushPendingCachePersist();
     _disposed = true;
     ++_generation;
-    _cancelTimers();
+    _cancelTimers(flushCache: false);
     activeCueNotifier.dispose();
     super.dispose();
   }
 }
 
 /// Cinema-grade bilingual subtitle overlay driven purely by `ValueListenableBuilder`.
-/// Respects user's subtitle scale, vertical position, color, outline width, and background opacity.
+/// Respects user's subtitle scale, vertical position, font family, color, outline width, and background opacity.
 class AiBilingualSubtitleOverlay extends StatelessWidget {
   const AiBilingualSubtitleOverlay({
     super.key,
@@ -1098,6 +1210,7 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
     required this.colorHex,
     required this.outlineWidth,
     required this.bgOpacity,
+    this.fontFamily,
   });
 
   final AiSubtitleTranslatorController controller;
@@ -1107,6 +1220,7 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
   final String colorHex;
   final double outlineWidth;
   final double bgOpacity;
+  final String? fontFamily;
 
   Color _parseColor(String hex) {
     final clean = hex.trim().replaceFirst('#', '');
@@ -1133,10 +1247,11 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
             final compact = size.width < 600;
             final baseFont = (compact ? 17.5 : 23.0) * subScale.clamp(0.5, 2.0);
             final transScale = translationFontScale.clamp(0.6, 1.8);
-            // subPos: 100 => bottom edge (~26px), 60 => lifted ~38% up the screen
+            // subPos: 100 => bottom edge (~22px), 60 => lifted ~34% up the screen (PiP-safe upper bound!)
+            final maxBottomInset = math.max(18.0, size.height * 0.48);
             final bottomInset =
                 (22.0 + ((100 - subPos.clamp(60, 100)) / 40.0) * (size.height * 0.34))
-                    .clamp(18.0, size.height * 0.48);
+                    .clamp(18.0, maxBottomInset);
 
             if (snap.original.isEmpty && (snap.statusHint?.isNotEmpty ?? false)) {
               return Align(
@@ -1164,8 +1279,10 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
             }
 
             final primaryColor = _parseColor(colorHex);
-            final mode = controller.displayMode;
+            final mode = snap.displayMode;
             final hasTrans = snap.translated != null && snap.translated!.trim().isNotEmpty;
+            final effectiveFontFamily =
+                (fontFamily != null && fontFamily!.trim().isNotEmpty) ? fontFamily!.trim() : null;
             final shadows = outlineWidth <= 0.1
                 ? const <Shadow>[]
                 : <Shadow>[
@@ -1206,7 +1323,7 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
               }
             }
 
-            final effectiveBgAlpha = bgOpacity > 0.01 ? bgOpacity.clamp(0.0, 0.85) : 0.42;
+            final effectiveBgAlpha = bgOpacity.isFinite ? bgOpacity.clamp(0.0, 0.85) : 0.0;
 
             return Align(
               alignment: Alignment.bottomCenter,
@@ -1218,14 +1335,21 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
                   bottomInset,
                 ),
                 child: ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: compact ? size.width - 32 : 960),
+                  constraints: BoxConstraints(
+                    maxWidth: compact ? math.max(120.0, size.width - 32) : 960,
+                  ),
                   child: Container(
                     key: const ValueKey('ai-bilingual-subtitle-box'),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: effectiveBgAlpha),
-                      borderRadius: BorderRadius.circular(10),
+                    padding: EdgeInsets.symmetric(
+                      horizontal: effectiveBgAlpha > 0.01 ? 14 : 6,
+                      vertical: effectiveBgAlpha > 0.01 ? 7 : 3,
                     ),
+                    decoration: effectiveBgAlpha > 0.01
+                        ? BoxDecoration(
+                            color: Colors.black.withValues(alpha: effectiveBgAlpha),
+                            borderRadius: BorderRadius.circular(10),
+                          )
+                        : null,
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1234,6 +1358,7 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
                             topLine,
                             textAlign: TextAlign.center,
                             style: TextStyle(
+                              fontFamily: effectiveFontFamily,
                               color: (topIsTranslated || !hasTrans)
                                   ? primaryColor
                                   : primaryColor.withValues(alpha: 0.82),
@@ -1253,6 +1378,7 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
                             bottomLine,
                             textAlign: TextAlign.center,
                             style: TextStyle(
+                              fontFamily: effectiveFontFamily,
                               color: bottomIsTranslated
                                   ? primaryColor
                                   : primaryColor.withValues(alpha: 0.82),

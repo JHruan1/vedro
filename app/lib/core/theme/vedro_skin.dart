@@ -1726,6 +1726,110 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
   }
 
   static double lerpDoubleD(double a, double b, double t) => a + (b - a) * t;
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is VedroSkin &&
+        other.id == id &&
+        other.name == name &&
+        other.subtitle == subtitle &&
+        other.badge == badge &&
+        other.isLight == isLight &&
+        other.canvas == canvas &&
+        other.canvasGlow == canvasGlow &&
+        other.surface == surface &&
+        other.surface2 == surface2 &&
+        other.surface3 == surface3 &&
+        other.field == field &&
+        other.glass == glass &&
+        other.glassStrong == glassStrong &&
+        other.border == border &&
+        other.borderStrong == borderStrong &&
+        other.fg == fg &&
+        other.fg2 == fg2 &&
+        other.fg3 == fg3 &&
+        other.accent == accent &&
+        other.accentSecondary == accentSecondary &&
+        other.ctaStyle == ctaStyle &&
+        other.frameStyle == frameStyle &&
+        other.cardRadius == cardRadius &&
+        other.pillRadius == pillRadius &&
+        other.ambientGlow == ambientGlow &&
+        other.editorialSerif == editorialSerif &&
+        other.navLayout == navLayout &&
+        other.heroStyle == heroStyle &&
+        other.detailLayout == detailLayout &&
+        other.backdropMode == backdropMode &&
+        other.backdropBlur == backdropBlur &&
+        other.surfaceOpacity == surfaceOpacity &&
+        other.surfaceMaterial == surfaceMaterial &&
+        other.posterAspect == posterAspect &&
+        other.cardStyle == cardStyle &&
+        other.cardHoverEffect == cardHoverEffect &&
+        other.badgeStyle == badgeStyle &&
+        other.progressStyle == progressStyle &&
+        other.castStyle == castStyle &&
+        other.osdStyle == osdStyle &&
+        other.mobileNavStyle == mobileNavStyle &&
+        other.touchFeedbackStyle == touchFeedbackStyle &&
+        other.themeFamily == themeFamily &&
+        other.liquidSpecular == liquidSpecular &&
+        other.showCardRating == showCardRating &&
+        other.preferClearLogo == preferClearLogo &&
+        other.isCustom == isCustom;
+  }
+
+  @override
+  int get hashCode => Object.hashAll([
+        id,
+        name,
+        subtitle,
+        badge,
+        isLight,
+        canvas,
+        canvasGlow,
+        surface,
+        surface2,
+        surface3,
+        field,
+        glass,
+        glassStrong,
+        border,
+        borderStrong,
+        fg,
+        fg2,
+        fg3,
+        accent,
+        accentSecondary,
+        ctaStyle,
+        frameStyle,
+        cardRadius,
+        pillRadius,
+        ambientGlow,
+        editorialSerif,
+        navLayout,
+        heroStyle,
+        detailLayout,
+        backdropMode,
+        backdropBlur,
+        surfaceOpacity,
+        surfaceMaterial,
+        posterAspect,
+        cardStyle,
+        cardHoverEffect,
+        badgeStyle,
+        progressStyle,
+        castStyle,
+        osdStyle,
+        mobileNavStyle,
+        touchFeedbackStyle,
+        themeFamily,
+        liquidSpecular,
+        showCardRating,
+        preferClearLogo,
+        isCustom,
+      ]);
 }
 
 /// Global atmospheric backdrop canvas:
@@ -1737,10 +1841,12 @@ class VedroSkinCanvas extends StatelessWidget {
     super.key,
     required this.child,
     this.backdropImageUrl,
+    this.suppressTopOrb = false,
   });
 
   final Widget child;
   final String? backdropImageUrl;
+  final bool suppressTopOrb;
 
   @override
   Widget build(BuildContext context) {
@@ -1786,22 +1892,23 @@ class VedroSkinCanvas extends StatelessWidget {
               ),
             ),
           if (showOrb) ...[
-            Positioned.fill(
-              child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: RadialGradient(
-                      center: const Alignment(-0.72, -0.82),
-                      radius: 1.25,
-                      colors: [
-                        skin.canvasGlow.withValues(alpha: skin.isLight ? 0.36 : 0.28),
-                        skin.canvas.withValues(alpha: 0.0),
-                      ],
+            if (!suppressTopOrb)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: RadialGradient(
+                        center: const Alignment(-0.72, -0.82),
+                        radius: 1.25,
+                        colors: [
+                          skin.canvasGlow.withValues(alpha: skin.isLight ? 0.36 : 0.28),
+                          skin.canvas.withValues(alpha: 0.0),
+                        ],
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
             Positioned.fill(
               child: IgnorePointer(
                 child: DecoratedBox(

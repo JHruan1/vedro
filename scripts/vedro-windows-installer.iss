@@ -2,7 +2,7 @@
 ; Compiled automatically by scripts/build-windows.ps1 -> dist/vedro-v<Version>-windows-x64-setup.exe
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.0"
+  #define MyAppVersion "1.0.0"
 #endif
 #ifndef MyReleaseDir
   #define MyReleaseDir "..\app\build\windows\x64\runner\Release"
@@ -18,7 +18,9 @@
 AppId={{8D6E4A29-5C1F-4B9E-A732-9F0E1B6D4C20}
 AppName=Vedro
 AppVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppVersion}.0
 AppVerName=Vedro {#MyAppVersion}
+AppMutex=VedroSingleInstanceMutex
 AppPublisher=Vedro Media Player
 AppPublisherURL=https://github.com/JHruan1/vedro
 AppSupportURL=https://github.com/JHruan1/vedro/releases
@@ -58,9 +60,10 @@ Name: "{autoprograms}\Vedro"; Filename: "{app}\Vedro.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\Vedro"; Filename: "{app}\Vedro.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Registry]
-; Register common video file Open-With capability under HKKA (works for both per-user and admin installs)
+; Register common video file Open-With capability under HKA with full cleanup on uninstall
+Root: HKA; Subkey: "Software\Classes\Applications\Vedro.exe"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Applications\Vedro.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Vedro.exe"" ""%1"""; Flags: uninsdeletekey
-Root: HKA; Subkey: "Software\Classes\Applications\Vedro.exe\SupportedTypes"; ValueType: string; ValueName: ".mkv"; ValueData: ""
+Root: HKA; Subkey: "Software\Classes\Applications\Vedro.exe\SupportedTypes"; ValueType: string; ValueName: ".mkv"; ValueData: ""; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Applications\Vedro.exe\SupportedTypes"; ValueType: string; ValueName: ".mp4"; ValueData: ""
 Root: HKA; Subkey: "Software\Classes\Applications\Vedro.exe\SupportedTypes"; ValueType: string; ValueName: ".mov"; ValueData: ""
 Root: HKA; Subkey: "Software\Classes\Applications\Vedro.exe\SupportedTypes"; ValueType: string; ValueName: ".avi"; ValueData: ""

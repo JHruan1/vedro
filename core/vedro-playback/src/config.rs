@@ -307,7 +307,12 @@ impl PlaybackConfig {
         set("sub-auto", "no");
         set("sub-ass-override", "no");
         set("sub-font-size", &self.subtitle_font_size.to_string());
-        set("sub-scale", &format!("{:.2}", self.subtitle_scale));
+        let safe_sub_scale = if self.subtitle_scale.is_finite() {
+            self.subtitle_scale.clamp(0.4, 3.0)
+        } else {
+            1.0
+        };
+        set("sub-scale", &format!("{safe_sub_scale:.2}"));
         set("blend-subtitles", "no");
 
         if !self.preferred_audio_langs.is_empty() {

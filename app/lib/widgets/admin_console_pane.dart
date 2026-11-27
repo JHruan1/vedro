@@ -47,6 +47,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
   }
 
   Future<void> _reload() async {
+    if (!mounted) return;
     setState(() {
       _refreshing = true;
       _loadError = null;
@@ -112,12 +113,15 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                   controller: nameCtrl,
                   hintText: '输入用户名',
                   autofocus: true,
+                  textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 10),
                 _IosDialogField(
                   controller: passCtrl,
                   hintText: '初始密码（可留空）',
                   obscureText: true,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => Navigator.pop(ctx, true),
                 ),
                 const SizedBox(height: 16),
                 Row(
@@ -238,7 +242,12 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                               ),
                             ),
                             const SizedBox(width: 8),
-                            const _StatusDotBadge(label: '在线', color: Color(0xFF34D399)),
+                            if (_loadError != null)
+                              const _StatusDotBadge(label: '异常', color: VedroTheme.danger)
+                            else if (data != null)
+                              const _StatusDotBadge(label: '在线', color: Color(0xFF34D399))
+                            else
+                              _StatusDotBadge(label: _refreshing ? '连接中' : '离线', color: skin.fg3),
                           ],
                         ),
                         const SizedBox(height: 4),
@@ -1047,14 +1056,16 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                               TextButton(
                                 style: TextButton.styleFrom(foregroundColor: VedroTheme.danger),
                                 onPressed: () async {
-                                  await widget.appState.removeUserDevice(
-                                    targetUserId: uid,
-                                    deviceId: devId,
-                                  );
-                                  final updated =
-                                      await widget.appState.loadUserDevices(targetUserId: uid);
-                                  setModal(() => list = updated);
-                                  unawaited(_reload());
+                                  try {
+                                    await widget.appState.removeUserDevice(
+                                      targetUserId: uid,
+                                      deviceId: devId,
+                                    );
+                                    final updated =
+                                        await widget.appState.loadUserDevices(targetUserId: uid);
+                                    if (ctx.mounted) setModal(() => list = updated);
+                                    if (mounted) unawaited(_reload());
+                                  } catch (_) {}
                                 },
                                 child: const Text('移除'),
                               ),
@@ -1883,6 +1894,8 @@ class _IosDialogField extends StatelessWidget {
     this.autofocus = false,
     this.obscureText = false,
     this.keyboardType,
+    this.textInputAction,
+    this.onSubmitted,
   });
 
   final TextEditingController controller;
@@ -1890,6 +1903,8 @@ class _IosDialogField extends StatelessWidget {
   final bool autofocus;
   final bool obscureText;
   final TextInputType? keyboardType;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onSubmitted;
 
   @override
   Widget build(BuildContext context) {
@@ -1901,6 +1916,8 @@ class _IosDialogField extends StatelessWidget {
         autofocus: autofocus,
         obscureText: obscureText,
         keyboardType: keyboardType,
+        textInputAction: textInputAction,
+        onSubmitted: onSubmitted,
         style: TextStyle(color: skin.fg, fontSize: 13.5),
         decoration: InputDecoration(
           hintText: hintText,
@@ -2026,8 +2043,13 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
   }
 
   Future<void> _adjustPackGiB(double gib) async {
+    if (!gib.isFinite || gib.abs() > 1024 * 1024) {
+      if (mounted) setState(() => _error = '请输入有效的 GiB 数值');
+      return;
+    }
     final bytes = (gib * _bytesPerGiB).round();
     if (bytes == 0) return;
+    if (!mounted) return;
     setState(() {
       _saving = true;
       _error = null;
@@ -2038,6 +2060,7 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
         bytes,
         note: _packNoteCtrl.text.trim(),
       );
+      if (!mounted) return;
       _packNoteCtrl.clear();
       await _load();
     } catch (e) {
@@ -2048,12 +2071,14 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
   }
 
   Future<void> _saveMonthlyOverride(int? bytes) async {
+    if (!mounted) return;
     setState(() {
       _saving = true;
       _error = null;
     });
     try {
       await widget.appState.adminSetMonthlyDownloadQuota(widget.userId, bytes);
+      if (!mounted) return;
       await _load();
     } catch (e) {
       if (mounted) setState(() => _error = '更新周期额度失败：$e');
@@ -2259,7 +2284,7 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                                   loading: _saving,
                                   onTap: () {
                                     final v = double.tryParse(_packGiBCtrl.text.trim());
-                                    if (v != null && v != 0) _adjustPackGiB(v);
+                                    if (v != null && v.isFinite && v != 0) _adjustPackGiB(v);
                                   },
                                 ),
                               ],
@@ -2294,7 +2319,7 @@ class _UserDownloadQuotaDialogState extends State<_UserDownloadQuotaDialog> {
                                   loading: _saving,
                                   onTap: () {
                                     final v = double.tryParse(_monthlyGiBCtrl.text.trim());
-                                    if (v != null && v >= 0) {
+                                    if (v != null && v.isFinite && v >= 0 && v <= 1024 * 1024) {
                                       _saveMonthlyOverride((v * _bytesPerGiB).round());
                                     }
                                   },

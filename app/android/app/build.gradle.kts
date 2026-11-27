@@ -22,11 +22,16 @@ val releaseKeyAlias = keystoreProperties.getProperty("keyAlias")
 val releaseKeyPassword = keystoreProperties.getProperty("keyPassword")
     ?: System.getenv("ANDROID_KEY_PASSWORD")
 
+val releaseStoreFile = releaseStoreFilePath?.let { path ->
+    val direct = file(path)
+    if (direct.exists()) direct else rootProject.file(path)
+}
+
 val hasReleaseSigning = !releaseStoreFilePath.isNullOrBlank() &&
     !releaseStorePassword.isNullOrBlank() &&
     !releaseKeyAlias.isNullOrBlank() &&
     !releaseKeyPassword.isNullOrBlank() &&
-    file(releaseStoreFilePath).exists()
+    (releaseStoreFile?.exists() == true)
 
 if (System.getenv("REQUIRE_RELEASE_SIGNING") == "true" && !hasReleaseSigning) {
     throw GradleException(
@@ -51,12 +56,16 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // Restrict packaged ABIs to match compiled Rust `libvedro_ffi.so` (excludes sherpa-onnx x86)
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
     }
 
     signingConfigs {
         if (hasReleaseSigning) {
             create("release") {
-                storeFile = file(releaseStoreFilePath!!)
+                storeFile = releaseStoreFile!!
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
                 keyPassword = releaseKeyPassword
@@ -66,6 +75,10 @@ android {
 
     buildTypes {
         release {
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             signingConfig = if (hasReleaseSigning) {
                 signingConfigs.getByName("release")
             } else {

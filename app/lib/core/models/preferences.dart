@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -9,7 +10,7 @@ import '../theme/display_profile.dart';
 import '../theme/dynamic_color_engine.dart';
 import '../theme/vedro_skin.dart';
 
-/// Deterministic lightweight hash for local app passcode verification (no plain PIN on disk).
+/// Deterministic legacy v1 hash for local passcode verification (kept for compatibility).
 String hashPasscode(String pin) {
   final bytes = utf8.encode('vedro.lock.v1::$pin');
   var h1 = 0x811c9dc5;
@@ -19,6 +20,79 @@ String hashPasscode(String pin) {
     h2 = ((h2 + (b << 5) - b) ^ (h1 >> 3)) & 0xFFFFFFFF;
   }
   return '${h1.toRadixString(16).padLeft(8, '0')}${h2.toRadixString(16).padLeft(8, '0')}';
+}
+
+String _mixPasscodeV2(String salt, String pin) {
+  var state = utf8.encode('vedro.lock.v2::$salt::$pin');
+  var a = 0x6a09e667;
+  var b = 0xbb67ae85;
+  var c = 0x3c6ef372;
+  var d = 0xa54ff53a;
+  for (var round = 0; round < 10000; round++) {
+    a = (a ^ round ^ 0x9e3779b9) & 0xFFFFFFFF;
+    for (var i = 0; i < state.length; i++) {
+      final byte = state[i];
+      a = ((a ^ byte) * 0x01000193) & 0xFFFFFFFF;
+      b = (((b << 7) | (b >>> 25)) ^ (a + byte + i)) & 0xFFFFFFFF;
+      c = ((c + b + 0x85ebca6b) ^ (a >>> 11)) & 0xFFFFFFFF;
+      d = (((d ^ c) * 0xc2b2ae35) ^ (b >>> 13)) & 0xFFFFFFFF;
+    }
+    final tmp = a;
+    a = (b ^ (d >>> 5)) & 0xFFFFFFFF;
+    b = (c + tmp) & 0xFFFFFFFF;
+    c = (d ^ (a << 3)) & 0xFFFFFFFF;
+    d = (tmp + b) & 0xFFFFFFFF;
+  }
+  return '${a.toRadixString(16).padLeft(8, '0')}'
+      '${b.toRadixString(16).padLeft(8, '0')}'
+      '${c.toRadixString(16).padLeft(8, '0')}'
+      '${d.toRadixString(16).padLeft(8, '0')}';
+}
+
+/// Generate a salted, key-stretched (`10,000` rounds) v2 passcode hash (`vedro.lock.v2:<salt>:<digest>`).
+String createSaltedPasscodeHash(String pin) {
+  final rng = math.Random.secure();
+  final saltBytes = List<int>.generate(12, (_) => rng.nextInt(256));
+  final salt = saltBytes.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
+  final digest = _mixPasscodeV2(salt, pin);
+  return 'vedro.lock.v2:$salt:$digest';
+}
+
+bool _constantTimeEquals(String a, String b) {
+  if (a.length != b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) {
+    diff |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
+  }
+  return diff == 0;
+}
+
+/// Verify a candidate PIN against either a salted `vedro.lock.v2` hash or legacy v1 hash.
+bool verifyPasscode(String pin, String storedHash) {
+  final stored = storedHash.trim();
+  if (stored.isEmpty) return false;
+  if (stored.startsWith('vedro.lock.v2:')) {
+    final parts = stored.split(':');
+    if (parts.length != 3 || parts[1].isEmpty || parts[2].isEmpty) return false;
+    return _constantTimeEquals(_mixPasscodeV2(parts[1], pin), parts[2]);
+  }
+  return _constantTimeEquals(hashPasscode(pin), stored);
+}
+
+double _finiteDouble(dynamic raw, double fallback, double min, double max) {
+  if (raw is num) {
+    final d = raw.toDouble();
+    if (d.isFinite) return d.clamp(min, max).toDouble();
+  }
+  return fallback;
+}
+
+int _clampedInt(dynamic raw, int fallback, int min, int max) {
+  if (raw is num) {
+    final d = raw.toDouble();
+    if (d.isFinite) return d.round().clamp(min, max);
+  }
+  return fallback;
 }
 
 class AccentPalette {
@@ -1107,12 +1181,12 @@ class VedroPreferences {
             : const {},
         hardwareProfileInitSig: (j['hardware_profile_init_sig'] ?? '').toString(),
         accentId: (j['accent_id'] ?? 'blue').toString(),
-        cardRadius: (j['card_radius'] as num?)?.toDouble() ?? 12.0,
+        cardRadius: _finiteDouble(j['card_radius'], 12.0, 0.0, 28.0),
         glassIntensity: (j['glass_intensity'] ?? 'standard').toString(),
         reduceMotion: j['reduce_motion'] == true,
         listDensity: (j['list_density'] ?? 'comfortable').toString(),
         sectionSpacing: (j['section_spacing'] ?? 'compact').toString(),
-        posterScale: ((j['poster_scale'] as num?)?.toDouble() ?? 1.0).clamp(0.75, 1.25),
+        posterScale: _finiteDouble(j['poster_scale'], 1.0, 0.75, 1.25),
         showRatings: j['show_ratings'] != false,
         showYear: j['show_year'] != false,
         showWatchedBadge: j['show_watched_badge'] != false,
@@ -1126,23 +1200,23 @@ class VedroPreferences {
         incognitoMode: j['incognito_mode'] == true,
         tvModeOverride: j['tv_mode_override'] == true,
         ignoredUpdateVersion: (j['ignored_update_version'] ?? '').toString(),
-        bufferSizeMb: (j['buffer_size_mb'] as num?)?.toInt() ?? 128,
+        bufferSizeMb: _clampedInt(j['buffer_size_mb'], 128, 16, 1024),
         autoPlayNext: j['auto_play_next'] != false,
         autoSkipIntro: j['auto_skip_intro'] == true,
         autoSkipOutro: j['auto_skip_outro'] == true,
-        customSkipIntroSecs: (j['custom_skip_intro_secs'] as num?)?.toInt() ?? 0,
-        customSkipOutroSecs: (j['custom_skip_outro_secs'] as num?)?.toInt() ?? 0,
+        customSkipIntroSecs: _clampedInt(j['custom_skip_intro_secs'], 0, 0, 600),
+        customSkipOutroSecs: _clampedInt(j['custom_skip_outro_secs'], 0, 0, 600),
         rememberPosition: j['remember_position'] != false,
         rememberBrightness: j['remember_brightness'] != false,
-        savedBrightness: ((j['saved_brightness'] as num?)?.toDouble() ?? 1.0).clamp(0.15, 1.0),
+        savedBrightness: _finiteDouble(j['saved_brightness'], 1.0, 0.15, 1.0),
         rememberVolume: j['remember_volume'] != false,
-        savedVolume: ((j['saved_volume'] as num?)?.toDouble() ?? 100.0).clamp(0.0, 200.0),
+        savedVolume: _finiteDouble(j['saved_volume'], 100.0, 0.0, 300.0),
         rememberSpeed: j['remember_speed'] != false,
         rememberAspect: j['remember_aspect'] != false,
         showNetworkSpeed: j['show_network_speed'] != false,
-        defaultSpeed: (j['default_speed'] as num?)?.toDouble() ?? 1.0,
-        longPressSpeed: (j['long_press_speed'] as num?)?.toDouble() ?? 2.0,
-        seekStepSecs: (j['seek_step_secs'] as num?)?.toInt() ?? 10,
+        defaultSpeed: _finiteDouble(j['default_speed'], 1.0, 0.25, 4.0),
+        longPressSpeed: _finiteDouble(j['long_press_speed'], 2.0, 1.25, 4.0),
+        seekStepSecs: _clampedInt(j['seek_step_secs'], 10, 3, 120),
         pinchToZoom: j['pinch_to_zoom'] != false,
         enablePip: j['enable_pip'] != false,
         backgroundAudio: j['background_audio'] == true,
@@ -1155,23 +1229,23 @@ class VedroPreferences {
         anime4kOnlyAnime: j['anime4k_only_anime'] != false,
         customMpvConf: (j['custom_mpv_conf'] ?? '').toString(),
         preferredAudioLang: (j['preferred_audio_lang'] ?? 'auto').toString(),
-        maxVolumePercent: (j['max_volume_percent'] as num?)?.toInt() ?? 150,
-        audioDelayMs: (j['audio_delay_ms'] as num?)?.toInt() ?? 0,
+        maxVolumePercent: _clampedInt(j['max_volume_percent'], 150, 100, 300),
+        audioDelayMs: _clampedInt(j['audio_delay_ms'], 0, -5000, 5000),
         preferredSubLang: (j['preferred_sub_lang'] ?? 'zh').toString(),
         autoLoadExternalSubs: j['auto_load_external_subs'] != false,
         forceAssOverride: j['force_ass_override'] == true,
         subtitleFontFamily: (j['subtitle_font_family'] ?? '').toString(),
-        subtitleFontScale: (j['subtitle_font_scale'] as num?)?.toDouble() ?? 1.0,
-        subtitlePos: (j['subtitle_pos'] as num?)?.toInt() ?? 96,
+        subtitleFontScale: _finiteDouble(j['subtitle_font_scale'], 1.0, 0.5, 2.5),
+        subtitlePos: _clampedInt(j['subtitle_pos'], 96, 50, 110),
         subtitleColorHex: (j['subtitle_color_hex'] ?? '#FFFFFF').toString(),
-        subtitleOutlineWidth: (j['subtitle_outline_width'] as num?)?.toDouble() ?? 2.4,
-        subtitleBgOpacity: (j['subtitle_bg_opacity'] as num?)?.toDouble() ?? 0.0,
-        subtitleDelaySecs: (j['subtitle_delay_secs'] as num?)?.toDouble() ?? 0.0,
+        subtitleOutlineWidth: _finiteDouble(j['subtitle_outline_width'], 2.4, 0.0, 8.0),
+        subtitleBgOpacity: _finiteDouble(j['subtitle_bg_opacity'], 0.0, 0.0, 1.0),
+        subtitleDelaySecs: _finiteDouble(j['subtitle_delay_secs'], 0.0, -30.0, 30.0),
         danmakuEnabled: j['danmaku_enabled'] == true,
-        danmakuOpacity: (j['danmaku_opacity'] as num?)?.toDouble() ?? 0.82,
-        danmakuFontSize: (j['danmaku_font_size'] as num?)?.toDouble() ?? 18.0,
-        danmakuSpeedSecs: (j['danmaku_speed_secs'] as num?)?.toDouble() ?? 9.0,
-        danmakuArea: (j['danmaku_area'] as num?)?.toDouble() ?? 0.5,
+        danmakuOpacity: _finiteDouble(j['danmaku_opacity'], 0.82, 0.1, 1.0),
+        danmakuFontSize: _finiteDouble(j['danmaku_font_size'], 18.0, 12.0, 32.0),
+        danmakuSpeedSecs: _finiteDouble(j['danmaku_speed_secs'], 9.0, 4.0, 20.0),
+        danmakuArea: _finiteDouble(j['danmaku_area'], 0.5, 0.15, 1.0),
         danmakuHideTop: j['danmaku_hide_top'] == true,
         danmakuHideBottom: j['danmaku_hide_bottom'] == true,
         danmakuApiUrl: (j['danmaku_api_url'] ?? '').toString(),
@@ -1182,11 +1256,9 @@ class VedroPreferences {
         aiTargetLang: (j['ai_target_lang'] ?? '简体中文').toString(),
         aiBilingualSubtitle: j['ai_bilingual_subtitle'] != false,
         aiSubtitleMode: (j['ai_subtitle_mode'] ?? 'bilingual_trans_top').toString(),
-        aiSubtitleFontScale:
-            ((j['ai_subtitle_font_scale'] as num?)?.toDouble() ?? 1.0).clamp(0.6, 1.8),
-        aiSubtitleBatchSize: ((j['ai_subtitle_batch_size'] as num?)?.toInt() ?? 18).clamp(8, 32),
-        aiSubtitleLookaheadSecs:
-            ((j['ai_subtitle_lookahead_secs'] as num?)?.toInt() ?? 60).clamp(30, 300),
+        aiSubtitleFontScale: _finiteDouble(j['ai_subtitle_font_scale'], 1.0, 0.6, 1.8),
+        aiSubtitleBatchSize: _clampedInt(j['ai_subtitle_batch_size'], 18, 8, 32),
+        aiSubtitleLookaheadSecs: _clampedInt(j['ai_subtitle_lookahead_secs'], 60, 30, 300),
         aiDirectClientIp: j['ai_direct_client_ip'] != false,
         aiCachedModels: ((j['ai_cached_models'] as List<dynamic>?) ?? const [])
             .map((e) => e.toString())
@@ -1201,14 +1273,13 @@ class VedroPreferences {
         asrSourceLang: (j['asr_source_lang'] ?? 'auto').toString(),
         asrDirectClientIp: j['asr_direct_client_ip'] == true,
         beautyFilterPreset: (j['beauty_filter_preset'] ?? 'off').toString(),
-        beautyFilterStrength:
-            ((j['beauty_filter_strength'] as num?)?.toDouble() ?? 0.55).clamp(0.15, 1.0),
+        beautyFilterStrength: _finiteDouble(j['beauty_filter_strength'], 0.55, 0.15, 1.0),
         passcodeEnabled: j['passcode_enabled'] == true,
         passcodeHash: (j['passcode_hash'] ?? '').toString(),
-        lockTimeoutSecs: (j['lock_timeout_secs'] as num?)?.toInt() ?? 60,
+        lockTimeoutSecs: _clampedInt(j['lock_timeout_secs'], 60, 0, 3600),
         blurInBackground: false,
         downloadWifiOnly: j['download_wifi_only'] != false,
-        downloadMaxConcurrent: (j['download_max_concurrent'] as num?)?.toInt() ?? 2,
+        downloadMaxConcurrent: _clampedInt(j['download_max_concurrent'], 2, 1, 4),
         downloadCustomDir: (j['download_custom_dir'] ?? '').toString(),
         customFontPaths: ((j['custom_font_paths'] as List<dynamic>?) ?? const [])
             .map((e) => e.toString())

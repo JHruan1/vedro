@@ -26,7 +26,15 @@ $ReleaseDir = Join-Path $RootDir "app\build\windows\x64\runner\Release"
 Copy-Item (Join-Path $RootDir "target\release\vedro_ffi.dll") (Join-Path $ReleaseDir "vedro_ffi.dll") -Force
 
 # Bundle MSVC runtime DLLs alongside Vedro.exe so clean Windows 10/11 machines need zero separate VC++ redist install
-foreach ($VcDll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "concrt140.dll")) {
+foreach ($VcDll in @(
+  "vcruntime140.dll",
+  "vcruntime140_1.dll",
+  "msvcp140.dll",
+  "msvcp140_1.dll",
+  "msvcp140_2.dll",
+  "msvcp140_atomic_wait.dll",
+  "concrt140.dll"
+)) {
   $SysDll = Join-Path $env:SystemRoot "System32\$VcDll"
   $DestDll = Join-Path $ReleaseDir $VcDll
   if ((Test-Path $SysDll) -and -not (Test-Path $DestDll)) {

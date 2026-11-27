@@ -11,14 +11,28 @@ class NerdStatsHud extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final pb = (stats['playback'] as Map<String, dynamic>?) ?? const {};
-    final px = (stats['proxy'] as Map<String, dynamic>?) ?? const {};
-    final cache = (px['cache'] as Map<String, dynamic>?) ?? const {};
-    final hdr = (pb['hdr_decision'] as Map<String, dynamic>?) ?? const {};
-    final audio = (pb['audio_decision'] as Map<String, dynamic>?) ?? const {};
+    final pb = stats['playback'] is Map<String, dynamic>
+        ? stats['playback'] as Map<String, dynamic>
+        : const <String, dynamic>{};
+    final px = stats['proxy'] is Map<String, dynamic>
+        ? stats['proxy'] as Map<String, dynamic>
+        : const <String, dynamic>{};
+    final cache = px['cache'] is Map<String, dynamic>
+        ? px['cache'] as Map<String, dynamic>
+        : const <String, dynamic>{};
+    final hdr = pb['hdr_decision'] is Map<String, dynamic>
+        ? pb['hdr_decision'] as Map<String, dynamic>
+        : const <String, dynamic>{};
+    final audio = pb['audio_decision'] is Map<String, dynamic>
+        ? pb['audio_decision'] as Map<String, dynamic>
+        : const <String, dynamic>{};
 
     final cachedMb = (((cache['cached_bytes'] as num?) ?? 0) / (1024 * 1024)).toStringAsFixed(1);
-    final mbps = ((px['throughput_mbps'] as num?) ?? 0).toStringAsFixed(1);
+    final liveSpeedBps = (px['current_speed_bytes_per_sec'] as num?)?.toDouble() ?? 0.0;
+    final rawMbps = liveSpeedBps > 0
+        ? (liveSpeedBps * 8.0 / 1000000.0)
+        : ((px['throughput_mbps'] as num?)?.toDouble() ?? 0.0);
+    final mbps = rawMbps.isFinite ? rawMbps.toStringAsFixed(1) : '0.0';
 
     return SizedBox(
       width: 316,

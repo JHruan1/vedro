@@ -18,6 +18,114 @@ import '../core/theme/dynamic_color_engine.dart';
 import '../widgets/danmaku_engine.dart';
 import '../widgets/local_asr_engine.dart';
 
+/// Centralized user-friendly Chinese error formatter translating raw transport, TLS,
+/// DNS, HTTP status, and malformed HTML/JSON responses into actionable explanations.
+class VedroErrorFormatter {
+  static String friendly(Object error) => format(error);
+
+  static String format(Object error) {
+    final raw = error
+        .toString()
+        .replaceFirst('VedroCoreException: ', '')
+        .replaceFirst('Exception: ', '')
+        .trim();
+    if (raw.isEmpty) return '操作失败，请稍后重试';
+    final lower = raw.toLowerCase();
+
+    if (lower.contains('unauthorized') ||
+        lower.contains('http 401') ||
+        lower.contains('status 401') ||
+        lower.contains('invalid username') ||
+        lower.contains('invalid password')) {
+      return '用户名或密码不正确，或登录凭证已失效';
+    }
+    if (lower.contains('http 403') || lower.contains('status 403') || lower.contains('forbidden')) {
+      return '服务器拒绝访问（403），请检查账号权限或是否被限制';
+    }
+    if (lower.contains('http 404') || lower.contains('status 404') || lower.contains('not found')) {
+      return '接口或资源不存在（404），请确认服务器地址与路径（如 /emby）';
+    }
+    if (lower.contains('http 429') || lower.contains('status 429') || lower.contains('too many requests')) {
+      return '请求过于频繁（429），请稍后再试';
+    }
+    if (lower.contains('http 502') || lower.contains('http 503') || lower.contains('http 504')) {
+      return '服务器网关异常或维护中（502/503/504），请稍后重试';
+    }
+    if (lower.contains('certificate') ||
+        lower.contains('tls') ||
+        lower.contains('ssl') ||
+        lower.contains('handshake') ||
+        lower.contains('invalidpeer') ||
+        lower.contains('unknownissuer')) {
+      return 'HTTPS 证书校验失败：若使用自签名证书，请在「网络与代理」中开启允许自签名证书';
+    }
+    if (lower.contains('dns') ||
+        lower.contains('failed to lookup') ||
+        lower.contains('nodename nor servname') ||
+        lower.contains('name or service not known') ||
+        lower.contains('no such host')) {
+      return '域名解析失败，请检查服务器地址拼写或网络连接';
+    }
+    if (lower.contains('connection refused') || lower.contains('os error 111') || lower.contains('econnrefused')) {
+      return '连接被拒绝，请确认服务器已运行且端口正确';
+    }
+    if (lower.contains('timed out') || lower.contains('timeout') || lower.contains('deadline')) {
+      return '连接超时，请检查网络状况、防火墙或代理设置';
+    }
+    if (lower.contains('expected value at line 1') ||
+        lower.contains('<!doctype') ||
+        lower.contains('<html') ||
+        lower.contains('formatexception')) {
+      return '服务器返回了非预期页面（可能被反向代理拦截或地址有误）';
+    }
+    return raw;
+  }
+}
+
+/// Recent local file or direct network URL playback entry persisted in SQLite KV (`local_history_v1`).
+class VedroLocalHistoryEntry {
+  const VedroLocalHistoryEntry({
+    required this.key,
+    required this.title,
+    required this.target,
+    required this.isNetworkUrl,
+    this.positionSecs = 0.0,
+    this.durationSecs = 0.0,
+    this.playedAtMs = 0,
+  });
+
+  final String key;
+  final String title;
+  final String target;
+  final bool isNetworkUrl;
+  final double positionSecs;
+  final double durationSecs;
+  final int playedAtMs;
+
+  double get progress =>
+      durationSecs > 0 ? (positionSecs / durationSecs).clamp(0.0, 1.0) : 0.0;
+
+  Map<String, dynamic> toJson() => {
+        'key': key,
+        'title': title,
+        'target': target,
+        'is_network_url': isNetworkUrl,
+        'position_secs': positionSecs,
+        'duration_secs': durationSecs,
+        'played_at_ms': playedAtMs,
+      };
+
+  factory VedroLocalHistoryEntry.fromJson(Map<String, dynamic> j) => VedroLocalHistoryEntry(
+        key: (j['key'] ?? '').toString(),
+        title: (j['title'] ?? '').toString(),
+        target: (j['target'] ?? '').toString(),
+        isNetworkUrl: j['is_network_url'] == true,
+        positionSecs: asJsonDouble(j['position_secs']) ?? 0.0,
+        durationSecs: asJsonDouble(j['duration_secs']) ?? 0.0,
+        playedAtMs: asJsonInt(j['played_at_ms']) ?? 0,
+      );
+}
+
 /// Central reactive application state backed directly by the compiled Rust core (`VedroCoreClient`).
 ///
 /// Architecture aligned with SenPlayer / Forward:
@@ -99,9 +207,12 @@ class VedroAppState extends ChangeNotifier {
   final ValueNotifier<int> speedtestTickNotifier = ValueNotifier<int>(0);
 
   bool _disposed = false;
+  int _sessionEpoch = 0;
+  int _speedTestGen = 0;
   Timer? _prefsDebounceTimer;
   Timer? _quotaRefreshTimer;
   bool _prefsDirty = false;
+  List<VedroLocalHistoryEntry> localHistory = [];
 
   @override
   void notifyListeners() {
@@ -238,6 +349,15 @@ class VedroAppState extends ChangeNotifier {
         }
       } catch (_) {
         boot = null;
+      }
+
+      // On Android, probe Leanback / TV capability BEFORE applying first-run hardware defaults
+      // so Android TV devices don't get stuck with phone defaults on cold start!
+      if (!kIsWeb && Platform.isAndroid) {
+        try {
+          await NativePlaybackChannel.queryDisplayAndAudioCapabilities()
+              .timeout(const Duration(milliseconds: 250));
+        } catch (_) {}
       }
 
       if (boot != null) {
@@ -381,10 +501,12 @@ class VedroAppState extends ChangeNotifier {
           _supportDirPath = dir.path;
         } catch (_) {}
       }());
+      unawaited(_loadLocalHistory());
 
       // Background hardware probe + proxy activation + live session revalidation (never blocks UI entry!)
       final bgFuture = () async {
         try {
+          final prevTv = NativePlaybackChannel.detectedAndroidTv;
           final hwCaps = await NativePlaybackChannel.queryDisplayAndAudioCapabilities();
           final detectedProxy = hwCaps['system_proxy_url']?.toString().trim() ?? '';
           if (detectedProxy.isNotEmpty) {
@@ -398,6 +520,9 @@ class VedroAppState extends ChangeNotifier {
                 hwCaps['supports_native_dolby_vision'] ?? d['supports_native_dolby_vision'];
             d['max_luminance_nits'] = hwCaps['max_luminance_nits'] ?? d['max_luminance_nits'];
             settings['display'] = d;
+          }
+          if (prevTv != NativePlaybackChannel.detectedAndroidTv) {
+            notifyListeners();
           }
         } catch (_) {}
 
@@ -470,6 +595,7 @@ class VedroAppState extends ChangeNotifier {
     String? proxyUrl,
     bool? acceptInvalidTls,
   }) async {
+    final epoch = ++_sessionEpoch;
     errorMessage = null;
     loginStage = '正在连接服务器…';
     isBusy = true;
@@ -483,6 +609,9 @@ class VedroAppState extends ChangeNotifier {
         if (effectiveProxyUrl.isNotEmpty) 'proxy_url': effectiveProxyUrl,
         'accept_invalid_certs': acceptInvalidCerts,
       }) as Map<String, dynamic>;
+      if (epoch != _sessionEpoch || _disposed) {
+        return ServerCapabilitiesModel.fromJson(res['capabilities'] as Map<String, dynamic>);
+      }
       capabilities = ServerCapabilitiesModel.fromJson(
         res['capabilities'] as Map<String, dynamic>,
       );
@@ -490,11 +619,15 @@ class VedroAppState extends ChangeNotifier {
       connectedUrl = url.trim();
       return capabilities!;
     } catch (e) {
-      errorMessage = _humanizeError(e.toString());
+      if (epoch == _sessionEpoch) {
+        errorMessage = _humanizeError(e.toString());
+      }
       rethrow;
     } finally {
-      isBusy = false;
-      notifyListeners();
+      if (epoch == _sessionEpoch) {
+        isBusy = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -516,6 +649,7 @@ class VedroAppState extends ChangeNotifier {
         proxyUrl: proxyUrl,
         acceptInvalidTls: acceptInvalidTls,
       );
+      final epoch = _sessionEpoch;
       loginStage = '正在验证身份…';
       isBusy = true;
       notifyListeners();
@@ -524,31 +658,8 @@ class VedroAppState extends ChangeNotifier {
         'username': user.trim(),
         'password': password,
       }) as Map<String, dynamic>;
-      final auth = res['auth'] as Map<String, dynamic>;
-      final userObj = auth['User'] as Map<String, dynamic>;
-      final policyObj = userObj['Policy'] as Map<String, dynamic>?;
-      username = userObj['Name']?.toString();
-      userId = userObj['Id']?.toString();
-      isAdmin = policyObj?['IsAdministrator'] == true;
-      enableContentDownloading = policyObj?['EnableContentDownloading'] == true;
-      meQuota = null;
-      if (res['capabilities'] is Map<String, dynamic>) {
-        capabilities = ServerCapabilitiesModel.fromJson(
-          res['capabilities'] as Map<String, dynamic>,
-        );
-      }
-      if (res['proxy_addr'] != null) proxyAddr = res['proxy_addr'].toString();
-      activeServerId = capabilities?.serverId.isNotEmpty == true
-          ? capabilities!.serverId
-          : (auth['ServerId']?.toString() ?? connectedUrl);
-
-      _clearHomeCollections();
-      isBusy = false;
-      loginStage = null;
-      isLoadingHome = true;
-      notifyListeners();
-
-      _startEventPolling();
+      if (epoch != _sessionEpoch || _disposed) return;
+      _applyAuthLoginResult(res);
       await _reloadSavedServers();
       unawaited(refreshHome());
       unawaited(refreshMeQuota());
@@ -561,6 +672,59 @@ class VedroAppState extends ChangeNotifier {
     }
   }
 
+  void _applyAuthLoginResult(Map<String, dynamic> res) {
+    final auth = asJsonMap(res['auth']);
+    final userObj = asJsonMap(auth['User']);
+    final policyObj = asJsonMapOrNull(userObj['Policy']);
+    username = userObj['Name']?.toString();
+    userId = userObj['Id']?.toString();
+    isAdmin = policyObj?['IsAdministrator'] == true;
+    enableContentDownloading = policyObj?['EnableContentDownloading'] == true;
+    meQuota = null;
+    if (res['capabilities'] is Map<String, dynamic>) {
+      capabilities = ServerCapabilitiesModel.fromJson(
+        res['capabilities'] as Map<String, dynamic>,
+      );
+    }
+    if (res['proxy_addr'] != null) proxyAddr = res['proxy_addr'].toString();
+    activeServerId = capabilities?.serverId.isNotEmpty == true
+        ? capabilities!.serverId
+        : (auth['ServerId']?.toString() ?? connectedUrl);
+
+    _clearHomeCollections();
+    isBusy = false;
+    loginStage = null;
+    isLoadingHome = true;
+    notifyListeners();
+    _startEventPolling();
+  }
+
+  /// Initiate Jellyfin Quick Connect (returns `{code, secret}` to authorize from another device).
+  Future<Map<String, dynamic>> initiateQuickConnect(
+    String url, {
+    String? proxyUrl,
+    bool? acceptInvalidTls,
+  }) async {
+    await connectServer(url, proxyUrl: proxyUrl, acceptInvalidTls: acceptInvalidTls);
+    final res = await core.invoke('quick_connect_initiate');
+    return asJsonMap(res);
+  }
+
+  /// Poll Jellyfin Quick Connect status; when authorized, finishes sign-in and returns `true`.
+  Future<bool> pollQuickConnect(String secret) async {
+    final epoch = _sessionEpoch;
+    final res = asJsonMap(await core.invoke('quick_connect_check', {'secret': secret}));
+    if (epoch != _sessionEpoch || _disposed) return false;
+    if (res['authenticated'] == true) {
+      _applyAuthLoginResult(res);
+      await _reloadSavedServers();
+      unawaited(refreshHome());
+      unawaited(refreshMeQuota());
+      return true;
+    }
+    return false;
+  }
+
   Future<void> restoreSavedServer(
     SavedServerProfile profile, {
     bool silentError = false,
@@ -571,6 +735,8 @@ class VedroAppState extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final epoch = ++_sessionEpoch;
+    final prevServerId = activeServerId;
     if (!silentError) errorMessage = null;
     homeError = null;
     if (!preserveCachedHome) {
@@ -594,6 +760,8 @@ class VedroAppState extends ChangeNotifier {
         if (routeProxy.isNotEmpty) 'proxy_url': routeProxy,
         'accept_invalid_certs': routeTls,
       }) as Map<String, dynamic>;
+      if (epoch != _sessionEpoch || _disposed) return;
+
       connectedUrl = targetUrl;
       activeServerId = profile.id;
       if (res['proxy_addr'] != null) proxyAddr = res['proxy_addr'].toString();
@@ -608,7 +776,7 @@ class VedroAppState extends ChangeNotifier {
       enableContentDownloading = uPolicy?['EnableContentDownloading'] == true;
       meQuota = null;
 
-      if (!preserveCachedHome || activeServerId != profile.id) {
+      if (!preserveCachedHome || prevServerId != profile.id) {
         _clearHomeCollections();
       }
       isBusy = false;
@@ -621,6 +789,7 @@ class VedroAppState extends ChangeNotifier {
       unawaited(refreshHome());
       unawaited(refreshMeQuota());
     } catch (e) {
+      if (epoch != _sessionEpoch || _disposed) return;
       final humanized = _humanizeError(e.toString());
       if (silentError) {
         // Keep the remembered server selected even if network/proxy is temporarily unreachable on cold start
@@ -724,6 +893,7 @@ class VedroAppState extends ChangeNotifier {
   }
 
   Future<void> switchServerRoute(String serverId, String routeId) async {
+    final epoch = ++_sessionEpoch;
     errorMessage = null;
     homeError = null;
     isBusy = true;
@@ -734,6 +904,7 @@ class VedroAppState extends ChangeNotifier {
         'server_id': serverId,
         'route_id': routeId,
       }) as Map<String, dynamic>;
+      if (epoch != _sessionEpoch || _disposed) return;
       if (res['proxy_addr'] != null) proxyAddr = res['proxy_addr'].toString();
       if (res['capabilities'] is Map<String, dynamic>) {
         capabilities = ServerCapabilitiesModel.fromJson(
@@ -755,6 +926,7 @@ class VedroAppState extends ChangeNotifier {
       }
       meQuota = null;
       await _reloadSavedServers();
+      if (epoch != _sessionEpoch || _disposed) return;
       isBusy = false;
       loginStage = null;
       isLoadingHome = true;
@@ -763,10 +935,12 @@ class VedroAppState extends ChangeNotifier {
       unawaited(refreshHome());
       unawaited(refreshMeQuota());
     } catch (e) {
-      errorMessage = _humanizeError(e.toString());
-      isBusy = false;
-      loginStage = null;
-      notifyListeners();
+      if (epoch == _sessionEpoch) {
+        errorMessage = _humanizeError(e.toString());
+        isBusy = false;
+        loginStage = null;
+        notifyListeners();
+      }
       rethrow;
     }
   }
@@ -799,7 +973,9 @@ class VedroAppState extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    ++_sessionEpoch;
     _wsPollTimer?.cancel();
+    _wsPollTimer = null;
     try {
       await core.invoke('logout');
     } catch (_) {}
@@ -848,6 +1024,7 @@ class VedroAppState extends ChangeNotifier {
 
   Future<void> refreshHome() async {
     if (!isSignedIn) return;
+    final epoch = _sessionEpoch;
     if (!hasAnyHomeContent) {
       isLoadingHome = true;
       homeError = null;
@@ -860,15 +1037,18 @@ class VedroAppState extends ChangeNotifier {
         'include_suggestions': wantSuggestions,
         'include_favorites': wantFavorites,
       }) as Map<String, dynamic>;
+      if (epoch != _sessionEpoch || _disposed) return;
       _applyHomePayload(res);
       homeError = null;
     } catch (e) {
-      if (!hasAnyHomeContent) {
+      if (epoch == _sessionEpoch && !hasAnyHomeContent) {
         homeError = _humanizeError(e.toString());
       }
     } finally {
-      isLoadingHome = false;
-      notifyListeners();
+      if (epoch == _sessionEpoch) {
+        isLoadingHome = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -878,7 +1058,9 @@ class VedroAppState extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final epoch = _sessionEpoch;
     final res = await core.invoke('list_playlists') as Map<String, dynamic>;
+    if (epoch != _sessionEpoch || _disposed) return;
     playlists = _parseItems(res['Items']);
     notifyListeners();
   }
@@ -899,9 +1081,63 @@ class VedroAppState extends ChangeNotifier {
     unawaited(refreshHome());
   }
 
+  /// Fetch Next Up episode(s) for a specific Series so DetailScreen auto-selects the right season.
+  Future<MediaItemModel?> getNextUpForSeries(String seriesId) async {
+    if (!isSignedIn || seriesId.isEmpty) return null;
+    try {
+      final res = await core.invoke('get_next_up_for_series', {'series_id': seriesId});
+      if (res is Map<String, dynamic>) {
+        final items = _parseItems(res['Items']);
+        if (items.isNotEmpty) return items.first;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Per-series / per-item remembered audio & subtitle track selection (`track_preferences` table).
+  Future<({String? audioLang, String? subtitleLang, int? audioIndex, int? subtitleIndex})?>
+      getTrackPreference(String seriesOrItemId) async {
+    if (seriesOrItemId.isEmpty) return null;
+    try {
+      final res = await core.invoke('get_track_preference', {
+        'series_or_item_id': seriesOrItemId,
+      });
+      if (res is Map<String, dynamic>) {
+        return (
+          audioLang: res['audio_lang']?.toString(),
+          subtitleLang: res['subtitle_lang']?.toString(),
+          audioIndex: asJsonInt(res['audio_index']),
+          subtitleIndex: asJsonInt(res['subtitle_index']),
+        );
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> setTrackPreference(
+    String seriesOrItemId, {
+    String? audioLang,
+    String? subtitleLang,
+    int? audioIndex,
+    int? subtitleIndex,
+  }) async {
+    if (seriesOrItemId.isEmpty || prefs.incognitoMode) return;
+    try {
+      await core.invoke('set_track_preference', {
+        'series_or_item_id': seriesOrItemId,
+        if (audioLang != null) 'audio_lang': audioLang,
+        if (subtitleLang != null) 'subtitle_lang': subtitleLang,
+        if (audioIndex != null) 'audio_index': audioIndex,
+        if (subtitleIndex != null) 'subtitle_index': subtitleIndex,
+      });
+    } catch (_) {}
+  }
+
   Future<void> loadEmbyGoAdminDashboard() async {
     if (!isAdmin || !isSignedIn) return;
+    final epoch = _sessionEpoch;
     final res = await core.invoke('get_embygo_admin_dashboard') as Map<String, dynamic>;
+    if (epoch != _sessionEpoch || _disposed) return;
     embygoAdminDashboard = res;
     notifyListeners();
   }
@@ -1024,13 +1260,155 @@ class VedroAppState extends ChangeNotifier {
     return const {};
   }
 
+  Future<void> _loadLocalHistory() async {
+    try {
+      final kv = await core.invoke('get_kv', {'key': 'local_history_v1'});
+      if (_disposed) return;
+      if (kv is Map<String, dynamic> && kv['value'] is List) {
+        localHistory = (kv['value'] as List)
+            .map(asJsonMapOrNull)
+            .whereType<Map<String, dynamic>>()
+            .map(VedroLocalHistoryEntry.fromJson)
+            .where((e) => e.target.isNotEmpty)
+            .take(30)
+            .toList();
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  /// Strip sensitive query parameters (api_key/token/password/auth) from URLs before persisting history.
+  static String sanitizeUrlForHistory(String raw) {
+    final uri = Uri.tryParse(raw.trim());
+    if (uri == null || !uri.hasQuery) return raw.trim();
+    const sensitive = {'api_key', 'apikey', 'token', 'access_token', 'password', 'pass', 'auth', 'sig', 'signature'};
+    final cleaned = <String, String>{};
+    uri.queryParameters.forEach((k, v) {
+      if (!sensitive.contains(k.toLowerCase())) {
+        cleaned[k] = v;
+      }
+    });
+    return uri.replace(
+      userInfo: uri.userInfo.isNotEmpty ? '' : null,
+      queryParameters: cleaned.isEmpty ? null : cleaned,
+    ).toString();
+  }
+
+  Future<void> recordLocalHistory({
+    required String title,
+    required String target,
+    required bool isNetworkUrl,
+    double positionSecs = 0.0,
+    double durationSecs = 0.0,
+  }) async {
+    if (target.trim().isEmpty || prefs.incognitoMode) return;
+    final safeTarget = isNetworkUrl ? sanitizeUrlForHistory(target) : target.trim();
+    final key = '${isNetworkUrl ? 'url' : 'file'}::$safeTarget';
+    final entry = VedroLocalHistoryEntry(
+      key: key,
+      title: title.trim().isEmpty ? safeTarget : title.trim(),
+      target: safeTarget,
+      isNetworkUrl: isNetworkUrl,
+      positionSecs: positionSecs.isFinite ? positionSecs.clamp(0.0, 86400.0) : 0.0,
+      durationSecs: durationSecs.isFinite ? durationSecs.clamp(0.0, 86400.0) : 0.0,
+      playedAtMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    localHistory = [
+      entry,
+      ...localHistory.where((e) => e.key != key),
+    ].take(30).toList();
+    notifyListeners();
+    try {
+      await core.invoke('set_kv', {
+        'key': 'local_history_v1',
+        'value': localHistory.map((e) => e.toJson()).toList(),
+      });
+    } catch (_) {}
+  }
+
+  Future<void> removeLocalHistoryEntry(String key) async {
+    localHistory = localHistory.where((e) => e.key != key).toList();
+    notifyListeners();
+    try {
+      await core.invoke('set_kv', {
+        'key': 'local_history_v1',
+        'value': localHistory.map((e) => e.toJson()).toList(),
+      });
+    } catch (_) {}
+  }
+
+  Future<void> clearLocalHistory() async {
+    localHistory = [];
+    notifyListeners();
+    try {
+      await core.invoke('set_kv', {'key': 'local_history_v1', 'value': const <dynamic>[]});
+    } catch (_) {}
+  }
+
+  /// Export portable JSON configuration (preferences + home layout; NEVER exports PIN hashes or API keys).
+  String exportConfigJson() {
+    final p = prefs.toJson()
+      ..remove('passcode_hash')
+      ..remove('passcode_enabled')
+      ..remove('ai_api_key')
+      ..remove('asr_api_key');
+    return const JsonEncoder.withIndent('  ').convert({
+      'format': 'vedro-config',
+      'version': 1,
+      'exported_at': DateTime.now().toIso8601String(),
+      'preferences': p,
+      'home_layout': {
+        'show_hero': showHomeHero,
+        'sections': homeSections.map((s) => s.toJson()).toList(),
+      },
+    });
+  }
+
+  /// Import a portable Vedro JSON config (preserves local passcode lock and API keys).
+  Future<void> importConfigJson(String rawJson) async {
+    final parsed = jsonDecode(rawJson.trim());
+    if (parsed is! Map) {
+      throw Exception('配置格式无效，请粘贴完整的 JSON 内容');
+    }
+    final prefMap = asJsonMapOrNull(parsed['preferences']);
+    if (prefMap == null) {
+      throw Exception('配置中缺少 preferences 字段');
+    }
+    final imported = VedroPreferences.fromJson(prefMap).copyWith(
+      passcodeEnabled: prefs.passcodeEnabled,
+      passcodeHash: prefs.passcodeHash,
+      aiApiKey: prefs.aiApiKey,
+      asrApiKey: prefs.asrApiKey,
+    );
+    await updatePrefs(imported, immediate: true);
+    final layout = asJsonMapOrNull(parsed['home_layout']);
+    if (layout != null) {
+      await saveHomeLayout(
+        HomeSectionConfig.normalize(layout['sections'] as List<dynamic>?),
+        showHero: layout['show_hero'] is bool ? layout['show_hero'] as bool : showHomeHero,
+      );
+    }
+  }
+
+  /// Reset all user preferences back to factory defaults (preserving passcode lock).
+  Future<void> resetPreferencesToDefaults() async {
+    await updatePrefs(
+      const VedroPreferences().copyWith(
+        passcodeEnabled: prefs.passcodeEnabled,
+        passcodeHash: prefs.passcodeHash,
+      ),
+      immediate: true,
+    );
+    await resetHomeLayout();
+  }
+
   Future<void> saveAiTranslationCache(String cacheKey, Map<int, String> translations) async {
     if (cacheKey.isEmpty || translations.isEmpty) return;
     try {
       final serialized = <String, String>{};
       var count = 0;
       for (final entry in translations.entries) {
-        if (count >= 2500) break;
+        if (count >= 10000) break;
         if (entry.value.isNotEmpty) {
           serialized['${entry.key}'] = entry.value;
           count++;
@@ -1087,10 +1465,12 @@ class VedroAppState extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final epoch = _sessionEpoch;
     isLoadingQuota = true;
     notifyListeners();
     try {
       final res = await core.invoke('get_me_quota');
+      if (epoch != _sessionEpoch || _disposed) return;
       if (res is Map<String, dynamic> && res.containsKey('limits')) {
         meQuota = MeQuotaModel.fromJson(res);
       } else {
@@ -1099,8 +1479,10 @@ class VedroAppState extends ChangeNotifier {
     } catch (_) {
       // Standard Emby / Jellyfin servers do not expose `/emby-compat/me/quota`.
     } finally {
-      isLoadingQuota = false;
-      notifyListeners();
+      if (epoch == _sessionEpoch) {
+        isLoadingQuota = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -1322,15 +1704,21 @@ class VedroAppState extends ChangeNotifier {
                 (k, v) => MapEntry(k.toString(), v.toString()),
               ) ??
               const <String, String>{};
-          final ext = (prep['container']?.toString().trim().isNotEmpty == true)
+          final rawExt = (prep['container']?.toString().trim().isNotEmpty == true)
               ? prep['container'].toString().trim().replaceFirst(RegExp(r'^\.'), '')
               : 'mkv';
+          final ext = rawExt.replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '').toLowerCase();
+          final safeExt = ext.isEmpty ? 'mkv' : ext;
+          final safeItemId = task.itemId.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]+'), '_');
           final rawFilename = prep['filename']?.toString().trim() ?? '';
           final fallbackSize = (prep['size'] as num?)?.toInt() ?? task.totalBytes;
           final proxyUrl = prep['proxy_url']?.toString().trim() ?? '';
           final acceptInvalid = prep['accept_invalid_certs'] == true;
 
           final initialUri = Uri.parse(initialUrlStr);
+          if (!NativePlaybackChannel.isAllowedHttpUrl(initialUrlStr)) {
+            throw const _PermanentDownloadError('下载地址协议不安全，已拒绝');
+          }
           final initialHost = initialUri.host.toLowerCase();
           if (acceptInvalid && initialHost.isNotEmpty) {
             client.badCertificateCallback =
@@ -1349,15 +1737,15 @@ class VedroAppState extends ChangeNotifier {
           if (!await dir.exists()) await dir.create(recursive: true);
 
           String outPath = task.filePath;
-          if (outPath.isEmpty) {
+          if (outPath.isEmpty || !_isPathInsideDirectory(outPath, dir.path)) {
             final baseName = rawFilename.isNotEmpty
                 ? rawFilename
-                : '${task.title}${task.subtitle.isNotEmpty ? ' - ${task.subtitle}' : ''}${task.versionLabel.isNotEmpty ? ' [${task.versionLabel}]' : ''}.$ext';
-            final safeName = baseName
-                .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ()\[\]]+'), '_')
-                .replaceAll(RegExp(r'^\.+'), '')
-                .trim();
-            outPath = '${dir.path}/${safeName.isEmpty ? '${task.itemId}.$ext' : safeName}';
+                : '${task.title}${task.subtitle.isNotEmpty ? ' - ${task.subtitle}' : ''}${task.versionLabel.isNotEmpty ? ' [${task.versionLabel}]' : ''}.$safeExt';
+            final safeName = _sanitizeDownloadFileName(
+              baseName,
+              fallback: '${safeItemId.isEmpty ? 'media' : safeItemId}.$safeExt',
+            );
+            outPath = '${dir.path}/$safeName';
             _replaceDownload(taskId, (d) => d.copyWith(filePath: outPath));
           }
 
@@ -1382,8 +1770,9 @@ class VedroAppState extends ChangeNotifier {
             return;
           }
 
-          var currentUri = Uri.parse(initialUrlStr);
+          var currentUri = initialUri;
           final initialOrigin = '${currentUri.scheme}://${currentUri.authority}';
+          final initialIsPrivate = _isPrivateOrLoopbackHost(initialUri.host);
           HttpClientResponse? resp;
 
           for (var hop = 0; hop < 6; hop++) {
@@ -1418,7 +1807,15 @@ class VedroAppState extends ChangeNotifier {
               if (loc == null || loc.isEmpty) {
                 throw const _PermanentDownloadError('下载重定向地址无效');
               }
-              currentUri = currentUri.resolve(loc);
+              final nextUri = currentUri.resolve(loc);
+              final nextScheme = nextUri.scheme.toLowerCase();
+              if (nextScheme != 'http' && nextScheme != 'https') {
+                throw const _PermanentDownloadError('下载重定向协议不安全，已拦截');
+              }
+              if (!initialIsPrivate && _isPrivateOrLoopbackHost(nextUri.host)) {
+                throw const _PermanentDownloadError('下载重定向至内网地址，已拦截');
+              }
+              currentUri = nextUri;
               continue;
             }
             resp = r;
@@ -1454,7 +1851,15 @@ class VedroAppState extends ChangeNotifier {
 
           if (resp.statusCode < 200 || resp.statusCode >= 300) {
             final quotaErr = resp.headers.value('x-embygo-quota-error')?.trim() ?? '';
-            final bodyBytes = await resp.fold<List<int>>(<int>[], (acc, b) => acc..addAll(b));
+            final bodyBytes = <int>[];
+            await for (final chunk in resp.timeout(const Duration(seconds: 10))) {
+              if (bodyBytes.length < 64 * 1024) {
+                final take = (64 * 1024) - bodyBytes.length;
+                bodyBytes.addAll(chunk.length <= take ? chunk : chunk.sublist(0, take));
+              } else {
+                break;
+              }
+            }
             final bodyStr = utf8.decode(bodyBytes, allowMalformed: true).trim();
             String serverMsg = '';
             if (bodyStr.startsWith('{')) {
@@ -1480,13 +1885,13 @@ class VedroAppState extends ChangeNotifier {
               resp.headers.value('content-disposition'),
             );
             if (cdFilename.isNotEmpty) {
-              final safeCd = cdFilename
-                  .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ()\[\]]+'), '_')
-                  .replaceAll(RegExp(r'^\.+'), '')
-                  .trim();
+              final safeCd = _sanitizeDownloadFileName(cdFilename, fallback: '');
               if (safeCd.isNotEmpty) {
-                outPath = '${dir.path}/$safeCd';
-                _replaceDownload(taskId, (d) => d.copyWith(filePath: outPath));
+                final candidate = '${dir.path}/$safeCd';
+                if (_isPathInsideDirectory(candidate, dir.path)) {
+                  outPath = candidate;
+                  _replaceDownload(taskId, (d) => d.copyWith(filePath: outPath));
+                }
               }
             }
           }
@@ -1536,7 +1941,7 @@ class VedroAppState extends ChangeNotifier {
 
           inFlightRefreshTimer?.cancel();
           inFlightRefreshTimer = Timer(const Duration(milliseconds: 650), () {
-            unawaited(refreshMeQuota());
+            if (!_disposed) unawaited(refreshMeQuota());
           });
 
           final sink = activePartFile.openWrite(mode: writeMode);
@@ -1597,7 +2002,8 @@ class VedroAppState extends ChangeNotifier {
               (d) => d.copyWith(
                 downloadedBytes: received,
                 speedBytesPerSec: 0,
-                status: handle.paused ? 'paused' : d.status,
+                // Don't clobber `'queued'` if user paused and immediately clicked resume while worker exited!
+                status: handle.paused && d.status == 'downloading' ? 'paused' : d.status,
               ),
             );
             await _persistDownloads();
@@ -1678,7 +2084,10 @@ class VedroAppState extends ChangeNotifier {
             ),
           );
           await _persistDownloads();
-          await Future<void>.delayed(Duration(seconds: waitSecs));
+          await Future.any<void>([
+            Future<void>.delayed(Duration(seconds: waitSecs)),
+            handle.cancelSignal.future,
+          ]);
         } finally {
           inFlightRefreshTimer?.cancel();
           handle.client = null;
@@ -1687,7 +2096,12 @@ class VedroAppState extends ChangeNotifier {
       }
     } finally {
       inFlightRefreshTimer?.cancel();
-      _activeDownloadHandles.remove(taskId);
+      if (_activeDownloadHandles[taskId] == handle) {
+        _activeDownloadHandles.remove(taskId);
+      }
+      if (!handle.done.isCompleted) {
+        handle.done.complete();
+      }
       if (!_disposed) {
         unawaited(refreshMeQuota());
         _quotaRefreshTimer?.cancel();
@@ -1697,6 +2111,51 @@ class VedroAppState extends ChangeNotifier {
         _pumpDownloadQueue();
       }
     }
+  }
+
+  static String _sanitizeDownloadFileName(String raw, {required String fallback}) {
+    final base = raw
+        .replaceAll('\\', '/')
+        .split('/')
+        .last
+        .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ()\[\]]+'), '_')
+        .replaceAll('..', '_')
+        .replaceAll(RegExp(r'^\.+'), '')
+        .trim();
+    if (base.isEmpty || base == '.' || base == '..') return fallback;
+    return base.length > 180 ? base.substring(0, 180) : base;
+  }
+
+  static bool _isPathInsideDirectory(String targetPath, String baseDir) {
+    try {
+      final normBase = Directory(baseDir).absolute.path.replaceAll('\\', '/');
+      final cleanBase = normBase.endsWith('/') ? normBase : '$normBase/';
+      final normTarget = File(targetPath).absolute.path.replaceAll('\\', '/');
+      if (normTarget.contains('/../') || normTarget.endsWith('/..')) return false;
+      return normTarget.startsWith(cleanBase);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static bool _isPrivateOrLoopbackHost(String host) {
+    final h = host.trim().toLowerCase().replaceAll(RegExp(r'^\[|\]$'), '');
+    if (h.isEmpty || h == 'localhost' || h.endsWith('.local')) return true;
+    final ip = InternetAddress.tryParse(h);
+    if (ip == null) return false;
+    if (ip.isLoopback || ip.isLinkLocal || ip.isMulticast) return true;
+    final b = ip.rawAddress;
+    if (ip.type == InternetAddressType.IPv4 && b.length == 4) {
+      if (b[0] == 10 || b[0] == 0 || b[0] == 127) return true;
+      if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+      if (b[0] == 192 && b[1] == 168) return true;
+      if (b[0] == 169 && b[1] == 254) return true;
+      if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return true;
+    }
+    if (ip.type == InternetAddressType.IPv6 && b.length == 16) {
+      if ((b[0] & 0xFE) == 0xFC) return true; // fc00::/7 ULA
+    }
+    return false;
   }
 
   static ({int start, int end, int total})? _parseContentRange(String? header) {
@@ -1769,12 +2228,16 @@ class VedroAppState extends ChangeNotifier {
     if (handle != null) {
       handle.cancelled = true;
       handle.abort();
+      try {
+        await handle.done.future.timeout(const Duration(seconds: 3));
+      } catch (_) {}
     }
     final idx = downloads.indexWhere((d) => d.id == taskId);
     if (idx < 0) return;
     final task = downloads.removeAt(idx);
     if (deleteFile && task.filePath.isNotEmpty) {
       for (final p in [task.filePath, '${task.filePath}.part']) {
+        if (!_isPathInsideDirectory(p, downloadsDirectoryPath)) continue;
         try {
           final f = File(p);
           if (f.existsSync()) f.deleteSync();
@@ -1793,8 +2256,12 @@ class VedroAppState extends ChangeNotifier {
     }
     final dir = Directory(fontsDirectoryPath);
     if (!dir.existsSync()) dir.createSync(recursive: true);
-    final fileName = src.uri.pathSegments.last;
+    final rawName = src.uri.pathSegments.isNotEmpty ? src.uri.pathSegments.last : 'font.ttf';
+    final fileName = _sanitizeDownloadFileName(rawName, fallback: 'font_${DateTime.now().millisecondsSinceEpoch}.ttf');
     final dest = '${dir.path}/$fileName';
+    if (!_isPathInsideDirectory(dest, dir.path)) {
+      throw Exception('字体文件名非法');
+    }
     await src.copy(dest);
     final next = <String>{...prefs.customFontPaths, dest}.toList();
     final stem = fileName.replaceAll(RegExp(r'\.(ttf|otf|ttc)$', caseSensitive: false), '');
@@ -2097,17 +2564,7 @@ class VedroAppState extends ChangeNotifier {
   Future<void> openExternalUrl(String url) async {
     final trimmed = url.trim();
     if (!NativePlaybackChannel.isAllowedHttpUrl(trimmed)) return;
-    final openedByPlugin = await NativePlaybackChannel.openUrl(trimmed);
-    if (openedByPlugin) return;
-    try {
-      if (!kIsWeb && Platform.isMacOS) {
-        await Process.start('open', ['--', trimmed]);
-      } else if (!kIsWeb && Platform.isWindows) {
-        await Process.start('rundll32', ['url.dll,FileProtocolHandler', trimmed]);
-      } else if (!kIsWeb && Platform.isLinux) {
-        await Process.start('xdg-open', ['--', trimmed]);
-      }
-    } catch (_) {}
+    await NativePlaybackChannel.openUrl(trimmed);
   }
 
   DownloadTaskModel? findDownloadForItem(String itemId, {String? mediaSourceId}) {
@@ -2134,10 +2591,13 @@ class VedroAppState extends ChangeNotifier {
     String? playerOverride,
   }) async {
     final targetPlayer = (playerOverride ?? prefs.externalPlayer).toLowerCase();
+    final isDesktop = !kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux);
     final res = await core.invoke('external_play_url', {
       'item_id': item.id,
       if (mediaSourceId != null) 'media_source_id': mediaSourceId,
       if (targetPlayer != 'builtin') 'player_id': targetPlayer,
+      // Keep upstream server tokens off OS process argv on desktop by routing through local loopback proxy!
+      'use_local_proxy': isDesktop,
     }) as Map<String, dynamic>;
     final streamUrl = (res['url'] ?? '').toString().trim();
     if (!NativePlaybackChannel.isAllowedHttpUrl(streamUrl)) {
@@ -2181,7 +2641,7 @@ class VedroAppState extends ChangeNotifier {
         title: item.name,
       );
       if (!ok) {
-        await Process.start('rundll32', ['url.dll,FileProtocolHandler', streamUrl]);
+        await NativePlaybackChannel.openUrl(streamUrl);
       }
       return '已调用外部播放器';
     } else if (!kIsWeb && Platform.isLinux) {
@@ -2272,18 +2732,19 @@ class VedroAppState extends ChangeNotifier {
   }) {
     if (connectedUrl == null || itemId.isEmpty) return '';
     final params = <String>[];
-    if (tag != null && tag.isNotEmpty) params.add('tag=$tag');
+    if (tag != null && tag.isNotEmpty) params.add('tag=${Uri.encodeComponent(tag)}');
     if (maxWidth != null) params.add('maxWidth=$maxWidth');
     params.add('quality=88');
     final q = params.isEmpty ? '' : '?${params.join('&')}';
+    final encType = Uri.encodeComponent(type);
 
     if (proxyAddr != null && proxyAddr!.isNotEmpty) {
-      return 'http://$proxyAddr/img/Items/${Uri.encodeComponent(itemId)}/Images/$type$q';
+      return 'http://$proxyAddr/img/Items/${Uri.encodeComponent(itemId)}/Images/$encType$q';
     }
     final base = connectedUrl!.endsWith('/')
         ? connectedUrl!.substring(0, connectedUrl!.length - 1)
         : connectedUrl!;
-    return '$base/Items/${Uri.encodeComponent(itemId)}/Images/$type$q';
+    return '$base/Items/${Uri.encodeComponent(itemId)}/Images/$encType$q';
   }
 
   /// Build artwork URL for a specific server (used in multi-server aggregated search).
@@ -2296,12 +2757,13 @@ class VedroAppState extends ChangeNotifier {
   }) {
     if (itemId.isEmpty) return '';
     final params = <String>[];
-    if (tag != null && tag.isNotEmpty) params.add('tag=$tag');
+    if (tag != null && tag.isNotEmpty) params.add('tag=${Uri.encodeComponent(tag)}');
     if (maxWidth != null) params.add('maxWidth=$maxWidth');
     params.add('quality=86');
     final q = params.isEmpty ? '' : '?${params.join('&')}';
+    final encType = Uri.encodeComponent(type);
     if (proxyAddr != null && proxyAddr!.isNotEmpty && serverId.isNotEmpty) {
-      return 'http://$proxyAddr/img-srv/${Uri.encodeComponent(serverId)}/Items/${Uri.encodeComponent(itemId)}/Images/$type$q';
+      return 'http://$proxyAddr/img-srv/${Uri.encodeComponent(serverId)}/Items/${Uri.encodeComponent(itemId)}/Images/$encType$q';
     }
     return buildImageUrl(itemId, type: type, tag: tag, maxWidth: maxWidth);
   }
@@ -2524,7 +2986,7 @@ class VedroAppState extends ChangeNotifier {
   bool _appResumed = true;
 
   void setAppResumed(bool resumed) {
-    if (_appResumed == resumed) return;
+    if (_disposed || _appResumed == resumed) return;
     _appResumed = resumed;
     if (!resumed) {
       _wsPollTimer?.cancel();
@@ -2537,7 +2999,7 @@ class VedroAppState extends ChangeNotifier {
 
   void _startEventPolling() {
     _wsPollTimer?.cancel();
-    if (!_appResumed) return;
+    if (_disposed || !_appResumed) return;
     final pollSecs = (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? 4 : 3;
     _wsPollTimer = Timer.periodic(Duration(seconds: pollSecs), (_) => _consumeCoreEvents());
   }
@@ -2545,6 +3007,7 @@ class VedroAppState extends ChangeNotifier {
   /// Fetch registered login devices (`GET /emby-compat/devices` or `/Devices`).
   Future<List<Map<String, dynamic>>> loadUserDevices({String? targetUserId}) async {
     if (!isSignedIn) return const [];
+    final epoch = _sessionEpoch;
     final isSelf = targetUserId == null || targetUserId == userId;
     if (isSelf) {
       isLoadingDevices = true;
@@ -2554,6 +3017,7 @@ class VedroAppState extends ChangeNotifier {
       final res = await core.invoke('get_user_devices', {
         'user_id': targetUserId ?? userId,
       }) as Map<String, dynamic>;
+      if (epoch != _sessionEpoch || _disposed) return const [];
       final list = ((res['items'] as List<dynamic>?) ?? const [])
           .whereType<Map<String, dynamic>>()
           .toList();
@@ -2565,7 +3029,7 @@ class VedroAppState extends ChangeNotifier {
       }
       return list;
     } finally {
-      if (isSelf) {
+      if (isSelf && epoch == _sessionEpoch) {
         isLoadingDevices = false;
         notifyListeners();
       }
@@ -2599,6 +3063,7 @@ class VedroAppState extends ChangeNotifier {
   /// Run an EmbyGo playback route speedtest (`POST /emby-compat/speedtest` + ping + download).
   Future<Map<String, dynamic>?> runEmbyGoSpeedTest() async {
     if (isSpeedTesting) return null;
+    final gen = ++_speedTestGen;
     isSpeedTesting = true;
     liveSpeedTestMbps = null;
     speedTestLatencyMs = null;
@@ -2609,10 +3074,13 @@ class VedroAppState extends ChangeNotifier {
     _speedTestPollTimer?.cancel();
     _speedTestPollTimer = Timer.periodic(
       const Duration(milliseconds: 220),
-      (_) => _consumeCoreEvents(),
+      (_) {
+        if (gen == _speedTestGen) _consumeCoreEvents();
+      },
     );
     try {
       final res = await core.invoke('run_embygo_speedtest') as Map<String, dynamic>;
+      if (gen != _speedTestGen || _disposed) return null;
       _consumeCoreEvents();
       lastSpeedTestResult = res;
       speedTestLatencyMs = (res['latency_ms'] as num?)?.toDouble();
@@ -2621,27 +3089,32 @@ class VedroAppState extends ChangeNotifier {
           (res['measured_mbps'] as num?)?.toDouble();
       return res;
     } catch (e) {
-      final msg = e.toString().replaceFirst('VedroCoreException: ', '');
-      if (!msg.contains('已取消')) {
-        speedTestError = msg;
+      if (gen == _speedTestGen && !_disposed) {
+        final msg = VedroErrorFormatter.format(e);
+        if (!msg.contains('已取消')) {
+          speedTestError = msg;
+        }
       }
       return null;
     } finally {
-      _speedTestPollTimer?.cancel();
-      _speedTestPollTimer = null;
-      isSpeedTesting = false;
-      notifyListeners();
+      if (gen == _speedTestGen) {
+        _speedTestPollTimer?.cancel();
+        _speedTestPollTimer = null;
+        isSpeedTesting = false;
+        notifyListeners();
+      }
     }
   }
 
   Future<void> cancelEmbyGoSpeedTest() async {
-    try {
-      await core.invoke('cancel_embygo_speedtest');
-    } catch (_) {}
+    ++_speedTestGen;
     _speedTestPollTimer?.cancel();
     _speedTestPollTimer = null;
     isSpeedTesting = false;
     notifyListeners();
+    try {
+      await core.invoke('cancel_embygo_speedtest');
+    } catch (_) {}
   }
 
   /// Query local persistent disk + memory image cache usage from the Rust core.
@@ -2699,13 +3172,7 @@ class VedroAppState extends ChangeNotifier {
     }
   }
 
-  static String _humanizeError(String raw) {
-    final cleaned = raw.replaceFirst('VedroCoreException: ', '');
-    if (cleaned.contains('unauthorized') || cleaned.contains('401')) {
-      return '用户名或密码不正确';
-    }
-    return cleaned;
-  }
+  static String _humanizeError(String raw) => VedroErrorFormatter.format(raw);
 
   static List<MediaItemModel> _parseItems(dynamic raw) {
     if (raw is! List) return const [];
@@ -2724,6 +3191,8 @@ class VedroAppState extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    ++_sessionEpoch;
+    ++_speedTestGen;
     _wsPollTimer?.cancel();
     _speedTestPollTimer?.cancel();
     _prefsDebounceTimer?.cancel();
@@ -2731,10 +3200,14 @@ class VedroAppState extends ChangeNotifier {
     if (_prefsDirty) {
       _prefsDirty = false;
       try {
-        unawaited(core.invoke('set_kv', {
-          'key': 'vedro_prefs',
-          'value': prefs.toJson(),
-        }));
+        unawaited(
+          core
+              .invoke('set_kv', {
+                'key': 'vedro_prefs',
+                'value': prefs.toJson(),
+              })
+              .catchError((_) => null),
+        );
       } catch (_) {}
     }
     for (final h in _activeDownloadHandles.values) {
@@ -2752,8 +3225,13 @@ class _ActiveDownloadHandle {
   HttpClient? client;
   bool paused = false;
   bool cancelled = false;
+  final Completer<void> cancelSignal = Completer<void>();
+  final Completer<void> done = Completer<void>();
 
   void abort() {
+    if (!cancelSignal.isCompleted) {
+      cancelSignal.complete();
+    }
     try {
       client?.close(force: true);
     } catch (_) {}

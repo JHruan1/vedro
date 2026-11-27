@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
@@ -44,6 +45,7 @@ class PlayerScreen extends StatefulWidget {
     this.preferredSubLangOverride,
     this.localFilePath,
     this.localPlaylistPaths,
+    this.directNetworkUrl,
   });
 
   final MediaItemModel item;
@@ -58,6 +60,7 @@ class PlayerScreen extends StatefulWidget {
   final String? preferredSubLangOverride;
   final String? localFilePath;
   final List<String>? localPlaylistPaths;
+  final String? directNetworkUrl;
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -70,9 +73,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   late MediaItemModel _currentItem;
   late List<MediaSegmentModel> _segments;
   String? _activeLocalPath;
+  String? _activeNetworkUrl;
   List<MediaItemModel> _localEpisodes = const [];
   final Map<String, String> _localPathById = {};
   final List<({String title, String path})> _loadedLocalSubtitles = [];
+
+  bool get _isLocalFile => _activeLocalPath != null && _activeLocalPath!.isNotEmpty;
+  bool get _isDirectNetwork => _activeNetworkUrl != null && _activeNetworkUrl!.isNotEmpty;
+  bool get _isServerStream => !_isLocalFile && !_isDirectNetwork;
 
   PreparedPlaybackModel? _prepared;
   final ValueNotifier<Map<String, dynamic>> _statsNotifier =
@@ -82,14 +90,23 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   String? _error;
   bool _disposed = false;
   bool _isInitialEpisode = true;
+  int _playbackGen = 0;
+  int _danmakuGen = 0;
   int _autoRetryCount = 0;
+  double _retryAnchorSecs = -1.0;
   bool _hwFallbackAttempted = false;
   bool _inPipMode = false;
+  bool _enteringPip = false;
+  Timer? _enteringPipResetTimer;
+  bool _sheetOpen = false;
   int _lastAudioInterruptCount = 0;
   bool _usingNativeBrightness = false;
   int _videoWidth = 16;
   int _videoHeight = 9;
   int _lastHoverRevealMs = 0;
+  String? _lastNowPlayingSig;
+  int _lastNowPlayingTickMs = 0;
+  Timer? _beautyShaderDebounce;
 
   // End-of-video Replay & Up-Next 6s Countdown state
   bool _hasEndedReplay = false;
@@ -97,6 +114,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   Timer? _upNextTimer;
   Timer? _pauseWakeLockTimer;
   bool _quickSkipIntroDismissed = false;
+  final ValueNotifier<bool> _quickSkipEligibleNotifier = ValueNotifier<bool>(false);
 
   // Mobile fullscreen live clock & battery indicator (isolated ValueNotifier)
   final ValueNotifier<({String clock, int batteryPct, bool charging})> _statusBarNotifier =
@@ -181,17 +199,22 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   int _videoRotate = 0;
   double _videoZoom = 0.0;
   double _pinchBaseZoom = 0.0;
+  bool _deinterlace = false;
+  bool _hflip = false;
+  bool _vflip = false;
   bool _anime4kActive = false;
   double _subDelaySecs = 0.0;
   double _subScale = 1.0;
   int _subPos = 96;
   String _subFontFamily = '';
   bool _forceAssOverride = false;
+  String? _secondarySubTrackId;
   String _aspectMode = 'fit';
   String _toneMapping = 'bt.2446a';
   String _audioMode = 'auto';
   bool _nightMode = false;
   bool _dialogueBoost = false;
+  bool _loudnessNorm = false;
   bool _danmakuEnabled = false;
   List<DanmakuComment> _danmakuComments = const [];
   List<Map<String, dynamic>> _danmakuCandidates = const [];
@@ -229,11 +252,22 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   final _playPauseFocusNode = FocusNode(debugLabel: 'player-play-pause');
   final _unlockFocusNode = FocusNode(debugLabel: 'player-unlock');
   final _drawerCloseFocusNode = FocusNode(debugLabel: 'player-drawer-close');
+  final _drawerActiveEpFocusNode = FocusNode(debugLabel: 'player-drawer-active-ep');
+  final _upNextPlayFocusNode = FocusNode(debugLabel: 'player-upnext-play');
+  final _replayFocusNode = FocusNode(debugLabel: 'player-replay');
+  final _errorRetryFocusNode = FocusNode(debugLabel: 'player-error-retry');
+  final _skipIntroFocusNode = FocusNode(debugLabel: 'player-skip-intro');
 
   List<MediaItemModel> get _episodes =>
       _localEpisodes.isNotEmpty ? _localEpisodes : (widget.playlistEpisodes ?? const []);
 
   int get _currentEpisodeIndex => _episodes.indexWhere((e) => e.id == _currentItem.id);
+
+  MediaItemModel? get _prevEpisode {
+    final idx = _currentEpisodeIndex;
+    if (idx > 0 && idx - 1 < _episodes.length) return _episodes[idx - 1];
+    return null;
+  }
 
   MediaItemModel? get _nextEpisode {
     final idx = _currentEpisodeIndex;
@@ -270,7 +304,22 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     return null;
   }
 
-  double get _maxVolume => widget.appState.prefs.maxVolumePercent.toDouble().clamp(100.0, 200.0);
+  double get _maxVolume => widget.appState.prefs.maxVolumePercent.toDouble().clamp(100.0, 300.0);
+
+  static String _normalizeToneMapping(String raw) {
+    return switch (raw.trim().toLowerCase()) {
+      'bt2446a' || 'bt.2446a' => 'bt.2446a',
+      'st2094_40' || 'st2094-40' => 'st2094-40',
+      'st2094_10' || 'st2094-10' => 'st2094-10',
+      'spline' => 'spline',
+      'reinhard' => 'reinhard',
+      'hable' => 'hable',
+      'clip' => 'clip',
+      _ => 'bt.2446a',
+    };
+  }
+
+  String? get _trackPrefScopeId => _currentItem.seriesId ?? (_isServerStream ? _currentItem.id : null);
 
   bool _isLikelyAnime(MediaItemModel item) {
     final text = [
@@ -291,10 +340,24 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     final p = widget.appState.prefs;
     _currentItem = widget.item;
     _segments = widget.segments ?? const [];
-    _activeLocalPath = widget.localFilePath;
+    final rawNet = widget.directNetworkUrl?.trim();
+    final rawLocal = widget.localFilePath?.trim();
+    if (rawNet != null && rawNet.isNotEmpty) {
+      _activeNetworkUrl = rawNet;
+      _activeLocalPath = null;
+    } else if (rawLocal != null &&
+        rawLocal.isNotEmpty &&
+        NativePlaybackChannel.isAllowedMediaUrl(rawLocal)) {
+      // Defensive normalization when a caller passes a stream URL via localFilePath
+      _activeNetworkUrl = rawLocal;
+      _activeLocalPath = null;
+    } else {
+      _activeLocalPath = rawLocal;
+      _activeNetworkUrl = null;
+    }
     if (widget.localPlaylistPaths != null && widget.localPlaylistPaths!.isNotEmpty) {
       _buildLocalPlaylist(widget.localPlaylistPaths!);
-    } else if (_activeLocalPath != null && _activeLocalPath!.isNotEmpty) {
+    } else if (_isLocalFile) {
       final resolved = NativePlaybackChannel.resolveLocalPlaylist(_activeLocalPath!);
       if (resolved.files.length > 1) {
         _buildLocalPlaylist(resolved.files);
@@ -326,7 +389,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
     _hwDecodeEnabled = (widget.appState.settings['hwdec'] ?? 'auto_zero_copy') != 'software';
     _anime4kActive = p.anime4kEnabled && (!p.anime4kOnlyAnime || _isLikelyAnime(_currentItem));
-    _toneMapping = (widget.appState.settings['tone_mapping'] ?? 'bt.2446a').toString();
+    _toneMapping = _normalizeToneMapping((widget.appState.settings['tone_mapping'] ?? 'bt.2446a').toString());
     _audioMode = (widget.appState.settings['audio_mode'] ?? 'auto').toString();
     _nightMode = widget.appState.settings['night_mode'] == true;
     _dialogueBoost = widget.appState.settings['dialogue_boost'] == true;
@@ -342,7 +405,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _lastAudioInterruptCount = NativePlaybackChannel.audioInterruptCountNotifier.value;
     NativePlaybackChannel.audioInterruptCountNotifier.addListener(_onAudioInterrupted);
     NativePlaybackChannel.pipModeNotifier.addListener(_onPipModeChanged);
+    NativePlaybackChannel.mediaActionNotifier.addListener(_onNativeMediaAction);
     unawaited(NativePlaybackChannel.setAudioPlaybackActive(true));
+    unawaited(NativePlaybackChannel.setAutoPipEnabled(p.enablePip));
     NativePlaybackChannel.setKeepScreenOn(true);
     NativePlaybackChannel.syncWindowChrome(
       isLight: false,
@@ -387,6 +452,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
             _cancelUpNextCountdown();
           }
         });
+        unawaited(NativePlaybackChannel.setAutoPipEnabled(
+          playing && widget.appState.prefs.enablePip && !_disposed,
+        ));
+        _syncNowPlaying(force: true);
         if (playing) {
           _pauseWakeLockTimer?.cancel();
           NativePlaybackChannel.setKeepScreenOn(true);
@@ -411,6 +480,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (!mounted || _scrubbing) return;
       final secs = pos.inMilliseconds / 1000.0;
       _positionSecs = secs;
+      // Reset reconnect counter ONLY once playback actually makes real forward progress (>= 2s)
+      if (_autoRetryCount > 0 && _retryAnchorSecs >= 0 && (secs - _retryAnchorSecs) >= 2.0) {
+        _autoRetryCount = 0;
+        _retryAnchorSecs = -1.0;
+      }
+      if (_upNextCountdown > 0 && _durationSecs > 15 && secs < _durationSecs - 10.0) {
+        setState(() {
+          _cancelUpNextCountdown();
+          _completedTriggered = false;
+        });
+      }
       _checkAutoSkipSegments(secs);
       if (_loopPointA != null && _loopPointB != null && secs >= _loopPointB!) {
         _seekTo(_loopPointA!);
@@ -420,6 +500,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (nextSeg?.type != curSeg?.type || nextSeg?.endTicks != curSeg?.endTicks) {
         _activeSegmentNotifier.value = nextSeg;
       }
+      final quickSkipEligible = !_quickSkipIntroDismissed &&
+          _segments.isEmpty &&
+          _currentItem.type == 'Episode' &&
+          _durationSecs > 600 &&
+          secs >= 2.0 &&
+          secs < 240.0;
+      if (_quickSkipEligibleNotifier.value != quickSkipEligible) {
+        _quickSkipEligibleNotifier.value = quickSkipEligible;
+      }
+      _syncNowPlaying();
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       if (_aiSubCtrl.enabled && nowMs - _lastAiPosTickMs >= 120) {
         _lastAiPosTickMs = nowMs;
@@ -458,6 +548,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _subs.add(_player.stream.duration.listen((dur) {
       if (mounted && dur.inMilliseconds > 0) {
         setState(() => _durationSecs = dur.inMilliseconds / 1000.0);
+        _syncNowPlaying(force: true);
         if (_chapters.isEmpty) {
           unawaited(_loadChapters());
         }
@@ -465,8 +556,29 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }));
     _subs.add(_player.stream.completed.listen((done) {
       if (!done || !mounted) return;
-      if (_activeLocalPath != null && _activeLocalPath!.isNotEmpty) {
+      if (_isLocalFile) {
         unawaited(widget.appState.saveLocalResumeSecs(_activeLocalPath!, 0.0));
+        unawaited(widget.appState.recordLocalHistory(
+          title: _currentItem.displayName,
+          target: _activeLocalPath!,
+          isNetworkUrl: false,
+          positionSecs: 0.0,
+          durationSecs: _durationSecs,
+        ));
+      } else if (_isServerStream && !widget.appState.prefs.incognitoMode && _durationSecs > 0) {
+        // Explicitly report completion at full duration so Emby/Jellyfin marks the item watched
+        final doneTicks = (_durationSecs * 10000000).round();
+        unawaited(widget.appState.core
+            .invoke('report_playback_stopped', {
+              'item_id': _currentItem.id,
+              if (_prepared?.mediaSourceId != null) 'media_source_id': _prepared!.mediaSourceId,
+              if (_prepared?.playSessionId != null) 'play_session_id': _prepared!.playSessionId,
+              if (_prepared?.streamId != null) 'stream_id': _prepared!.streamId,
+              'position_ticks': doneTicks,
+              'run_time_ticks': doneTicks,
+              'is_paused': true,
+            })
+            .catchError((_) => null));
       }
       if (_sleepAfterEpisode) {
         _sleepAfterEpisode = false;
@@ -483,6 +595,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         setState(() {
           _hasEndedReplay = true;
           _controlsVisible = true;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _hasEndedReplay && _replayFocusNode.canRequestFocus) {
+            _replayFocusNode.requestFocus();
+          }
         });
       }
     }));
@@ -516,10 +633,75 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       }
     } catch (_) {}
     await _refreshMobileStatusBar();
+    if (!mounted || _disposed) return;
     _statusBarTimer?.cancel();
     _statusBarTimer = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (mounted) unawaited(_refreshMobileStatusBar());
+      if (mounted && !_disposed) unawaited(_refreshMobileStatusBar());
     });
+  }
+
+  void _syncNowPlaying({bool force = false}) {
+    if (_disposed) return;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final title = _currentItem.seriesName != null
+        ? '${_currentItem.seriesName} ${_currentItem.episodeCode ?? ''}'.trim()
+        : _currentItem.displayName;
+    final subtitle = _currentItem.seriesName != null ? _currentItem.displayName : '';
+    final sig = '$title|$subtitle|${!_paused}|${_durationSecs.round()}|${_speed.toStringAsFixed(2)}';
+    if (!force && sig == _lastNowPlayingSig && nowMs - _lastNowPlayingTickMs < 2000) return;
+    _lastNowPlayingSig = sig;
+    _lastNowPlayingTickMs = nowMs;
+    unawaited(NativePlaybackChannel.updateNowPlaying(
+      title: title,
+      subtitle: subtitle,
+      durationSecs: _durationSecs,
+      positionSecs: _positionSecs,
+      playing: !_paused,
+      speed: _speed,
+      hasNext: _nextEpisode != null,
+      hasPrevious: _prevEpisode != null,
+    ));
+  }
+
+  void _onNativeMediaAction() {
+    if (!mounted || _disposed) return;
+    final payload = NativePlaybackChannel.mediaActionNotifier.value;
+    if (payload == null || payload.isEmpty) return;
+    NativePlaybackChannel.mediaActionNotifier.value = null;
+    final action = (payload['action'] ?? '').toString().toLowerCase();
+    if (action.isEmpty) return;
+    final step = widget.appState.prefs.seekStepSecs.toDouble();
+    switch (action) {
+      case 'play':
+        unawaited(_player.play());
+        break;
+      case 'pause':
+        unawaited(_player.pause());
+        break;
+      case 'toggle':
+        unawaited(_togglePause());
+        break;
+      case 'next':
+        if (_nextEpisode != null) unawaited(_switchEpisode(_nextEpisode!));
+        break;
+      case 'prev':
+      case 'previous':
+        if (_prevEpisode != null) unawaited(_switchEpisode(_prevEpisode!));
+        break;
+      case 'seek_fwd':
+        unawaited(_seekBy(step, showHud: true));
+        break;
+      case 'seek_back':
+        unawaited(_seekBy(-step, showHud: true));
+        break;
+      case 'seek':
+        final pos = (payload['position_secs'] as num?)?.toDouble();
+        if (pos != null && pos.isFinite) unawaited(_seekTo(pos));
+        break;
+      case 'stop':
+        unawaited(_requestExit());
+        break;
+    }
   }
 
   Future<void> _refreshMobileStatusBar() async {
@@ -549,6 +731,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   void _onPipModeChanged() {
     if (!mounted) return;
     final inPip = NativePlaybackChannel.pipModeNotifier.value;
+    _enteringPip = false;
+    _enteringPipResetTimer?.cancel();
     if (_inPipMode != inPip) {
       setState(() {
         _inPipMode = inPip;
@@ -560,15 +744,32 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
   }
 
+  Future<void> _enterPipSafely() async {
+    _enteringPip = true;
+    _enteringPipResetTimer?.cancel();
+    _enteringPipResetTimer = Timer(const Duration(milliseconds: 1600), () {
+      _enteringPip = false;
+    });
+    final ok = await NativePlaybackChannel.enterPictureInPicture(
+      aspectW: _videoWidth,
+      aspectH: _videoHeight,
+    );
+    if (!ok) {
+      _enteringPip = false;
+      _enteringPipResetTimer?.cancel();
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!mounted) return;
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       unawaited(_flushCurrentProgress());
-      if (!widget.appState.prefs.backgroundAudio && !_inPipMode && !_paused) {
+      if (!widget.appState.prefs.backgroundAudio && !_inPipMode && !_enteringPip && !_paused) {
         unawaited(_player.pause());
       }
     } else if (state == AppLifecycleState.resumed) {
+      _enteringPip = false;
       if (!_paused) {
         NativePlaybackChannel.setKeepScreenOn(true);
       }
@@ -577,15 +778,37 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> _flushCurrentProgress() async {
     if (widget.appState.prefs.incognitoMode) return;
-    if (_activeLocalPath != null && _activeLocalPath!.isNotEmpty) {
+    if (_isLocalFile) {
       if (_positionSecs > 3.0) {
         await widget.appState.saveLocalResumeSecs(_activeLocalPath!, _positionSecs);
+        await widget.appState.recordLocalHistory(
+          title: _currentItem.displayName,
+          target: _activeLocalPath!,
+          isNetworkUrl: false,
+          positionSecs: _positionSecs,
+          durationSecs: _durationSecs,
+        );
+      }
+      return;
+    }
+    if (_isDirectNetwork) {
+      if (_positionSecs > 3.0) {
+        await widget.appState.recordLocalHistory(
+          title: _currentItem.displayName,
+          target: _activeNetworkUrl!,
+          isNetworkUrl: true,
+          positionSecs: _positionSecs,
+          durationSecs: _durationSecs,
+        );
       }
       return;
     }
     if (_prepared == null) return;
     try {
       await widget.appState.core.invoke('report_playback_progress', {
+        'item_id': _currentItem.id,
+        'media_source_id': _prepared!.mediaSourceId,
+        'play_session_id': _prepared!.playSessionId,
         'position_ticks': (_positionSecs * 10000000).round(),
         if (_durationSecs > 0) 'run_time_ticks': (_durationSecs * 10000000).round(),
         'is_paused': _paused,
@@ -615,8 +838,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       return;
     }
 
-    // 2. Automatic transient network / stream-ticket retry (up to 2x)
-    if (_activeLocalPath == null &&
+    // 2. Automatic transient network / stream-ticket retry (up to 2x, bounded until real 2s progress!)
+    if (!_isLocalFile &&
         _autoRetryCount < 2 &&
         (lower.contains('http') ||
             lower.contains('tcp') ||
@@ -626,11 +849,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
             lower.contains('connection') ||
             lower.contains('failed to open'))) {
       _autoRetryCount += 1;
+      _retryAnchorSecs = _positionSecs;
       final attempt = _autoRetryCount;
       _flashGestureHud('seek_feedback', text: '网络波动，正在自动重连（第 $attempt/2 次）…');
       unawaited(() async {
         try {
-          if (_prepared?.usesStreamTicket == true) {
+          if (_isServerStream && _prepared?.usesStreamTicket == true) {
             await widget.appState.core.invoke('refresh_stream_ticket');
           }
         } catch (_) {}
@@ -646,6 +870,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _loading = false;
       _controlsVisible = true;
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _error != null && _errorRetryFocusNode.canRequestFocus) {
+        _errorRetryFocusNode.requestFocus();
+      }
+    });
   }
 
   void _startUpNextCountdown() {
@@ -653,6 +882,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     setState(() {
       _upNextCountdown = 6;
       _controlsVisible = true;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _upNextCountdown > 0 && _upNextPlayFocusNode.canRequestFocus) {
+        _upNextPlayFocusNode.requestFocus();
+      }
     });
     _upNextTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) {
@@ -712,7 +946,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         secs >= _durationSecs - p.customSkipOutroSecs) {
       _customOutroSkipped = true;
       if (p.autoPlayNext && _nextEpisode != null) {
-        _switchEpisode(_nextEpisode!);
+        unawaited(_switchEpisode(_nextEpisode!, overridePositionSecs: _durationSecs));
       } else {
         _seekTo(_durationSecs - 0.5);
       }
@@ -830,7 +1064,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     final rawW = vp.dw ?? vp.w ?? 0;
     final rawH = vp.dh ?? vp.h ?? 0;
     if (rawW <= 0 || rawH <= 0) return;
-    final rot = ((vp.rotate ?? 0) + _videoRotate) % 360;
+    final rot = (vp.rotate ?? _videoRotate) % 360;
     final swapped = rot == 90 || rot == 270;
     final effW = swapped ? rawH : rawW;
     final effH = swapped ? rawW : rawH;
@@ -1136,24 +1370,48 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> _loadChapters() async {
     final raw = await _readMpvProperty('chapter-list');
-    if (raw == null || raw.isEmpty) return;
-    try {
-      final list = jsonDecode(raw);
-      if (list is List) {
-        final parsed = <({String title, double timeSecs})>[];
-        for (var i = 0; i < list.length; i++) {
-          final item = list[i];
-          if (item is Map) {
-            final t = (item['time'] as num?)?.toDouble() ?? 0.0;
-            final title = (item['title']?.toString().trim() ?? '');
-            parsed.add((title: title.isEmpty ? '章节 ${i + 1}' : title, timeSecs: t));
+    final parsed = <({String title, double timeSecs})>[];
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final list = jsonDecode(raw);
+        if (list is List) {
+          for (var i = 0; i < list.length; i++) {
+            final item = list[i];
+            if (item is Map) {
+              final t = (item['time'] as num?)?.toDouble() ?? 0.0;
+              final title = (item['title']?.toString().trim() ?? '');
+              parsed.add((title: title.isEmpty ? '章节 ${i + 1}' : title, timeSecs: t));
+            }
           }
         }
-        if (mounted && parsed.isNotEmpty) {
-          setState(() => _chapters = parsed);
-        }
+      } catch (_) {}
+    }
+    if (parsed.isEmpty && _currentItem.chapters.isNotEmpty) {
+      for (var i = 0; i < _currentItem.chapters.length; i++) {
+        final ch = _currentItem.chapters[i];
+        parsed.add((
+          title: ch.name.trim().isEmpty ? '章节 ${i + 1}' : ch.name.trim(),
+          timeSecs: ch.startPositionTicks / 10000000.0,
+        ));
       }
-    } catch (_) {}
+    }
+    if (mounted && parsed.isNotEmpty) {
+      setState(() => _chapters = parsed);
+    }
+  }
+
+  Future<void> _jumpChapter(bool next) async {
+    if (_chapters.isEmpty) return;
+    var curIdx = 0;
+    for (var i = 0; i < _chapters.length; i++) {
+      if (_positionSecs >= _chapters[i].timeSecs - 0.5) curIdx = i;
+    }
+    final targetIdx = next
+        ? (curIdx + 1).clamp(0, _chapters.length - 1)
+        : ((_positionSecs - _chapters[curIdx].timeSecs > 3.0) ? curIdx : (curIdx - 1).clamp(0, _chapters.length - 1));
+    final target = _chapters[targetIdx];
+    await _seekTo(target.timeSecs);
+    _flashGestureHud('seek_feedback', text: '${next ? '下一章' : '上一章'}：${target.title}');
   }
 
   void _setSleepTimer({int minutes = 0, bool afterEpisode = false}) {
@@ -1191,7 +1449,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> _stepFrame(bool forward) async {
     if (!_paused) await _player.pause();
-    await _seekBy(forward ? 0.042 : -0.042);
+    final platform = _player.platform;
+    var stepped = false;
+    if (platform is NativePlayer) {
+      try {
+        await platform.command([forward ? 'frame-step' : 'frame-back-step']);
+        stepped = true;
+      } catch (_) {}
+    }
+    if (!stepped) {
+      await _seekBy(forward ? 0.042 : -0.042);
+    }
     _flashGestureHud('seek_feedback', text: forward ? '下一帧 (+1f)' : '上一帧 (-1f)');
   }
 
@@ -1244,6 +1512,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     WidgetsBinding.instance.removeObserver(this);
     NativePlaybackChannel.audioInterruptCountNotifier.removeListener(_onAudioInterrupted);
     NativePlaybackChannel.pipModeNotifier.removeListener(_onPipModeChanged);
+    NativePlaybackChannel.mediaActionNotifier.removeListener(_onNativeMediaAction);
+    unawaited(NativePlaybackChannel.setAutoPipEnabled(false));
     unawaited(NativePlaybackChannel.setAudioPlaybackActive(false));
     for (final s in _subs) {
       s.cancel();
@@ -1261,13 +1531,21 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _pauseWakeLockTimer?.cancel();
     _statusBarTimer?.cancel();
     _keySeekFlushTimer?.cancel();
+    _enteringPipResetTimer?.cancel();
+    _beautyShaderDebounce?.cancel();
     _focusNode.dispose();
     _playPauseFocusNode.dispose();
     _unlockFocusNode.dispose();
     _drawerCloseFocusNode.dispose();
+    _drawerActiveEpFocusNode.dispose();
+    _upNextPlayFocusNode.dispose();
+    _replayFocusNode.dispose();
+    _errorRetryFocusNode.dispose();
+    _skipIntroFocusNode.dispose();
     _positionNotifier.dispose();
     _bufferedNotifier.dispose();
     _activeSegmentNotifier.dispose();
+    _quickSkipEligibleNotifier.dispose();
     _networkSpeedBpsNotifier.dispose();
     _sleepRemainingNotifier.dispose();
     _statsNotifier.dispose();
@@ -1276,9 +1554,26 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _aiSubCtrl.dispose();
     unawaited(LocalAsrManager.instance.unloadEngine());
     _persistRememberedPlayerPrefs(notify: false);
-    if (_activeLocalPath != null && _activeLocalPath!.isNotEmpty && _positionSecs > 3.0) {
-      final localDone = _durationSecs > 0 && _positionSecs >= _durationSecs - 15.0;
-      unawaited(widget.appState.saveLocalResumeSecs(_activeLocalPath!, localDone ? 0.0 : _positionSecs));
+    if (!widget.appState.prefs.incognitoMode && _positionSecs > 3.0) {
+      final done = _durationSecs > 0 && _positionSecs >= _durationSecs - 15.0;
+      if (_isLocalFile) {
+        unawaited(widget.appState.saveLocalResumeSecs(_activeLocalPath!, done ? 0.0 : _positionSecs));
+        unawaited(widget.appState.recordLocalHistory(
+          title: _currentItem.displayName,
+          target: _activeLocalPath!,
+          isNetworkUrl: false,
+          positionSecs: done ? 0.0 : _positionSecs,
+          durationSecs: _durationSecs,
+        ));
+      } else if (_isDirectNetwork) {
+        unawaited(widget.appState.recordLocalHistory(
+          title: _currentItem.displayName,
+          target: _activeNetworkUrl!,
+          isNetworkUrl: true,
+          positionSecs: done ? 0.0 : _positionSecs,
+          durationSecs: _durationSecs,
+        ));
+      }
     }
     if (_usingNativeBrightness) {
       unawaited(NativePlaybackChannel.resetScreenBrightness());
@@ -1315,7 +1610,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   void _scheduleHideControls() {
     _hideControlsTimer?.cancel();
-    if (_paused || _loading || _showEpisodeDrawer || _hoveringChrome || _upNextCountdown > 0 || _hasEndedReplay) {
+    if (_paused ||
+        _loading ||
+        _showEpisodeDrawer ||
+        _hoveringChrome ||
+        _sheetOpen ||
+        _upNextCountdown > 0 ||
+        _hasEndedReplay) {
       return;
     }
     final delayMs = _isTv ? 6000 : 3400;
@@ -1325,12 +1626,34 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           !_scrubbing &&
           !_showEpisodeDrawer &&
           !_hoveringChrome &&
+          !_sheetOpen &&
           _upNextCountdown == 0 &&
           !_hasEndedReplay) {
         setState(() => _controlsVisible = false);
         if (_isTv && !_focusNode.hasPrimaryFocus) {
           _focusNode.requestFocus();
         }
+      }
+    });
+  }
+
+  Future<T?> _openPlayerSheet<T>({required WidgetBuilder builder}) {
+    _hideControlsTimer?.cancel();
+    _sheetOpen = true;
+    return showGlassSheet<T>(
+      context: context,
+      forceDark: true,
+      builder: builder,
+    ).whenComplete(() {
+      _sheetOpen = false;
+      if (!mounted || _disposed) return;
+      _scheduleHideControls();
+      if (_isTv && _controlsVisible && !_showEpisodeDrawer && !_screenLocked) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _controlsVisible && _playPauseFocusNode.canRequestFocus) {
+            _playPauseFocusNode.requestFocus();
+          }
+        });
       }
     });
   }
@@ -1384,15 +1707,39 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     return null;
   }
 
-  Future<void> _switchEpisode(MediaItemModel ep) async {
+  String? _matchVersionSourceForNextEpisode(MediaItemModel ep) {
+    if (ep.mediaSources.length <= 1) return null;
+    final prevSources = _prepared?.allSources ?? _currentItem.mediaSources;
+    if (prevSources.isEmpty) return null;
+    final prevId = _prepared?.mediaSourceId;
+    final prevResolved = MediaSourceModel.resolveVersions(prevSources, stripEpisodePrefix: true);
+    if (prevResolved.isEmpty) return null;
+    final chosen = prevResolved.firstWhere(
+      (v) => prevId != null && v.source.id == prevId,
+      orElse: () => prevResolved.first,
+    );
+    final nextResolved = MediaSourceModel.resolveVersions(ep.mediaSources, stripEpisodePrefix: true);
+    for (final nv in nextResolved) {
+      if (nv.seriesMatchSignature == chosen.seriesMatchSignature) {
+        return nv.source.id;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _switchEpisode(MediaItemModel ep, {double? overridePositionSecs}) async {
     _cancelUpNextCountdown();
-    await _reportStoppedAndCleanup();
+    final matchedSourceId = _matchVersionSourceForNextEpisode(ep);
+    await _reportStoppedAndCleanup(overridePositionSecs: overridePositionSecs);
+    if (!mounted || _disposed) return;
     _completedTriggered = false;
     _hasEndedReplay = false;
     _customIntroSkipped = false;
     _customOutroSkipped = false;
     _quickSkipIntroDismissed = false;
+    _quickSkipEligibleNotifier.value = false;
     _autoRetryCount = 0;
+    _retryAnchorSecs = -1.0;
     _hwFallbackAttempted = false;
     _isInitialEpisode = false;
     _aiSubCtrl.resetForNewMedia(mediaTitle: ep.displayName);
@@ -1400,11 +1747,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _activeSubUrl = null;
     _activeSubFormat = null;
     _activeSubLabel = null;
+    _secondarySubTrackId = null;
+    unawaited(_applyMpvProperty('secondary-sid', 'no'));
     unawaited(_applyMpvProperty('sub-visibility', 'yes'));
     final localNext = _localPathById[ep.id];
     setState(() {
       _currentItem = ep;
-      if (localNext != null) _activeLocalPath = localNext;
+      if (localNext != null) {
+        _activeLocalPath = localNext;
+        _activeNetworkUrl = null;
+      }
       _segments = const [];
       _chapters = const [];
       _showEpisodeDrawer = false;
@@ -1418,25 +1770,35 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _danmakuMatchTitle = null;
       _danmakuError = null;
     });
-    if (localNext == null) {
-      unawaited(() async {
-        try {
-          final res = await widget.appState.core.invoke('get_item', {'item_id': ep.id})
-              as Map<String, dynamic>;
-          final segs = ((res['segments'] as List<dynamic>?) ?? const [])
-              .whereType<Map<String, dynamic>>()
-              .map(MediaSegmentModel.fromJson)
-              .toList();
-          if (mounted && _currentItem.id == ep.id) {
-            setState(() => _segments = segs);
-          }
-        } catch (_) {}
-      }());
+    if (localNext == null && !_isDirectNetwork) {
+      unawaited(_fetchItemSegments(ep.id));
     }
-    await _startPlayback(null);
-    if (_danmakuEnabled) {
+    await _startPlayback(matchedSourceId);
+    if (mounted && !_disposed && _danmakuEnabled) {
       unawaited(_loadDanmaku());
     }
+  }
+
+  Future<void> _fetchItemSegments(String itemId) async {
+    try {
+      final res = await widget.appState.core.invoke('get_item', {'item_id': itemId})
+          as Map<String, dynamic>;
+      final segs = ((res['segments'] as List<dynamic>?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(MediaSegmentModel.fromJson)
+          .toList();
+      if (mounted && !_disposed && _currentItem.id == itemId && segs.isNotEmpty) {
+        setState(() => _segments = segs);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _applyVideoFilterChain() async {
+    final filters = <String>[];
+    if (_deinterlace) filters.add('yadif=mode=1');
+    if (_hflip) filters.add('hflip');
+    if (_vflip) filters.add('vflip');
+    await _applyMpvProperty('vf', filters.join(','));
   }
 
   Future<void> _applyInitialPreferencesToMpv({
@@ -1457,13 +1819,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         : (hwPref == 'auto_copy' ? 'auto-copy-safe' : 'auto-safe');
     props['hwdec'] = hwVal;
     props['hwdec-codecs'] = 'all';
-    props['target-colorspace-hint'] = 'yes';
+    final preferNativeDv = widget.appState.settings['prefer_native_dolby_vision'] != false;
+    props['target-colorspace-hint'] = preferNativeDv ? 'yes' : 'no';
     props['volume-max'] = '${_maxVolume.round()}';
     // Mobile thermal protection: avoid per-frame 4K compute-shader peak detection
     // and heavy display-resample / dithering on battery-powered phone SoCs.
     final effComputePeak = !_isMobile && p.hdrComputePeak;
     props['hdr-compute-peak'] = effComputePeak ? 'yes' : 'no';
-    props['tone-mapping'] = _toneMapping;
+    props['tone-mapping'] = _normalizeToneMapping(_toneMapping);
     props['video-sync'] = _isMobile ? 'audio' : p.videoSync;
     final effBufMb = _isMobile ? p.bufferSizeMb.clamp(32, 96) : p.bufferSizeMb;
     props['demuxer-max-bytes'] = '${effBufMb}MiB';
@@ -1505,9 +1868,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       }
     }
 
-    if (p.audioDelayMs != 0) {
-      props['audio-delay'] = (p.audioDelayMs / 1000.0).toStringAsFixed(3);
+    if (_audioDelaySecs.abs() > 0.001) {
+      props['audio-delay'] = _audioDelaySecs.toStringAsFixed(3);
     }
+    props['loop-file'] = _loopFile ? 'inf' : 'no';
+    if (_eqBrightness != 0) props['brightness'] = '$_eqBrightness';
+    if (_eqContrast != 0) props['contrast'] = '$_eqContrast';
+    if (_eqSaturation != 0) props['saturation'] = '$_eqSaturation';
+    if (_eqGamma != 0) props['gamma'] = '$_eqGamma';
     props['sub-fonts-dir'] = widget.appState.fontsDirectoryPath;
     if (_subFontFamily.trim().isNotEmpty) {
       props['sub-font'] = _subFontFamily.trim();
@@ -1534,6 +1902,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       props.entries.map((e) => _applyMpvProperty(e.key, e.value)),
     );
     await _applyAspectMode(_aspectMode);
+    await _applyAudioMode();
+    await _applyVideoFilterChain();
     if (_anime4kActive) {
       await _applyAnime4k(true);
     }
@@ -1581,6 +1951,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     double strength, {
     bool persist = true,
     bool showHud = true,
+    bool debounceShader = false,
   }) async {
     final preset = BeautyFilterPreset.byId(presetId);
     final clamped = strength.clamp(0.15, 1.0);
@@ -1594,24 +1965,31 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _beautyStrength = clamped;
     }
 
-    if (preset.id == 'off') {
-      await _applyMpvProperty('glsl-shaders', '');
-    } else {
-      // Desktop GPUs run our verified 5-tap YCbCr skin-smoothing GLSL pass in addition
-      // to Flutter's instant ColorFilter.matrix; mobile stays strictly on Flutter's
-      // zero-heat GPU ColorFilter.matrix to avoid driver quirks or thermal throttling.
-      if (_isDesktop) {
+    Future<void> applyDesktopShader() async {
+      if (_disposed) return;
+      if (preset.id == 'off') {
+        await _applyMpvProperty('glsl-shaders', '');
+      } else if (_isDesktop) {
         try {
           final shaderPath = await BeautyFilterEngine.prepareShaderFile(preset.id, clamped);
-          if (shaderPath != null && shaderPath.isNotEmpty) {
+          if (!_disposed && shaderPath != null && shaderPath.isNotEmpty) {
             await _applyMpvProperty('glsl-shaders', shaderPath.replaceAll('\\', '/'));
           }
         } catch (_) {
-          await _applyMpvProperty('glsl-shaders', '');
+          if (!_disposed) await _applyMpvProperty('glsl-shaders', '');
         }
       } else {
         await _applyMpvProperty('glsl-shaders', '');
       }
+    }
+
+    _beautyShaderDebounce?.cancel();
+    if (debounceShader && _isDesktop && preset.id != 'off') {
+      _beautyShaderDebounce = Timer(const Duration(milliseconds: 140), () {
+        unawaited(applyDesktopShader());
+      });
+    } else {
+      await applyDesktopShader();
     }
 
     if (persist) {
@@ -1718,7 +2096,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
     await _applyMpvProperty('sub-visibility', 'no');
     await _aiSubCtrl.enableAsr(
-      sourceUrl: _prepared?.proxyUrl,
+      sourceUrl: _prepared?.proxyUrl ?? _activeNetworkUrl,
       localPath: _activeLocalPath,
       currentPositionSecs: _positionSecs,
       durationSecs: _durationSecs,
@@ -1747,23 +2125,69 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> _applyCustomMpvConf(String raw) async {
     if (raw.trim().isEmpty) return;
-    const blocked = {
-      'vo',
-      'ao',
-      'gpu-context',
-      'gpu-api',
-      'script',
-      'scripts',
-      'script-opts',
-      'load-scripts',
-      'input-ipc-server',
-      'log-file',
-      'ytdl-path',
-      'dump-stream',
-      'stream-dump',
-      'o',
-      'include',
-      'config-dir',
+    // Strict allowlist of safe video/audio/subtitle/demuxer tuning keys (blocks IPC/script/file/dump injection)
+    const allowed = {
+      'interpolation',
+      'tscale',
+      'tscale-window',
+      'tscale-clamp',
+      'tscale-radius',
+      'tscale-antiring',
+      'scale',
+      'cscale',
+      'dscale',
+      'scale-antiring',
+      'cscale-antiring',
+      'correct-downscaling',
+      'linear-downscaling',
+      'sigmoid-upscaling',
+      'deband',
+      'deband-iterations',
+      'deband-threshold',
+      'deband-range',
+      'deband-grain',
+      'dither',
+      'dither-depth',
+      'dither-size-fruit',
+      'temporal-dither',
+      'sharpen',
+      'tone-mapping',
+      'tone-mapping-param',
+      'tone-mapping-max-boost',
+      'hdr-compute-peak',
+      'hdr-peak-percentile',
+      'gamut-mapping-mode',
+      'target-peak',
+      'target-trc',
+      'target-prim',
+      'target-contrast',
+      'video-sync',
+      'video-sync-max-video-change',
+      'video-sync-max-factor',
+      'audio-pitch-correction',
+      'audio-normalize-downmix',
+      'audio-channels',
+      'sub-fix-timing',
+      'sub-gauss',
+      'sub-gray',
+      'sub-margin-y',
+      'sub-margin-x',
+      'sub-bold',
+      'sub-italic',
+      'sub-shadow-offset',
+      'sub-shadow-color',
+      'sub-spacing',
+      'sub-line-height',
+      'sub-ass-force-margins',
+      'blend-subtitles',
+      'demuxer-readahead-secs',
+      'demuxer-max-back-bytes',
+      'cache-secs',
+      'hr-seek',
+      'hr-seek-framedrop',
+      'framedrop',
+      'vd-lavc-threads',
+      'ad-lavc-downmix',
     };
     for (final rawLine in raw.split('\n')) {
       final line = rawLine.split('#').first.trim();
@@ -1772,7 +2196,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (eq <= 0) continue;
       final k = line.substring(0, eq).trim().toLowerCase();
       final v = line.substring(eq + 1).trim();
-      if (k.isEmpty || blocked.contains(k)) continue;
+      if (k.isEmpty || !allowed.contains(k)) continue;
       await _applyMpvProperty(k, v);
     }
   }
@@ -1796,7 +2220,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     setState(() => _videoZoom = clamped);
     await _applyMpvProperty('video-zoom', clamped.toStringAsFixed(3));
     if (showHud) {
-      _flashGestureHud('seek_feedback', text: '缩放 ${(100 * (1 + clamped)).round()}%');
+      final pct = (100.0 * math.pow(2.0, clamped)).round();
+      _flashGestureHud('seek_feedback', text: '缩放 $pct%');
     }
   }
 
@@ -1810,13 +2235,25 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         _flashGestureHud('seek_feedback', text: '当前画面暂不支持截图');
         return;
       }
-      final dir = Directory('${widget.appState.downloadsDirectoryPath}/screenshots');
-      if (!dir.existsSync()) dir.createSync(recursive: true);
       final safeTitle = _currentItem.displayName
           .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ]+'), '_')
           .trim();
       final ts = DateTime.now().millisecondsSinceEpoch;
-      final file = File('${dir.path}/${safeTitle.isEmpty ? 'vedro' : safeTitle}_$ts.png');
+      final fileName = '${safeTitle.isEmpty ? 'vedro' : safeTitle}_$ts.png';
+      final gallerySaved = await NativePlaybackChannel.saveScreenshotToGallery(
+        bytes,
+        fileName,
+      );
+      if (gallerySaved != null && gallerySaved.isNotEmpty) {
+        _flashGestureHud(
+          'seek_feedback',
+          text: _isMobile ? '已保存截图到系统相册' : '已保存截图到图片目录',
+        );
+        return;
+      }
+      final dir = Directory('${widget.appState.downloadsDirectoryPath}/screenshots');
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      final file = File('${dir.path}/$fileName');
       await file.writeAsBytes(bytes);
       _flashGestureHud('seek_feedback', text: '已保存截图');
     } catch (_) {
@@ -1836,7 +2273,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   Future<void> _loadDanmaku({String? queryOverride}) async {
-    if (_danmakuLoading) return;
+    final gen = ++_danmakuGen;
     final query = (queryOverride ?? (_currentItem.seriesName ?? _currentItem.displayName)).trim();
     if (query.isEmpty) return;
     setState(() {
@@ -1850,7 +2287,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         season: _currentItem.parentIndexNumber,
         episode: _currentItem.indexNumber,
       );
-      if (!mounted) return;
+      if (!mounted || gen != _danmakuGen) return;
       setState(() {
         _danmakuComments = res.comments;
         _danmakuMatchTitle = res.title.isNotEmpty ? res.title : query;
@@ -1863,10 +2300,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         );
       }
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || gen != _danmakuGen) return;
       setState(() {
         _danmakuLoading = false;
-        _danmakuError = e.toString().replaceFirst('Exception: ', '');
+        _danmakuError = VedroErrorFormatter.friendly(e);
       });
     }
   }
@@ -1900,6 +2337,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> _startPlayback(String? sourceId, {double? resumeFromSecs}) async {
     if (!mounted || _disposed) return;
+    final gen = ++_playbackGen;
+    final isReconnectOrSwitch = resumeFromSecs != null;
+    final savedAudioId = isReconnectOrSwitch ? _player.state.track.audio.id : null;
+    final savedSubId = isReconnectOrSwitch ? _player.state.track.subtitle.id : null;
+    final savedLocalSub = isReconnectOrSwitch ? _activeSubLocalPath : null;
+    final savedExtSubUrl = isReconnectOrSwitch ? _activeSubUrl : null;
+    final savedExtSubLabel = isReconnectOrSwitch ? _activeSubLabel : null;
+    final savedSecondarySub = isReconnectOrSwitch ? _secondarySubTrackId : null;
+
     setState(() {
       _loading = true;
       _error = null;
@@ -1910,16 +2356,60 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     try {
       final p = widget.appState.prefs;
 
-      // Support playing local offline downloaded file or direct http(s) stream URL directly!
-      if (_activeLocalPath != null && _activeLocalPath!.isNotEmpty) {
-        final localPath = _activeLocalPath!;
-        final isNetworkDirect = NativePlaybackChannel.isAllowedHttpUrl(localPath);
+      // 1. Direct network stream URL (http/https/rtsp/rtmp/mms/udp/rtp)
+      if (_isDirectNetwork) {
+        final netUrl = _activeNetworkUrl!;
         await _applyInitialPreferencesToMpv();
+        if (!mounted || _disposed || gen != _playbackGen) return;
+        final startSecs = resumeFromSecs ?? 0.0;
+        await _player.open(
+          Media(
+            netUrl,
+            start: startSecs > 3.0 ? Duration(milliseconds: (startSecs * 1000).round()) : null,
+          ),
+          play: true,
+        );
+        if (!mounted || _disposed || gen != _playbackGen) return;
+        if (!p.incognitoMode) {
+          unawaited(widget.appState.recordLocalHistory(
+            title: _currentItem.displayName,
+            target: netUrl,
+            isNetworkUrl: true,
+            positionSecs: startSecs,
+            durationSecs: _durationSecs,
+          ));
+        }
+        if (applyInitialOverrides &&
+            widget.initialExternalSubtitlePath != null &&
+            widget.initialExternalSubtitlePath!.trim().isNotEmpty) {
+          await _loadExternalSubtitleFile(widget.initialExternalSubtitlePath!);
+        } else if (savedLocalSub != null && savedLocalSub.isNotEmpty) {
+          await _loadExternalSubtitleFile(savedLocalSub);
+        }
+        if (_aiSubCtrl.enabled && _aiSubCtrl.asrMode) {
+          _aiSubCtrl.updateAsrMediaSource(sourceUrl: netUrl, localPath: null);
+        }
+        if (!mounted || _disposed || gen != _playbackGen) return;
+        setState(() {
+          _loading = false;
+          _paused = false;
+        });
+        _syncNowPlaying(force: true);
+        _scheduleHideControls();
+        _startTimers();
+        return;
+      }
+
+      // 2. Local offline downloaded / user-picked video file
+      if (_isLocalFile) {
+        final localPath = _activeLocalPath!;
+        await _applyInitialPreferencesToMpv();
+        if (!mounted || _disposed || gen != _playbackGen) return;
         double startSecs = resumeFromSecs ?? 0.0;
-        if (resumeFromSecs == null && p.rememberPosition && !isNetworkDirect) {
+        if (resumeFromSecs == null && p.rememberPosition) {
           startSecs = await widget.appState.getLocalResumeSecs(localPath);
         }
-        if (!mounted || _disposed) return;
+        if (!mounted || _disposed || gen != _playbackGen) return;
         await _player.open(
           Media(
             localPath,
@@ -1927,12 +2417,23 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           ),
           play: true,
         );
+        if (!mounted || _disposed || gen != _playbackGen) return;
+        if (!p.incognitoMode) {
+          unawaited(widget.appState.recordLocalHistory(
+            title: _currentItem.displayName,
+            target: localPath,
+            isNetworkUrl: false,
+            positionSecs: startSecs,
+            durationSecs: _durationSecs,
+          ));
+        }
         if (applyInitialOverrides &&
             widget.initialExternalSubtitlePath != null &&
             widget.initialExternalSubtitlePath!.trim().isNotEmpty) {
           await _loadExternalSubtitleFile(widget.initialExternalSubtitlePath!);
-        } else if (!isNetworkDirect &&
-            p.autoLoadExternalSubs &&
+        } else if (savedLocalSub != null && savedLocalSub.isNotEmpty) {
+          await _loadExternalSubtitleFile(savedLocalSub);
+        } else if (p.autoLoadExternalSubs &&
             (!applyInitialOverrides || widget.initialSubtitleStreamIndex != -1) &&
             p.preferredSubLang != 'off') {
           final sidecars = NativePlaybackChannel.findSidecarSubtitles(localPath);
@@ -1948,14 +2449,33 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
             );
           }
         }
-        if (!mounted || _disposed) return;
+        if (_aiSubCtrl.enabled && _aiSubCtrl.asrMode) {
+          _aiSubCtrl.updateAsrMediaSource(sourceUrl: null, localPath: localPath);
+        }
+        if (!mounted || _disposed || gen != _playbackGen) return;
         setState(() {
           _loading = false;
           _paused = false;
         });
+        _syncNowPlaying(force: true);
         _scheduleHideControls();
         _startTimers();
         return;
+      }
+
+      // 3. Emby / Jellyfin / EmbyGo server stream
+      if (_segments.isEmpty) {
+        unawaited(_fetchItemSegments(_currentItem.id));
+      }
+      ({String? audioLang, String? subtitleLang, int? audioIndex, int? subtitleIndex})? savedTrackPref;
+      final scopeId = _trackPrefScopeId;
+      if (scopeId != null &&
+          !isReconnectOrSwitch &&
+          (!applyInitialOverrides ||
+              (widget.initialAudioStreamIndex == null &&
+                  widget.initialSubtitleStreamIndex == null))) {
+        savedTrackPref = await widget.appState.getTrackPreference(scopeId);
+        if (!mounted || _disposed || gen != _playbackGen) return;
       }
 
       final prepRaw = await widget.appState.core.invoke('prepare_playback', {
@@ -1967,11 +2487,22 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           'subtitle_stream_index': widget.initialSubtitleStreamIndex,
         'inspect_header': true,
       }) as Map<String, dynamic>;
-      if (!mounted || _disposed) return;
+      if (!mounted || _disposed || gen != _playbackGen) return;
 
       final prep = PreparedPlaybackModel.fromJson(prepRaw);
-      await _applyInitialPreferencesToMpv(prepOptions: prep.mpvOptions);
-      if (!mounted || _disposed) return;
+      final prepOptions = Map<String, String>.from(prep.mpvOptions);
+      if (savedTrackPref != null) {
+        final prefAlang = savedTrackPref.audioLang?.trim() ?? '';
+        final prefSlang = savedTrackPref.subtitleLang?.trim() ?? '';
+        if (prefAlang.isNotEmpty) prepOptions['alang'] = prefAlang;
+        if (prefSlang == 'off') {
+          prepOptions['sid'] = 'no';
+        } else if (prefSlang.isNotEmpty) {
+          prepOptions['slang'] = prefSlang;
+        }
+      }
+      await _applyInitialPreferencesToMpv(prepOptions: prepOptions);
+      if (!mounted || _disposed || gen != _playbackGen) return;
 
       final Duration? startDur;
       if (resumeFromSecs != null && resumeFromSecs > 1.0) {
@@ -1986,13 +2517,33 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         Media(prep.proxyUrl, start: startDur),
         play: true,
       );
-      if (!mounted || _disposed) return;
+      if (!mounted || _disposed || gen != _playbackGen) return;
 
-      if (applyInitialOverrides &&
+      // Restore live tracks on reconnect / HW->SW fallback, or apply initial/preferred tracks
+      if (isReconnectOrSwitch) {
+        if (savedAudioId != null && savedAudioId != 'auto' && savedAudioId != 'no') {
+          unawaited(_applyMpvProperty('aid', savedAudioId));
+        }
+        if (savedLocalSub != null && savedLocalSub.isNotEmpty) {
+          await _loadExternalSubtitleFile(savedLocalSub);
+        } else if (savedExtSubUrl != null && savedExtSubUrl.isNotEmpty) {
+          await _player.setSubtitleTrack(
+            SubtitleTrack.uri(savedExtSubUrl, title: savedExtSubLabel),
+          );
+        } else if (savedSubId == 'no') {
+          await _player.setSubtitleTrack(SubtitleTrack.no());
+        } else if (savedSubId != null && savedSubId != 'auto') {
+          unawaited(_applyMpvProperty('sid', savedSubId));
+        }
+        if (savedSecondarySub != null && savedSecondarySub.isNotEmpty) {
+          unawaited(_applyMpvProperty('secondary-sid', savedSecondarySub));
+        }
+      } else if (applyInitialOverrides &&
           widget.initialExternalSubtitlePath != null &&
           widget.initialExternalSubtitlePath!.trim().isNotEmpty) {
         await _loadExternalSubtitleFile(widget.initialExternalSubtitlePath!);
       } else if ((applyInitialOverrides && widget.initialSubtitleStreamIndex == -1) ||
+          savedTrackPref?.subtitleLang == 'off' ||
           p.preferredSubLang == 'off') {
         await _player.setSubtitleTrack(SubtitleTrack.no());
       } else if (applyInitialOverrides && widget.initialSubtitleStreamIndex != null) {
@@ -2019,7 +2570,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         }
       } else if (p.autoLoadExternalSubs && prep.externalSubtitles.isNotEmpty) {
         Map<String, dynamic>? preferredExt;
-        final prefLang = p.preferredSubLang.toLowerCase();
+        final prefLang =
+            (savedTrackPref?.subtitleLang ?? p.preferredSubLang).toLowerCase();
         for (final sub in prep.externalSubtitles) {
           if (sub['url'] == null) continue;
           final lang = (sub['language'] ?? '').toString().toLowerCase();
@@ -2035,6 +2587,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
             break;
           }
           if (prefLang == 'en' && (lang.contains('en') || title.contains('eng'))) {
+            preferredExt = sub;
+            break;
+          }
+          if (prefLang.isNotEmpty && lang.contains(prefLang)) {
             preferredExt = sub;
             break;
           }
@@ -2058,13 +2614,18 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         }
       }
 
+      if (_aiSubCtrl.enabled && _aiSubCtrl.asrMode) {
+        _aiSubCtrl.updateAsrMediaSource(sourceUrl: prep.proxyUrl, localPath: null);
+      }
+
       if (!p.incognitoMode) {
         unawaited(
           widget.appState.core
               .invoke('report_playback_start', {
-                'position_ticks': startDur != null
-                    ? startDur.inMicroseconds * 10
-                    : _currentItem.playbackPositionTicks,
+                'item_id': _currentItem.id,
+                'media_source_id': prep.mediaSourceId,
+                'play_session_id': prep.playSessionId,
+                'position_ticks': startDur != null ? startDur.inMicroseconds * 10 : 0,
                 if (_currentItem.runTimeTicks != null) 'run_time_ticks': _currentItem.runTimeTicks,
                 'is_paused': false,
               })
@@ -2072,21 +2633,26 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         );
       }
 
-      if (!mounted || _disposed) return;
-      _autoRetryCount = 0;
+      if (!mounted || _disposed || gen != _playbackGen) return;
       setState(() {
         _prepared = prep;
         _loading = false;
         _paused = false;
       });
+      _syncNowPlaying(force: true);
       _scheduleHideControls();
       _startTimers();
     } catch (e) {
-      if (mounted && !_disposed) {
+      if (mounted && !_disposed && gen == _playbackGen) {
         setState(() {
-          _error = e.toString().replaceFirst('VedroCoreException: ', '');
+          _error = VedroErrorFormatter.friendly(e);
           _loading = false;
           _controlsVisible = true;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _error != null && _errorRetryFocusNode.canRequestFocus) {
+            _errorRetryFocusNode.requestFocus();
+          }
         });
       }
     }
@@ -2132,14 +2698,18 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _progressTimer?.cancel();
     _progressTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!mounted || _disposed || widget.appState.prefs.incognitoMode) return;
-      if (_activeLocalPath != null && _activeLocalPath!.isNotEmpty) {
+      if (_isLocalFile) {
         if (!_paused && _positionSecs > 3.0) {
           await widget.appState.saveLocalResumeSecs(_activeLocalPath!, _positionSecs);
         }
         return;
       }
+      if (_isDirectNetwork) return;
       try {
         await widget.appState.core.invoke('report_playback_progress', {
+          'item_id': _currentItem.id,
+          if (_prepared?.mediaSourceId != null) 'media_source_id': _prepared!.mediaSourceId,
+          if (_prepared?.playSessionId != null) 'play_session_id': _prepared!.playSessionId,
           'position_ticks': (_positionSecs * 10000000).round(),
           if (_durationSecs > 0) 'run_time_ticks': (_durationSecs * 10000000).round(),
           'is_paused': _paused,
@@ -2159,15 +2729,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
 
     _speedTimer?.cancel();
-    if (_activeLocalPath == null) {
+    if (!_isLocalFile) {
       _speedTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
         if (!mounted || _disposed) return;
         final showSpeed = widget.appState.prefs.showNetworkSpeed;
         if (!showSpeed && !_buffering && !_loading) return;
         try {
-          // Lock-free atomic read from Rust StreamProxy (ZERO Isolate / JSON overhead!)
-          int bps = widget.appState.core.proxySpeedBps;
-          if (bps <= 0 && (_buffering || _loading)) {
+          // Lock-free atomic read from Rust StreamProxy for Emby/Jellyfin; mpv cache-speed for direct network URLs
+          int bps = _isServerStream ? widget.appState.core.proxySpeedBps : 0;
+          if (bps <= 0 && (_isDirectNetwork || _buffering || _loading)) {
             final mpvSpeed = await _readMpvProperty('cache-speed');
             bps = double.tryParse(mpvSpeed ?? '')?.round() ?? 0;
           }
@@ -2182,17 +2752,25 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
   }
 
-  Future<void> _reportStoppedAndCleanup() async {
-    if (_activeLocalPath != null) return;
+  Future<void> _reportStoppedAndCleanup({double? overridePositionSecs}) async {
+    if (!_isServerStream) return;
+    final prep = _prepared;
+    final reportSecs = overridePositionSecs ?? _positionSecs;
     try {
       if (!widget.appState.prefs.incognitoMode) {
         await widget.appState.core.invoke('report_playback_stopped', {
-          'position_ticks': (_positionSecs * 10000000).round(),
+          'item_id': _currentItem.id,
+          if (prep?.mediaSourceId != null) 'media_source_id': prep!.mediaSourceId,
+          if (prep?.playSessionId != null) 'play_session_id': prep!.playSessionId,
+          if (prep?.streamId != null) 'stream_id': prep!.streamId,
+          'position_ticks': (reportSecs * 10000000).round(),
           if (_durationSecs > 0) 'run_time_ticks': (_durationSecs * 10000000).round(),
           'is_paused': true,
         });
       }
-      await widget.appState.core.invoke('player_stop');
+      await widget.appState.core.invoke('player_stop', {
+        if (prep?.streamId != null) 'stream_id': prep!.streamId,
+      });
     } catch (_) {}
   }
 
@@ -2216,6 +2794,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> _togglePause() async {
     await _player.playOrPause();
+    if (!mounted || _disposed) return;
     _revealControls();
   }
 
@@ -2283,12 +2862,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   Future<void> _seekTo(double secs) async {
     final target = secs.clamp(0.0, _durationSecs > 0 ? _durationSecs : 86400.0);
     await _player.seek(Duration(milliseconds: (target * 1000).round()));
+    if (!mounted || _disposed) return;
     _positionSecs = target;
     _positionNotifier.value = target;
+    _syncNowPlaying(force: true);
   }
 
   Future<void> _seekBy(double delta, {bool showHud = false}) async {
     await _seekTo(_positionSecs + delta);
+    if (!mounted || _disposed) return;
     if (showHud) {
       HapticFeedback.selectionClick();
       final sign = delta >= 0 ? '+' : '';
@@ -2299,31 +2881,50 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   Future<void> _setSpeed(double s) async {
     final clamped = s.clamp(0.25, 4.0);
     await _player.setRate(clamped);
-    if (mounted) setState(() => _speed = clamped);
+    if (mounted && !_disposed) {
+      setState(() => _speed = clamped);
+      _syncNowPlaying(force: true);
+    }
     if (!_isSpeedBoost) _schedulePersistPlayerPrefs();
   }
 
   Future<void> _applyAspectMode(String mode) async {
+    if (!mounted || _disposed) return;
     setState(() => _aspectMode = mode);
     _schedulePersistPlayerPrefs();
     switch (mode) {
       case 'fill':
+        await _applyMpvProperty('keepaspect', 'yes');
         await _applyMpvProperty('video-aspect-override', '-1');
         await _applyMpvProperty('panscan', '1.0');
         break;
+      case 'stretch':
+        await _applyMpvProperty('panscan', '0.0');
+        await _applyMpvProperty('video-aspect-override', '-1');
+        await _applyMpvProperty('keepaspect', 'no');
+        break;
       case '16:9':
+        await _applyMpvProperty('keepaspect', 'yes');
         await _applyMpvProperty('panscan', '0.0');
         await _applyMpvProperty('video-aspect-override', '16:9');
         break;
       case '21:9':
+        await _applyMpvProperty('keepaspect', 'yes');
         await _applyMpvProperty('panscan', '0.0');
         await _applyMpvProperty('video-aspect-override', '21:9');
         break;
+      case '2.35:1':
+        await _applyMpvProperty('keepaspect', 'yes');
+        await _applyMpvProperty('panscan', '0.0');
+        await _applyMpvProperty('video-aspect-override', '2.35');
+        break;
       case '4:3':
+        await _applyMpvProperty('keepaspect', 'yes');
         await _applyMpvProperty('panscan', '0.0');
         await _applyMpvProperty('video-aspect-override', '4:3');
         break;
       default:
+        await _applyMpvProperty('keepaspect', 'yes');
         await _applyMpvProperty('panscan', '0.0');
         await _applyMpvProperty('video-aspect-override', '-1');
         break;
@@ -2360,10 +2961,21 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (_showEpisodeDrawer) {
       setState(() => _showEpisodeDrawer = false);
       _scheduleHideControls();
+      if (_isTv && _controlsVisible) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _controlsVisible && _playPauseFocusNode.canRequestFocus) {
+            _playPauseFocusNode.requestFocus();
+          }
+        });
+      }
       return;
     }
     if (_upNextCountdown > 0) {
-      setState(_cancelUpNextCountdown);
+      final atEnd = _durationSecs > 0 && _positionSecs >= _durationSecs - 2.0;
+      setState(() {
+        _cancelUpNextCountdown();
+        if (atEnd) _hasEndedReplay = true;
+      });
       return;
     }
     if (_isTv && _controlsVisible && _error == null && !_hasEndedReplay) {
@@ -2384,6 +2996,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     final key = ev.logicalKey;
     final isRepeat = ev is KeyRepeatEvent;
     final step = widget.appState.prefs.seekStepSecs.toDouble();
+
+    // Never intercept typing inside a TextField (e.g. Danmaku search box)
+    final focusedWidget = FocusManager.instance.primaryFocus?.context?.widget;
+    if (focusedWidget is EditableText &&
+        key != LogicalKeyboardKey.escape &&
+        key != LogicalKeyboardKey.goBack) {
+      return KeyEventResult.ignored;
+    }
 
     // 1. Hardware media keys work in every state (except when screen-locked)
     if (!_screenLocked) {
@@ -2453,13 +3073,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           : KeyEventResult.handled;
     }
 
-    // 4. Episode Drawer open: let Flutter focus traversal drive D-Pad inside the drawer!
+    // 4. Episode Drawer or interactive overlay (Up-Next / Replay / Error) open:
+    // Let Flutter focus traversal drive D-Pad/Enter across overlay buttons naturally!
     if (_showEpisodeDrawer) {
       return KeyEventResult.ignored;
     }
-
-    // 5. TV / D-Pad Remote Mode when OSD controls are visible:
-    // Let Up/Down/Left/Right/OK navigate OSD buttons & Scrub Bar, while keeping OSD alive!
     final isSelect = key == LogicalKeyboardKey.select ||
         key == LogicalKeyboardKey.gameButtonA ||
         (_isTv && (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter));
@@ -2468,6 +3086,26 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         key == LogicalKeyboardKey.arrowLeft ||
         key == LogicalKeyboardKey.arrowRight;
 
+    if ((_upNextCountdown > 0 || _hasEndedReplay || _error != null) && (isArrow || isSelect)) {
+      if (_focusNode.hasPrimaryFocus) {
+        if (_error != null && _errorRetryFocusNode.canRequestFocus) {
+          _errorRetryFocusNode.requestFocus();
+          return KeyEventResult.handled;
+        }
+        if (_upNextCountdown > 0 && _upNextPlayFocusNode.canRequestFocus) {
+          _upNextPlayFocusNode.requestFocus();
+          return KeyEventResult.handled;
+        }
+        if (_hasEndedReplay && _replayFocusNode.canRequestFocus) {
+          _replayFocusNode.requestFocus();
+          return KeyEventResult.handled;
+        }
+      }
+      return KeyEventResult.ignored;
+    }
+
+    // 5. TV / D-Pad Remote Mode when OSD controls are visible:
+    // Let Up/Down/Left/Right/OK navigate OSD buttons & Scrub Bar, while keeping OSD alive!
     if (_controlsVisible && _isTv && (isArrow || isSelect)) {
       _scheduleHideControls();
       if (_focusNode.hasPrimaryFocus) {
@@ -2565,6 +3203,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       return KeyEventResult.handled;
     } else if (key == LogicalKeyboardKey.keyN && _nextEpisode != null) {
       unawaited(_switchEpisode(_nextEpisode!));
+      return KeyEventResult.handled;
+    } else if (key == LogicalKeyboardKey.keyP && _prevEpisode != null) {
+      unawaited(_switchEpisode(_prevEpisode!));
+      return KeyEventResult.handled;
+    } else if (key == LogicalKeyboardKey.pageDown && _chapters.isNotEmpty) {
+      unawaited(_jumpChapter(true));
+      return KeyEventResult.handled;
+    } else if (key == LogicalKeyboardKey.pageUp && _chapters.isNotEmpty) {
+      unawaited(_jumpChapter(false));
       return KeyEventResult.handled;
     } else if (key == LogicalKeyboardKey.bracketRight) {
       unawaited(_setSpeed(_speed + 0.25));
@@ -2741,12 +3388,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                       _scaleAxis = 'v';
                     }
                   }
-                  if (_scaleAxis == 'h' && _scrubbing) {
+                  if (_scaleAxis == 'h' && _scrubbing && size.width > 0) {
                     final deltaSecs = (delta.dx / size.width) * 180.0;
                     setState(() {
                       _scrubTargetSecs = (_scrubTargetSecs + deltaSecs).clamp(0.0, _durationSecs);
                     });
-                  } else if (_scaleAxis == 'v') {
+                  } else if (_scaleAxis == 'v' && size.height > 0) {
                     final vDelta = -delta.dy / (size.height * 0.55);
                     if (_scaleAnchor.dx < size.width * 0.5) {
                       _setBrightness(_brightness + vDelta);
@@ -2780,6 +3427,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                             controller: _videoController,
                             controls: NoVideoControls,
                             fill: Colors.black,
+                            fit: _aspectMode == 'fill'
+                                ? BoxFit.cover
+                                : (_aspectMode == 'stretch' ? BoxFit.fill : BoxFit.contain),
                           );
                           final beautyMatrix = BeautyFilterEngine.buildColorMatrix(
                             _beautyPreset,
@@ -2812,6 +3462,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         colorHex: widget.appState.prefs.subtitleColorHex,
                         outlineWidth: widget.appState.prefs.subtitleOutlineWidth,
                         bgOpacity: widget.appState.prefs.subtitleBgOpacity,
+                        fontFamily: _subFontFamily,
                       ),
                     ),
 
@@ -2838,7 +3489,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         child: ValueListenableBuilder<int>(
                           valueListenable: _networkSpeedBpsNotifier,
                           builder: (_, bps, __) {
-                            final showNet = _activeLocalPath == null &&
+                            final showNet = !_isLocalFile &&
                                 widget.appState.prefs.showNetworkSpeed;
                             final label = _loading ? '正在加载' : '缓冲中';
                             return GlassSurface(
@@ -2879,7 +3530,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
                     // Live network download speed pill (zero full-page rebuild via ValueNotifier)
                     if (widget.appState.prefs.showNetworkSpeed &&
-                        _activeLocalPath == null &&
+                        !_isLocalFile &&
                         !_showEpisodeDrawer &&
                         !_screenLocked &&
                         !_inPipMode)
@@ -2985,10 +3636,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                     runSpacing: 8,
                                     children: [
                                       _DeckPillButton(
+                                        focusNode: _errorRetryFocusNode,
                                         label: '重试播放',
                                         active: true,
                                         onTap: () {
                                           _autoRetryCount = 0;
+                                          _retryAnchorSecs = -1.0;
                                           unawaited(_startPlayback(
                                             _prepared?.mediaSourceId,
                                             resumeFromSecs: _positionSecs,
@@ -3001,6 +3654,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                           onTap: () {
                                             setState(() => _hwDecodeEnabled = false);
                                             _autoRetryCount = 0;
+                                            _retryAnchorSecs = -1.0;
                                             unawaited(_startPlayback(
                                               _prepared?.mediaSourceId,
                                               resumeFromSecs: _positionSecs,
@@ -3061,6 +3715,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     _DeckPillButton(
+                                      focusNode: _upNextPlayFocusNode,
                                       label: '立即播放',
                                       active: true,
                                       onTap: () {
@@ -3072,7 +3727,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                     const SizedBox(width: 8),
                                     _DeckPillButton(
                                       label: '取消',
-                                      onTap: () => setState(_cancelUpNextCountdown),
+                                      onTap: () => setState(() {
+                                        _cancelUpNextCountdown();
+                                        if (_durationSecs > 0 &&
+                                            _positionSecs >= _durationSecs - 2.0) {
+                                          _hasEndedReplay = true;
+                                        }
+                                      }),
                                     ),
                                   ],
                                 ),
@@ -3107,10 +3768,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   _DeckPillButton(
+                                    focusNode: _replayFocusNode,
                                     label: '重新播放',
                                     active: true,
                                     onTap: () async {
-                                      setState(() => _hasEndedReplay = false);
+                                      setState(() {
+                                        _completedTriggered = false;
+                                        _hasEndedReplay = false;
+                                      });
                                       await _seekTo(0);
                                       await _player.play();
                                     },
@@ -3134,7 +3799,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         ),
                       ),
 
-                    // Skip Intro / Outro floating button (also offers quick +85s pill for TV episodes without IntroSkipper)
+                    // Skip Intro / Outro floating button (also offers reactive +85s pill for TV episodes without IntroSkipper)
                     if (!_showEpisodeDrawer && !_screenLocked && !_inPipMode && _upNextCountdown == 0)
                       ValueListenableBuilder<MediaSegmentModel?>(
                         valueListenable: _activeSegmentNotifier,
@@ -3144,6 +3809,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                               right: 28 + tvPadX,
                               bottom: (_controlsVisible ? 142 : 34) + tvPadY,
                               child: PressableScale(
+                                focusNode: _skipIntroFocusNode,
                                 onTap: () => _seekTo(seg.endSecs),
                                 hoverScale: 1.04,
                                 pressScale: 0.94,
@@ -3173,48 +3839,53 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                               ),
                             );
                           }
-                          final showQuickSkip = _controlsVisible &&
-                              !_quickSkipIntroDismissed &&
-                              _segments.isEmpty &&
-                              _currentItem.type == 'Episode' &&
-                              _durationSecs > 600 &&
-                              _positionSecs >= 2.0 &&
-                              _positionSecs < 240.0;
-                          if (!showQuickSkip) return const SizedBox.shrink();
-                          return Positioned(
-                            right: 28 + tvPadX,
-                            bottom: 142 + tvPadY,
-                            child: PressableScale(
-                              onTap: () {
-                                setState(() => _quickSkipIntroDismissed = true);
-                                unawaited(_seekBy(85, showHud: true));
-                              },
-                              hoverScale: 1.04,
-                              pressScale: 0.94,
-                              borderRadius: BorderRadius.circular(12),
-                              child: const GlassSurface(
-                                borderRadius: 12,
-                                enableBlur: false,
-                                color: Color(0xD6181920),
-                                borderColor: Color(0x3CFFFFFF),
-                                padding: EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      '跳过片头 +85s',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w600,
-                                      ),
+                          return ValueListenableBuilder<bool>(
+                            valueListenable: _quickSkipEligibleNotifier,
+                            builder: (_, eligible, __) {
+                              final showQuickSkip = _controlsVisible &&
+                                  eligible &&
+                                  !_quickSkipIntroDismissed &&
+                                  _segments.isEmpty &&
+                                  _currentItem.type == 'Episode';
+                              if (!showQuickSkip) return const SizedBox.shrink();
+                              return Positioned(
+                                right: 28 + tvPadX,
+                                bottom: 142 + tvPadY,
+                                child: PressableScale(
+                                  focusNode: _skipIntroFocusNode,
+                                  onTap: () {
+                                    setState(() => _quickSkipIntroDismissed = true);
+                                    _quickSkipEligibleNotifier.value = false;
+                                    unawaited(_seekBy(85, showHud: true));
+                                  },
+                                  hoverScale: 1.04,
+                                  pressScale: 0.94,
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: const GlassSurface(
+                                    borderRadius: 12,
+                                    enableBlur: false,
+                                    color: Color(0xD6181920),
+                                    borderColor: Color(0x3CFFFFFF),
+                                    padding: EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          '跳过片头 +85s',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                        SizedBox(width: 5),
+                                        Icon(Icons.fast_forward_rounded, size: 16, color: Colors.white),
+                                      ],
                                     ),
-                                    SizedBox(width: 5),
-                                    Icon(Icons.fast_forward_rounded, size: 16, color: Colors.white),
-                                  ],
+                                  ),
                                 ),
-                              ),
-                            ),
+                              );
+                            },
                           );
                         },
                       ),
@@ -3417,14 +4088,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                                 ),
                                                 if (specs.isNotEmpty) ...[
                                                   const SizedBox(width: 10),
-                                                  SpecGlyphRow(specs: specs),
+                                                  SpecGlyphRow(specs: specs, forceDarkScrim: true),
                                                 ],
                                               ],
                                             ),
                                           ),
                                           const SizedBox(width: 12),
                                           // Mobile fullscreen live clock & battery %
-                                          if (_isMobile)
+                                          if (_isMobile && size.width >= 460)
                                             ValueListenableBuilder<
                                                 ({String clock, int batteryPct, bool charging})>(
                                               valueListenable: _statusBarNotifier,
@@ -3497,16 +4168,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                               );
                                             },
                                           ),
-                                          Tooltip(
-                                            message: _hwDecodeEnabled
-                                                ? '当前硬件解码，点击切至软解'
-                                                : '当前软件解码，点击切至硬解',
-                                            child: _DeckPillButton(
-                                              label: _hwDecodeEnabled ? 'HW' : 'SW',
-                                              active: _hwDecodeEnabled,
-                                              onTap: _toggleHwDecode,
+                                          if (size.width >= 460)
+                                            Tooltip(
+                                              message: _hwDecodeEnabled
+                                                  ? '当前硬件解码，点击切至软解'
+                                                  : '当前软件解码，点击切至硬解',
+                                              child: _DeckPillButton(
+                                                label: _hwDecodeEnabled ? 'HW' : 'SW',
+                                                active: _hwDecodeEnabled,
+                                                onTap: _toggleHwDecode,
+                                              ),
                                             ),
-                                          ),
                                           if (wide && _chapters.isNotEmpty) ...[
                                             const SizedBox(width: 6),
                                             _CircleHudButton(
@@ -3532,7 +4204,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                                 setState(() => _showEpisodeDrawer = true);
                                                 WidgetsBinding.instance.addPostFrameCallback((_) {
                                                   if (mounted && _showEpisodeDrawer) {
-                                                    _drawerCloseFocusNode.requestFocus();
+                                                    if (_drawerActiveEpFocusNode.canRequestFocus) {
+                                                      _drawerActiveEpFocusNode.requestFocus();
+                                                    } else {
+                                                      _drawerCloseFocusNode.requestFocus();
+                                                    }
                                                   }
                                                 });
                                               },
@@ -3570,10 +4246,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                             _CircleHudButton(
                                               icon: Icons.picture_in_picture_alt_rounded,
                                               tooltip: '画中画',
-                                              onTap: () => NativePlaybackChannel.enterPictureInPicture(
-                                                aspectW: _videoWidth,
-                                                aspectH: _videoHeight,
-                                              ),
+                                              onTap: _enterPipSafely,
                                             ),
                                           ],
                                           const SizedBox(width: 6),
@@ -3653,7 +4326,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                               ),
                                               child: LayoutBuilder(
                                                 builder: (context, deckConstraints) {
-                                                  final singleRowDeck = deckConstraints.maxWidth >= 680;
+                                                  final singleRowDeck = deckConstraints.maxWidth >= 900;
                                                   final speedPill = _DeckPillButton(
                                                     key: const ValueKey('player-speed-pill'),
                                                     label: _fmtSpeed(_speed),
@@ -3664,6 +4337,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                                   final transportCluster = Row(
                                                     mainAxisSize: MainAxisSize.min,
                                                     children: [
+                                                      if (_prevEpisode != null) ...[
+                                                        _DeckIconButton(
+                                                          icon: Icons.skip_previous_rounded,
+                                                          tooltip: '上一集 (P)',
+                                                          onTap: () => _switchEpisode(_prevEpisode!),
+                                                        ),
+                                                        const SizedBox(width: 4),
+                                                      ],
                                                       _DeckIconButton(
                                                         icon: _seekBackIcon(step),
                                                         tooltip: '后退 ${step}s',
@@ -3772,14 +4453,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                                             bufferedSecs: _bufferedNotifier.value,
                                                             durationSecs: _durationSecs,
                                                             segments: _segments,
-                                                            chapterTimes: _chapters
-                                                                .map((c) => c.timeSecs)
-                                                                .toList(),
+                                                            chapters: _chapters,
                                                             showRemaining: _showRemaining,
                                                             seekStepSecs: step.toDouble(),
                                                             fmtTime: _fmtTime,
                                                             onToggleRemaining: () => setState(() =>
                                                                 _showRemaining = !_showRemaining),
+                                                            onTogglePlayPause: _togglePause,
                                                             onScrubStart: () =>
                                                                 _hideControlsTimer?.cancel(),
                                                             onScrubUpdate: (secs) {
@@ -3822,50 +4502,55 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                                     const SizedBox(width: 10),
                                                     speedPill,
                                                     Expanded(child: Center(child: transportCluster)),
-                                                    Row(
-                                                      mainAxisSize: MainAxisSize.min,
-                                                      children: [
-                                                        _DeckPillButton(
-                                                          label: _danmakuEnabled && _danmakuComments.isNotEmpty
-                                                              ? '弹幕 ${_danmakuComments.length}'
-                                                              : '弹幕',
-                                                          active: _danmakuEnabled,
-                                                          onTap: _openDanmakuSheet,
+                                                    Flexible(
+                                                      child: SingleChildScrollView(
+                                                        scrollDirection: Axis.horizontal,
+                                                        child: Row(
+                                                          mainAxisSize: MainAxisSize.min,
+                                                          children: [
+                                                            _DeckPillButton(
+                                                              label: _danmakuEnabled && _danmakuComments.isNotEmpty
+                                                                  ? '弹幕 ${_danmakuComments.length}'
+                                                                  : '弹幕',
+                                                              active: _danmakuEnabled,
+                                                              onTap: _openDanmakuSheet,
+                                                            ),
+                                                            const SizedBox(width: 6),
+                                                            _DeckPillButton(
+                                                              label: '字幕',
+                                                              onTap: _openSubtitleSheet,
+                                                            ),
+                                                            const SizedBox(width: 6),
+                                                            _DeckPillButton(
+                                                              label: '音轨',
+                                                              onTap: _openAudioSheet,
+                                                            ),
+                                                            const SizedBox(width: 6),
+                                                            _DeckPillButton(
+                                                              key: const ValueKey('player-beauty-pill'),
+                                                              label: _beautyPreset == 'off'
+                                                                  ? '美颜'
+                                                                  : '美颜·${BeautyFilterPreset.byId(_beautyPreset).label}',
+                                                              active: _beautyPreset != 'off',
+                                                              onTap: _openBeautyFilterSheet,
+                                                            ),
+                                                            const SizedBox(width: 6),
+                                                            _DeckPillButton(
+                                                              label: '画面',
+                                                              onTap: _openHdrSheet,
+                                                            ),
+                                                            if ((_prepared?.allSources.length ?? 0) > 1) ...[
+                                                              const SizedBox(width: 6),
+                                                              _DeckPillButton(
+                                                                label: '版本',
+                                                                onTap: _openVersionSheet,
+                                                              ),
+                                                            ],
+                                                            const SizedBox(width: 6),
+                                                            screenToggleBtn,
+                                                          ],
                                                         ),
-                                                        const SizedBox(width: 6),
-                                                        _DeckPillButton(
-                                                          label: '字幕',
-                                                          onTap: _openSubtitleSheet,
-                                                        ),
-                                                        const SizedBox(width: 6),
-                                                        _DeckPillButton(
-                                                          label: '音轨',
-                                                          onTap: _openAudioSheet,
-                                                        ),
-                                                        const SizedBox(width: 6),
-                                                        _DeckPillButton(
-                                                          key: const ValueKey('player-beauty-pill'),
-                                                          label: _beautyPreset == 'off'
-                                                              ? '美颜'
-                                                              : '美颜·${BeautyFilterPreset.byId(_beautyPreset).label}',
-                                                          active: _beautyPreset != 'off',
-                                                          onTap: _openBeautyFilterSheet,
-                                                        ),
-                                                        const SizedBox(width: 6),
-                                                        _DeckPillButton(
-                                                          label: '画面',
-                                                          onTap: _openHdrSheet,
-                                                        ),
-                                                        if ((_prepared?.allSources.length ?? 0) > 1) ...[
-                                                          const SizedBox(width: 6),
-                                                          _DeckPillButton(
-                                                            label: '版本',
-                                                            onTap: _openVersionSheet,
-                                                          ),
-                                                        ],
-                                                        const SizedBox(width: 6),
-                                                        screenToggleBtn,
-                                                      ],
+                                                      ),
                                                     ),
                                                   ],
                                                 )
@@ -3934,7 +4619,18 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                                           const SizedBox(width: 6),
                                                           _DeckPillButton(
                                                             label: '选集',
-                                                            onTap: () => setState(() => _showEpisodeDrawer = true),
+                                                            onTap: () {
+                                                              setState(() => _showEpisodeDrawer = true);
+                                                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                                                if (mounted && _showEpisodeDrawer) {
+                                                                  if (_drawerActiveEpFocusNode.canRequestFocus) {
+                                                                    _drawerActiveEpFocusNode.requestFocus();
+                                                                  } else {
+                                                                    _drawerCloseFocusNode.requestFocus();
+                                                                  }
+                                                                }
+                                                              });
+                                                            },
                                                           ),
                                                         ],
                                                         if (_chapters.isNotEmpty) ...[
@@ -3985,6 +4681,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         onTap: () {
                           setState(() => _showEpisodeDrawer = false);
                           _scheduleHideControls();
+                          if (_isTv && _controlsVisible) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (mounted && _playPauseFocusNode.canRequestFocus) {
+                                _playPauseFocusNode.requestFocus();
+                              }
+                            });
+                          }
                         },
                         child: Container(color: const Color(0x66000000)),
                       ),
@@ -4080,6 +4783,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                           onPressed: () {
                                             setState(() => _showEpisodeDrawer = false);
                                             _scheduleHideControls();
+                                            if (_isTv && _controlsVisible) {
+                                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                                if (mounted && _playPauseFocusNode.canRequestFocus) {
+                                                  _playPauseFocusNode.requestFocus();
+                                                }
+                                              });
+                                            }
                                           },
                                         ),
                                       ],
@@ -4152,6 +4862,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                               return Tooltip(
                                                 message: ep.displayName,
                                                 child: PressableScale(
+                                                  focusNode: playing ? _drawerActiveEpFocusNode : null,
                                                   onTap: () => _switchEpisode(ep),
                                                   hoverScale: 1.04,
                                                   pressScale: 0.94,
@@ -4198,6 +4909,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                               final ep = visibleEps[idx];
                                               final playing = ep.id == _currentItem.id;
                                               return PressableScale(
+                                                focusNode: playing ? _drawerActiveEpFocusNode : null,
                                                 onTap: () => _switchEpisode(ep),
                                                 hoverScale: 1.01,
                                                 pressScale: 0.97,
@@ -4348,13 +5060,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     const modes = {
       'fit': '原始比例（适应屏幕）',
       'fill': '铺满屏幕（等比裁切黑边）',
+      'stretch': '拉伸铺满（无黑边）',
       '16:9': '强制 16:9',
       '21:9': '宽银幕 21:9',
+      '2.35:1': '超宽银幕 2.35:1',
       '4:3': '经典 4:3',
     };
     const angles = [0, 90, 180, 270];
-    showGlassSheet<void>(
-      context: context,
+    _openPlayerSheet<void>(
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
           shrinkWrap: true,
@@ -4375,23 +5088,26 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
             const Divider(height: 20),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text('画面旋转', style: TextStyle(color: VedroTheme.fg2, fontSize: 13.5)),
-                  const Spacer(),
-                  for (final angle in angles) ...[
-                    Padding(
-                      padding: const EdgeInsets.only(left: 6),
-                      child: _DeckPillButton(
-                        label: '$angle°',
-                        active: _videoRotate == angle,
-                        onTap: () {
-                          setModal(() => _videoRotate = angle);
-                          _rotateVideo(angle);
-                        },
-                      ),
-                    ),
-                  ],
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final angle in angles)
+                        _DeckPillButton(
+                          label: '$angle°',
+                          active: _videoRotate == angle,
+                          onTap: () {
+                            setModal(() => _videoRotate = angle);
+                            _rotateVideo(angle);
+                          },
+                        ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -4403,11 +5119,43 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
               step: 0.05,
               defaultValue: 0.0,
               snapValues: const [0.0, 0.25, 0.5, 1.0],
-              ticks: const [(-0.5, '50%'), (0.0, '100%'), (0.5, '150%'), (1.0, '200%'), (1.5, '250%')],
-              valueText: '${(100 * (1 + _videoZoom)).round()}%',
+              ticks: const [(-0.5, '71%'), (0.0, '100%'), (0.5, '141%'), (1.0, '200%'), (1.5, '283%')],
+              valueText: '${(100 * math.pow(2.0, _videoZoom)).round()}%',
               onChanged: (next) {
                 setModal(() => _videoZoom = next);
                 _setVideoZoom(next, showHud: false);
+              },
+            ),
+            const Divider(height: 18),
+            SwitchListTile(
+              dense: true,
+              title: const Text('水平镜像翻转', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+              value: _hflip,
+              onChanged: (v) async {
+                setModal(() => _hflip = v);
+                setState(() => _hflip = v);
+                await _applyVideoFilterChain();
+              },
+            ),
+            SwitchListTile(
+              dense: true,
+              title: const Text('垂直上下翻转', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+              value: _vflip,
+              onChanged: (v) async {
+                setModal(() => _vflip = v);
+                setState(() => _vflip = v);
+                await _applyVideoFilterChain();
+              },
+            ),
+            SwitchListTile(
+              dense: true,
+              title: const Text('去隔行扫描 (Deinterlace)', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+              subtitle: const Text('老片源 / 1080i 电视录播出现锯齿拉丝时开启', style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5)),
+              value: _deinterlace,
+              onChanged: (v) async {
+                setModal(() => _deinterlace = v);
+                setState(() => _deinterlace = v);
+                await _applyVideoFilterChain();
               },
             ),
           ],
@@ -4420,10 +5168,31 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     final queryCtrl = TextEditingController(
       text: _currentItem.seriesName ?? _currentItem.displayName,
     );
-    showGlassSheet<void>(
-      context: context,
+    _openPlayerSheet<void>(
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModal) => ListView(
+        builder: (ctx, setModal) {
+          Future<void> runSearch() async {
+            final kw = queryCtrl.text.trim();
+            if (kw.isEmpty || _danmakuLoading || _danmakuSearching) return;
+            setModal(() {
+              _danmakuEnabled = true;
+              _danmakuSearching = true;
+            });
+            setState(() => _danmakuEnabled = true);
+            try {
+              await Future.wait([
+                _loadDanmaku(queryOverride: kw),
+                widget.appState.searchDanmakuCandidates(kw).then((c) {
+                  if (mounted) _danmakuCandidates = c;
+                }).catchError((_) {}),
+              ]);
+            } finally {
+              if (mounted) _danmakuSearching = false;
+              if (ctx.mounted) setModal(() {});
+            }
+          }
+
+          return ListView(
           shrinkWrap: true,
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 22),
           children: [
@@ -4482,22 +5251,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                   Expanded(
                     child: TextField(
                       controller: queryCtrl,
-                      onSubmitted: (_) async {
-                        final kw = queryCtrl.text.trim();
-                        if (kw.isEmpty) return;
-                        setModal(() {
-                          _danmakuEnabled = true;
-                          _danmakuSearching = true;
-                        });
-                        setState(() => _danmakuEnabled = true);
-                        await Future.wait([
-                          _loadDanmaku(queryOverride: kw),
-                          widget.appState.searchDanmakuCandidates(kw).then((c) {
-                            if (mounted) _danmakuCandidates = c;
-                          }).catchError((_) {}),
-                        ]);
-                        if (ctx.mounted) setModal(() => _danmakuSearching = false);
-                      },
+                      textInputAction: TextInputAction.search,
+                      onSubmitted: (_) => unawaited(runSearch()),
                       decoration: const InputDecoration(
                         isDense: true,
                         hintText: '输入番剧或电影名称搜索弹幕…',
@@ -4508,22 +5263,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                   FilledButton(
                     onPressed: (_danmakuLoading || _danmakuSearching)
                         ? null
-                        : () async {
-                            final kw = queryCtrl.text.trim();
-                            if (kw.isEmpty) return;
-                            setModal(() {
-                              _danmakuEnabled = true;
-                              _danmakuSearching = true;
-                            });
-                            setState(() => _danmakuEnabled = true);
-                            await Future.wait([
-                              _loadDanmaku(queryOverride: kw),
-                              widget.appState.searchDanmakuCandidates(kw).then((c) {
-                                if (mounted) _danmakuCandidates = c;
-                              }).catchError((_) {}),
-                            ]);
-                            if (ctx.mounted) setModal(() => _danmakuSearching = false);
-                          },
+                        : () => unawaited(runSearch()),
                     child: Text(
                       (_danmakuLoading || _danmakuSearching) ? '搜索中…' : '搜索匹配',
                       style: const TextStyle(fontSize: 12.5),
@@ -4735,14 +5475,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
               },
             ),
           ],
-        ),
+        );
+        },
       ),
     ).whenComplete(queryCtrl.dispose);
   }
 
   void _openSpeedSheet() {
-    showGlassSheet<void>(
-      context: context,
+    _openPlayerSheet<void>(
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => Padding(
           key: const ValueKey('player-speed-sheet'),
@@ -4812,8 +5552,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       'hable': 'Hable（电影感曲线）',
       'clip': 'Clip（直通无压缩）',
     };
-    showGlassSheet<void>(
-      context: context,
+    _openPlayerSheet<void>(
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
           shrinkWrap: true,
@@ -4852,7 +5591,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                   onTap: () async {
                     Navigator.pop(ctx);
                     setState(() => _toneMapping = e.key);
-                    await _applyMpvProperty('tone-mapping', e.key);
+                    await _applyMpvProperty('tone-mapping', _normalizeToneMapping(e.key));
+                    unawaited(widget.appState.saveSettings({
+                      ...widget.appState.settings,
+                      'tone_mapping': e.key,
+                    }));
                   },
                 )),
           ],
@@ -4873,8 +5616,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         .where((t) => t.id != 'auto' && t.id != 'no')
         .toList();
 
-    showGlassSheet<void>(
-      context: context,
+    _openPlayerSheet<void>(
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
           shrinkWrap: true,
@@ -4892,6 +5634,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                     onTap: () async {
                       Navigator.pop(ctx);
                       await _player.setAudioTrack(t);
+                      final scopeId = _trackPrefScopeId;
+                      final prefVal = (t.language ?? '').trim().isNotEmpty
+                          ? t.language!.trim()
+                          : (t.title ?? t.id);
+                      if (scopeId != null && prefVal.isNotEmpty) {
+                        unawaited(widget.appState.setTrackPreference(scopeId, audioLang: prefVal));
+                      }
                     },
                   )),
               const Divider(height: 22),
@@ -4907,6 +5656,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                     setModal(() => _audioMode = e.key);
                     setState(() => _audioMode = e.key);
                     await _applyAudioMode();
+                    unawaited(widget.appState.saveSettings({
+                      ...widget.appState.settings,
+                      'audio_mode': e.key,
+                    }));
                   },
                 )),
             const Divider(height: 18),
@@ -4918,6 +5671,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                 setModal(() => _nightMode = v);
                 setState(() => _nightMode = v);
                 await _applyAudioMode();
+                unawaited(widget.appState.saveSettings({
+                  ...widget.appState.settings,
+                  'night_mode': v,
+                }));
               },
             ),
             SwitchListTile(
@@ -4928,24 +5685,42 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                 setModal(() => _dialogueBoost = v);
                 setState(() => _dialogueBoost = v);
                 await _applyAudioMode();
+                unawaited(widget.appState.saveSettings({
+                  ...widget.appState.settings,
+                  'dialogue_boost': v,
+                }));
+              },
+            ),
+            SwitchListTile(
+              dense: true,
+              title: const Text('响度均衡 (Dynaudnorm)', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+              subtitle: const Text('自动拉平电影中对白轻、爆炸响的音量落差', style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5)),
+              value: _loudnessNorm,
+              onChanged: (v) async {
+                setModal(() => _loudnessNorm = v);
+                setState(() => _loudnessNorm = v);
+                await _applyAudioMode();
               },
             ),
             const Divider(height: 18),
             VedroPrecisionSlider(
               label: '音频同步偏移',
-              value: _audioDelaySecs,
-              min: -3.0,
-              max: 3.0,
+              value: _audioDelaySecs.clamp(-5.0, 5.0),
+              min: -5.0,
+              max: 5.0,
               step: 0.05,
               defaultValue: 0.0,
               centeredOrigin: true,
               snapValues: const [0.0],
-              ticks: const [(-3.0, '-3s'), (-1.0, '-1s'), (0.0, '0s'), (1.0, '+1s'), (3.0, '+3s')],
+              ticks: const [(-5.0, '-5s'), (-2.0, '-2s'), (0.0, '0s'), (2.0, '+2s'), (5.0, '+5s')],
               valueText: '${_audioDelaySecs >= 0 ? '+' : ''}${_audioDelaySecs.toStringAsFixed(2)}s',
               onChanged: (v) async {
                 setModal(() => _audioDelaySecs = v);
                 setState(() => _audioDelaySecs = v);
                 await _applyMpvProperty('audio-delay', v.toStringAsFixed(2));
+                unawaited(widget.appState.updatePrefs(
+                  widget.appState.prefs.copyWith(audioDelayMs: (v * 1000).round()),
+                ));
               },
             ),
           ],
@@ -4955,6 +5730,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   Future<void> _applyAudioMode() async {
+    await _applyMpvProperty('audio-channels', _audioMode == 'pcm_stereo' ? 'stereo' : 'auto-safe');
     if (_audioMode == 'passthrough_bitstream') {
       await _applyMpvProperty('audio-spdif', 'ac3,eac3,dts,dts-hd,truehd');
       await _applyMpvProperty('af', '');
@@ -4970,6 +5746,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (_nightMode) {
         filters.add('lavfi=[acompressor=threshold=-20dB:ratio=4:attack=10:release=150:makeup=4dB]');
       }
+      if (_loudnessNorm) {
+        filters.add('lavfi=[dynaudnorm=f=150:g=15:p=0.95]');
+      }
       await _applyMpvProperty('af', filters.join(','));
     }
   }
@@ -4981,8 +5760,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         .where((t) => t.id != 'auto' && t.id != 'no')
         .toList();
 
-    showGlassSheet<void>(
-      context: context,
+    _openPlayerSheet<void>(
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
           shrinkWrap: true,
@@ -5010,9 +5788,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                     : _aiSubCtrl.isLoadingCues
                         ? '正在读取完整字幕并提前预读翻译…'
                         : _aiSubCtrl.asrMode
-                            ? (_aiSubCtrl.isTranscribing
-                                ? 'AI 语音识别中（已识别 ${_aiSubCtrl.totalCues} 句${aiReady ? ' · 已译 ${_aiSubCtrl.translatedCount} 句' : ''}）…'
-                                : 'AI 听音字幕已就绪 · 已识别 ${_aiSubCtrl.totalCues} 句${aiReady ? ' · 已译 ${_aiSubCtrl.translatedCount} 句' : ''}')
+                            ? (_aiSubCtrl.totalCues == 0
+                                ? (_aiSubCtrl.isTranscribing
+                                    ? 'AI 语音识别已开启，正在等待人声对白…'
+                                    : 'AI 听音字幕已就绪，正在等待人声对白…')
+                                : (_aiSubCtrl.isTranscribing
+                                    ? 'AI 语音识别中（已识别 ${_aiSubCtrl.totalCues} 句${aiReady ? ' · 已译 ${_aiSubCtrl.translatedCount} 句' : ''}）…'
+                                    : 'AI 听音字幕已就绪 · 已识别 ${_aiSubCtrl.totalCues} 句${aiReady ? ' · 已译 ${_aiSubCtrl.translatedCount} 句' : ''}'))
                             : _aiSubCtrl.isLiveFallbackMode
                                 ? '实时逐句翻译模式 → ${_aiSubCtrl.targetLang}'
                                 : '已预读翻译 ${_aiSubCtrl.translatedCount} / ${_aiSubCtrl.totalCues} 句 → ${_aiSubCtrl.targetLang}';
@@ -5061,7 +5843,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 } else {
                                   await _disableAiSubtitle();
                                 }
-                                setModal(() {});
+                                if (ctx.mounted) setModal(() {});
                               },
                             ),
                           ),
@@ -5089,7 +5871,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 active: true,
                                 onTap: () {
                                   _aiSubCtrl.retryAsr();
-                                  setModal(() {});
+                                  if (ctx.mounted) setModal(() {});
                                 },
                               ),
                             ] else if (_aiSubCtrl.translateCircuitOpen) ...[
@@ -5099,7 +5881,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 active: true,
                                 onTap: () {
                                   _aiSubCtrl.retryTranslation();
-                                  setModal(() {});
+                                  if (ctx.mounted) setModal(() {});
                                 },
                               ),
                             ],
@@ -5135,7 +5917,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 } else {
                                   await _aiSubCtrl.setTargetLang(langId);
                                 }
-                                setModal(() {});
+                                if (ctx.mounted) setModal(() {});
                               },
                               itemBuilder: (_) => AiSubtitleTargetLanguage.all.map((lang) {
                                 final isCur = _aiSubCtrl.targetLang == lang.id;
@@ -5214,7 +5996,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 unawaited(widget.appState.updatePrefs(
                                   prefs.copyWith(aiSubtitleMode: modeId),
                                 ));
-                                setModal(() {});
+                                if (ctx.mounted) setModal(() {});
                               },
                               itemBuilder: (_) => const [
                                 ('bilingual_trans_top', '双语 · 译文在上'),
@@ -5348,7 +6130,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 } else {
                                   await _disableAiSubtitle();
                                 }
-                                setModal(() {});
+                                if (ctx.mounted) setModal(() {});
                               },
                             ),
                           ),
@@ -5394,8 +6176,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                 unawaited(LocalAsrManager.instance.unloadEngine());
                 _activeSubLocalPath = null;
                 _activeSubUrl = null;
+                _secondarySubTrackId = null;
+                unawaited(_applyMpvProperty('secondary-sid', 'no'));
                 await _applyMpvProperty('sub-visibility', 'yes');
                 await _player.setSubtitleTrack(SubtitleTrack.no());
+                final scopeId = _trackPrefScopeId;
+                if (scopeId != null) {
+                  unawaited(widget.appState.setTrackPreference(scopeId, subtitleLang: 'off'));
+                }
               },
             ),
             ...embeddedSubs.map((t) => _SheetOptionRow(
@@ -5411,6 +6199,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                     _activeSubFormat = t.codec;
                     _activeSubLabel = t.title ?? t.language ?? '字幕 #${t.id}';
                     await _player.setSubtitleTrack(t);
+                    final scopeId = _trackPrefScopeId;
+                    final prefVal = (t.language ?? '').trim().isNotEmpty
+                        ? t.language!.trim()
+                        : (t.title ?? t.id);
+                    if (scopeId != null && prefVal.isNotEmpty) {
+                      unawaited(widget.appState.setTrackPreference(scopeId, subtitleLang: prefVal));
+                    }
                     if (_aiSubCtrl.enabled && !_aiSubCtrl.asrMode) {
                       await _enableAiSubtitleTranslation();
                     }
@@ -5434,12 +6229,67 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                           language: s['language']?.toString(),
                         ),
                       );
+                      final scopeId = _trackPrefScopeId;
+                      final prefVal = (s['language']?.toString() ?? '').trim().isNotEmpty
+                          ? s['language'].toString().trim()
+                          : (s['title']?.toString() ?? '');
+                      if (scopeId != null && prefVal.isNotEmpty) {
+                        unawaited(widget.appState.setTrackPreference(scopeId, subtitleLang: prefVal));
+                      }
                       if (_aiSubCtrl.enabled && !_aiSubCtrl.asrMode) {
                         await _enableAiSubtitleTranslation();
                       }
                     }
                   },
                 )),
+            if (embeddedSubs.length >= 2) ...[
+              const Divider(height: 18),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 2, 8, 4),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '副字幕双轨同显（顶部第二条字幕）',
+                      style: TextStyle(color: VedroTheme.fg2, fontSize: 13),
+                    ),
+                    const SizedBox(height: 8),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: _DeckPillButton(
+                              label: '关闭',
+                              active: _secondarySubTrackId == null,
+                              onTap: () async {
+                                setModal(() => _secondarySubTrackId = null);
+                                setState(() => _secondarySubTrackId = null);
+                                await _applyMpvProperty('secondary-sid', 'no');
+                              },
+                            ),
+                          ),
+                          for (final t in embeddedSubs)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 6),
+                              child: _DeckPillButton(
+                                label: t.title ?? t.language ?? '字幕 #${t.id}',
+                                active: _secondarySubTrackId == t.id,
+                                onTap: () async {
+                                  setModal(() => _secondarySubTrackId = t.id);
+                                  setState(() => _secondarySubTrackId = t.id);
+                                  await _applyMpvProperty('secondary-sid', t.id);
+                                },
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const Divider(height: 22),
             VedroPrecisionSlider(
               label: '字号缩放',
@@ -5454,6 +6304,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                 setModal(() => _subScale = v);
                 setState(() => _subScale = v);
                 await _applyMpvProperty('sub-scale', v.toStringAsFixed(2));
+                unawaited(widget.appState.updatePrefs(
+                  widget.appState.prefs.copyWith(subtitleFontScale: v),
+                ));
               },
             ),
             VedroPrecisionSlider(
@@ -5469,6 +6322,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                 setModal(() => _subPos = iv);
                 setState(() => _subPos = iv);
                 await _applyMpvProperty('sub-pos', '$iv');
+                unawaited(widget.appState.updatePrefs(
+                  widget.appState.prefs.copyWith(subtitlePos: iv),
+                ));
               },
             ),
             VedroPrecisionSlider(
@@ -5485,6 +6341,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                 setModal(() => _subDelaySecs = v);
                 setState(() => _subDelaySecs = v);
                 await _applyMpvProperty('sub-delay', v.toStringAsFixed(2));
+                unawaited(widget.appState.updatePrefs(
+                  widget.appState.prefs.copyWith(subtitleDelaySecs: v),
+                ));
               },
             ),
             Padding(
@@ -5510,6 +6369,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         setModal(() => _subDelaySecs = next);
                         setState(() => _subDelaySecs = next);
                         await _applyMpvProperty('sub-delay', next.toStringAsFixed(2));
+                        unawaited(widget.appState.updatePrefs(
+                          widget.appState.prefs.copyWith(subtitleDelaySecs: next),
+                        ));
                       },
                     ),
                 ],
@@ -5536,7 +6398,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                             widget.appState.prefs.copyWith(subtitleColorHex: hex),
                           ));
                           await _applyMpvProperty('sub-color', hex);
-                          setModal(() {});
+                          if (ctx.mounted) setModal(() {});
                           if (mounted) setState(() {});
                         },
                         borderRadius: BorderRadius.circular(999),
@@ -5574,7 +6436,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                   widget.appState.prefs.copyWith(subtitleOutlineWidth: v),
                 ));
                 await _applyMpvProperty('sub-border-size', v.toStringAsFixed(1));
-                setModal(() {});
+                if (ctx.mounted) setModal(() {});
                 if (mounted) setState(() {});
               },
             ),
@@ -5594,7 +6456,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                   'sub-back-color',
                   '0.0/0.0/0.0/${v.toStringAsFixed(2)}',
                 );
-                setModal(() {});
+                if (ctx.mounted) setModal(() {});
                 if (mounted) setState(() {});
               },
             ),
@@ -5606,6 +6468,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                 setModal(() => _forceAssOverride = v);
                 setState(() => _forceAssOverride = v);
                 await _applyMpvProperty('sub-ass-override', v ? 'force' : 'no');
+                unawaited(widget.appState.updatePrefs(
+                  widget.appState.prefs.copyWith(forceAssOverride: v),
+                ));
               },
             ),
             Padding(
@@ -5643,6 +6508,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 setState(() => _subFontFamily = family);
                                 await _applyMpvProperty('sub-fonts-dir', widget.appState.fontsDirectoryPath);
                                 await _applyMpvProperty('sub-font', family.isEmpty ? 'sans-serif' : family);
+                                unawaited(widget.appState.updatePrefs(
+                                  widget.appState.prefs.copyWith(subtitleFontFamily: family),
+                                ));
                               },
                             ),
                           ),
@@ -5659,17 +6527,37 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   void _openChaptersSheet() {
-    showGlassSheet<void>(
-      context: context,
+    _openPlayerSheet<void>(
       builder: (ctx) => ListView(
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
         children: [
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Text(
-              '章节列表 (${_chapters.length})',
-              style: const TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '章节列表 (${_chapters.length})',
+                    style: const TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                _DeckPillButton(
+                  label: '上一章',
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    unawaited(_jumpChapter(false));
+                  },
+                ),
+                const SizedBox(width: 6),
+                _DeckPillButton(
+                  label: '下一章',
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    unawaited(_jumpChapter(true));
+                  },
+                ),
+              ],
             ),
           ),
           for (var i = 0; i < _chapters.length; i++)
@@ -5689,8 +6577,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   void _openBeautyFilterSheet() {
-    showGlassSheet<void>(
-      context: context,
+    _openPlayerSheet<void>(
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
           shrinkWrap: true,
@@ -5723,7 +6610,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         active: _beautyPreset == preset.id,
                         onTap: () async {
                           await _applyBeautyFilter(preset.id, _beautyStrength);
-                          setModal(() {});
+                          if (ctx.mounted) setModal(() {});
                         },
                       );
                     }).toList(),
@@ -5741,7 +6628,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                       valueText: '${(_beautyStrength * 100).round()}%',
                       onChanged: (v) async {
                         setModal(() => _beautyStrength = v);
-                        await _applyBeautyFilter(_beautyPreset, v, showHud: false);
+                        await _applyBeautyFilter(
+                          _beautyPreset,
+                          v,
+                          showHud: false,
+                          debounceShader: true,
+                        );
                       },
                     ),
                   ],
@@ -5777,8 +6669,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   void _openMoreToolsSheet() {
-    showGlassSheet<void>(
-      context: context,
+    _openPlayerSheet<void>(
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
           shrinkWrap: true,
@@ -5861,45 +6752,49 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text('A-B 复读', style: TextStyle(color: VedroTheme.fg2, fontSize: 13)),
-                  const Spacer(),
-                  _DeckPillButton(
-                    label: _loopPointA == null ? '设 A 点' : 'A ${_fmtTime(_loopPointA!)}',
-                    active: _loopPointA != null,
-                    onTap: () {
-                      setModal(() => _loopPointA = _positionSecs);
-                      setState(() => _loopPointA = _positionSecs);
-                    },
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      _DeckPillButton(
+                        label: _loopPointA == null ? '设 A 点' : 'A ${_fmtTime(_loopPointA!)}',
+                        active: _loopPointA != null,
+                        onTap: () {
+                          setModal(() => _loopPointA = _positionSecs);
+                          setState(() => _loopPointA = _positionSecs);
+                        },
+                      ),
+                      _DeckPillButton(
+                        label: _loopPointB == null ? '设 B 点' : 'B ${_fmtTime(_loopPointB!)}',
+                        active: _loopPointB != null,
+                        onTap: () {
+                          if (_loopPointA != null && _positionSecs > _loopPointA! + 0.5) {
+                            setModal(() => _loopPointB = _positionSecs);
+                            setState(() => _loopPointB = _positionSecs);
+                          }
+                        },
+                      ),
+                      if (_loopPointA != null || _loopPointB != null)
+                        _DeckPillButton(
+                          label: '清除',
+                          onTap: () {
+                            setModal(() {
+                              _loopPointA = null;
+                              _loopPointB = null;
+                            });
+                            setState(() {
+                              _loopPointA = null;
+                              _loopPointB = null;
+                            });
+                          },
+                        ),
+                    ],
                   ),
-                  const SizedBox(width: 6),
-                  _DeckPillButton(
-                    label: _loopPointB == null ? '设 B 点' : 'B ${_fmtTime(_loopPointB!)}',
-                    active: _loopPointB != null,
-                    onTap: () {
-                      if (_loopPointA != null && _positionSecs > _loopPointA! + 0.5) {
-                        setModal(() => _loopPointB = _positionSecs);
-                        setState(() => _loopPointB = _positionSecs);
-                      }
-                    },
-                  ),
-                  if (_loopPointA != null || _loopPointB != null) ...[
-                    const SizedBox(width: 6),
-                    _DeckPillButton(
-                      label: '清除',
-                      onTap: () {
-                        setModal(() {
-                          _loopPointA = null;
-                          _loopPointB = null;
-                        });
-                        setState(() {
-                          _loopPointA = null;
-                          _loopPointB = null;
-                        });
-                      },
-                    ),
-                  ],
                 ],
               ),
             ),
@@ -5924,9 +6819,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Text(
-                        BeautyFilterPreset.byId(_beautyPreset).subtitle,
-                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                      Expanded(
+                        child: Text(
+                          BeautyFilterPreset.byId(_beautyPreset).subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                        ),
                       ),
                     ],
                   ),
@@ -5940,7 +6839,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         active: _beautyPreset == preset.id,
                         onTap: () async {
                           await _applyBeautyFilter(preset.id, _beautyStrength);
-                          setModal(() {});
+                          if (ctx.mounted) setModal(() {});
                         },
                       );
                     }).toList(),
@@ -5958,7 +6857,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                       valueText: '${(_beautyStrength * 100).round()}%',
                       onChanged: (v) async {
                         setModal(() => _beautyStrength = v);
-                        await _applyBeautyFilter(_beautyPreset, v, showHud: false);
+                        await _applyBeautyFilter(
+                          _beautyPreset,
+                          v,
+                          showHud: false,
+                          debounceShader: true,
+                        );
                       },
                     ),
                   ],
@@ -6115,61 +7019,68 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       ('D', '弹幕开关'),
       ('R', '画面旋转 90°'),
       ('C', '打开章节列表'),
+      ('PgUp / PgDn', '上一章 / 下一章'),
       ('I', '硬件解码与码率 HUD'),
       ('M', '静音切换'),
-      ('N', '下一集'),
+      ('P / N', '上一集 / 下一集'),
     ];
     showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('桌面快捷键指南', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-        content: SizedBox(
-          width: 380,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: shortcuts.map((s) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 5),
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF21232E),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: const Color(0x22FFFFFF), width: 0.7),
-                        ),
-                        child: Text(
-                          s.$1,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w600,
-                            fontFamily: 'monospace',
+      builder: (ctx) => Theme(
+        data: VedroTheme.dark(),
+        child: AlertDialog(
+          backgroundColor: const Color(0xFF171820),
+          title: const Text(
+            '桌面快捷键指南',
+            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          content: SizedBox(
+            width: 380,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: shortcuts.map((s) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 5),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF21232E),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0x22FFFFFF), width: 0.7),
+                          ),
+                          child: Text(
+                            s.$1,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              fontFamily: 'monospace',
+                            ),
                           ),
                         ),
-                      ),
-                      const Spacer(),
-                      Text(s.$2, style: const TextStyle(color: VedroTheme.fg2, fontSize: 13)),
-                    ],
-                  ),
-                );
-              }).toList(),
+                        const Spacer(),
+                        Text(s.$2, style: const TextStyle(color: VedroTheme.fg2, fontSize: 13)),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
             ),
           ),
+          actions: [
+            FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('知道了')),
+          ],
         ),
-        actions: [
-          FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('知道了')),
-        ],
       ),
     );
   }
 
   void _openVersionSheet() {
     final sources = _prepared?.allSources ?? const [];
-    showGlassSheet<void>(
-      context: context,
+    _openPlayerSheet<void>(
       builder: (ctx) => ListView(
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
@@ -6250,11 +7161,12 @@ class _CinemaScrubBar extends StatefulWidget {
     required this.bufferedSecs,
     required this.durationSecs,
     required this.segments,
-    this.chapterTimes = const [],
+    this.chapters = const [],
     required this.showRemaining,
     this.seekStepSecs = 10.0,
     required this.fmtTime,
     required this.onToggleRemaining,
+    this.onTogglePlayPause,
     required this.onScrubStart,
     required this.onScrubUpdate,
     required this.onScrubEnd,
@@ -6265,11 +7177,12 @@ class _CinemaScrubBar extends StatefulWidget {
   final double bufferedSecs;
   final double durationSecs;
   final List<MediaSegmentModel> segments;
-  final List<double> chapterTimes;
+  final List<({String title, double timeSecs})> chapters;
   final bool showRemaining;
   final double seekStepSecs;
   final String Function(double) fmtTime;
   final VoidCallback onToggleRemaining;
+  final VoidCallback? onTogglePlayPause;
   final VoidCallback onScrubStart;
   final ValueChanged<double> onScrubUpdate;
   final ValueChanged<double> onScrubEnd;
@@ -6287,6 +7200,18 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
 
   double _ratioFromDx(double dx, double width) =>
       width <= 0 ? 0.0 : (dx / width).clamp(0.0, 1.0);
+
+  String? _chapterTitleAt(double secs) {
+    String? title;
+    for (final c in widget.chapters) {
+      if (secs >= c.timeSecs) {
+        title = c.title;
+      } else {
+        break;
+      }
+    }
+    return title;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -6334,6 +7259,13 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
                   return KeyEventResult.handled;
                 }
               }
+              if (ev is KeyDownEvent &&
+                  (ev.logicalKey == LogicalKeyboardKey.select ||
+                      ev.logicalKey == LogicalKeyboardKey.enter ||
+                      ev.logicalKey == LogicalKeyboardKey.gameButtonA)) {
+                widget.onTogglePlayPause?.call();
+                return KeyEventResult.handled;
+              }
               return KeyEventResult.ignored;
             },
             child: AnimatedContainer(
@@ -6348,6 +7280,14 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final w = constraints.maxWidth;
+                  final hoverSecs = _hoverRatio != null ? _hoverRatio! * dur : null;
+                  final hoverChap = hoverSecs != null ? _chapterTitleAt(hoverSecs) : null;
+                  final tooltipText = hoverSecs == null
+                      ? ''
+                      : (hoverChap != null && hoverChap.isNotEmpty
+                          ? '${widget.fmtTime(hoverSecs)} · $hoverChap'
+                          : widget.fmtTime(hoverSecs));
+                  final estPillW = (tooltipText.length * 7.5 + 16.0).clamp(56.0, math.min(220.0, w));
                   return MouseRegion(
                     cursor: SystemMouseCursors.click,
                     onEnter: (_) => setState(() => _hovering = true),
@@ -6430,10 +7370,10 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
                             ),
                             // Chapter tick marks
                             if (widget.durationSecs > 0)
-                              for (final t in widget.chapterTimes)
-                                if (t > 1.0 && t < widget.durationSecs - 1.0)
+                              for (final chap in widget.chapters)
+                                if (chap.timeSecs > 1.0 && chap.timeSecs < widget.durationSecs - 1.0)
                                   Positioned(
-                                    left: (t / dur).clamp(0.0, 1.0) * w,
+                                    left: (chap.timeSecs / dur).clamp(0.0, 1.0) * w,
                                     child: Container(
                                       width: 2,
                                       height: trackH + 2,
@@ -6460,25 +7400,31 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
                                 ),
                               ),
                             ),
-                            // Hover timestamp tooltip pill
+                            // Hover timestamp & chapter tooltip pill
                             if (_hoverRatio != null && widget.durationSecs > 0)
                               Positioned(
-                                left: (_hoverRatio! * w - 28).clamp(0.0, (w - 56).clamp(0.0, w)),
+                                left: (_hoverRatio! * w - estPillW / 2)
+                                    .clamp(0.0, (w - estPillW).clamp(0.0, w)),
                                 top: -28,
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xE8141417),
-                                    borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(color: const Color(0x28FFFFFF), width: 0.6),
-                                  ),
-                                  child: Text(
-                                    widget.fmtTime(_hoverRatio! * dur),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w500,
-                                      fontFeatures: [FontFeature.tabularFigures()],
+                                child: ConstrainedBox(
+                                  constraints: BoxConstraints(maxWidth: math.min(220.0, w)),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xE8141417),
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(color: const Color(0x28FFFFFF), width: 0.6),
+                                    ),
+                                    child: Text(
+                                      tooltipText,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w500,
+                                        fontFeatures: [FontFeature.tabularFigures()],
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -6518,60 +7464,106 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
   }
 }
 
-class _MiniVolumeBar extends StatelessWidget {
+class _MiniVolumeBar extends StatefulWidget {
   const _MiniVolumeBar({required this.value, required this.onChanged});
   final double value;
   final ValueChanged<double> onChanged;
 
   @override
+  State<_MiniVolumeBar> createState() => _MiniVolumeBarState();
+}
+
+class _MiniVolumeBarState extends State<_MiniVolumeBar> {
+  bool _focused = false;
+
+  @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final w = constraints.maxWidth;
-        void update(double dx) => onChanged((dx / w).clamp(0.0, 1.0));
-        return MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTapDown: (d) => update(d.localPosition.dx),
-            onHorizontalDragUpdate: (d) => update(d.localPosition.dx),
-            child: SizedBox(
-              height: 22,
-              child: Stack(
-                alignment: Alignment.centerLeft,
-                children: [
-                  Container(
-                    height: 3.5,
-                    decoration: BoxDecoration(
-                      color: const Color(0x32FFFFFF),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  Container(
-                    height: 3.5,
-                    width: w * value.clamp(0.0, 1.0),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  Positioned(
-                    left: (w * value.clamp(0.0, 1.0) - 5).clamp(0.0, (w - 10).clamp(0.0, w)),
-                    child: Container(
-                      width: 10,
-                      height: 10,
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
+    return Focus(
+      onFocusChange: (hasFocus) {
+        if (_focused != hasFocus) setState(() => _focused = hasFocus);
       },
+      onKeyEvent: (_, ev) {
+        if (ev is KeyDownEvent || ev is KeyRepeatEvent) {
+          if (ev.logicalKey == LogicalKeyboardKey.arrowLeft) {
+            final next = (widget.value - 0.05).clamp(0.0, 1.0);
+            if ((next - widget.value).abs() > 1e-4) {
+              widget.onChanged(next);
+              return KeyEventResult.handled;
+            }
+          }
+          if (ev.logicalKey == LogicalKeyboardKey.arrowRight) {
+            final next = (widget.value + 0.05).clamp(0.0, 1.0);
+            if ((next - widget.value).abs() > 1e-4) {
+              widget.onChanged(next);
+              return KeyEventResult.handled;
+            }
+          }
+        }
+        return KeyEventResult.ignored;
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        padding: const EdgeInsets.symmetric(horizontal: 3),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          border: _focused
+              ? Border.all(color: Colors.white.withValues(alpha: 0.92), width: 1.6)
+              : null,
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final w = constraints.maxWidth;
+            void update(double dx) {
+              if (w <= 0) return;
+              widget.onChanged((dx / w).clamp(0.0, 1.0));
+            }
+
+            return MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapDown: (d) => update(d.localPosition.dx),
+                onHorizontalDragUpdate: (d) => update(d.localPosition.dx),
+                child: SizedBox(
+                  height: 22,
+                  child: Stack(
+                    alignment: Alignment.centerLeft,
+                    children: [
+                      Container(
+                        height: 3.5,
+                        decoration: BoxDecoration(
+                          color: const Color(0x32FFFFFF),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      Container(
+                        height: 3.5,
+                        width: w * widget.value.clamp(0.0, 1.0),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      Positioned(
+                        left: (w * widget.value.clamp(0.0, 1.0) - 5)
+                            .clamp(0.0, (w - 10).clamp(0.0, w)),
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: const BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
     );
   }
 }
@@ -6681,11 +7673,13 @@ class _DeckPillButton extends StatefulWidget {
     required this.label,
     required this.onTap,
     this.active = false,
+    this.focusNode,
   });
 
   final String label;
   final VoidCallback onTap;
   final bool active;
+  final FocusNode? focusNode;
 
   @override
   State<_DeckPillButton> createState() => _DeckPillButtonState();
@@ -6698,6 +7692,7 @@ class _DeckPillButtonState extends State<_DeckPillButton> {
   Widget build(BuildContext context) {
     final accent = Theme.of(context).colorScheme.secondary;
     return PressableScale(
+      focusNode: widget.focusNode,
       onTap: widget.onTap,
       onHoverChanged: (v) => setState(() => _hovered = v),
       hoverScale: 1.04,

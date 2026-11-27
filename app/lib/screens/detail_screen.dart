@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
 import '../core/platform/platform_perf.dart';
+import '../core/theme/display_profile.dart';
 import '../core/theme/dynamic_color_engine.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
@@ -17,6 +18,8 @@ import '../widgets/horizontal_rail.dart';
 import '../widgets/media_card.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
+import 'home_screen.dart' show showMediaItemContextSheet;
+import 'library_screen.dart';
 import 'player_screen.dart';
 
 /// Apple TV+ / Infuse / AfuseKt caliber Cinema Detail Screen:
@@ -48,16 +51,18 @@ class _DetailScreenState extends State<DetailScreen> {
   List<MediaSegmentModel> _segments = [];
   List<MediaItemModel> _seasons = [];
   List<MediaItemModel> _episodes = [];
+  List<MediaItemModel> _collectionItems = [];
   List<MediaItemModel> _personCredits = [];
+  MediaItemModel? _seriesNextUp;
   String? _selectedSeasonId;
   int _selectedSourceIndex = 0;
   int _selectedSeriesVersionIndex = 0;
   bool _loading = true;
   String? _loadError;
   Future<void>? _loadFuture;
+  int _episodesGen = 0;
   String? _lastChromeSig;
-  Color? _cachedMonetSeed;
-  String? _cachedSkinSig;
+  VedroSkin? _cachedDetailSkin;
   ThemeData? _cachedDetailTheme;
   String _episodeViewMode = 'cards'; // 'grid' | 'cards' | 'list'
   bool _episodeModeUserChosen = false;
@@ -179,14 +184,17 @@ class _DetailScreenState extends State<DetailScreen> {
             .map(MediaItemModel.fromJson)
             .toList();
       } else if (_item.isSeries) {
-        // Fetch item metadata and seasons in parallel to halve Series DetailScreen TTFP
+        // Fetch item metadata, seasons, and NextUp in parallel to halve Series DetailScreen TTFP
+        // and land directly on the active/resumed season (skipping Season 0 Specials unless only S0 exists).
         final results = await Future.wait<dynamic>([
           widget.appState.core.invoke('get_item', {'item_id': _item.id}),
           widget.appState.core.invoke('get_seasons', {'series_id': _item.id}),
+          widget.appState.getNextUpForSeries(_item.id).catchError((_) => null),
         ]);
         if (!mounted) return;
         final res = results[0] as Map<String, dynamic>;
         final sRes = results[1] as Map<String, dynamic>;
+        final nextUpEp = results[2] as MediaItemModel?;
         _item = MediaItemModel.fromJson(res['item'] as Map<String, dynamic>);
         _similar = ((res['similar'] as List<dynamic>?) ?? const [])
             .whereType<Map<String, dynamic>>()
@@ -196,15 +204,57 @@ class _DetailScreenState extends State<DetailScreen> {
             .whereType<Map<String, dynamic>>()
             .map(MediaSegmentModel.fromJson)
             .toList();
+        _seriesNextUp = nextUpEp;
         _refreshDetailMonetSeed();
         _seasons = ((sRes['Items'] as List<dynamic>?) ?? const [])
             .whereType<Map<String, dynamic>>()
             .map(MediaItemModel.fromJson)
             .toList();
         if (_seasons.isNotEmpty) {
-          _selectedSeasonId = _seasons.first.id;
-          await _loadEpisodes(_seasons.first.id);
+          MediaItemModel preferredSeason = _seasons.first;
+          // 1. Prefer the season referenced by NextUp / Resume
+          if (nextUpEp != null) {
+            final byId = nextUpEp.seasonId != null
+                ? _seasons.where((s) => s.id == nextUpEp.seasonId)
+                : const Iterable<MediaItemModel>.empty();
+            if (byId.isNotEmpty) {
+              preferredSeason = byId.first;
+            } else if (nextUpEp.parentIndexNumber != null) {
+              final byIdx = _seasons.where((s) => s.indexNumber == nextUpEp.parentIndexNumber);
+              if (byIdx.isNotEmpty) preferredSeason = byIdx.first;
+            }
+          } else {
+            // 2. Skip Season 0 (Specials) when regular seasons exist
+            final regular = _seasons.where((s) => (s.indexNumber ?? 1) >= 1);
+            if (regular.isNotEmpty) preferredSeason = regular.first;
+          }
+          _selectedSeasonId = preferredSeason.id;
+          await _loadEpisodes(preferredSeason.id);
         }
+      } else if (_item.type == 'BoxSet' || _item.type == 'Folder') {
+        final results = await Future.wait<dynamic>([
+          widget.appState.core.invoke('get_item', {'item_id': _item.id}),
+          widget.appState.core.invoke('get_items', {
+            'ParentId': _item.id,
+            'Recursive': false,
+            'SortBy': 'SortName',
+            'SortOrder': 'Ascending',
+            'Limit': 500,
+          }),
+        ]);
+        if (!mounted) return;
+        final res = results[0] as Map<String, dynamic>;
+        final cRes = results[1] as Map<String, dynamic>;
+        _item = MediaItemModel.fromJson(res['item'] as Map<String, dynamic>);
+        _similar = ((res['similar'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(MediaItemModel.fromJson)
+            .toList();
+        _collectionItems = ((cRes['Items'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(MediaItemModel.fromJson)
+            .toList();
+        _refreshDetailMonetSeed();
       } else {
         final res = await widget.appState.core.invoke('get_item', {'item_id': _item.id})
             as Map<String, dynamic>;
@@ -225,7 +275,7 @@ class _DetailScreenState extends State<DetailScreen> {
       }
     } catch (e) {
       if (mounted) {
-        _loadError = e.toString().replaceFirst('VedroCoreException: ', '');
+        _loadError = VedroErrorFormatter.friendly(e);
       }
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -233,36 +283,44 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Future<void> _loadEpisodes(String seasonId) async {
-    final eRes = await widget.appState.core.invoke('get_episodes', {
-      'series_id': _item.id,
-      'season_id': seasonId,
-      'limit': 5000,
-    }) as Map<String, dynamic>;
-    if (!mounted) return;
-    final loaded = ((eRes['Items'] as List<dynamic>?) ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .map(MediaItemModel.fromJson)
-        .toList();
+    final gen = ++_episodesGen;
+    try {
+      final eRes = await widget.appState.core.invoke('get_episodes', {
+        'series_id': _item.id,
+        'season_id': seasonId,
+        'limit': 5000,
+      }) as Map<String, dynamic>;
+      if (!mounted || gen != _episodesGen) return;
+      final loaded = ((eRes['Items'] as List<dynamic>?) ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(MediaItemModel.fromJson)
+          .toList();
 
-    // Auto-select compact numbered grid when a season has >= 24 episodes (e.g. long-running anime)
-    final chunkSize = loaded.length >= 400 ? 100 : 50;
-    var initialRange = 0;
-    if (loaded.length > chunkSize) {
-      var targetIdx = loaded.indexWhere((e) => e.resumeProgress > 0.01);
-      if (targetIdx < 0) targetIdx = loaded.indexWhere((e) => !e.played);
-      if (targetIdx >= 0) initialRange = targetIdx ~/ chunkSize;
-    }
-
-    setState(() {
-      _selectedSeasonId = seasonId;
-      _episodes = loaded;
-      _episodeRangeIndex = initialRange;
-      _episodeFilterQuery = '';
-      _episodeJumpCtrl.clear();
-      if (!_episodeModeUserChosen) {
-        _episodeViewMode = loaded.length >= 24 ? 'grid' : 'cards';
+      // Auto-select compact numbered grid when a season has >= 24 episodes (e.g. long-running anime)
+      final chunkSize = loaded.length >= 400 ? 100 : 50;
+      var initialRange = 0;
+      if (loaded.length > chunkSize) {
+        var targetIdx = loaded.indexWhere((e) => e.resumeProgress > 0.01);
+        if (targetIdx < 0) targetIdx = loaded.indexWhere((e) => !e.played);
+        if (targetIdx >= 0) initialRange = targetIdx ~/ chunkSize;
       }
-    });
+
+      setState(() {
+        _selectedSeasonId = seasonId;
+        _episodes = loaded;
+        _episodeRangeIndex = initialRange;
+        _episodeFilterQuery = '';
+        _episodeJumpCtrl.clear();
+        if (!_episodeModeUserChosen) {
+          _episodeViewMode = loaded.length >= 24 ? 'grid' : 'cards';
+        }
+      });
+    } catch (e) {
+      if (!mounted || gen != _episodesGen) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('加载分集失败：${VedroErrorFormatter.friendly(e)}')),
+      );
+    }
   }
 
   /// Silent background refresh after returning from PlayerScreen so newly played versions
@@ -468,6 +526,7 @@ class _DetailScreenState extends State<DetailScreen> {
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: InkWell(
+                autofocus: i == activeIdx,
                 borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 16.0)),
                 onTap: () {
                   Navigator.pop(ctx);
@@ -599,6 +658,7 @@ class _DetailScreenState extends State<DetailScreen> {
             runTimeTicks: target.runTimeTicks,
             playbackPositionTicks: overrideTicks,
             mediaSources: target.mediaSources,
+            chapters: target.chapters,
           )
         : target;
 
@@ -630,6 +690,24 @@ class _DetailScreenState extends State<DetailScreen> {
         item: other,
         appState: widget.appState,
         onGenreTap: widget.onGenreTap,
+      )),
+    );
+  }
+
+  void _openStudio(String studio) {
+    Navigator.of(context).push(
+      vedroRoute(LibraryScreen(
+        appState: widget.appState,
+        initialStudio: studio,
+        onItemTap: _openItemDetail,
+        onQuickPlay: (item) {
+          if (item.isPlayable) {
+            _play(item);
+          } else {
+            _openItemDetail(item);
+          }
+        },
+        standalone: true,
       )),
     );
   }
@@ -944,6 +1022,7 @@ class _DetailScreenState extends State<DetailScreen> {
           ),
           if (playable != null) ...[
             ListTile(
+              autofocus: true,
               leading: Icon(Icons.subtitles_outlined, color: skin.fg2),
               title: Text('挂载本地外挂字幕 (.srt / .ass)', style: TextStyle(color: skin.fg, fontSize: 14)),
               subtitle: Text(
@@ -1036,17 +1115,29 @@ class _DetailScreenState extends State<DetailScreen> {
                 child: Text('暂无片单，请先在片单页新建', style: TextStyle(color: sheetSkin.fg3, fontSize: 13)),
               )
             else
-              ...lists.map((pl) => ListTile(
-                    leading: Icon(Icons.bookmark_outline_rounded, color: sheetSkin.fg2),
-                    title: Text(pl.name, style: TextStyle(color: sheetSkin.fg, fontSize: 14)),
-                    onTap: () async {
-                      Navigator.pop(ctx);
+              for (var i = 0; i < lists.length; i++)
+                ListTile(
+                  autofocus: i == 0,
+                  leading: Icon(Icons.bookmark_outline_rounded, color: sheetSkin.fg2),
+                  title: Text(lists[i].name, style: TextStyle(color: sheetSkin.fg, fontSize: 14)),
+                  onTap: () async {
+                    final messenger = ScaffoldMessenger.of(context);
+                    Navigator.pop(ctx);
+                    try {
                       await widget.appState.core.invoke('add_to_playlist', {
-                        'playlist_id': pl.id,
+                        'playlist_id': lists[i].id,
                         'item_ids': [_item.id],
                       });
-                    },
-                  )),
+                      messenger.showSnackBar(
+                        SnackBar(content: Text('已加入片单「${lists[i].name}」')),
+                      );
+                    } catch (e) {
+                      messenger.showSnackBar(
+                        SnackBar(content: Text('加入片单失败：${VedroErrorFormatter.friendly(e)}')),
+                      );
+                    }
+                  },
+                ),
           ],
         );
       },
@@ -1071,18 +1162,13 @@ class _DetailScreenState extends State<DetailScreen> {
     final prefs = widget.appState.prefs;
     if (prefs.dynamicMonet && _detailMonetSeed != null) {
       final sysBrightness = View.of(context).platformDispatcher.platformBrightness;
-      final sig =
-          '${prefs.skinId}|${prefs.themeMode}|${prefs.accentId}|${prefs.tonalChroma}|${sysBrightness.index}|${_detailMonetSeed!.toARGB32()}';
-      if (_cachedDetailTheme == null ||
-          _cachedSkinSig != sig ||
-          _cachedMonetSeed != _detailMonetSeed) {
-        final dynSkin = prefs.activeSkinFor(
-          systemBrightness: sysBrightness,
-          dynamicSeedOverride: _detailMonetSeed,
-        );
+      final dynSkin = prefs.activeSkinFor(
+        systemBrightness: sysBrightness,
+        dynamicSeedOverride: _detailMonetSeed,
+      );
+      if (_cachedDetailTheme == null || _cachedDetailSkin != dynSkin) {
         _cachedDetailTheme = VedroTheme.fromSkin(dynSkin);
-        _cachedSkinSig = sig;
-        _cachedMonetSeed = _detailMonetSeed;
+        _cachedDetailSkin = dynSkin;
       }
       return Theme(
         data: _cachedDetailTheme!,
@@ -1157,10 +1243,14 @@ class _DetailScreenState extends State<DetailScreen> {
           ].take(6).toList()
         : const <String>[];
 
-    // Pick next unwatched episode for Series main Play CTA
+    // Pick next unwatched episode for Series main Play CTA (preferring server NextUp when present)
     MediaItemModel? nextEpToPlay;
     if (_episodes.isNotEmpty) {
-      nextEpToPlay = _episodes.firstWhere(
+      if (_seriesNextUp != null) {
+        final match = _episodes.where((e) => e.id == _seriesNextUp!.id);
+        if (match.isNotEmpty) nextEpToPlay = match.first;
+      }
+      nextEpToPlay ??= _episodes.firstWhere(
         (e) => e.resumeProgress > 0.01,
         orElse: () => _episodes.firstWhere(
           (e) => !e.played,
@@ -1340,6 +1430,7 @@ class _DetailScreenState extends State<DetailScreen> {
                           label: playLabel,
                           progress: playProgress,
                           accent: accent,
+                          autofocus: PlatformPerfProfile.isTv,
                           onTap: onPrimaryPlay,
                         ),
                       ),
@@ -1400,6 +1491,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       progress: playProgress,
                       accent: accent,
                       fullWidth: true,
+                      autofocus: PlatformPerfProfile.isTv,
                       onTap: onPrimaryPlay,
                     ),
                     if (playProgress > 0.02) ...[
@@ -1609,6 +1701,28 @@ class _DetailScreenState extends State<DetailScreen> {
       ));
     }
 
+    for (final studio in _item.studios.take(2)) {
+      addDotFact(
+        PressableScale(
+          onTap: () => _openStudio(studio),
+          borderRadius: BorderRadius.circular(6),
+          hoverScale: 1.04,
+          pressScale: 0.96,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+            child: Text(
+              studio,
+              style: TextStyle(
+                color: skin.accent,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     final heroCreditRows = <(String role, String names)>[
       if (directors.isNotEmpty) ('导演', directors.take(2).join('、')),
       if (castNames.isNotEmpty) ('主演', castNames.join('、')),
@@ -1617,31 +1731,34 @@ class _DetailScreenState extends State<DetailScreen> {
     ];
 
     final posterRadius = widget.appState.prefs.effectiveCardRadius(skin);
-    Widget coverCard = PressableScale(
-      onTap: _openPosterLightbox,
-      borderRadius: BorderRadius.circular(posterRadius),
-      hoverScale: 1.02,
-      pressScale: 0.97,
-      child: Container(
-        key: const ValueKey('detail-poster-cover'),
-        width: coverW,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(posterRadius),
-          color: skin.surface2,
-          boxShadow: skin.posterShadow(hovered: true),
-        ),
-        foregroundDecoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(posterRadius),
-          border: skin.cardBorder(hovered: false),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: AspectRatio(
-          aspectRatio: coverAspect,
-          child: VedroArtwork(
-            item: _item,
-            appState: widget.appState,
-            landscape: isEpisodeWithStill,
-            width: 600,
+    Widget coverCard = RepaintBoundary(
+      child: PressableScale(
+        onTap: _openPosterLightbox,
+        borderRadius: BorderRadius.circular(posterRadius),
+        hoverScale: 1.02,
+        pressScale: 0.97,
+        child: Container(
+          key: const ValueKey('detail-poster-cover'),
+          width: coverW,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(posterRadius),
+            color: skin.surface2,
+            boxShadow: skin.posterShadow(hovered: true),
+          ),
+          foregroundDecoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(posterRadius),
+            border: skin.cardBorder(hovered: false),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: AspectRatio(
+            aspectRatio: coverAspect,
+            child: VedroArtwork(
+              item: _item,
+              appState: widget.appState,
+              landscape: isEpisodeWithStill,
+              width: 600,
+              displayWidth: coverW,
+            ),
           ),
         ),
       ),
@@ -1989,6 +2106,7 @@ class _DetailScreenState extends State<DetailScreen> {
       child: Scaffold(
       backgroundColor: skin.canvas,
       body: VedroSkinCanvas(
+        suppressTopOrb: true,
         child: Stack(
           children: [
             CustomScrollView(
@@ -2266,7 +2384,8 @@ class _DetailScreenState extends State<DetailScreen> {
 
                             if (skin.castStyle == 'portrait_card') {
                               final cardR = skin.cardRadius.clamp(6.0, 16.0);
-                              return SizedBox(
+                              return RepaintBoundary(
+                                child: SizedBox(
                                 width: 114,
                                 child: PressableScale(
                                   onTap: openPerson,
@@ -2320,12 +2439,14 @@ class _DetailScreenState extends State<DetailScreen> {
                                     ],
                                   ),
                                 ),
+                              ),
                               );
                             }
 
                             if (skin.castStyle == 'compact_pill') {
                               final pillR = skin.radiusForPill(52);
-                              return PressableScale(
+                              return RepaintBoundary(
+                                child: PressableScale(
                                 onTap: openPerson,
                                 hoverScale: 1.02,
                                 child: Container(
@@ -2386,10 +2507,12 @@ class _DetailScreenState extends State<DetailScreen> {
                                     ],
                                   ),
                                 ),
+                              ),
                               );
                             }
 
-                            return SizedBox(
+                            return RepaintBoundary(
+                              child: SizedBox(
                               width: 90,
                               child: PressableScale(
                                 onTap: openPerson,
@@ -2441,6 +2564,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                   ],
                                 ),
                               ),
+                            ),
                             );
                           },
                         ),
@@ -2465,7 +2589,20 @@ class _DetailScreenState extends State<DetailScreen> {
                   ),
                 ),
 
-                // 3. Related Recommendations Rail
+                // 3. BoxSet / Folder Child Items (lazy SliverGrid.builder)
+                if ((_item.type == 'BoxSet' || _item.type == 'Folder') &&
+                    _collectionItems.isNotEmpty)
+                  ..._buildLazyPosterGridSlivers(
+                    title: _item.type == 'BoxSet'
+                        ? '合集内容 (${_collectionItems.length})'
+                        : '文件夹内容 (${_collectionItems.length})',
+                    items: _collectionItems,
+                    padX: padX,
+                    wide: wide,
+                    skin: skin,
+                  ),
+
+                // 4. Related Recommendations Rail
                 if (_similar.isNotEmpty)
                   SliverToBoxAdapter(
                     child: Padding(
@@ -2475,49 +2612,32 @@ class _DetailScreenState extends State<DetailScreen> {
                         items: _similar,
                         appState: widget.appState,
                         onItemTap: _openItemDetail,
+                        onItemQuickPlay: (it) => it.isPlayable ? _play(it) : _openItemDetail(it),
+                        onItemLongPress: (it) => showMediaItemContextSheet(
+                          context: context,
+                          item: it,
+                          appState: widget.appState,
+                          onOpenDetail: () => _openItemDetail(it),
+                          onQuickPlay: it.isPlayable ? () => _play(it) : null,
+                        ),
                       ),
                     ),
                   ),
 
-                // 4. Person Filmography (when viewing an Actor / Director detail page)
+                // 5. Person Filmography (lazy SliverGrid.builder — smooth even for 200+ credits!)
                 if (_item.type == 'Person' && _personCredits.isNotEmpty)
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(horizontal: padX),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '参与作品 (${_personCredits.length})',
-                            style: skin.applyHeadlineMood(
-                              TextStyle(
-                                color: skin.fg,
-                                fontSize: 20,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: -0.4,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Wrap(
-                            spacing: 16,
-                            runSpacing: 20,
-                            children: _personCredits
-                                .map((c) => MediaCard(
-                                      item: c,
-                                      appState: widget.appState,
-                                      width: wide ? 152 : 110,
-                                      onTap: () => _openItemDetail(c),
-                                    ))
-                                .toList(),
-                          ),
-                          const SizedBox(height: 24),
-                        ],
-                      ),
-                    ),
+                  ..._buildLazyPosterGridSlivers(
+                    title: '参与作品 (${_personCredits.length})',
+                    items: _personCredits,
+                    padX: padX,
+                    wide: wide,
+                    skin: skin,
                   ),
 
-                if (_loading && _item.type == 'Person')
+                if (_loading &&
+                    (_item.type == 'Person' ||
+                        _item.type == 'BoxSet' ||
+                        _item.type == 'Folder'))
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: const EdgeInsets.all(24),
@@ -2616,6 +2736,85 @@ class _DetailScreenState extends State<DetailScreen> {
       ),
       ),
     );
+  }
+
+  List<Widget> _buildLazyPosterGridSlivers({
+    required String title,
+    required List<MediaItemModel> items,
+    required double padX,
+    required bool wide,
+    required VedroSkin skin,
+  }) {
+    final metrics = DisplayMetricsProfile.of(context);
+    final prefs = widget.appState.prefs;
+    final gridGap = prefs.cardGap(wide);
+    final effectiveStyle =
+        (skin.cardStyle == 'hover_reveal' && metrics.isTouchPrimary)
+            ? 'overlay_poster'
+            : skin.cardStyle;
+    final showBelowCaption = effectiveStyle != 'overlay_poster' &&
+        effectiveStyle != 'hover_reveal' &&
+        effectiveStyle != 'minimal_clean';
+    final textScaler = MediaQuery.textScalerOf(context);
+    final screenW = MediaQuery.sizeOf(context).width;
+    final availW = (screenW - padX * 2).clamp(140.0, 8000.0);
+    final gridLayout = PosterCardLayout.forGrid(
+      profile: metrics,
+      availableWidth: availW,
+      density: prefs.listDensity,
+      scale: prefs.posterScale,
+      aspectRatio: 2 / 3,
+      showBelowCaption: showBelowCaption,
+      crossSpacing: gridGap,
+      textScaler: textScaler,
+    );
+    return [
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(padX, 0, padX, 16),
+          child: Text(
+            title,
+            style: skin.applyHeadlineMood(
+              TextStyle(
+                color: skin.fg,
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.4,
+              ),
+            ),
+          ),
+        ),
+      ),
+      SliverPadding(
+        padding: EdgeInsets.fromLTRB(padX, 0, padX, 28),
+        sliver: SliverGrid.builder(
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: gridLayout.columns,
+            mainAxisSpacing: gridLayout.mainSpacing,
+            crossAxisSpacing: gridLayout.crossSpacing,
+            mainAxisExtent: gridLayout.cardHeight,
+          ),
+          itemCount: items.length,
+          itemBuilder: (_, idx) {
+            final c = items[idx];
+            return MediaCard(
+              item: c,
+              appState: widget.appState,
+              width: gridLayout.cardWidth,
+              onTap: () => _openItemDetail(c),
+              onQuickPlay: c.isPlayable ? () => _play(c) : null,
+              onLongPress: () => showMediaItemContextSheet(
+                context: context,
+                item: c,
+                appState: widget.appState,
+                onOpenDetail: () => _openItemDetail(c),
+                onQuickPlay: c.isPlayable ? () => _play(c) : null,
+              ),
+            );
+          },
+        ),
+      ),
+    ];
   }
 
   /// Scalable Apple TV+ Season & Episode Picker supporting everything from 6-episode miniseries
@@ -2734,69 +2933,68 @@ class _DetailScreenState extends State<DetailScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Unified Single-Row iOS Header: Season Picker (Left) + Uniform 34px Controls (Right)
-              Row(
-                children: [
-                  Flexible(
-                    child: _seasons.length > 1
-                        ? VedroPullDownButton<String>(
-                            key: const ValueKey('detail-season-dropdown'),
-                            height: 34,
-                            displayLabelOverride:
-                                '${activeSeason?.name ?? _seasons.first.name} · ${_episodes.length} 集',
-                            value: _selectedSeasonId ?? _seasons.first.id,
-                            items: _seasons
-                                .map(
-                                  (s) => VedroDropdownItem<String>(
-                                    value: s.id,
-                                    label: s.name,
-                                    subtitle: s.childCount != null && s.childCount! > 0
-                                        ? '共 ${s.childCount} 集'
-                                        : null,
-                                    itemKey: ValueKey('season-option-${s.id}'),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: _loadEpisodes,
-                          )
-                        : Row(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.baseline,
-                            textBaseline: TextBaseline.alphabetic,
-                            children: [
-                              Flexible(
-                                child: Text(
-                                  _seasons.first.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: skin.applyHeadlineMood(
-                                    TextStyle(
-                                      color: skin.fg,
-                                      fontSize: 19,
-                                      fontWeight: FontWeight.w700,
-                                      letterSpacing: -0.4,
-                                    ),
+              // Responsive iOS Header: Season Picker + Uniform 34px Controls (wraps cleanly on 360px phones)
+              LayoutBuilder(
+                builder: (context, headerConstraints) {
+                  final seasonSelector = _seasons.length > 1
+                      ? VedroPullDownButton<String>(
+                          key: const ValueKey('detail-season-dropdown'),
+                          height: 34,
+                          displayLabelOverride:
+                              '${activeSeason?.name ?? _seasons.first.name} · ${_episodes.length} 集',
+                          value: _selectedSeasonId ?? _seasons.first.id,
+                          items: _seasons
+                              .map(
+                                (s) => VedroDropdownItem<String>(
+                                  value: s.id,
+                                  label: s.name,
+                                  subtitle: s.childCount != null && s.childCount! > 0
+                                      ? '共 ${s.childCount} 集'
+                                      : null,
+                                  itemKey: ValueKey('season-option-${s.id}'),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: _loadEpisodes,
+                        )
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.baseline,
+                          textBaseline: TextBaseline.alphabetic,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                _seasons.first.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: skin.applyHeadlineMood(
+                                  TextStyle(
+                                    color: skin.fg,
+                                    fontSize: 19,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: -0.4,
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              Text(
-                                '共 ${_episodes.length} 集',
-                                style: TextStyle(
-                                  color: skin.fg3,
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.w500,
-                                  fontFeatures: const [FontFeature.tabularFigures()],
-                                ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              '共 ${_episodes.length} 集',
+                              style: TextStyle(
+                                color: skin.fg3,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w500,
+                                fontFeatures: const [FontFeature.tabularFigures()],
                               ),
-                            ],
-                          ),
-                  ),
-                  const SizedBox(width: 8),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+                            ),
+                          ],
+                        );
+                  final controls = Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      if (_episodes.length > 12) ...[
+                      if (_episodes.length > 12)
                         buildToolCircle(
                           key: const ValueKey('detail-episode-search-toggle'),
                           icon: CupertinoIcons.search,
@@ -2819,8 +3017,6 @@ class _DetailScreenState extends State<DetailScreen> {
                             }
                           },
                         ),
-                        const SizedBox(width: 6),
-                      ],
                       buildToolCircle(
                         key: const ValueKey('detail-episode-sort-btn'),
                         icon: CupertinoIcons.arrow_up_arrow_down,
@@ -2832,8 +3028,7 @@ class _DetailScreenState extends State<DetailScreen> {
                           _episodeRangeIndex = 0;
                         }),
                       ),
-                      if (canBatchDownload) ...[
-                        const SizedBox(width: 6),
+                      if (canBatchDownload)
                         buildToolCircle(
                           key: const ValueKey('detail-batch-download-btn'),
                           icon: CupertinoIcons.arrow_down_to_line,
@@ -2841,8 +3036,6 @@ class _DetailScreenState extends State<DetailScreen> {
                           wideLabel: wide ? '批量下载' : null,
                           onTap: _openBatchDownloadDialog,
                         ),
-                      ],
-                      const SizedBox(width: 6),
                       VedroPullDownButton<String>(
                         key: const ValueKey('detail-episode-view-dropdown'),
                         height: 34,
@@ -2859,8 +3052,30 @@ class _DetailScreenState extends State<DetailScreen> {
                         }),
                       ),
                     ],
-                  ),
-                ],
+                  );
+                  if (headerConstraints.maxWidth < 300) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        seasonSelector,
+                        const SizedBox(height: 8),
+                        controls,
+                      ],
+                    );
+                  }
+                  return Row(
+                    children: [
+                      Expanded(
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: seasonSelector,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      controls,
+                    ],
+                  );
+                },
               ),
 
               // Expandable Full-Width iOS Search Bar (Never truncates range pills!)
@@ -3414,6 +3629,7 @@ class _ExpandableOverviewState extends State<_ExpandableOverview> {
           textDirection: TextDirection.ltr,
         )..layout(maxWidth: constraints.maxWidth);
         final overflows = tp.didExceedMaxLines;
+        tp.dispose();
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -3520,6 +3736,7 @@ class _ProgressPlayPill extends StatelessWidget {
     required this.accent,
     required this.onTap,
     this.fullWidth = false,
+    this.autofocus = false,
   });
 
   final String label;
@@ -3527,6 +3744,7 @@ class _ProgressPlayPill extends StatelessWidget {
   final Color accent;
   final VoidCallback onTap;
   final bool fullWidth;
+  final bool autofocus;
 
   @override
   Widget build(BuildContext context) {
@@ -3535,6 +3753,7 @@ class _ProgressPlayPill extends StatelessWidget {
     final r = fullWidth ? skin.cardRadius.clamp(6.0, 16.0) : skin.radiusForPill(h);
     return PressableScale(
       onTap: onTap,
+      autofocus: autofocus,
       hoverScale: fullWidth ? 1.015 : 1.03,
       pressScale: 0.96,
       child: Container(
@@ -3615,10 +3834,13 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
     final epOverview = ep.cleanOverview;
     final cardR = widget.appState.prefs.effectiveCardRadius(skin);
 
-    return SizedBox(
+    return RepaintBoundary(
+      child: SizedBox(
       width: widget.width,
       child: PressableScale(
         onTap: widget.onTap,
+        onLongPress: widget.onPickVersion ?? widget.onOpenDetail,
+        onSecondaryTap: widget.onPickVersion ?? widget.onOpenDetail,
         onHoverChanged: (v) => setState(() => _hovered = v),
         hoverScale: 1.02,
         pressScale: 0.97,
@@ -3649,6 +3871,7 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                       appState: widget.appState,
                       landscape: true,
                       width: 520,
+                      displayWidth: widget.width,
                     ),
                     const DecoratedBox(
                       decoration: BoxDecoration(
@@ -3692,8 +3915,9 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                           if (widget.onPickVersion != null)
                             Padding(
                               padding: const EdgeInsets.only(right: 5),
-                              child: GestureDetector(
+                              child: PressableScale(
                                 onTap: widget.onPickVersion,
+                                borderRadius: BorderRadius.circular(10),
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
                                   decoration: BoxDecoration(
@@ -3711,8 +3935,9 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                                 ),
                               ),
                             ),
-                          GestureDetector(
+                          PressableScale(
                             onTap: widget.onOpenDetail,
+                            borderRadius: BorderRadius.circular(12),
                             child: Container(
                               width: 24,
                               height: 24,
@@ -3807,6 +4032,7 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
           ],
         ),
       ),
+    ),
     );
   }
 }
@@ -4193,10 +4419,13 @@ class _EpisodeRowState extends State<_EpisodeRow> {
         '★ ${ep.communityRating!.toStringAsFixed(1)}',
     ];
 
-    return Padding(
+    return RepaintBoundary(
+      child: Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: PressableScale(
         onTap: widget.onTap,
+        onLongPress: widget.onPickVersion ?? widget.onOpenDetail,
+        onSecondaryTap: widget.onPickVersion ?? widget.onOpenDetail,
         onHoverChanged: (v) => setState(() => _hovered = v),
         hoverScale: 1.006,
         pressScale: 0.985,
@@ -4229,6 +4458,7 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                           appState: widget.appState,
                           landscape: true,
                           width: 420,
+                          displayWidth: thumbW,
                         ),
                         if (ep.indexNumber != null)
                           Positioned(
@@ -4311,9 +4541,9 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                           ),
                         ),
                         const SizedBox(width: 6),
-                        GestureDetector(
-                          behavior: HitTestBehavior.opaque,
+                        PressableScale(
                           onTap: widget.onOpenDetail,
+                          borderRadius: BorderRadius.circular(8),
                           child: Padding(
                             padding: const EdgeInsets.fromLTRB(4, 1, 2, 4),
                             child: Icon(CupertinoIcons.ellipsis, size: 16, color: skin.fg3),
@@ -4338,8 +4568,9 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                             ),
                           ),
                         if (widget.onPickVersion != null)
-                          GestureDetector(
+                          PressableScale(
                             onTap: widget.onPickVersion,
+                            borderRadius: BorderRadius.circular(999),
                             child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
                               decoration: BoxDecoration(
@@ -4389,6 +4620,7 @@ class _EpisodeRowState extends State<_EpisodeRow> {
           ),
         ),
       ),
+    ),
     );
   }
 }
@@ -4598,13 +4830,16 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
         side: BorderSide(color: skin.borderStrong, width: 0.9),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 620, maxHeight: 720),
+        constraints: BoxConstraints(
+          maxWidth: 620,
+          maxHeight: (MediaQuery.sizeOf(context).height * 0.86).clamp(360.0, 720.0),
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
+              padding: const EdgeInsets.fromLTRB(20, 14, 12, 8),
               child: Row(
                 children: [
                   Icon(Icons.arrow_downward_rounded, size: 19, color: skin.fg),
@@ -4629,120 +4864,37 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
               ),
             ),
 
-            if (widget.seasons.length > 1)
-              SizedBox(
-                height: 36,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 18),
-                  itemCount: widget.seasons.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (_, idx) {
-                    final s = widget.seasons[idx];
-                    final active = s.id == _seasonId;
-                    return PressableScale(
-                      onTap: () => _selectSeason(s.id),
-                      borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14),
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: active ? skin.activePillBg : skin.surface2,
-                          borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
-                        ),
-                        child: Text(
-                          s.name,
-                          style: TextStyle(
-                            color: active ? skin.activePillFg : skin.fg2,
-                            fontSize: 12.5,
-                            fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-
-            if (versions.length > 1) ...[
-              const SizedBox(height: 10),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 18),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '下载版本 (${versions.length})',
-                      style: TextStyle(color: skin.fg3, fontSize: 11.5, fontWeight: FontWeight.w500),
-                    ),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 6,
-                      children: [
-                        for (var i = 0; i < versions.length; i++)
-                          PressableScale(
-                            onTap: () => setState(() => _versionIndex = i),
-                            borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6.5),
-                              decoration: BoxDecoration(
-                                color: i == safeVerIdx ? skin.activePillBg : skin.surface2,
-                                borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
-                              ),
-                              child: Text(
-                                versions[i].displayTitle,
-                                style: TextStyle(
-                                  color: i == safeVerIdx ? skin.activePillFg : skin.fg2,
-                                  fontSize: 12,
-                                  fontWeight: i == safeVerIdx ? FontWeight.w600 : FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-
-            const SizedBox(height: 10),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 18),
-              child: Row(
-                children: [
-                  if (rangeCount > 1)
-                    Expanded(
+            Expanded(
+              child: CustomScrollView(
+                slivers: [
+                  if (widget.seasons.length > 1)
+                    SliverToBoxAdapter(
                       child: SizedBox(
-                        height: 30,
+                        height: 36,
                         child: ListView.separated(
                           scrollDirection: Axis.horizontal,
-                          itemCount: rangeCount,
-                          separatorBuilder: (_, __) => const SizedBox(width: 6),
-                          itemBuilder: (_, rIdx) {
-                            final rStart = rIdx * chunkSize;
-                            final rEnd = (rStart + chunkSize).clamp(0, _episodes.length);
-                            final firstNum = _episodes[rStart].indexNumber ?? (rStart + 1);
-                            final lastNum = _episodes[rEnd - 1].indexNumber ?? rEnd;
-                            final active = rIdx == safeRangeIdx;
+                          padding: const EdgeInsets.symmetric(horizontal: 18),
+                          itemCount: widget.seasons.length,
+                          separatorBuilder: (_, __) => const SizedBox(width: 8),
+                          itemBuilder: (_, idx) {
+                            final s = widget.seasons[idx];
+                            final active = s.id == _seasonId;
                             return PressableScale(
-                              onTap: () => setState(() => _rangeIdx = rIdx),
-                              borderRadius: BorderRadius.circular(skin.radiusForPill(28)),
+                              onTap: () => _selectSeason(s.id),
+                              borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
                               child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
+                                padding: const EdgeInsets.symmetric(horizontal: 14),
                                 alignment: Alignment.center,
                                 decoration: BoxDecoration(
                                   color: active ? skin.activePillBg : skin.surface2,
-                                  borderRadius: BorderRadius.circular(skin.radiusForPill(28)),
+                                  borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
                                 ),
                                 child: Text(
-                                  '$firstNum-$lastNum',
+                                  s.name,
                                   style: TextStyle(
                                     color: active ? skin.activePillFg : skin.fg2,
-                                    fontSize: 11.5,
-                                    fontWeight: FontWeight.w600,
-                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                    fontSize: 12.5,
+                                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                                   ),
                                 ),
                               ),
@@ -4750,171 +4902,265 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                           },
                         ),
                       ),
-                    )
-                  else
-                    const Spacer(),
-                  const SizedBox(width: 8),
-                  TextButton(
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      foregroundColor: skin.fg,
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
                     ),
-                    onPressed: () {
-                      setState(() {
-                        for (final ep in visibleEps) {
-                          if (!_isAlreadyQueuedOrDone(ep)) {
-                            _selectedById[ep.id] = ep;
-                          }
-                        }
-                      });
-                    },
-                    child: Text(rangeCount > 1 ? '全选本段' : '全选', style: const TextStyle(fontSize: 12)),
-                  ),
-                  TextButton(
-                    style: TextButton.styleFrom(
-                      visualDensity: VisualDensity.compact,
-                      foregroundColor: skin.fg2,
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                    ),
-                    onPressed: () {
-                      setState(() {
-                        for (final ep in visibleEps) {
-                          if (!ep.played && !_isAlreadyQueuedOrDone(ep)) {
-                            _selectedById[ep.id] = ep;
-                          }
-                        }
-                      });
-                    },
-                    child: const Text('选未看', style: TextStyle(fontSize: 12)),
-                  ),
-                  if (_selectedById.isNotEmpty)
-                    TextButton(
-                      style: TextButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                        foregroundColor: skin.fg3,
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                      ),
-                      onPressed: () => setState(() => _selectedById.clear()),
-                      child: const Text('清空', style: TextStyle(fontSize: 12)),
-                    ),
-                ],
-              ),
-            ),
 
-            const SizedBox(height: 8),
-
-            Expanded(
-              child: _loadingSeason
-                  ? Center(
-                      child: CircularProgressIndicator(strokeWidth: 2, color: skin.fg2),
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                      itemCount: visibleEps.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 6),
-                      itemBuilder: (_, idx) {
-                        final ep = visibleEps[idx];
-                        final src = _resolveSourceFor(ep);
-                        final existing =
-                            widget.appState.findDownloadForItem(ep.id, mediaSourceId: src?.id);
-                        final done = existing != null && existing.status == 'completed';
-                        final active = existing != null && existing.isActive;
-                        final disabled = done || active;
-                        final checked = _selectedById.containsKey(ep.id);
-                        final sizeText = fmtFileSize(src?.size);
-
-                        return InkWell(
-                          borderRadius: BorderRadius.circular(12),
-                          onTap: disabled
-                              ? null
-                              : () {
-                                  setState(() {
-                                    if (checked) {
-                                      _selectedById.remove(ep.id);
-                                    } else {
-                                      _selectedById[ep.id] = ep;
-                                    }
-                                  });
-                                },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10.5),
-                            decoration: BoxDecoration(
-                              color: checked ? skin.surface3 : skin.surface2,
-                              borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 12.0)),
+                  if (versions.length > 1)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 10, 18, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '下载版本 (${versions.length})',
+                              style: TextStyle(color: skin.fg3, fontSize: 11.5, fontWeight: FontWeight.w500),
                             ),
-                            child: Row(
+                            const SizedBox(height: 6),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 6,
                               children: [
-                                Icon(
-                                  done
-                                      ? Icons.check_circle_rounded
-                                      : (checked
-                                          ? Icons.check_circle_rounded
-                                          : Icons.radio_button_unchecked_rounded),
-                                  size: 19,
-                                  color: done
-                                      ? const Color(0xFF10B981)
-                                      : (checked ? skin.accent : skin.fg3),
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        '${ep.episodeCode ?? 'E${ep.indexNumber ?? idx + 1}'} · ${ep.displayName}',
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
+                                for (var i = 0; i < versions.length; i++)
+                                  PressableScale(
+                                    onTap: () => setState(() => _versionIndex = i),
+                                    borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6.5),
+                                      decoration: BoxDecoration(
+                                        color: i == safeVerIdx ? skin.activePillBg : skin.surface2,
+                                        borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
+                                      ),
+                                      child: Text(
+                                        versions[i].displayTitle,
                                         style: TextStyle(
-                                          color: disabled ? skin.fg3 : skin.fg,
-                                          fontSize: 13.5,
-                                          fontWeight: FontWeight.w500,
+                                          color: i == safeVerIdx ? skin.activePillFg : skin.fg2,
+                                          fontSize: 12,
+                                          fontWeight: i == safeVerIdx ? FontWeight.w600 : FontWeight.w500,
                                         ),
                                       ),
-                                      if (src != null && (src.name?.isNotEmpty == true))
-                                        Text(
-                                          src.name!,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(color: skin.fg3, fontSize: 11),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                if (done)
-                                  const Text(
-                                    '已下载',
-                                    style: TextStyle(
-                                      color: Color(0xFF10B981),
-                                      fontSize: 11.5,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  )
-                                else if (active)
-                                  Text(
-                                    '队列中',
-                                    style: TextStyle(
-                                      color: skin.accent,
-                                      fontSize: 11.5,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  )
-                                else if (sizeText.isNotEmpty)
-                                  Text(
-                                    sizeText,
-                                    style: TextStyle(
-                                      color: skin.fg2,
-                                      fontSize: 12,
-                                      fontFeatures: const [FontFeature.tabularFigures()],
                                     ),
                                   ),
                               ],
                             ),
-                          ),
-                        );
-                      },
+                          ],
+                        ),
+                      ),
                     ),
+
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 10, 18, 8),
+                      child: Row(
+                        children: [
+                          if (rangeCount > 1)
+                            Expanded(
+                              child: SizedBox(
+                                height: 30,
+                                child: ListView.separated(
+                                  scrollDirection: Axis.horizontal,
+                                  itemCount: rangeCount,
+                                  separatorBuilder: (_, __) => const SizedBox(width: 6),
+                                  itemBuilder: (_, rIdx) {
+                                    final rStart = rIdx * chunkSize;
+                                    final rEnd = (rStart + chunkSize).clamp(0, _episodes.length);
+                                    final firstNum = _episodes[rStart].indexNumber ?? (rStart + 1);
+                                    final lastNum = _episodes[rEnd - 1].indexNumber ?? rEnd;
+                                    final active = rIdx == safeRangeIdx;
+                                    return PressableScale(
+                                      onTap: () => setState(() => _rangeIdx = rIdx),
+                                      borderRadius: BorderRadius.circular(skin.radiusForPill(28)),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
+                                        alignment: Alignment.center,
+                                        decoration: BoxDecoration(
+                                          color: active ? skin.activePillBg : skin.surface2,
+                                          borderRadius: BorderRadius.circular(skin.radiusForPill(28)),
+                                        ),
+                                        child: Text(
+                                          '$firstNum-$lastNum',
+                                          style: TextStyle(
+                                            color: active ? skin.activePillFg : skin.fg2,
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.w600,
+                                            fontFeatures: const [FontFeature.tabularFigures()],
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            )
+                          else
+                            const Spacer(),
+                          const SizedBox(width: 8),
+                          TextButton(
+                            style: TextButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              foregroundColor: skin.fg,
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                for (final ep in visibleEps) {
+                                  if (!_isAlreadyQueuedOrDone(ep)) {
+                                    _selectedById[ep.id] = ep;
+                                  }
+                                }
+                              });
+                            },
+                            child: Text(rangeCount > 1 ? '全选本段' : '全选', style: const TextStyle(fontSize: 12)),
+                          ),
+                          TextButton(
+                            style: TextButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              foregroundColor: skin.fg2,
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                for (final ep in visibleEps) {
+                                  if (!ep.played && !_isAlreadyQueuedOrDone(ep)) {
+                                    _selectedById[ep.id] = ep;
+                                  }
+                                }
+                              });
+                            },
+                            child: const Text('选未看', style: TextStyle(fontSize: 12)),
+                          ),
+                          if (_selectedById.isNotEmpty)
+                            TextButton(
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                foregroundColor: skin.fg3,
+                                padding: const EdgeInsets.symmetric(horizontal: 8),
+                              ),
+                              onPressed: () => setState(() => _selectedById.clear()),
+                              child: const Text('清空', style: TextStyle(fontSize: 12)),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  if (_loadingSeason)
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: Center(
+                        child: CircularProgressIndicator(strokeWidth: 2, color: skin.fg2),
+                      ),
+                    )
+                  else
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                      sliver: SliverList.separated(
+                        itemCount: visibleEps.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 6),
+                        itemBuilder: (_, idx) {
+                          final ep = visibleEps[idx];
+                          final src = _resolveSourceFor(ep);
+                          final existing =
+                              widget.appState.findDownloadForItem(ep.id, mediaSourceId: src?.id);
+                          final done = existing != null && existing.status == 'completed';
+                          final active = existing != null && existing.isActive;
+                          final disabled = done || active;
+                          final checked = _selectedById.containsKey(ep.id);
+                          final sizeText = fmtFileSize(src?.size);
+
+                          return InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: disabled
+                                ? null
+                                : () {
+                                    setState(() {
+                                      if (checked) {
+                                        _selectedById.remove(ep.id);
+                                      } else {
+                                        _selectedById[ep.id] = ep;
+                                      }
+                                    });
+                                  },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10.5),
+                              decoration: BoxDecoration(
+                                color: checked ? skin.surface3 : skin.surface2,
+                                borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 12.0)),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    done
+                                        ? Icons.check_circle_rounded
+                                        : (checked
+                                            ? Icons.check_circle_rounded
+                                            : Icons.radio_button_unchecked_rounded),
+                                    size: 19,
+                                    color: done
+                                        ? const Color(0xFF10B981)
+                                        : (checked ? skin.accent : skin.fg3),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          '${ep.episodeCode ?? 'E${ep.indexNumber ?? idx + 1}'} · ${ep.displayName}',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: disabled ? skin.fg3 : skin.fg,
+                                            fontSize: 13.5,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                        if (src != null && (src.name?.isNotEmpty == true))
+                                          Text(
+                                            src.name!,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(color: skin.fg3, fontSize: 11),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  if (done)
+                                    const Text(
+                                      '已下载',
+                                      style: TextStyle(
+                                        color: Color(0xFF10B981),
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    )
+                                  else if (active)
+                                    Text(
+                                      '队列中',
+                                      style: TextStyle(
+                                        color: skin.accent,
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    )
+                                  else if (sizeText.isNotEmpty)
+                                    Text(
+                                      sizeText,
+                                      style: TextStyle(
+                                        color: skin.fg2,
+                                        fontSize: 12,
+                                        fontFeatures: const [FontFeature.tabularFigures()],
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
             ),
 
             Padding(

@@ -296,6 +296,7 @@ class PressableScale extends StatefulWidget {
     this.focusNode,
     this.borderRadius,
     this.showFocusRing = true,
+    this.primaryFocusRingOnly = false,
   });
 
   final Widget child;
@@ -311,9 +312,14 @@ class PressableScale extends StatefulWidget {
   final FocusNode? focusNode;
   final BorderRadius? borderRadius;
   final bool showFocusRing;
+  final bool primaryFocusRingOnly;
 
   @override
   State<PressableScale> createState() => _PressableScaleState();
+}
+
+class _ContextMenuIntent extends Intent {
+  const _ContextMenuIntent();
 }
 
 class _PressableScaleState extends State<PressableScale> {
@@ -323,12 +329,25 @@ class _PressableScaleState extends State<PressableScale> {
     SingleActivator(LogicalKeyboardKey.numpadEnter): ActivateIntent(),
     SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
     SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
+    SingleActivator(LogicalKeyboardKey.contextMenu): _ContextMenuIntent(),
+    SingleActivator(LogicalKeyboardKey.info): _ContextMenuIntent(),
+    SingleActivator(LogicalKeyboardKey.gameButtonX): _ContextMenuIntent(),
   };
 
   bool _hovering = false;
   bool _pressing = false;
   bool _focused = false;
   bool _showFocusHighlight = false;
+  FocusNode? _internalFocusNode;
+
+  FocusNode get _effectiveFocusNode =>
+      widget.focusNode ?? (_internalFocusNode ??= FocusNode(debugLabel: 'pressable_scale'));
+
+  @override
+  void dispose() {
+    _internalFocusNode?.dispose();
+    super.dispose();
+  }
 
   void _setHover(bool v) {
     if (_hovering == v) return;
@@ -337,10 +356,11 @@ class _PressableScaleState extends State<PressableScale> {
   }
 
   void _setFocus(bool v) {
-    if (_focused == v) return;
-    setState(() => _focused = v);
-    widget.onFocusChanged?.call(v);
-    if (v) {
+    final effective = widget.primaryFocusRingOnly ? (v && _effectiveFocusNode.hasPrimaryFocus) : v;
+    if (_focused == effective) return;
+    setState(() => _focused = effective);
+    widget.onFocusChanged?.call(effective);
+    if (effective) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_focused) return;
         if (Scrollable.maybeOf(context) != null) {
@@ -357,7 +377,10 @@ class _PressableScaleState extends State<PressableScale> {
 
   @override
   Widget build(BuildContext context) {
-    final focusActive = _focused && (_showFocusHighlight || PlatformPerfProfile.isTv);
+    final hasFocusForRing = widget.primaryFocusRingOnly
+        ? (_focused && _effectiveFocusNode.hasPrimaryFocus)
+        : _focused;
+    final focusActive = hasFocusForRing && (_showFocusHighlight || PlatformPerfProfile.isTv);
     final focusScale = widget.hoverScale > 1.0 ? widget.hoverScale : 1.018;
     final targetScale = _pressing
         ? widget.pressScale
@@ -412,13 +435,19 @@ class _PressableScaleState extends State<PressableScale> {
 
     if (widget.canRequestFocus && interactive) {
       result = FocusableActionDetector(
-        focusNode: widget.focusNode,
+        focusNode: _effectiveFocusNode,
         autofocus: widget.autofocus,
         shortcuts: _kActivateShortcuts,
         actions: {
           ActivateIntent: CallbackAction<ActivateIntent>(
             onInvoke: (_) {
               widget.onTap?.call();
+              return null;
+            },
+          ),
+          _ContextMenuIntent: CallbackAction<_ContextMenuIntent>(
+            onInvoke: (_) {
+              (widget.onLongPress ?? widget.onSecondaryTap)?.call();
               return null;
             },
           ),
@@ -827,14 +856,34 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
           Focus(
             onFocusChange: (hasFocus) {
               if (_focused != hasFocus) setState(() => _focused = hasFocus);
+              if (hasFocus) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted || !_focused) return;
+                  if (Scrollable.maybeOf(context) != null) {
+                    Scrollable.ensureVisible(
+                      context,
+                      alignment: 0.45,
+                      duration: const Duration(milliseconds: 170),
+                      curve: Curves.easeOutCubic,
+                    );
+                  }
+                });
+              }
             },
             onKeyEvent: (_, event) {
               if (event is KeyDownEvent || event is KeyRepeatEvent) {
                 if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                  if (widget.value <= widget.min + 1e-4) {
+                    // Release D-Pad Left at minimum so TV users can escape back to the sidebar!
+                    return KeyEventResult.ignored;
+                  }
                   _stepBy(-1);
                   return KeyEventResult.handled;
                 }
                 if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                  if (widget.value >= widget.max - 1e-4) {
+                    return KeyEventResult.ignored;
+                  }
                   _stepBy(1);
                   return KeyEventResult.handled;
                 }
@@ -992,21 +1041,32 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
 }
 
 /// Present a crisp, skin-adaptive modal sheet.
+/// Pass `forceDark: true` from always-dark overlays like `PlayerScreen` so white text & controls
+/// remain crisp even when the user's global theme is Light Mode!
 Future<T?> showGlassSheet<T>({
   required BuildContext context,
   required WidgetBuilder builder,
   double maxWidth = 480,
+  bool forceDark = false,
 }) {
   final size = MediaQuery.sizeOf(context);
   final wide = size.width >= 720;
   final parentSkin = VedroSkin.of(context);
+  final effectiveSkin =
+      forceDark && parentSkin.isLight ? parentSkin.withPolarity(false) : parentSkin;
+  final overrideTheme = forceDark && parentSkin.isLight ? VedroTheme.fromSkin(effectiveSkin) : null;
+
+  Widget wrapTheme(BuildContext ctx, Widget child) {
+    if (overrideTheme == null) return child;
+    return Theme(data: overrideTheme, child: child);
+  }
 
   if (wide) {
     return showGeneralDialog<T>(
       context: context,
       barrierDismissible: true,
       barrierLabel: 'Dismiss',
-      barrierColor: Colors.black.withValues(alpha: parentSkin.isLight ? 0.36 : 0.62),
+      barrierColor: Colors.black.withValues(alpha: effectiveSkin.isLight ? 0.36 : 0.62),
       transitionDuration: const Duration(milliseconds: 230),
       transitionBuilder: (ctx, anim, _, child) {
         final curved = CurvedAnimation(
@@ -1024,38 +1084,43 @@ Future<T?> showGlassSheet<T>({
       },
       pageBuilder: (ctx, _, __) {
         final s = MediaQuery.sizeOf(ctx);
-        final skin = VedroSkin.of(ctx);
+        final skin = overrideTheme != null ? effectiveSkin : VedroSkin.of(ctx);
         final r = skin.cardRadius.clamp(10.0, 22.0);
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          insetPadding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxWidth: maxWidth,
-              maxHeight: s.height * 0.86,
-            ),
-            child: Container(
-              decoration: BoxDecoration(
-                color: skin.surface,
-                borderRadius: BorderRadius.circular(r),
-                border: Border.all(color: skin.borderStrong, width: 1.0),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: skin.isLight ? 0.22 : 0.78),
-                    blurRadius: 36,
-                    offset: const Offset(0, 16),
-                  ),
-                ],
+        return wrapTheme(
+          ctx,
+          Dialog(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            insetPadding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: maxWidth,
+                maxHeight: s.height * 0.86,
               ),
-              clipBehavior: Clip.antiAlias,
-              child: Material(
-                type: MaterialType.transparency,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Flexible(child: builder(ctx)),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: skin.surface,
+                  borderRadius: BorderRadius.circular(r),
+                  border: Border.all(color: skin.borderStrong, width: 1.0),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: skin.isLight ? 0.22 : 0.78),
+                      blurRadius: 36,
+                      offset: const Offset(0, 16),
+                    ),
                   ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: Builder(
+                    builder: (innerCtx) => Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(child: builder(innerCtx)),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -1068,53 +1133,58 @@ Future<T?> showGlassSheet<T>({
   return showModalBottomSheet<T>(
     context: context,
     backgroundColor: Colors.transparent,
-    barrierColor: Colors.black.withValues(alpha: parentSkin.isLight ? 0.36 : 0.65),
+    barrierColor: Colors.black.withValues(alpha: effectiveSkin.isLight ? 0.36 : 0.65),
     isScrollControlled: true,
     isDismissible: true,
     enableDrag: true,
     builder: (ctx) {
       final s = MediaQuery.sizeOf(ctx);
-      final skin = VedroSkin.of(ctx);
+      final skin = overrideTheme != null ? effectiveSkin : VedroSkin.of(ctx);
       final r = skin.cardRadius.clamp(12.0, 22.0);
-      return SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxWidth: 540,
-              maxHeight: s.height * 0.84,
-            ),
-            child: Container(
-              decoration: BoxDecoration(
-                color: skin.surface,
-                borderRadius: BorderRadius.circular(r),
-                border: Border.all(color: skin.borderStrong, width: 1.0),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: skin.isLight ? 0.20 : 0.72),
-                    blurRadius: 32,
-                    offset: const Offset(0, 12),
-                  ),
-                ],
+      return wrapTheme(
+        ctx,
+        SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: 540,
+                maxHeight: s.height * 0.84,
               ),
-              clipBehavior: Clip.antiAlias,
-              child: Material(
-                type: MaterialType.transparency,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SizedBox(height: 10),
-                    Container(
-                      width: 36,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: skin.fg3.withValues(alpha: 0.45),
-                        borderRadius: BorderRadius.circular(2),
-                      ),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: skin.surface,
+                  borderRadius: BorderRadius.circular(r),
+                  border: Border.all(color: skin.borderStrong, width: 1.0),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: skin.isLight ? 0.20 : 0.72),
+                      blurRadius: 32,
+                      offset: const Offset(0, 12),
                     ),
-                    Flexible(child: builder(ctx)),
                   ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: Builder(
+                    builder: (innerCtx) => Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(height: 10),
+                        Container(
+                          width: 36,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: skin.fg3.withValues(alpha: 0.45),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                        Flexible(child: builder(innerCtx)),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -1457,14 +1527,20 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
           itemBuilder: (ctx, idx) {
             final entry = items[idx];
             final isSelected = entry.onTapOverride == null && entry.value == selectedValue;
+            final selectedIdx =
+                items.indexWhere((e) => e.onTapOverride == null && e.value == selectedValue);
+            final shouldAutofocus = selectedIdx >= 0 && selectedIdx < 6
+                ? idx == selectedIdx
+                : idx == 0;
             final textColor = entry.isDestructive
                 ? VedroTheme.danger
                 : (isSelected ? skin.fg : skin.fg.withValues(alpha: 0.90));
-            return InkWell(
+            return PressableScale(
               key: entry.itemKey,
-              autofocus: isSelected ||
-                  (idx == 0 && !items.any((e) => e.onTapOverride == null && e.value == selectedValue)),
-              focusColor: skin.accent.withValues(alpha: 0.22),
+              autofocus: shouldAutofocus,
+              hoverScale: 1.0,
+              pressScale: 0.985,
+              borderRadius: BorderRadius.circular(8),
               onTap: () {
                 HapticFeedback.selectionClick();
                 Navigator.of(ctx).pop();

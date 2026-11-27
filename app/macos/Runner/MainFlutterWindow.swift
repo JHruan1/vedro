@@ -3,6 +3,7 @@ import CFNetwork
 import Cocoa
 import FlutterMacOS
 import IOKit.pwr_mgt
+import MediaPlayer
 import UniformTypeIdentifiers
 
 class MainFlutterWindow: NSWindow, NSDraggingDestination {
@@ -96,11 +97,22 @@ final class VedroHardwarePlugin: NSObject {
   }
 
   private static var retainedInstance: VedroHardwarePlugin?
+  private static var pendingColdLaunchFiles: [String] = []
+  private var remoteCommandsInstalled = false
 
   deinit {
     setPreventSleep(false)
+    removeRemoteCommands()
     for obs in observers {
       NotificationCenter.default.removeObserver(obs)
+    }
+  }
+
+  static func enqueueOrEmitDroppedFiles(_ paths: [String]) {
+    if let shared = shared {
+      shared.emitDroppedFiles(paths)
+    } else {
+      pendingColdLaunchFiles.append(contentsOf: paths)
     }
   }
 
@@ -119,6 +131,57 @@ final class VedroHardwarePlugin: NSObject {
     }
   }
 
+  private func flushPendingColdLaunchFiles() {
+    if !Self.pendingColdLaunchFiles.isEmpty {
+      let batch = Self.pendingColdLaunchFiles
+      Self.pendingColdLaunchFiles.removeAll()
+      emitDroppedFiles(batch)
+    }
+  }
+
+  private func installRemoteCommands() {
+    if remoteCommandsInstalled { return }
+    remoteCommandsInstalled = true
+    let cc = MPRemoteCommandCenter.shared()
+    cc.playCommand.isEnabled = true
+    cc.playCommand.addTarget { [weak self] _ in
+      self?.channel?.invokeMethod("mediaAction", arguments: ["action": "play"])
+      return .success
+    }
+    cc.pauseCommand.isEnabled = true
+    cc.pauseCommand.addTarget { [weak self] _ in
+      self?.channel?.invokeMethod("mediaAction", arguments: ["action": "pause"])
+      return .success
+    }
+    cc.togglePlayPauseCommand.isEnabled = true
+    cc.togglePlayPauseCommand.addTarget { [weak self] _ in
+      self?.channel?.invokeMethod("mediaAction", arguments: ["action": "toggle_play"])
+      return .success
+    }
+    cc.nextTrackCommand.isEnabled = true
+    cc.nextTrackCommand.addTarget { [weak self] _ in
+      self?.channel?.invokeMethod("mediaAction", arguments: ["action": "next"])
+      return .success
+    }
+    cc.previousTrackCommand.isEnabled = true
+    cc.previousTrackCommand.addTarget { [weak self] _ in
+      self?.channel?.invokeMethod("mediaAction", arguments: ["action": "previous"])
+      return .success
+    }
+  }
+
+  private func removeRemoteCommands() {
+    if !remoteCommandsInstalled { return }
+    remoteCommandsInstalled = false
+    let cc = MPRemoteCommandCenter.shared()
+    cc.playCommand.removeTarget(nil)
+    cc.pauseCommand.removeTarget(nil)
+    cc.togglePlayPauseCommand.removeTarget(nil)
+    cc.nextTrackCommand.removeTarget(nil)
+    cc.previousTrackCommand.removeTarget(nil)
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+  }
+
   private func resolveWindow() -> NSWindow? {
     return window ?? NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first
   }
@@ -126,7 +189,52 @@ final class VedroHardwarePlugin: NSObject {
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "queryCapabilities":
+      flushPendingColdLaunchFiles()
       result(queryCapabilities())
+    case "updateNowPlaying":
+      let args = call.arguments as? [String: Any]
+      let title = (args?["title"] as? String) ?? ""
+      let subtitle = (args?["subtitle"] as? String) ?? ""
+      let durationMs = (args?["duration_ms"] as? NSNumber)?.intValue ?? 0
+      let positionMs = (args?["position_ms"] as? NSNumber)?.intValue ?? 0
+      let isPlaying = (args?["is_playing"] as? Bool) ?? false
+      let speed = (args?["speed"] as? NSNumber)?.doubleValue ?? 1.0
+      DispatchQueue.main.async {
+        if title.isEmpty && !isPlaying {
+          MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+          MPNowPlayingInfoCenter.default().playbackState = .stopped
+        } else {
+          self.installRemoteCommands()
+          MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: title,
+            MPMediaItemPropertyArtist: subtitle,
+            MPMediaItemPropertyPlaybackDuration: Double(max(0, durationMs)) / 1000.0,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(max(0, positionMs)) / 1000.0,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? speed : 0.0,
+          ]
+          MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+        }
+      }
+      result(nil)
+    case "saveScreenshotToGallery":
+      let args = call.arguments as? [String: Any]
+      guard let typed = args?["bytes"] as? FlutterStandardTypedData else {
+        result(nil)
+        return
+      }
+      let rawName = (args?["file_name"] as? String) ?? "vedro_\(Int(Date().timeIntervalSince1970)).png"
+      let safeName = rawName.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression)
+      let picturesDir = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
+      let vedroDir = picturesDir?.appendingPathComponent("Vedro", isDirectory: true)
+      if let dir = vedroDir {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent(safeName)
+        if (try? typed.data.write(to: dest)) != nil {
+          result(dest.path)
+          return
+        }
+      }
+      result(nil)
     case "setKeepScreenOn":
       let args = call.arguments as? [String: Any]
       let enabled = (args?["enabled"] as? Bool) ?? false
@@ -286,7 +394,7 @@ final class VedroHardwarePlugin: NSObject {
   private func queryCapabilities() -> [String: Any] {
     var headroom: CGFloat = 1.0
     var refreshHz: Double = 60.0
-    if let screen = NSScreen.main {
+    if let screen = resolveWindow()?.screen ?? NSScreen.main {
       headroom = screen.maximumPotentialExtendedDynamicRangeColorComponentValue
       if #available(macOS 12.0, *) {
         refreshHz = Double(screen.maximumFramesPerSecond)
@@ -303,7 +411,7 @@ final class VedroHardwarePlugin: NSObject {
       "supports_hdr10": supportsHdr,
       "supports_hlg": supportsHdr,
       "supports_native_dolby_vision": supportsDovi,
-      "supports_atmos_bitstream": true,
+      "supports_atmos_bitstream": false,
       "supports_spatial_audio": true,
       "max_luminance_nits": maxNits,
       "refresh_rate_hz": refreshHz,

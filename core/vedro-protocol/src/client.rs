@@ -72,9 +72,12 @@ impl EmbyClient {
         let mut builder = Client::builder()
             .pool_max_idle_per_host(8)
             .pool_idle_timeout(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(15))
+            .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(30))
             .tcp_nodelay(true)
+            // Follow redirects manually in send_raw so X-Emby-Token / X-Emby-Authorization
+            // are stripped on any cross-origin redirect.
+            .redirect(reqwest::redirect::Policy::none())
             .danger_accept_invalid_certs(options.accept_invalid_certs);
 
         if let Some(proxy_str) = options
@@ -265,12 +268,62 @@ impl EmbyClient {
                 }
             }
         }
-        let headers = self.auth_headers();
-        let mut req = self.http.request(method, url).headers(headers);
-        if let Some(json) = body {
-            req = req.json(&json);
+        let mut headers = self.auth_headers();
+        let mut current_url = url;
+        let mut current_method = method;
+        let mut current_body = body;
+        let mut resp = None;
+        for _ in 0..=5 {
+            let mut req = self
+                .http
+                .request(current_method.clone(), current_url.clone())
+                .headers(headers.clone());
+            if let Some(ref json) = current_body {
+                req = req.json(json);
+            }
+            let r = req.send().await?;
+            if r.status().is_redirection() {
+                if let Some(loc) = r
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                {
+                    if let Ok(next) = current_url.join(loc) {
+                        if matches!(next.scheme(), "http" | "https") {
+                            let same = current_url.scheme().eq_ignore_ascii_case(next.scheme())
+                                && current_url
+                                    .host_str()
+                                    .map(|h| h.to_ascii_lowercase())
+                                    .eq(&next.host_str().map(|h| h.to_ascii_lowercase()))
+                                && current_url.port_or_known_default()
+                                    == next.port_or_known_default();
+                            if !same {
+                                headers.remove(reqwest::header::AUTHORIZATION);
+                                headers.remove(reqwest::header::COOKIE);
+                                headers.remove("x-emby-authorization");
+                                headers.remove("x-emby-token");
+                                headers.remove("x-mediabrowser-token");
+                            }
+                            if matches!(
+                                r.status(),
+                                StatusCode::SEE_OTHER
+                                    | StatusCode::MOVED_PERMANENTLY
+                                    | StatusCode::FOUND
+                            ) && current_method == Method::POST
+                            {
+                                current_method = Method::GET;
+                                current_body = None;
+                            }
+                            current_url = next;
+                            continue;
+                        }
+                    }
+                }
+            }
+            resp = Some(r);
+            break;
         }
-        let resp = req.send().await?;
+        let resp = resp.ok_or_else(|| ProtocolError::Transport("too many redirects".into()))?;
         let status = resp.status();
         if status.is_success() {
             return Ok(resp);
@@ -280,7 +333,8 @@ impl EmbyClient {
             .get("Retry-After")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok());
-        let text = resp.text().await.unwrap_or_default();
+        let err_bytes = read_body_capped(resp, 64 * 1024).await.unwrap_or_default();
+        let text = String::from_utf8_lossy(&err_bytes).into_owned();
         let message = serde_json::from_str::<serde_json::Value>(&text)
             .ok()
             .and_then(|v| {
@@ -320,7 +374,7 @@ impl EmbyClient {
         body: Option<serde_json::Value>,
     ) -> Result<T> {
         let resp = self.send_raw(method, path, query, body).await?;
-        let bytes = resp.bytes().await?;
+        let bytes = read_body_capped(resp, 24 * 1024 * 1024).await?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
@@ -347,10 +401,23 @@ impl EmbyClient {
     /// Probe `GET /System/Info/Public` and detect server dialect (`embygo` / `Emby` / `Jellyfin`)
     /// in a single concurrent round-trip so login never feels stalled.
     pub async fn probe_server(&self) -> Result<(PublicSystemInfo, ServerCapabilities)> {
-        let (pub_res, embygo_res) = tokio::join!(
+        let (mut pub_res, embygo_res) = tokio::join!(
             self.send_raw(Method::GET, "System/Info/Public", &[], None),
             self.send_raw(Method::GET, "emby-compat/status", &[], None),
         );
+        // Auto-fallback to `/emby` reverse-proxy subpath when root returns 404
+        let mut detected_prefix = String::new();
+        if matches!(pub_res, Err(ProtocolError::NotFound(_)))
+            && self.base_url.path().trim_matches('/').is_empty()
+        {
+            if let Ok(r) = self
+                .send_raw(Method::GET, "emby/System/Info/Public", &[], None)
+                .await
+            {
+                detected_prefix = "/emby".to_string();
+                pub_res = Ok(r);
+            }
+        }
         let resp = pub_res?;
         let server_hdr = resp
             .headers()
@@ -362,7 +429,7 @@ impl EmbyClient {
             .get("X-Emby-Server-Version")
             .and_then(|v| v.to_str().ok())
             .map(ToString::to_string);
-        let bytes = resp.bytes().await?;
+        let bytes = read_body_capped(resp, 2 * 1024 * 1024).await?;
         let info: PublicSystemInfo = serde_json::from_slice(&bytes)?;
 
         // 200 on `/emby-compat/status` (or 401/403 with JSON/Emby headers when not blocked by a generic proxy)
@@ -381,12 +448,15 @@ impl EmbyClient {
             _ => false,
         };
 
-        let caps = ServerCapabilities::detect(
+        let mut caps = ServerCapabilities::detect(
             &info,
             server_hdr.as_deref(),
             emby_ver_hdr.as_deref(),
             is_embygo_hint,
         );
+        if !detected_prefix.is_empty() {
+            caps.api_prefix = detected_prefix;
+        }
         self.state.write().capabilities = caps.clone();
         debug!(
             dialect = caps.dialect.as_str(),
@@ -399,7 +469,40 @@ impl EmbyClient {
 
     pub async fn ping(&self) -> Result<String> {
         let resp = self.send_raw(Method::GET, "System/Ping", &[], None).await?;
-        Ok(resp.text().await.unwrap_or_default())
+        let bytes = read_body_capped(resp, 16 * 1024).await.unwrap_or_default();
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Initiate Jellyfin Quick Connect (`POST /QuickConnect/Initiate`).
+    pub async fn quick_connect_initiate(&self) -> Result<serde_json::Value> {
+        self.request_json(Method::POST, "QuickConnect/Initiate", &[], None)
+            .await
+    }
+
+    /// Poll Jellyfin Quick Connect status (`GET /QuickConnect/Connect?secret=...`).
+    pub async fn quick_connect_state(&self, secret: &str) -> Result<serde_json::Value> {
+        self.request_json(
+            Method::GET,
+            "QuickConnect/Connect",
+            &[("secret", secret.to_string())],
+            None,
+        )
+        .await
+    }
+
+    /// Exchange an authorized Jellyfin Quick Connect secret for an access token (`POST /Users/AuthenticateWithQuickConnect`).
+    pub async fn authenticate_with_quick_connect(&self, secret: &str) -> Result<AuthResponse> {
+        let body = serde_json::json!({ "Secret": secret });
+        let auth: AuthResponse = self
+            .request_json(
+                Method::POST,
+                "Users/AuthenticateWithQuickConnect",
+                &[],
+                Some(body),
+            )
+            .await?;
+        self.set_credentials(auth.access_token.clone(), auth.user.id.clone());
+        Ok(auth)
     }
 
     pub async fn public_users(&self) -> Result<Vec<UserDto>> {
@@ -914,6 +1017,38 @@ impl EmbyClient {
             }
         }
 
+        let no_compat = resp.media_sources.is_empty()
+            || resp
+                .error_code
+                .as_deref()
+                .map(|e| e.eq_ignore_ascii_case("NoCompatibleStream"))
+                .unwrap_or(false)
+            || resp.media_sources.iter().all(|s| {
+                !s.supports_direct_play
+                    && !s.supports_direct_stream
+                    && s.direct_stream_url.is_none()
+            });
+
+        if no_compat && caps.supports_transcoding && caps.dialect != ServerDialect::EmbyGo {
+            // Fallback for standard Emby/Jellyfin servers enforcing bitrate caps or rejecting DirectPlay
+            let mut tc_req = req;
+            tc_req.enable_transcoding = Some(true);
+            let tc_body = serde_json::to_value(&tc_req)?;
+            if let Ok(tc_resp) = self
+                .request_json::<PlaybackInfoResponse>(
+                    Method::POST,
+                    &format!("Items/{item_id}/PlaybackInfo"),
+                    &query,
+                    Some(tc_body),
+                )
+                .await
+            {
+                if !tc_resp.media_sources.is_empty() {
+                    return Ok(tc_resp);
+                }
+            }
+        }
+
         if resp.media_sources.is_empty()
             || resp
                 .error_code
@@ -1398,8 +1533,49 @@ impl EmbyClient {
     }
 }
 
+async fn read_body_capped(resp: Response, max_bytes: usize) -> Result<Vec<u8>> {
+    use futures_util::StreamExt;
+    if let Some(cl) = resp.content_length() {
+        if usize::try_from(cl).unwrap_or(usize::MAX) > max_bytes {
+            return Err(ProtocolError::Transport(format!(
+                "response body exceeds limit ({} bytes)",
+                max_bytes
+            )));
+        }
+    }
+    let cap = resp
+        .content_length()
+        .and_then(|n| usize::try_from(n).ok())
+        .map(|n| n.min(max_bytes))
+        .unwrap_or(16 * 1024);
+    let mut buf = Vec::with_capacity(cap);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res?;
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(ProtocolError::Transport(format!(
+                "response body exceeds limit ({} bytes)",
+                max_bytes
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
 fn normalize_base_url(raw: &str) -> Result<Url> {
-    let trimmed = raw.trim().trim_end_matches('/');
+    let mut trimmed = raw.trim().trim_end_matches('/');
+    // Guard against accidental paste duplicates like `https://http://192.168.1.5:8096`
+    loop {
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("https://http://") || lower.starts_with("https://https://") {
+            trimmed = &trimmed[8..];
+        } else if lower.starts_with("http://http://") || lower.starts_with("http://https://") {
+            trimmed = &trimmed[7..];
+        } else {
+            break;
+        }
+    }
     let lower = trimmed.to_ascii_lowercase();
     let candidate = if lower.starts_with("http://") || lower.starts_with("https://") {
         trimmed.to_string()

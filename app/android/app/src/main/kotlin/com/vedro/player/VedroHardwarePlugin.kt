@@ -1,24 +1,33 @@
 package com.vedro.player
 
 import android.app.Activity
+import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import android.app.RemoteAction
 import android.app.UiModeManager
 import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.MediaCodecList
+import android.media.MediaMetadata
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Rational
@@ -47,6 +56,8 @@ class VedroHardwarePlugin(
     companion object {
         const val CHANNEL_NAME = "com.vedro.player/hardware"
         private const val REQ_PICK_FILES = 9401
+        private const val ACTION_PIP_TOGGLE_PLAY = "com.vedro.player.PIP_TOGGLE_PLAY"
+        private const val MAX_CACHE_COPY_BYTES = 32L * 1024L * 1024L
 
         private val VIDEO_EXTS = setOf(
             "mkv", "mp4", "m4v", "mov", "ts", "m2ts", "webm", "avi", "flv", "wmv", "mpg", "mpeg", "ogm", "iso", "strm"
@@ -102,7 +113,13 @@ class VedroHardwarePlugin(
 
     private var pendingPickResult: MethodChannel.Result? = null
     private var noisyReceiverRegistered = false
+    private var pipReceiverRegistered = false
     private var audioFocusRequest: Any? = null
+    private var mediaSession: MediaSession? = null
+    private var autoPipEnabled = false
+    private var pipAspectW = 16
+    private var pipAspectH = 9
+    private var nowPlayingActive = false
 
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -112,10 +129,20 @@ class VedroHardwarePlugin(
         }
     }
 
+    private val pipActionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_PIP_TOGGLE_PLAY) {
+                emitMediaAction("toggle_play")
+            }
+        }
+    }
+
     private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
             AudioManager.AUDIOFOCUS_LOSS,
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> emitAudioInterrupted("focus_loss")
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> emitMediaAction("duck")
+            AudioManager.AUDIOFOCUS_GAIN -> emitMediaAction("unduck")
         }
     }
 
@@ -123,6 +150,16 @@ class VedroHardwarePlugin(
         activity.runOnUiThread {
             try {
                 channel.invokeMethod("audioInterrupted", mapOf("reason" to reason))
+            } catch (_: Throwable) {}
+        }
+    }
+
+    private fun emitMediaAction(action: String, extra: Map<String, Any>? = null) {
+        activity.runOnUiThread {
+            try {
+                val payload = mutableMapOf<String, Any>("action" to action)
+                if (extra != null) payload.putAll(extra)
+                channel.invokeMethod("mediaAction", payload)
             } catch (_: Throwable) {}
         }
     }
@@ -135,10 +172,160 @@ class VedroHardwarePlugin(
         }
     }
 
+    fun onUserLeaveHint() {
+        if (!autoPipEnabled || !nowPlayingActive) return
+        if (Build.VERSION.SDK_INT in Build.VERSION_CODES.O until Build.VERSION_CODES.S &&
+            activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+        ) {
+            enterPipInternal(pipAspectW, pipAspectH, playing = true)
+        }
+    }
+
     fun cleanup() {
         setAudioPlaybackActive(false)
+        releaseMediaSession()
+        unregisterPipReceiver()
         pendingPickResult?.success(emptyList<String>())
         pendingPickResult = null
+    }
+
+    private fun ensureMediaSession() {
+        if (mediaSession != null) return
+        try {
+            val session = MediaSession(activity, "VedroMediaSession")
+            session.setCallback(object : MediaSession.Callback() {
+                override fun onPlay() = emitMediaAction("play")
+                override fun onPause() = emitMediaAction("pause")
+                override fun onSkipToNext() = emitMediaAction("next")
+                override fun onSkipToPrevious() = emitMediaAction("previous")
+                override fun onStop() = emitMediaAction("pause")
+                override fun onSeekTo(pos: Long) = emitMediaAction("seek", mapOf("position_ms" to pos))
+            })
+            session.isActive = true
+            mediaSession = session
+        } catch (_: Throwable) {}
+    }
+
+    private fun releaseMediaSession() {
+        try {
+            mediaSession?.isActive = false
+            mediaSession?.release()
+        } catch (_: Throwable) {}
+        mediaSession = null
+        nowPlayingActive = false
+    }
+
+    private fun updateNowPlaying(
+        title: String,
+        subtitle: String,
+        durationMs: Long,
+        positionMs: Long,
+        isPlaying: Boolean,
+        speed: Float
+    ) {
+        nowPlayingActive = isPlaying
+        if (title.isBlank() && !isPlaying) {
+            releaseMediaSession()
+            return
+        }
+        ensureMediaSession()
+        val session = mediaSession ?: return
+        try {
+            val meta = MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_TITLE, title)
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, subtitle)
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, durationMs.coerceAtLeast(0L))
+                .build()
+            session.setMetadata(meta)
+            val actions = PlaybackState.ACTION_PLAY or
+                PlaybackState.ACTION_PAUSE or
+                PlaybackState.ACTION_PLAY_PAUSE or
+                PlaybackState.ACTION_SKIP_TO_NEXT or
+                PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+                PlaybackState.ACTION_SEEK_TO
+            val state = PlaybackState.Builder()
+                .setActions(actions)
+                .setState(
+                    if (isPlaying) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
+                    positionMs.coerceAtLeast(0L),
+                    if (isPlaying) speed.coerceIn(0.25f, 4.0f) else 0f
+                )
+                .build()
+            session.setPlaybackState(state)
+            updatePipParamsIfSupported(isPlaying)
+        } catch (_: Throwable) {}
+    }
+
+    private fun ensurePipReceiver() {
+        if (pipReceiverRegistered) return
+        try {
+            val filter = IntentFilter(ACTION_PIP_TOGGLE_PLAY)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                activity.registerReceiver(pipActionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                activity.registerReceiver(pipActionReceiver, filter)
+            }
+            pipReceiverRegistered = true
+        } catch (_: Throwable) {}
+    }
+
+    private fun unregisterPipReceiver() {
+        if (!pipReceiverRegistered) return
+        try {
+            activity.unregisterReceiver(pipActionReceiver)
+        } catch (_: Throwable) {}
+        pipReceiverRegistered = false
+    }
+
+    private fun buildPipParams(aw: Int, ah: Int, playing: Boolean): PictureInPictureParams? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return null
+        val ratio = (aw.coerceAtLeast(1).toDouble() / ah.coerceAtLeast(1).toDouble()).coerceIn(0.45, 2.35)
+        val rational = Rational((ratio * 100).toInt().coerceAtLeast(45), 100)
+        ensurePipReceiver()
+        val intent = Intent(ACTION_PIP_TOGGLE_PLAY).setPackage(activity.packageName)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+        val pending = PendingIntent.getBroadcast(activity, 1, intent, flags)
+        val iconRes = if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
+        val label = if (playing) "暂停" else "播放"
+        val action = RemoteAction(Icon.createWithResource(activity, iconRes), label, label, pending)
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(rational)
+            .setActions(listOf(action))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled(autoPipEnabled && playing)
+        }
+        return builder.build()
+    }
+
+    private fun updatePipParamsIfSupported(playing: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+        ) {
+            activity.runOnUiThread {
+                try {
+                    buildPipParams(pipAspectW, pipAspectH, playing)?.let {
+                        activity.setPictureInPictureParams(it)
+                    }
+                } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    private fun enterPipInternal(aw: Int, ah: Int, playing: Boolean): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+            !activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+        ) {
+            return false
+        }
+        pipAspectW = aw.coerceAtLeast(1)
+        pipAspectH = ah.coerceAtLeast(1)
+        return try {
+            val params = buildPipParams(pipAspectW, pipAspectH, playing) ?: return false
+            activity.enterPictureInPictureMode(params)
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -159,6 +346,8 @@ class VedroHardwarePlugin(
             if (am != null) {
                 try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        // Abandon any prior AudioFocusRequest so repeated calls never leak focus handles
+                        (audioFocusRequest as? AudioFocusRequest)?.let { am.abandonAudioFocusRequest(it) }
                         val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                             .setAudioAttributes(
                                 AudioAttributes.Builder()
@@ -197,6 +386,7 @@ class VedroHardwarePlugin(
                     }
                 } catch (_: Throwable) {}
             }
+            releaseMediaSession()
         }
     }
 
@@ -208,13 +398,48 @@ class VedroHardwarePlugin(
                 setAudioPlaybackActive(active)
                 result.success(null)
             }
+            "updateNowPlaying" -> {
+                val title = call.argument<String>("title") ?: ""
+                val subtitle = call.argument<String>("subtitle") ?: ""
+                val durationMs = (call.argument<Number>("duration_ms")?.toLong()) ?: 0L
+                val positionMs = (call.argument<Number>("position_ms")?.toLong()) ?: 0L
+                val isPlaying = call.argument<Boolean>("is_playing") ?: false
+                val speed = (call.argument<Number>("speed")?.toFloat()) ?: 1.0f
+                updateNowPlaying(title, subtitle, durationMs, positionMs, isPlaying, speed)
+                result.success(null)
+            }
+            "setAutoPipEnabled" -> {
+                autoPipEnabled = call.argument<Boolean>("enabled") ?: false
+                pipAspectW = (call.argument<Number>("aspect_w")?.toInt() ?: pipAspectW).coerceAtLeast(1)
+                pipAspectH = (call.argument<Number>("aspect_h")?.toInt() ?: pipAspectH).coerceAtLeast(1)
+                updatePipParamsIfSupported(nowPlayingActive)
+                result.success(null)
+            }
+            "saveScreenshotToGallery" -> {
+                val bytes = call.argument<ByteArray>("bytes")
+                val fileName = (call.argument<String>("file_name") ?: "vedro_${System.currentTimeMillis()}.png")
+                    .replace(Regex("[^A-Za-z0-9._\\-]"), "_")
+                if (bytes == null || bytes.isEmpty()) {
+                    result.success(null)
+                    return
+                }
+                Thread {
+                    val savedPath = savePngToAndroidGallery(bytes, fileName)
+                    activity.runOnUiThread {
+                        if (!activity.isFinishing && !activity.isDestroyed) {
+                            runCatching { result.success(savedPath) }
+                        }
+                    }
+                }.start()
+            }
             "getScreenBrightness" -> {
                 var value = activity.window.attributes.screenBrightness
                 if (value < 0f) {
                     val sys = runCatching {
                         Settings.System.getInt(activity.contentResolver, Settings.System.SCREEN_BRIGHTNESS)
                     }.getOrDefault(128)
-                    value = (sys / 255f).coerceIn(0.05f, 1.0f)
+                    val maxBright = resolveMaxSystemBrightness(sys)
+                    value = (sys.toFloat() / maxBright.toFloat()).coerceIn(0.05f, 1.0f)
                 }
                 result.success(value.toDouble())
             }
@@ -255,26 +480,9 @@ class VedroHardwarePlugin(
                 result.success(isUnmeteredOrWifi())
             }
             "enterPiP" -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                    activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
-                ) {
-                    val aw = (call.argument<Number>("aspect_w")?.toInt() ?: 16).coerceAtLeast(1)
-                    val ah = (call.argument<Number>("aspect_h")?.toInt() ?: 9).coerceAtLeast(1)
-                    // Clamp ratio to Android's strict PiP bounds [0.4184, 2.39] to prevent IllegalArgumentException
-                    val ratio = (aw.toDouble() / ah.toDouble()).coerceIn(0.45, 2.35)
-                    val rational = Rational((ratio * 100).toInt().coerceAtLeast(45), 100)
-                    val ok = try {
-                        val params = PictureInPictureParams.Builder()
-                            .setAspectRatio(rational)
-                            .build()
-                        activity.enterPictureInPictureMode(params)
-                    } catch (_: Throwable) {
-                        false
-                    }
-                    result.success(ok)
-                } else {
-                    result.success(false)
-                }
+                val aw = (call.argument<Number>("aspect_w")?.toInt() ?: 16).coerceAtLeast(1)
+                val ah = (call.argument<Number>("aspect_h")?.toInt() ?: 9).coerceAtLeast(1)
+                result.success(enterPipInternal(aw, ah, playing = true))
             }
             "setKeepScreenOn" -> {
                 val enabled = call.argument<Boolean>("enabled") ?: false
@@ -298,8 +506,12 @@ class VedroHardwarePlugin(
                 activity.runOnUiThread {
                     val win = activity.window
                     WindowCompat.setDecorFitsSystemWindows(win, false)
-                    win.statusBarColor = android.graphics.Color.TRANSPARENT
-                    win.navigationBarColor = android.graphics.Color.TRANSPARENT
+                    if (Build.VERSION.SDK_INT < 35) {
+                        @Suppress("DEPRECATION")
+                        win.statusBarColor = android.graphics.Color.TRANSPARENT
+                        @Suppress("DEPRECATION")
+                        win.navigationBarColor = android.graphics.Color.TRANSPARENT
+                    }
                     win.decorView.setBackgroundColor(canvasArgb)
                     val ctrl = WindowCompat.getInsetsController(win, win.decorView)
                     ctrl.isAppearanceLightStatusBars = isLight
@@ -408,12 +620,27 @@ class VedroHardwarePlugin(
             val paths = mutableListOf<String>()
             for (uri in uris) {
                 try {
+                    val fileSize = resolveFileSize(appCtx, uri)
+                    // Never copy multi-GB local movies into cacheDir! Pass direct filesystem path
+                    // (when resolvable) or content:// URI directly to libmpv/media_kit.
+                    if (fileSize < 0L || fileSize > MAX_CACHE_COPY_BYTES) {
+                        runCatching {
+                            appCtx.contentResolver.takePersistableUriPermission(
+                                uri,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        }
+                        val directPath = resolveDirectStoragePath(uri)
+                        paths.add(directPath ?: uri.toString())
+                        continue
+                    }
                     val rawName = resolveDisplayName(appCtx, uri) ?: "picked_${System.currentTimeMillis()}"
                     val safeName = rawName
                         .replace(Regex("[^A-Za-z0-9._\\-\\u4e00-\\u9fa5 ()\\[\\]]"), "_")
                         .trimStart('.')
                         .ifEmpty { "picked_${System.currentTimeMillis()}" }
-                    val dest = File(pickedDir, safeName)
+                    val uniqueName = "${System.currentTimeMillis() % 100000}_$safeName"
+                    val dest = File(pickedDir, uniqueName)
                     appCtx.contentResolver.openInputStream(uri)?.use { input ->
                         FileOutputStream(dest).use { out ->
                             input.copyTo(out, bufferSize = 64 * 1024)
@@ -424,13 +651,88 @@ class VedroHardwarePlugin(
                     }
                 } catch (_: Throwable) {}
             }
-            if (!activity.isFinishing && !activity.isDestroyed) {
-                activity.runOnUiThread {
-                    pending.success(paths)
+            activity.runOnUiThread {
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    runCatching { pending.success(paths) }
                 }
             }
         }.start()
         return true
+    }
+
+    private fun resolveMaxSystemBrightness(currentVal: Int): Int {
+        val resId = activity.resources.getIdentifier(
+            "config_screenBrightnessSettingMaximum",
+            "integer",
+            "android"
+        )
+        val oemMax = if (resId != 0) runCatching { activity.resources.getInteger(resId) }.getOrDefault(255) else 255
+        var maxV = oemMax.coerceAtLeast(255)
+        if (currentVal > maxV) {
+            maxV = when {
+                currentVal <= 1023 -> 1023
+                currentVal <= 2047 -> 2047
+                currentVal <= 4095 -> 4095
+                else -> 16383
+            }
+        }
+        return maxV
+    }
+
+    private fun resolveFileSize(ctx: Context, uri: Uri): Long {
+        try {
+            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val idx = c.getColumnIndex(OpenableColumns.SIZE)
+                    if (idx >= 0 && !c.isNull(idx)) {
+                        return c.getLong(idx)
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
+        return -1L
+    }
+
+    private fun resolveDirectStoragePath(uri: Uri): String? {
+        if (uri.scheme == "file") return uri.path
+        val docId = uri.lastPathSegment ?: return null
+        if (uri.authority == "com.android.externalstorage.documents" && docId.startsWith("primary:")) {
+            val rel = docId.removePrefix("primary:")
+            val candidate = File(Environment.getExternalStorageDirectory(), rel)
+            if (candidate.exists() && candidate.canRead()) {
+                return candidate.absolutePath
+            }
+        }
+        return null
+    }
+
+    private fun savePngToAndroidGallery(bytes: ByteArray, fileName: String): String? {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Vedro")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val resolver = activity.applicationContext.contentResolver
+                val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
+                resolver.openOutputStream(uri)?.use { it.write(bytes) }
+                values.clear()
+                values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                "Pictures/Vedro/$fileName"
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Vedro")
+                dir.mkdirs()
+                val out = File(dir, fileName)
+                FileOutputStream(out).use { it.write(bytes) }
+                out.absolutePath
+            }
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun resolveDisplayName(ctx: Context, uri: Uri): String? {
@@ -489,12 +791,9 @@ class VedroHardwarePlugin(
             return true
         }
         val pm = activity.packageManager
-        if (pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
-            pm.hasSystemFeature("android.hardware.type.television")
-        ) {
-            return true
-        }
-        return !pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
+        return pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
+            pm.hasSystemFeature("android.hardware.type.television") ||
+            pm.hasSystemFeature("amazon.hardware.fire_tv")
     }
 
     private fun queryCapabilities(): Map<String, Any> {

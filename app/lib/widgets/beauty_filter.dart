@@ -163,6 +163,7 @@ class BeautyFilterEngine {
 
   /// Build a 20-element Flutter GPU `ColorFilter.matrix` for instant, zero-glitch,
   /// cross-platform visual beauty grading directly on the `Video` widget.
+  /// Keeps `r4 = g4 = b4 = 0.0` (pure zero black floor) so OLED letterbox bars stay `#000000`!
   /// Returns `null` when `presetId == 'off'`.
   static List<double>? buildColorMatrix(String presetId, double strength) {
     final p = BeautyFilterPreset.byId(presetId);
@@ -171,14 +172,13 @@ class BeautyFilterEngine {
     final s = strength.clamp(0.15, 1.0);
     double lerp1(double target) => 1.0 + (target - 1.0) * s;
 
-    final rg = lerp1(p.rGain);
-    final gg = lerp1(p.gGain);
-    final bg = lerp1(p.bGain);
+    // Fold additive brightness offset into proportional luminance-preserving gain so
+    // pure black (0, 0, 0) letterbox bars NEVER turn washed-out grey on OLED displays.
+    final rg = lerp1(p.rGain) + (p.rOffset * s) / 255.0 * 0.55;
+    final gg = lerp1(p.gGain) + (p.gOffset * s) / 255.0 * 0.55;
+    final bg = lerp1(p.bGain) + (p.bOffset * s) / 255.0 * 0.55;
     final c = lerp1(p.contrast);
     final sat = lerp1(p.saturation);
-    final ro = p.rOffset * s;
-    final go = p.gOffset * s;
-    final bo = p.bOffset * s;
 
     // Rec.709 luminance weights for saturation matrix
     const lr = 0.2126;
@@ -188,27 +188,22 @@ class BeautyFilterEngine {
     final sg = (1.0 - sat) * lg;
     final sb = (1.0 - sat) * lb;
 
-    // Combine saturation -> contrast -> per-channel gain & offset cleanly
-    final cBias = 128.0 * (1.0 - c);
     final r0 = (sr + sat) * c * rg;
     final r1 = sg * c * rg;
     final r2 = sb * c * rg;
-    final r4 = cBias * rg + ro;
 
     final g0 = sr * c * gg;
     final g1 = (sg + sat) * c * gg;
     final g2 = sb * c * gg;
-    final g4 = cBias * gg + go;
 
     final b0 = sr * c * bg;
     final b1 = sg * c * bg;
     final b2 = (sb + sat) * c * bg;
-    final b4 = cBias * bg + bo;
 
     return <double>[
-      r0, r1, r2, 0.0, r4,
-      g0, g1, g2, 0.0, g4,
-      b0, b1, b2, 0.0, b4,
+      r0, r1, r2, 0.0, 0.0,
+      g0, g1, g2, 0.0, 0.0,
+      b0, b1, b2, 0.0, 0.0,
       0.0, 0.0, 0.0, 1.0, 0.0,
     ];
   }
@@ -216,8 +211,8 @@ class BeautyFilterEngine {
   /// Generate a strictly valid, GLSL ES & desktop OpenGL compatible single-pass
   /// 5-tap YCbCr skin-tone edge-preserving mpv shader for real skin smoothing (`磨皮`).
   ///
-  /// All coefficients are precomputed non-negative float literals in Dart so double-minus
-  /// (`--`) syntax errors are impossible, and `HOOKED_texOff` always receives `vec2`.
+  /// Preserves pure black (`y <= 0.02`) and avoids `clamp(..., 0.0, 1.0)` highlight clipping
+  /// so HDR10/Dolby Vision extended-range peaks (>1.0) pass through untouched!
   /// Returns `null` when `presetId == 'off'`.
   static String? buildGlslSource(String presetId, double strength) {
     final p = BeautyFilterPreset.byId(presetId);
@@ -226,6 +221,9 @@ class BeautyFilterEngine {
     final s = strength.clamp(0.15, 1.0);
     final smooth = (p.smooth * s).clamp(0.0, 0.85).toStringAsFixed(4);
     final glow = (p.glow * s).clamp(0.0, 0.25).toStringAsFixed(4);
+    final shadowLift = (((p.rOffset + p.gOffset + p.bOffset) / 3.0) * s / 255.0 * 0.45)
+        .clamp(0.0, 0.08)
+        .toStringAsFixed(4);
 
     return '''
 //!DESC Vedro Low-Power Skin Smoothing (${p.id})
@@ -261,30 +259,31 @@ vec4 hook() {
     float w4 = exp(-dot(d4, d4) * 32.0);
     vec3 blurred = (c + s1 * w1 + s2 * w2 + s3 * w3 + s4 * w4) / (1.0 + w1 + w2 + w3 + w4);
 
-    // Apply skin-selective smoothing + subtle highlight soft glow
+    // Apply skin-selective smoothing + luminance-gated shadow lift (black bars remain 0.0!)
     vec3 res = mix(c, blurred, $smooth * skinMask);
+    float midGate = smoothstep(0.02, 0.16, y) * (1.0 - smoothstep(0.65, 0.98, y));
+    res = res + vec3($shadowLift * midGate * (0.35 + 0.65 * skinMask));
     float hi = smoothstep(0.55, 0.98, y);
     res = res + (blurred - res) * ($glow * hi * 0.65);
 
-    return vec4(clamp(res, 0.0, 1.0), center.a);
+    return vec4(max(res, vec3(0.0, 0.0, 0.0)), center.a);
 }
 ''';
   }
 
   /// Write the verified single-pass shader to the app's private support directory and return its path.
-  /// Returns `null` when `presetId == 'off'`.
+  /// Fails closed (`null`) if the private support directory cannot be resolved (never uses shared `/tmp`).
   static Future<String?> prepareShaderFile(String presetId, double strength) async {
     final src = buildGlslSource(presetId, strength);
     if (src == null) return null;
     final bucket = (strength.clamp(0.15, 1.0) * 20).round();
-    String basePath;
+    final Directory support;
     try {
-      final support = await getApplicationSupportDirectory();
-      basePath = support.path;
+      support = await getApplicationSupportDirectory();
     } catch (_) {
-      basePath = Directory.systemTemp.path;
+      return null;
     }
-    final dir = Directory('$basePath/vedro_shaders_v2');
+    final dir = Directory('${support.path}/vedro_shaders_v2');
     if (!dir.existsSync()) {
       await dir.create(recursive: true);
     }

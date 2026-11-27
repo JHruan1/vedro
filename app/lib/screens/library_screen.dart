@@ -12,8 +12,9 @@ import '../state/app_state.dart';
 import '../widgets/media_card.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
+import 'home_screen.dart' show showMediaItemContextSheet;
 
-/// Infinite-paging library & facet browser (supports Library, Genre, Year, Favorites, Type, Grid/List).
+/// Infinite-paging library & facet browser (supports Library, Genre, Studio, Year, Favorites, Folders, Grid/List).
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({
     super.key,
@@ -23,6 +24,7 @@ class LibraryScreen extends StatefulWidget {
     this.onOpenAddServer,
     this.initialLibrary,
     this.initialGenreName,
+    this.initialStudio,
     this.initialYear,
     this.initialOnlyFavorite = false,
     this.customTitle,
@@ -36,6 +38,7 @@ class LibraryScreen extends StatefulWidget {
   final void Function([String? initialUrl])? onOpenAddServer;
   final MediaItemModel? initialLibrary;
   final String? initialGenreName;
+  final String? initialStudio;
   final int? initialYear;
   final bool initialOnlyFavorite;
   final String? customTitle;
@@ -51,9 +54,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
   MediaItemModel? _selectedLibrary;
   late String _sortBy;
   String _sortOrder = 'Descending';
-  String _mediaTypeFilter = 'Movie,Series';
+  String _mediaTypeFilter = 'Movie,Series,Video,MusicVideo,BoxSet';
+  bool _recursiveQuery = true;
+  bool _userTypeOverride = false;
   String? _selectedGenreId;
   String? _selectedGenreName;
+  String? _selectedStudio;
   int? _selectedYear;
   bool _onlyUnplayed = false;
   bool _onlyFavorite = false;
@@ -68,19 +74,81 @@ class _LibraryScreenState extends State<LibraryScreen> {
   int _requestGen = 0;
   static const int _pageSize = 60;
 
+  static ({String types, bool recursive}) _defaultFilterForLibrary(MediaItemModel? lib) {
+    if (lib == null) {
+      return (types: 'Movie,Series,Video,MusicVideo,BoxSet', recursive: true);
+    }
+    if (lib.type == 'Folder' || lib.type == 'BoxSet') {
+      return (types: '', recursive: false);
+    }
+    switch ((lib.collectionType ?? '').toLowerCase()) {
+      case 'movies':
+        return (types: 'Movie', recursive: true);
+      case 'tvshows':
+        return (types: 'Series', recursive: true);
+      case 'boxsets':
+        return (types: 'BoxSet', recursive: true);
+      case 'musicvideos':
+        return (types: 'MusicVideo', recursive: true);
+      case 'homevideos':
+        return (types: 'Video,Movie', recursive: true);
+      case 'livetv':
+        return (types: 'TvChannel,LiveTvChannel,Video', recursive: true);
+      case 'folders':
+        return (types: '', recursive: false);
+      case 'mixed':
+      default:
+        return (types: 'Movie,Series,Video,MusicVideo,BoxSet', recursive: true);
+    }
+  }
+
+  void _applyLibraryDefaults(MediaItemModel? lib) {
+    final defaults = _defaultFilterForLibrary(lib);
+    _mediaTypeFilter = defaults.types;
+    _recursiveQuery = defaults.recursive;
+    _userTypeOverride = false;
+  }
+
+  bool get _isFolderDrilldown =>
+      _selectedLibrary != null &&
+      (_selectedLibrary!.type == 'Folder' ||
+          _selectedLibrary!.type == 'BoxSet' ||
+          (_selectedLibrary!.collectionType ?? '').toLowerCase() == 'folders');
+
+  void _handleItemTap(MediaItemModel item) {
+    if (item.type == 'Folder') {
+      Navigator.of(context).push(
+        vedroRoute(LibraryScreen(
+          appState: widget.appState,
+          initialLibrary: item,
+          onItemTap: widget.onItemTap,
+          onQuickPlay: widget.onQuickPlay,
+          standalone: true,
+        )),
+      );
+      return;
+    }
+    widget.onItemTap(item);
+  }
+
   @override
   void initState() {
     super.initState();
     _sortBy = widget.appState.prefs.defaultSort;
     _selectedGenreName = widget.initialGenreName;
+    _selectedStudio = widget.initialStudio;
     _selectedYear = widget.initialYear;
     _onlyFavorite = widget.initialOnlyFavorite;
-    if (widget.initialGenreName == null && widget.initialYear == null && !widget.initialOnlyFavorite) {
+    if (widget.initialGenreName == null &&
+        widget.initialStudio == null &&
+        widget.initialYear == null &&
+        !widget.initialOnlyFavorite) {
       _selectedLibrary = widget.initialLibrary ??
           (widget.appState.views.isNotEmpty ? widget.appState.views.first : null);
     } else {
       _selectedLibrary = widget.initialLibrary;
     }
+    _applyLibraryDefaults(_selectedLibrary);
     _scrollCtrl.addListener(_onScroll);
     if (widget.appState.isSignedIn) {
       _loadFiltersAndReset();
@@ -136,7 +204,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     } catch (e) {
       if (!mounted || gen != _requestGen) return;
       setState(() {
-        _loadError = e.toString().replaceFirst('VedroCoreException: ', '');
+        _loadError = VedroErrorFormatter.friendly(e);
         _loading = false;
       });
     }
@@ -145,14 +213,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Future<({List<MediaItemModel> items, int total})> _fetchPageData(int startIndex) async {
     final res = await widget.appState.core.invoke('get_items', {
       if (_selectedLibrary != null) 'ParentId': _selectedLibrary!.id,
-      'IncludeItemTypes': _mediaTypeFilter,
-      'Recursive': true,
+      if (_mediaTypeFilter.isNotEmpty) 'IncludeItemTypes': _mediaTypeFilter,
+      'Recursive': _recursiveQuery,
       'SortBy': _sortBy,
       'SortOrder': _sortOrder,
       'StartIndex': startIndex,
       'Limit': _pageSize,
       if (_selectedGenreId != null) 'GenreIds': _selectedGenreId,
       if (_selectedGenreName != null && _selectedGenreId == null) 'Genres': _selectedGenreName,
+      if (_selectedStudio != null && _selectedStudio!.isNotEmpty) 'Studios': _selectedStudio,
       if (_selectedYear != null) 'Years': '$_selectedYear',
       if (_onlyUnplayed) 'IsPlayed': false,
       if (_onlyFavorite) 'IsFavorite': true,
@@ -197,7 +266,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     } catch (e) {
       if (!mounted || gen != _requestGen) return;
       setState(() {
-        _loadError = e.toString().replaceFirst('VedroCoreException: ', '');
+        _loadError = VedroErrorFormatter.friendly(e);
       });
     } finally {
       if (mounted && gen == _requestGen) {
@@ -244,11 +313,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
             ?.toString() ??
         prefs.listDensity;
     final pageTitle = widget.customTitle ??
-        (_selectedGenreName != null
-            ? '类型 · $_selectedGenreName'
-            : (_onlyFavorite && _selectedLibrary == null
-                ? '我的收藏'
-                : (_selectedLibrary?.name ?? '全部媒体')));
+        (_selectedStudio != null
+            ? '出品 · $_selectedStudio'
+            : (_selectedGenreName != null
+                ? '类型 · $_selectedGenreName'
+                : (_onlyFavorite && _selectedLibrary == null
+                    ? '我的收藏'
+                    : (_selectedLibrary?.name ?? '全部媒体'))));
 
     return Scaffold(
       backgroundColor: skin.canvas,
@@ -266,65 +337,84 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   padX - 6,
                   6,
                 ),
-                child: Row(
-                  children: [
-                    if (widget.standalone) ...[
-                      PressableScale(
-                        onTap: () => Navigator.of(context).pop(),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
-                          decoration: BoxDecoration(
-                            color: skin.surface2,
-                            borderRadius: BorderRadius.circular(skin.radiusForPill(34)),
-                            border: Border.all(color: skin.border, width: 0.7),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.arrow_back_ios_new_rounded, size: 13.5, color: skin.fg),
-                              const SizedBox(width: 4),
-                              Text('返回', style: TextStyle(color: skin.fg, fontSize: 13, fontWeight: FontWeight.w500)),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                    ],
-                    Expanded(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.baseline,
-                        textBaseline: TextBaseline.alphabetic,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              pageTitle,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: skin.applyHeadlineMood(
-                                TextStyle(
-                                  color: skin.fg,
-                                  fontSize: wide ? 26 : 24,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: -0.6,
-                                ),
+                child: LayoutBuilder(
+                  builder: (context, headerConstraints) {
+                    final compactHeader =
+                        widget.standalone && headerConstraints.maxWidth < 430;
+                    final titleRow = Row(
+                      children: [
+                        if (widget.standalone) ...[
+                          PressableScale(
+                            onTap: () => Navigator.of(context).pop(),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+                              decoration: BoxDecoration(
+                                color: skin.surface2,
+                                borderRadius: BorderRadius.circular(skin.radiusForPill(34)),
+                                border: Border.all(color: skin.border, width: 0.7),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.arrow_back_ios_new_rounded, size: 13.5, color: skin.fg),
+                                  const SizedBox(width: 4),
+                                  Text('返回',
+                                      style: TextStyle(
+                                          color: skin.fg, fontSize: 13, fontWeight: FontWeight.w500)),
+                                ],
                               ),
                             ),
                           ),
-                          const SizedBox(width: 10),
-                          Text(
-                            '$_total',
-                            style: TextStyle(
-                              color: skin.fg3,
-                              fontSize: 13.5,
-                              fontWeight: FontWeight.w500,
-                              fontFeatures: const [FontFeature.tabularFigures()],
-                            ),
-                          ),
+                          const SizedBox(width: 12),
                         ],
-                      ),
-                    ),
-                    ..._sortActions(skin),
-                  ],
+                        Expanded(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.baseline,
+                            textBaseline: TextBaseline.alphabetic,
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  pageTitle,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: skin.applyHeadlineMood(
+                                    TextStyle(
+                                      color: skin.fg,
+                                      fontSize: wide ? 26 : 22,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: -0.6,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '$_total',
+                                style: TextStyle(
+                                  color: skin.fg3,
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w500,
+                                  fontFeatures: const [FontFeature.tabularFigures()],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (!compactHeader) ..._sortActions(skin),
+                      ],
+                    );
+                    if (!compactHeader) return titleRow;
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        titleRow,
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: _sortActions(skin),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
             // Filter strip: Libraries, Type, Unplayed, Favorite, Genre, Year
@@ -333,48 +423,66 @@ class _LibraryScreenState extends State<LibraryScreen> {
               padding: EdgeInsets.fromLTRB(padX, 6, padX, 12),
               child: Row(
                 children: [
-                  _FilterPill(
-                    label: '全部',
-                    selected: _selectedLibrary == null,
-                    onTap: () {
-                      setState(() {
-                        _selectedLibrary = null;
-                        _selectedGenreId = null;
-                      });
-                      _loadFiltersAndReset();
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  ...widget.appState.views.map((lib) => Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: _FilterPill(
-                          label: lib.name,
-                          selected: _selectedLibrary?.id == lib.id,
-                          onTap: () {
-                            setState(() {
-                              _selectedLibrary = lib;
-                              _selectedGenreId = null;
-                            });
-                            _loadFiltersAndReset();
-                          },
-                        ),
-                      )),
+                  if (!_isFolderDrilldown) ...[
+                    _FilterPill(
+                      label: '全部',
+                      selected: _selectedLibrary == null,
+                      onTap: () {
+                        setState(() {
+                          _selectedLibrary = null;
+                          _selectedGenreId = null;
+                          _applyLibraryDefaults(null);
+                        });
+                        _loadFiltersAndReset();
+                      },
+                    ),
+                    const SizedBox(width: 8),
+                    ...widget.appState.views.map((lib) => Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: _FilterPill(
+                            label: lib.name,
+                            selected: _selectedLibrary?.id == lib.id,
+                            onTap: () {
+                              setState(() {
+                                _selectedLibrary = lib;
+                                _selectedGenreId = null;
+                                _applyLibraryDefaults(lib);
+                              });
+                              _loadFiltersAndReset();
+                            },
+                          ),
+                        )),
+                  ],
                   _FilterPill(
                     label: '电影',
-                    selected: _mediaTypeFilter == 'Movie',
+                    selected: _userTypeOverride && _mediaTypeFilter == 'Movie',
                     onTap: () {
-                      setState(() => _mediaTypeFilter =
-                          _mediaTypeFilter == 'Movie' ? 'Movie,Series' : 'Movie');
+                      setState(() {
+                        if (_userTypeOverride && _mediaTypeFilter == 'Movie') {
+                          _applyLibraryDefaults(_selectedLibrary);
+                        } else {
+                          _userTypeOverride = true;
+                          _mediaTypeFilter = 'Movie';
+                          _recursiveQuery = true;
+                        }
+                      });
                       _resetAndLoad();
                     },
                   ),
                   const SizedBox(width: 8),
                   _FilterPill(
                     label: '剧集',
-                    selected: _mediaTypeFilter == 'Series',
+                    selected: _userTypeOverride && _mediaTypeFilter == 'Series',
                     onTap: () {
-                      setState(() => _mediaTypeFilter =
-                          _mediaTypeFilter == 'Series' ? 'Movie,Series' : 'Series');
+                      setState(() {
+                        if (_userTypeOverride && _mediaTypeFilter == 'Series') {
+                          _applyLibraryDefaults(_selectedLibrary);
+                        } else {
+                          _userTypeOverride = true;
+                          _mediaTypeFilter = 'Series';
+                          _recursiveQuery = true;
+                        }
+                      });
                       _resetAndLoad();
                     },
                   ),
@@ -532,7 +640,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           return _LibraryListTile(
                             item: item,
                             appState: widget.appState,
-                            onTap: () => widget.onItemTap(item),
+                            onTap: () => _handleItemTap(item),
+                            onLongPress: () => showMediaItemContextSheet(
+                              context: context,
+                              item: item,
+                              appState: widget.appState,
+                              onOpenDetail: () => _handleItemTap(item),
+                              onQuickPlay: widget.onQuickPlay == null
+                                  ? null
+                                  : () => widget.onQuickPlay!(item),
+                              onMutated: _resetAndLoad,
+                            ),
                           );
                         },
                       ),
@@ -571,10 +689,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           appState: widget.appState,
                           width: gridLayout.cardWidth,
                           landscape: isWideThumb,
-                          onTap: () => widget.onItemTap(item),
+                          onTap: () => _handleItemTap(item),
                           onQuickPlay: widget.onQuickPlay == null
                               ? null
                               : () => widget.onQuickPlay!(item),
+                          onLongPress: () => showMediaItemContextSheet(
+                            context: context,
+                            item: item,
+                            appState: widget.appState,
+                            onOpenDetail: () => _handleItemTap(item),
+                            onQuickPlay: widget.onQuickPlay == null
+                                ? null
+                                : () => widget.onQuickPlay!(item),
+                            onMutated: _resetAndLoad,
+                          ),
                         );
                       },
                     ),
@@ -637,77 +765,88 @@ class _LibraryListTile extends StatelessWidget {
     required this.item,
     required this.appState,
     required this.onTap,
+    this.onLongPress,
   });
 
   final MediaItemModel item;
   final VedroAppState appState;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    return PressableScale(
-      onTap: onTap,
-      hoverScale: 1.006,
-      pressScale: 0.985,
-      child: Container(
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: skin.unifiedTileColor(),
-          borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 14.0)),
-          border: skin.cardBorder(),
-        ),
-        child: Row(
-          children: [
-            SizedBox(
-              width: 52,
-              height: 76,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(skin.cardRadius.clamp(4.0, 9.0)),
-                child: VedroArtwork(item: item, appState: appState, width: 160),
+    return RepaintBoundary(
+      child: PressableScale(
+        onTap: onTap,
+        onLongPress: onLongPress,
+        onSecondaryTap: onLongPress,
+        hoverScale: 1.006,
+        pressScale: 0.985,
+        child: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: skin.unifiedTileColor(),
+            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 14.0)),
+            border: skin.cardBorder(),
+          ),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 52,
+                height: 76,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(skin.cardRadius.clamp(4.0, 9.0)),
+                  child: VedroArtwork(
+                    item: item,
+                    appState: appState,
+                    width: 160,
+                    displayWidth: 52,
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    item.cardTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: skin.fg,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    item.cardSubtitle,
-                    style: TextStyle(color: skin.fg3, fontSize: 12.5),
-                  ),
-                  if (item.cleanOverview.isNotEmpty) ...[
-                    const SizedBox(height: 4),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
                     Text(
-                      item.cleanOverview,
-                      maxLines: 2,
+                      item.cardTitle,
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: skin.fg2, fontSize: 12.5, height: 1.4),
+                      style: TextStyle(
+                        color: skin.fg,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
+                    const SizedBox(height: 3),
+                    Text(
+                      item.cardSubtitle,
+                      style: TextStyle(color: skin.fg3, fontSize: 12.5),
+                    ),
+                    if (item.cleanOverview.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        item.cleanOverview,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: skin.fg2, fontSize: 12.5, height: 1.4),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
-            ),
-            Icon(Icons.chevron_right_rounded, size: 18, color: skin.fg3),
-          ],
+              Icon(Icons.chevron_right_rounded, size: 18, color: skin.fg3),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _MiniDropdown<T> extends StatelessWidget {
+class _MiniDropdown<T> extends StatefulWidget {
   const _MiniDropdown({
     required this.hint,
     required this.value,
@@ -721,82 +860,102 @@ class _MiniDropdown<T> extends StatelessWidget {
   final ValueChanged<T?> onChanged;
 
   @override
+  State<_MiniDropdown<T>> createState() => _MiniDropdownState<T>();
+}
+
+class _MiniDropdownState<T> extends State<_MiniDropdown<T>> {
+  bool _focused = false;
+
+  @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    String currentLabel = hint;
-    for (final it in items) {
-      if (it.value == value && it.child is Text) {
+    String currentLabel = widget.hint;
+    for (final it in widget.items) {
+      if (it.value == widget.value && it.child is Text) {
         final t = (it.child as Text).data;
         if (t != null && t.isNotEmpty) currentLabel = t;
         break;
       }
     }
-    final active = value != null;
+    final active = widget.value != null;
+    final radius = skin.radiusForPill(32);
 
-    return PopupMenuButton<int>(
-      color: skin.surface2,
-      elevation: 16,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: skin.borderStrong, width: 0.8),
-      ),
-      onSelected: (idx) {
-        if (idx >= 0 && idx < items.length) {
-          onChanged(items[idx].value);
-        }
+    return Focus(
+      canRequestFocus: false,
+      onFocusChange: (f) {
+        if (_focused != f) setState(() => _focused = f);
       },
-      itemBuilder: (_) => List.generate(items.length, (i) {
-        final it = items[i];
-        final sel = it.value == value;
-        final text = it.child is Text ? ((it.child as Text).data ?? '') : '';
-        return PopupMenuItem<int>(
-          value: i,
-          height: 36,
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  text,
-                  style: TextStyle(
-                    color: sel ? skin.fg : skin.fg2,
-                    fontSize: 13,
-                    fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+      child: PopupMenuButton<int>(
+        color: skin.surface2,
+        elevation: 16,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: skin.borderStrong, width: 0.8),
+        ),
+        onSelected: (idx) {
+          if (idx >= 0 && idx < widget.items.length) {
+            widget.onChanged(widget.items[idx].value);
+          }
+        },
+        itemBuilder: (_) => List.generate(widget.items.length, (i) {
+          final it = widget.items[i];
+          final sel = it.value == widget.value;
+          final text = it.child is Text ? ((it.child as Text).data ?? '') : '';
+          return PopupMenuItem<int>(
+            value: i,
+            height: 36,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    text,
+                    style: TextStyle(
+                      color: sel ? skin.fg : skin.fg2,
+                      fontSize: 13,
+                      fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+                    ),
                   ),
                 ),
+                if (sel) Icon(Icons.check_rounded, size: 15, color: skin.accent),
+              ],
+            ),
+          );
+        }),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          height: 32,
+          padding: const EdgeInsets.symmetric(horizontal: 13),
+          decoration: BoxDecoration(
+            color: active ? skin.activePillBg : skin.surface2,
+            borderRadius: BorderRadius.circular(radius),
+            border: _focused
+                ? Border.all(color: skin.accent, width: 2.0)
+                : ((!active && skin.frameStyle != 'borderless')
+                    ? Border.all(color: skin.border, width: 0.7)
+                    : null),
+            boxShadow: _focused
+                ? [BoxShadow(color: skin.accent.withValues(alpha: 0.35), blurRadius: 8)]
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                currentLabel,
+                style: TextStyle(
+                  color: active ? skin.activePillFg : skin.fg2,
+                  fontSize: 12.5,
+                  fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                ),
               ),
-              if (sel) Icon(Icons.check_rounded, size: 15, color: skin.accent),
+              const SizedBox(width: 4),
+              Icon(
+                Icons.keyboard_arrow_down_rounded,
+                size: 15,
+                color: active ? skin.activePillFg : skin.fg3,
+              ),
             ],
           ),
-        );
-      }),
-      child: Container(
-        height: 32,
-        padding: const EdgeInsets.symmetric(horizontal: 13),
-        decoration: BoxDecoration(
-          color: active ? skin.activePillBg : skin.surface2,
-          borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
-          border: (!active && skin.frameStyle != 'borderless')
-              ? Border.all(color: skin.border, width: 0.7)
-              : null,
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              currentLabel,
-              style: TextStyle(
-                color: active ? skin.activePillFg : skin.fg2,
-                fontSize: 12.5,
-                fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-              ),
-            ),
-            const SizedBox(width: 4),
-            Icon(
-              Icons.keyboard_arrow_down_rounded,
-              size: 15,
-              color: active ? skin.activePillFg : skin.fg3,
-            ),
-          ],
         ),
       ),
     );

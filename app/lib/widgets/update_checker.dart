@@ -3,19 +3,28 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
 import '../core/theme/vedro_skin.dart';
+import 'app_lock_gate.dart';
 
 bool isTrustedReleaseUrl(String raw) {
-  final uri = Uri.tryParse(raw.trim());
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty || trimmed.contains(RegExp(r'[\s\x00-\x1F\x7F]'))) {
+    return false;
+  }
+  final uri = Uri.tryParse(trimmed);
   if (uri == null || uri.scheme.toLowerCase() != 'https') return false;
+  if (uri.userInfo.isNotEmpty) return false;
+  if (uri.hasPort && uri.port != 443) return false;
   final host = uri.host.toLowerCase();
-  return host == 'github.com' ||
-      host == 'objects.githubusercontent.com' ||
-      host == 'release-assets.githubusercontent.com' ||
-      host.endsWith('.githubusercontent.com');
+  if (host == 'github.com') {
+    return uri.path.startsWith('/${VedroUpdateChecker.repoSlug}/releases');
+  }
+  return host == 'objects.githubusercontent.com' ||
+      host == 'release-assets.githubusercontent.com';
 }
 
 class VedroReleaseAsset {
@@ -126,27 +135,46 @@ String normalizeSemver(String raw) {
 }
 
 /// Compare two semantic version strings (`>0` if `a > b`, `0` if equal, `<0` if `a < b`).
+/// Implements full SemVer 2.0 prerelease identifier comparison (numeric < alphanumeric, shorter < longer).
 int compareSemver(String a, String b) {
-  List<int> parseCore(String v) {
-    final clean = normalizeSemver(v).split('-').first;
-    final parts = clean.split('.');
-    return [
+  (List<int>, List<String>) parse(String v) {
+    final norm = normalizeSemver(v);
+    final dash = norm.indexOf('-');
+    final coreStr = dash >= 0 ? norm.substring(0, dash) : norm;
+    final preStr = dash >= 0 ? norm.substring(dash + 1) : '';
+    final parts = coreStr.split('.');
+    final core = [
       parts.isNotEmpty ? (int.tryParse(parts[0]) ?? 0) : 0,
       parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0,
       parts.length > 2 ? (int.tryParse(parts[2]) ?? 0) : 0,
     ];
+    final pre = preStr.isEmpty
+        ? const <String>[]
+        : preStr.split('.').where((s) => s.isNotEmpty).toList();
+    return (core, pre);
   }
 
-  final pa = parseCore(a);
-  final pb = parseCore(b);
+  final (pa, preA) = parse(a);
+  final (pb, preB) = parse(b);
   for (var i = 0; i < 3; i++) {
     if (pa[i] != pb[i]) return pa[i].compareTo(pb[i]);
   }
-  final aHasPre = normalizeSemver(a).contains('-');
-  final bHasPre = normalizeSemver(b).contains('-');
-  if (aHasPre && !bHasPre) return -1;
-  if (!aHasPre && bHasPre) return 1;
-  return 0;
+  if (preA.isEmpty && preB.isEmpty) return 0;
+  if (preA.isNotEmpty && preB.isEmpty) return -1;
+  if (preA.isEmpty && preB.isNotEmpty) return 1;
+  final minLen = preA.length < preB.length ? preA.length : preB.length;
+  for (var i = 0; i < minLen; i++) {
+    final ia = preA[i];
+    final ib = preB[i];
+    if (ia == ib) continue;
+    final na = int.tryParse(ia);
+    final nb = int.tryParse(ib);
+    if (na != null && nb != null) return na.compareTo(nb);
+    if (na != null) return -1;
+    if (nb != null) return 1;
+    return ia.compareTo(ib);
+  }
+  return preA.length.compareTo(preB.length);
 }
 
 typedef ReleaseJsonFetcher = Future<Map<String, dynamic>> Function(String currentVersion);
@@ -232,6 +260,19 @@ class VedroUpdateChecker extends ChangeNotifier {
     required String currentVersion,
   }) async {
     if (_startupChecked) return;
+    if (AppLockGate.isLockedNotifier.value) {
+      // Wait until the user unlocks the app before prompting so dialog never collides with AppLockGate.
+      void onUnlock() {
+        if (!AppLockGate.isLockedNotifier.value) {
+          AppLockGate.isLockedNotifier.removeListener(onUnlock);
+          if (context.mounted) {
+            checkOnceOnStartup(context, currentVersion: currentVersion);
+          }
+        }
+      }
+      AppLockGate.isLockedNotifier.addListener(onUnlock);
+      return;
+    }
     _startupChecked = true;
     await checkAndPrompt(
       context,
@@ -248,6 +289,7 @@ class VedroUpdateChecker extends ChangeNotifier {
     final normCur = normalizeSemver(currentVersion);
     final info = await checkForUpdate(currentVersion: normCur, force: !silentIfUpToDate);
     if (!context.mounted) return;
+    if (silentIfUpToDate && AppLockGate.isLockedNotifier.value) return;
 
     if (hasUpdate && info != null) {
       if (silentIfUpToDate && ignoredVersion == info.version) {
@@ -295,124 +337,156 @@ Future<void> showVedroUpdateDialog(
       ? fmtFileSize(matchedAsset.sizeBytes)
       : '';
 
-  await showDialog<void>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      key: const ValueKey('vedro-update-dialog'),
-      backgroundColor: skin.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
-        side: BorderSide(color: skin.border, width: 0.8),
-      ),
-      title: Row(
-        children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: accent.withValues(alpha: 0.16),
-              borderRadius: BorderRadius.circular(10),
+  final notesScrollCtrl = ScrollController();
+  try {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        key: const ValueKey('vedro-update-dialog'),
+        backgroundColor: skin.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: BorderSide(color: skin.border, width: 0.8),
+        ),
+        title: Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(Icons.system_update_alt_rounded, size: 19, color: accent),
             ),
-            child: Icon(Icons.system_update_alt_rounded, size: 19, color: accent),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '发现新版本 ${release.tagName}',
+                    style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                  Text(
+                    '当前 v$currentVersion → 最新 v${release.version}',
+                    style: TextStyle(color: skin.fg3, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 460, maxHeight: 320),
+          child: Focus(
+            onKeyEvent: (_, ev) {
+              if ((ev is KeyDownEvent || ev is KeyRepeatEvent) && notesScrollCtrl.hasClients) {
+                if (ev.logicalKey == LogicalKeyboardKey.arrowDown) {
+                  notesScrollCtrl.animateTo(
+                    (notesScrollCtrl.offset + 64)
+                        .clamp(0.0, notesScrollCtrl.position.maxScrollExtent),
+                    duration: const Duration(milliseconds: 120),
+                    curve: Curves.easeOut,
+                  );
+                  return KeyEventResult.handled;
+                }
+                if (ev.logicalKey == LogicalKeyboardKey.arrowUp) {
+                  notesScrollCtrl.animateTo(
+                    (notesScrollCtrl.offset - 64)
+                        .clamp(0.0, notesScrollCtrl.position.maxScrollExtent),
+                    duration: const Duration(milliseconds: 120),
+                    curve: Curves.easeOut,
+                  );
+                  return KeyEventResult.handled;
+                }
+              }
+              return KeyEventResult.ignored;
+            },
+            child: SingleChildScrollView(
+              controller: notesScrollCtrl,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (matchedAsset != null)
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: skin.surface2,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: skin.border, width: 0.7),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.download_for_offline_outlined, size: 16, color: accent),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              matchedAsset.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: skin.fg,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                          if (sizeLabel.isNotEmpty) ...[
+                            const SizedBox(width: 8),
+                            Text(sizeLabel, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
+                          ],
+                        ],
+                      ),
+                    ),
+                  Text(
+                    release.releaseNotes.isNotEmpty ? release.releaseNotes : '包含多项功能更新与体验优化。',
+                    style: TextStyle(color: skin.fg2, fontSize: 13, height: 1.5),
+                  ),
+                ],
+              ),
+            ),
           ),
-          const SizedBox(width: 11),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '发现新版本 ${release.tagName}',
-                  style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w700),
-                ),
-                Text(
-                  '当前 v$currentVersion → 最新 v${release.version}',
-                  style: TextStyle(color: skin.fg3, fontSize: 12),
-                ),
-              ],
+        ),
+        actions: [
+          if (onIgnoreVersion != null)
+            TextButton(
+              onPressed: () {
+                onIgnoreVersion();
+                Navigator.pop(ctx);
+              },
+              child: Text('忽略此版本', style: TextStyle(color: skin.fg3, fontSize: 12.5)),
             ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('稍后再说'),
+          ),
+          if (matchedAsset != null)
+            OutlinedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                NativePlaybackChannel.openUrl(release.htmlUrl);
+              },
+              child: const Text('全部版本'),
+            ),
+          FilledButton.icon(
+            key: const ValueKey('vedro-update-download-btn'),
+            autofocus: true,
+            onPressed: () {
+              Navigator.pop(ctx);
+              NativePlaybackChannel.openUrl(downloadTarget);
+            },
+            icon: const Icon(Icons.download_rounded, size: 16),
+            label: Text(matchedAsset != null ? '立即下载' : '前往更新'),
           ),
         ],
       ),
-      content: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 460, maxHeight: 320),
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (matchedAsset != null)
-                Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: skin.surface2,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: skin.border, width: 0.7),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.download_for_offline_outlined, size: 16, color: accent),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          matchedAsset.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: skin.fg,
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                      if (sizeLabel.isNotEmpty) ...[
-                        const SizedBox(width: 8),
-                        Text(sizeLabel, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
-                      ],
-                    ],
-                  ),
-                ),
-              Text(
-                release.releaseNotes.isNotEmpty ? release.releaseNotes : '包含多项功能更新与体验优化。',
-                style: TextStyle(color: skin.fg2, fontSize: 13, height: 1.5),
-              ),
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        if (onIgnoreVersion != null)
-          TextButton(
-            onPressed: () {
-              onIgnoreVersion();
-              Navigator.pop(ctx);
-            },
-            child: Text('忽略此版本', style: TextStyle(color: skin.fg3, fontSize: 12.5)),
-          ),
-        TextButton(
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('稍后再说'),
-        ),
-        if (matchedAsset != null)
-          OutlinedButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              NativePlaybackChannel.openUrl(release.htmlUrl);
-            },
-            child: const Text('全部版本'),
-          ),
-        FilledButton.icon(
-          key: const ValueKey('vedro-update-download-btn'),
-          onPressed: () {
-            Navigator.pop(ctx);
-            NativePlaybackChannel.openUrl(downloadTarget);
-          },
-          icon: const Icon(Icons.download_rounded, size: 16),
-          label: Text(matchedAsset != null ? '立即下载' : '前往更新'),
-        ),
-      ],
-    ),
-  );
+    );
+  } finally {
+    notesScrollCtrl.dispose();
+  }
 }
 
 /// Compact clickable update chip for Settings sidebar/footer.

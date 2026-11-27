@@ -2,6 +2,9 @@
 
 #include <cstring>
 #include <flutter_linux/flutter_linux.h>
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -18,13 +21,67 @@ G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 
 static gboolean is_allowed_http_url(const gchar* url) {
   if (!url) return FALSE;
-  if (!g_str_has_prefix(url, "http://") && !g_str_has_prefix(url, "https://")) {
+  g_autofree gchar* lower = g_ascii_strdown(url, 8);
+  if (!g_str_has_prefix(lower, "http://") && !g_str_has_prefix(lower, "https://")) {
     return FALSE;
   }
   for (const gchar* p = url; *p; ++p) {
-    if (static_cast<unsigned char>(*p) < 0x20) return FALSE;
+    if (static_cast<unsigned char>(*p) <= 0x20) return FALSE;
   }
   return TRUE;
+}
+
+static void on_main_window_destroy(GtkWidget* widget, gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  if (GTK_WIDGET(self->main_window) == widget) {
+    self->main_window = nullptr;
+  }
+}
+
+static gboolean on_window_state_event(GtkWidget* widget,
+                                      GdkEventWindowState* event,
+                                      gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  gboolean now_fs = (event->new_window_state & GDK_WINDOW_STATE_FULLSCREEN) != 0;
+  if (now_fs != self->is_fullscreen) {
+    self->is_fullscreen = now_fs;
+    if (self->hw_channel) {
+      g_autoptr(FlValue) map = fl_value_new_map();
+      fl_value_set_string_take(map, "fullscreen", fl_value_new_bool(now_fs));
+      fl_method_channel_invoke_method(self->hw_channel, "fullscreenChanged", map,
+                                      nullptr, nullptr, nullptr);
+    }
+  }
+  return FALSE;
+}
+
+static void on_drag_data_received(GtkWidget* widget,
+                                  GdkDragContext* context,
+                                  gint x,
+                                  gint y,
+                                  GtkSelectionData* data,
+                                  guint info,
+                                  guint time,
+                                  gpointer user_data) {
+  MyApplication* self = MY_APPLICATION(user_data);
+  gchar** uris = gtk_selection_data_get_uris(data);
+  if (uris && self->hw_channel) {
+    g_autoptr(FlValue) list = fl_value_new_list();
+    for (gchar** p = uris; *p; ++p) {
+      g_autofree gchar* path = g_filename_from_uri(*p, nullptr, nullptr);
+      if (path && *path) {
+        fl_value_append_take(list, fl_value_new_string(path));
+      }
+    }
+    if (fl_value_get_length(list) > 0) {
+      g_autoptr(FlValue) map = fl_value_new_map();
+      fl_value_set_string(map, "paths", list);
+      fl_method_channel_invoke_method(self->hw_channel, "filesDropped", map,
+                                      nullptr, nullptr, nullptr);
+    }
+    g_strfreev(uris);
+  }
+  gtk_drag_finish(context, TRUE, FALSE, time);
 }
 
 static void hw_method_call_cb(FlMethodChannel* channel,
@@ -108,6 +165,86 @@ static void hw_method_call_cb(FlMethodChannel* channel,
       self->inhibit_cookie = 0;
     }
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+  } else if (strcmp(method, "pickFiles") == 0) {
+    gboolean allow_dir = FALSE;
+    gboolean allow_multi = FALSE;
+    const gchar* title = "选择文件";
+    FlValue* ext_val = nullptr;
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* v = fl_value_lookup_string(args, "allow_directory");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_BOOL) allow_dir = fl_value_get_bool(v);
+      v = fl_value_lookup_string(args, "allow_multiple");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_BOOL) allow_multi = fl_value_get_bool(v);
+      v = fl_value_lookup_string(args, "title");
+      if (v && fl_value_get_type(v) == FL_VALUE_TYPE_STRING) title = fl_value_get_string(v);
+      ext_val = fl_value_lookup_string(args, "extensions");
+    }
+    gboolean has_exts = ext_val && fl_value_get_type(ext_val) == FL_VALUE_TYPE_LIST &&
+                        fl_value_get_length(ext_val) > 0;
+    GtkFileChooserAction action = (allow_dir && !has_exts)
+                                      ? GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER
+                                      : GTK_FILE_CHOOSER_ACTION_OPEN;
+    GtkFileChooserNative* native = gtk_file_chooser_native_new(
+        title, self->main_window, action, "_打开", "_取消");
+    if (allow_multi && action == GTK_FILE_CHOOSER_ACTION_OPEN) {
+      gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(native), TRUE);
+    }
+    if (has_exts && action == GTK_FILE_CHOOSER_ACTION_OPEN) {
+      GtkFileFilter* filter = gtk_file_filter_new();
+      gtk_file_filter_set_name(filter, "Supported Files");
+      size_t n = fl_value_get_length(ext_val);
+      for (size_t i = 0; i < n; ++i) {
+        FlValue* item = fl_value_get_list_value(ext_val, i);
+        if (item && fl_value_get_type(item) == FL_VALUE_TYPE_STRING) {
+          g_autofree gchar* pat = g_strdup_printf("*.%s", fl_value_get_string(item));
+          gtk_file_filter_add_pattern(filter, pat);
+        }
+      }
+      gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(native), filter);
+      GtkFileFilter* all_filter = gtk_file_filter_new();
+      gtk_file_filter_set_name(all_filter, "All Files");
+      gtk_file_filter_add_pattern(all_filter, "*");
+      gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(native), all_filter);
+    }
+    g_autoptr(FlValue) out_list = fl_value_new_list();
+    if (gtk_native_dialog_run(GTK_NATIVE_DIALOG(native)) == GTK_RESPONSE_ACCEPT) {
+      GSList* files = gtk_file_chooser_get_filenames(GTK_FILE_CHOOSER(native));
+      for (GSList* it = files; it != nullptr; it = it->next) {
+        gchar* fname = static_cast<gchar*>(it->data);
+        if (fname && *fname) {
+          fl_value_append_take(out_list, fl_value_new_string(fname));
+        }
+        g_free(fname);
+      }
+      g_slist_free(files);
+    }
+    g_object_unref(native);
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(out_list));
+  } else if (strcmp(method, "saveScreenshotToGallery") == 0) {
+    g_autofree gchar* saved_path = nullptr;
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* bv = fl_value_lookup_string(args, "bytes");
+      FlValue* nv = fl_value_lookup_string(args, "file_name");
+      const gchar* fname = (nv && fl_value_get_type(nv) == FL_VALUE_TYPE_STRING)
+                               ? fl_value_get_string(nv)
+                               : "vedro_screenshot.png";
+      if (bv && fl_value_get_type(bv) == FL_VALUE_TYPE_UINT8_LIST) {
+        const gchar* pics = g_get_user_special_dir(G_USER_DIRECTORY_PICTURES);
+        if (!pics) pics = g_get_home_dir();
+        g_autofree gchar* dir = g_build_filename(pics, "Vedro", nullptr);
+        g_mkdir_with_parents(dir, 0755);
+        g_autofree gchar* base = g_path_get_basename(fname);
+        g_autofree gchar* dest = g_build_filename(dir, base, nullptr);
+        if (g_file_set_contents(dest,
+                                reinterpret_cast<const gchar*>(fl_value_get_uint8_list(bv)),
+                                static_cast<gssize>(fl_value_get_length(bv)),
+                                nullptr)) {
+          saved_path = g_strdup(dest);
+        }
+      }
+    }
+    g_autoptr(FlValue) val = saved_path ? fl_value_new_string(saved_path) : fl_value_new_null();
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(val));
   } else if (strcmp(method, "openUrl") == 0) {
     gboolean ok = FALSE;
     if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
@@ -143,17 +280,31 @@ static void my_application_activate(GApplication* application) {
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
   self->main_window = window;
+  g_signal_connect(window, "destroy", G_CALLBACK(on_main_window_destroy), self);
+  g_signal_connect(window, "window-state-event", G_CALLBACK(on_window_state_event), self);
   gtk_window_set_default_size(window, 1280, 720);
 
   if (GtkSettings* settings = gtk_settings_get_default()) {
     g_object_set(settings, "gtk-application-prefer-dark-theme", TRUE, nullptr);
   }
 
-  GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
-  gtk_widget_show(GTK_WIDGET(header_bar));
-  gtk_header_bar_set_title(header_bar, "Vedro");
-  gtk_header_bar_set_show_close_button(header_bar, TRUE);
-  gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
+  gboolean use_header_bar = TRUE;
+#ifdef GDK_WINDOWING_X11
+  GdkScreen* screen = gtk_window_get_screen(window);
+  if (GDK_IS_X11_SCREEN(screen)) {
+    const gchar* wm_name = gdk_x11_screen_get_window_manager_name(screen);
+    if (wm_name && g_strcmp0(wm_name, "GNOME Shell") != 0) {
+      use_header_bar = FALSE;
+    }
+  }
+#endif
+  if (use_header_bar) {
+    GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
+    gtk_widget_show(GTK_WIDGET(header_bar));
+    gtk_header_bar_set_title(header_bar, "Vedro");
+    gtk_header_bar_set_show_close_button(header_bar, TRUE);
+    gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
+  }
 
   gtk_window_set_title(window, "Vedro");
 
@@ -168,12 +319,24 @@ static void my_application_activate(GApplication* application) {
   gtk_widget_show(GTK_WIDGET(view));
   gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(view));
 
+  static const GtkTargetEntry drop_targets[] = {
+      {const_cast<gchar*>("text/uri-list"), 0, 0},
+  };
+  gtk_drag_dest_set(GTK_WIDGET(window), GTK_DEST_DEFAULT_ALL, drop_targets, 1,
+                    GDK_ACTION_COPY);
+  g_signal_connect(window, "drag-data-received",
+                   G_CALLBACK(on_drag_data_received), self);
+
   g_signal_connect_swapped(view, "first-frame", G_CALLBACK(first_frame_cb),
                            self);
   gtk_widget_realize(GTK_WIDGET(view));
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
+  if (self->hw_channel) {
+    fl_method_channel_set_method_call_handler(self->hw_channel, nullptr, nullptr, nullptr);
+    g_clear_object(&self->hw_channel);
+  }
   FlEngine* engine = fl_view_get_engine(view);
   g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
   self->hw_channel = fl_method_channel_new(
@@ -221,7 +384,11 @@ static void my_application_shutdown(GApplication* application) {
 
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
-  g_clear_object(&self->hw_channel);
+  if (self->hw_channel) {
+    fl_method_channel_set_method_call_handler(self->hw_channel, nullptr, nullptr, nullptr);
+    g_clear_object(&self->hw_channel);
+  }
+  self->main_window = nullptr;
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }

@@ -5,6 +5,16 @@ export PATH="$HOME/.cargo/bin:/opt/flutter/bin:/usr/local/go/bin:$PATH"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
+echo "=== [0/4] Version consistency check ==="
+CARGO_VER="$(awk -F'"' '/^version =/{print $2; exit}' "$ROOT_DIR/Cargo.toml")"
+PUBSPEC_VER="$(awk -F': *' '/^version:/{print $2; exit}' "$ROOT_DIR/app/pubspec.yaml" | cut -d'+' -f1 | tr -d '\r')"
+ISS_VER="$(awk -F'"' '/#define MyAppVersion/{print $2; exit}' "$ROOT_DIR/scripts/vedro-windows-installer.iss")"
+if [ "$CARGO_VER" != "$PUBSPEC_VER" ] || [ "$CARGO_VER" != "$ISS_VER" ]; then
+  echo "ERROR: Version mismatch! Cargo=$CARGO_VER pubspec=$PUBSPEC_VER iss=$ISS_VER" >&2
+  exit 1
+fi
+echo "Versions aligned: $CARGO_VER"
+
 echo "=== [1/4] Rust format, clippy & unit tests ==="
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings

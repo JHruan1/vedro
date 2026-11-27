@@ -19,11 +19,20 @@ import 'widgets/local_asr_engine.dart';
 import 'widgets/vedro_ui.dart';
 import 'widgets/windows_immersive_frame.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   runZonedGuarded<void>(
     () async {
       WidgetsFlutterBinding.ensureInitialized();
       PlatformPerfProfile.configureImageCache();
+      if (args.isNotEmpty) {
+        final startupPaths = args
+            .map((a) => a.trim())
+            .where((a) => a.isNotEmpty && !a.startsWith('-'))
+            .toList();
+        if (startupPaths.isNotEmpty) {
+          NativePlaybackChannel.droppedFilesNotifier.value = startupPaths;
+        }
+      }
 
       FlutterError.onError = (FlutterErrorDetails details) {
         if (kDebugMode) {
@@ -195,38 +204,7 @@ class _VedroAppState extends State<VedroApp> with WidgetsBindingObserver {
   }
 
   ThemeData _resolveTheme(VedroSkin skin) {
-    final prev = _cachedSkin;
-    if (prev != null &&
-        _cachedTheme != null &&
-        prev.id == skin.id &&
-        prev.isLight == skin.isLight &&
-        prev.canvas == skin.canvas &&
-        prev.surface == skin.surface &&
-        prev.surface2 == skin.surface2 &&
-        prev.fg == skin.fg &&
-        prev.fg2 == skin.fg2 &&
-        prev.accent == skin.accent &&
-        prev.accentSecondary == skin.accentSecondary &&
-        prev.cardRadius == skin.cardRadius &&
-        prev.pillRadius == skin.pillRadius &&
-        prev.editorialSerif == skin.editorialSerif &&
-        prev.navLayout == skin.navLayout &&
-        prev.heroStyle == skin.heroStyle &&
-        prev.detailLayout == skin.detailLayout &&
-        prev.backdropMode == skin.backdropMode &&
-        prev.backdropBlur == skin.backdropBlur &&
-        prev.surfaceMaterial == skin.surfaceMaterial &&
-        prev.cardStyle == skin.cardStyle &&
-        prev.posterAspect == skin.posterAspect &&
-        prev.mobileNavStyle == skin.mobileNavStyle &&
-        prev.osdStyle == skin.osdStyle &&
-        prev.badgeStyle == skin.badgeStyle &&
-        prev.progressStyle == skin.progressStyle &&
-        prev.ctaStyle == skin.ctaStyle &&
-        prev.frameStyle == skin.frameStyle &&
-        prev.liquidSpecular == skin.liquidSpecular &&
-        prev.touchFeedbackStyle == skin.touchFeedbackStyle &&
-        prev.cardHoverEffect == skin.cardHoverEffect) {
+    if (_cachedSkin == skin && _cachedTheme != null) {
       return _cachedTheme!;
     }
     _cachedSkin = skin;
@@ -308,18 +286,18 @@ class _VedroAppState extends State<VedroApp> with WidgetsBindingObserver {
           scrollBehavior: const VedroScrollBehavior(),
           builder: (ctx, navChild) => WindowsImmersiveFrame(
             isLight: skin.isLight,
-            child: navChild ?? const SizedBox.shrink(),
+            child: AppLockGate(
+              appState: _appState,
+              child: navChild ?? const SizedBox.shrink(),
+            ),
           ),
           home: AnnotatedRegion<SystemUiOverlayStyle>(
             value: overlayStyle,
-            child: AppLockGate(
-              appState: _appState,
-              child: AnimatedSwitcher(
-                duration: Duration(milliseconds: _appState.prefs.reduceMotion ? 0 : 260),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                child: child,
-              ),
+            child: AnimatedSwitcher(
+              duration: Duration(milliseconds: _appState.prefs.reduceMotion ? 0 : 260),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              child: child,
             ),
           ),
         );

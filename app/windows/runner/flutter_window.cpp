@@ -42,6 +42,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  vedro::UnregisterVedroHardwarePlugin();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

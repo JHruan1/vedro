@@ -102,7 +102,11 @@ class _ServerCardGridState extends State<ServerCardGrid> {
         if (widget.showHeaderControls && servers.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
-            child: Row(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Text(
                   '已保存服务器 (${servers.length})',
@@ -112,38 +116,41 @@ class _ServerCardGridState extends State<ServerCardGrid> {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                const Spacer(),
-                if (servers.isNotEmpty)
-                  _SmallGhostButton(
-                    icon: Icons.refresh_rounded,
-                    label: (_pinging.isNotEmpty || app.isProbingServers) ? '检测中…' : '刷新状态',
-                    onTap: (_pinging.isNotEmpty || app.isProbingServers) ? null : _pingAll,
-                  ),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.all(2.5),
-                  decoration: BoxDecoration(
-                    color: skin.surface,
-                    borderRadius: BorderRadius.circular(9),
-                    border: Border.all(color: skin.border, width: 0.7),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _LayoutToggleBtn(
-                        icon: Icons.grid_view_rounded,
-                        active: !isList,
-                        tooltip: '卡片网格',
-                        onTap: () => app.updatePrefs(app.prefs.copyWith(serverCardLayout: 'grid')),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _SmallGhostButton(
+                      icon: Icons.refresh_rounded,
+                      label: (_pinging.isNotEmpty || app.isProbingServers) ? '检测中…' : '刷新状态',
+                      onTap: (_pinging.isNotEmpty || app.isProbingServers) ? null : _pingAll,
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.all(2.5),
+                      decoration: BoxDecoration(
+                        color: skin.surface,
+                        borderRadius: BorderRadius.circular(9),
+                        border: Border.all(color: skin.border, width: 0.7),
                       ),
-                      _LayoutToggleBtn(
-                        icon: Icons.view_agenda_outlined,
-                        active: isList,
-                        tooltip: '紧凑列表',
-                        onTap: () => app.updatePrefs(app.prefs.copyWith(serverCardLayout: 'list')),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _LayoutToggleBtn(
+                            icon: Icons.grid_view_rounded,
+                            active: !isList,
+                            tooltip: '卡片网格',
+                            onTap: () => app.updatePrefs(app.prefs.copyWith(serverCardLayout: 'grid')),
+                          ),
+                          _LayoutToggleBtn(
+                            icon: Icons.view_agenda_outlined,
+                            active: isList,
+                            tooltip: '紧凑列表',
+                            onTap: () => app.updatePrefs(app.prefs.copyWith(serverCardLayout: 'list')),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -263,7 +270,10 @@ class _ServerRichCardState extends State<_ServerRichCard> {
 
     return PressableScale(
       onTap: widget.onTap,
+      onLongPress: widget.onOpenSettings,
+      onSecondaryTap: widget.onOpenSettings,
       onHoverChanged: (v) => setState(() => _hovered = v),
+      primaryFocusRingOnly: true,
       hoverScale: 1.015,
       pressScale: 0.98,
       child: AnimatedContainer(
@@ -508,6 +518,9 @@ class _ServerCompactRowCard extends StatelessWidget {
 
     return PressableScale(
       onTap: onTap,
+      onLongPress: onOpenSettings,
+      onSecondaryTap: onOpenSettings,
+      primaryFocusRingOnly: true,
       hoverScale: 1.006,
       pressScale: 0.99,
       child: Container(
@@ -982,9 +995,27 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
 
   Future<void> _addRouteDialog(SavedServerProfile server) async {
     final nameCtrl = TextEditingController();
-    final urlCtrl = TextEditingController(text: 'https://');
+    final urlCtrl = TextEditingController();
     final proxyCtrl = TextEditingController();
     var allowSelfSigned = false;
+
+    void submitDialog(BuildContext ctx) {
+      final u = urlCtrl.text.trim();
+      if (u.isEmpty) return;
+      final n = nameCtrl.text.trim().isNotEmpty
+          ? nameCtrl.text.trim()
+          : '线路 ${server.routes.length + 1}';
+      Navigator.pop(
+        ctx,
+        ServerRouteModel(
+          id: 'r_${DateTime.now().millisecondsSinceEpoch}',
+          name: n,
+          url: u,
+          proxyUrl: proxyCtrl.text.trim().isEmpty ? null : proxyCtrl.text.trim(),
+          acceptInvalidCerts: allowSelfSigned,
+        ),
+      );
+    }
 
     final created = await showDialog<ServerRouteModel>(
       context: context,
@@ -992,74 +1023,76 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
         builder: (ctx, setDlg) => AlertDialog(
           title: Text('为 ${widget.appState.displayNameForServer(server)} 添加线路',
               style: const TextStyle(fontSize: 16)),
-          content: SizedBox(
-            width: 360,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameCtrl,
-                  autofocus: true,
-                  decoration: const InputDecoration(
-                    labelText: '线路名称',
-                    hintText: '如：香港直连 / 内网线路 / CF 备用',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: urlCtrl,
-                  keyboardType: TextInputType.url,
-                  decoration: const InputDecoration(
-                    labelText: '线路地址',
-                    hintText: 'https://line2.example.com',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: proxyCtrl,
-                  decoration: const InputDecoration(
-                    labelText: '独立代理（可选，留空跟随系统）',
-                    hintText: 'http://127.0.0.1:7890',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text('允许自签名证书', style: TextStyle(color: VedroSkin.of(ctx).fg2, fontSize: 13)),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 360),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameCtrl,
+                    autofocus: true,
+                    textInputAction: TextInputAction.next,
+                    decoration: const InputDecoration(
+                      labelText: '线路名称',
+                      hintText: '如：香港直连 / 内网线路 / CF 备用',
                     ),
-                    Transform.scale(
-                      scale: 0.8,
-                      child: CupertinoSwitch(
-                        value: allowSelfSigned,
-                        onChanged: (v) => setDlg(() => allowSelfSigned = v),
-                      ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: urlCtrl,
+                    keyboardType: TextInputType.url,
+                    textInputAction: TextInputAction.next,
+                    onSubmitted: (_) => submitDialog(ctx),
+                    decoration: const InputDecoration(
+                      labelText: '线路地址',
+                      hintText: 'https://line2.example.com',
                     ),
-                  ],
-                ),
-              ],
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: proxyCtrl,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => submitDialog(ctx),
+                    decoration: const InputDecoration(
+                      labelText: '独立代理（可选，留空跟随系统）',
+                      hintText: 'http://127.0.0.1:7890',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  PressableScale(
+                    onTap: () => setDlg(() => allowSelfSigned = !allowSelfSigned),
+                    hoverScale: 1.0,
+                    pressScale: 0.99,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '允许自签名证书',
+                            style: TextStyle(color: VedroSkin.of(ctx).fg2, fontSize: 13),
+                          ),
+                        ),
+                        ExcludeFocus(
+                          child: Transform.scale(
+                            scale: 0.8,
+                            child: CupertinoSwitch(
+                              value: allowSelfSigned,
+                              onChanged: (v) => setDlg(() => allowSelfSigned = v),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
             FilledButton(
-              onPressed: () {
-                final u = urlCtrl.text.trim();
-                if (u.isEmpty) return;
-                final n = nameCtrl.text.trim().isNotEmpty
-                    ? nameCtrl.text.trim()
-                    : '线路 ${server.routes.length + 1}';
-                Navigator.pop(
-                  ctx,
-                  ServerRouteModel(
-                    id: 'r_${DateTime.now().millisecondsSinceEpoch}',
-                    name: n,
-                    url: u,
-                    proxyUrl: proxyCtrl.text.trim().isEmpty ? null : proxyCtrl.text.trim(),
-                    acceptInvalidCerts: allowSelfSigned,
-                  ),
-                );
-              },
+              onPressed: () => submitDialog(ctx),
               child: const Text('添加'),
             ),
           ],
@@ -1101,7 +1134,11 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Text(
                     '服务器卡片与线路设置',
@@ -1111,7 +1148,6 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  const Spacer(),
                   FilledButton(
                     onPressed: () async {
                       await _saveStyle();
@@ -1301,47 +1337,66 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
               const SizedBox(height: 10),
 
               // Hide URL privacy switch
-              Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('卡片隐藏服务器域名', style: TextStyle(color: skin.fg, fontSize: 13.5)),
-                        Text('截屏或分享时隐藏真实域名地址', style: TextStyle(color: skin.fg3, fontSize: 11.5)),
-                      ],
-                    ),
+              PressableScale(
+                onTap: () => setState(() => _hideAddress = !_hideAddress),
+                hoverScale: 1.0,
+                pressScale: 0.99,
+                borderRadius: BorderRadius.circular(10),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('卡片隐藏服务器域名', style: TextStyle(color: skin.fg, fontSize: 13.5)),
+                            Text('截屏或分享时隐藏真实域名地址', style: TextStyle(color: skin.fg3, fontSize: 11.5)),
+                          ],
+                        ),
+                      ),
+                      ExcludeFocus(
+                        child: Transform.scale(
+                          scale: 0.8,
+                          child: CupertinoSwitch(
+                            value: _hideAddress,
+                            onChanged: (v) => setState(() => _hideAddress = v),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  Transform.scale(
-                    scale: 0.8,
-                    child: CupertinoSwitch(
-                      value: _hideAddress,
-                      onChanged: (v) => setState(() => _hideAddress = v),
-                    ),
-                  ),
-                ],
+                ),
               ),
 
               const Divider(height: 24),
 
               // Routes section
-              Row(
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Text(
                     '多线路管理 (${srv.routes.length})',
                     style: TextStyle(color: skin.fg2, fontSize: 13, fontWeight: FontWeight.w600),
                   ),
-                  const Spacer(),
-                  _SmallGhostButton(
-                    icon: Icons.speed_rounded,
-                    label: _pinging ? '测速中…' : '测速',
-                    onTap: _pinging ? null : _runPing,
-                  ),
-                  const SizedBox(width: 8),
-                  _SmallGhostButton(
-                    icon: Icons.add_rounded,
-                    label: '加线路',
-                    onTap: () => _addRouteDialog(srv),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _SmallGhostButton(
+                        icon: Icons.speed_rounded,
+                        label: _pinging ? '测速中…' : '测速',
+                        onTap: _pinging ? null : _runPing,
+                      ),
+                      const SizedBox(width: 8),
+                      _SmallGhostButton(
+                        icon: Icons.add_rounded,
+                        label: '加线路',
+                        onTap: () => _addRouteDialog(srv),
+                      ),
+                    ],
                   ),
                 ],
               ),

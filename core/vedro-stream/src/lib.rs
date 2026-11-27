@@ -14,6 +14,7 @@ pub use inspector::{
 };
 pub use proxy::{StreamProxy, StreamProxyConfig, StreamProxyStats};
 pub use subtitle::{
-    build_subtitle_batch_prompt, detect_format, parse_subtitle_batch_response, parse_subtitles,
-    render_webvtt, shift_cues, SubtitleCue, SubtitleFormat,
+    build_subtitle_batch_prompt, decode_subtitle_bytes, detect_format,
+    parse_subtitle_batch_response, parse_subtitles, render_webvtt, shift_cues, SubtitleCue,
+    SubtitleFormat,
 };

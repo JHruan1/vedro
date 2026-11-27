@@ -1,6 +1,8 @@
 import AVFoundation
 import CFNetwork
 import Flutter
+import MediaPlayer
+import Network
 import UIKit
 import UniformTypeIdentifiers
 
@@ -27,23 +29,144 @@ import UniformTypeIdentifiers
 final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
   static let channelName = "com.vedro.player/hardware"
   private static var retainedInstance: VedroHardwarePlugin?
-  private weak var channel: FlutterMethodChannel?
+  private var channel: FlutterMethodChannel?
   private var pendingPickResult: FlutterResult?
   private var originalBrightness: CGFloat?
+  private var playerBrightnessOverride: CGFloat?
   private var audioObservers: [NSObjectProtocol] = []
+  private var lifecycleObservers: [NSObjectProtocol] = []
+  private var remoteCommandsInstalled = false
+  private var pathMonitor: NWPathMonitor?
+  private var isUnmeteredNetwork = true
 
   static func register(with messenger: FlutterBinaryMessenger) {
     let channel = FlutterMethodChannel(name: channelName, binaryMessenger: messenger)
     let instance = VedroHardwarePlugin()
     instance.channel = channel
     retainedInstance = instance
+    instance.startNetworkMonitor()
+    instance.installLifecycleObservers()
     channel.setMethodCallHandler { [weak instance] call, result in
       instance?.handle(call, result: result)
     }
   }
 
   deinit {
+    pathMonitor?.cancel()
     removeAudioObservers()
+    removeRemoteCommands()
+    for obs in lifecycleObservers {
+      NotificationCenter.default.removeObserver(obs)
+    }
+  }
+
+  private func startNetworkMonitor() {
+    let monitor = NWPathMonitor()
+    monitor.pathUpdateHandler = { [weak self] path in
+      let wifiOrWired = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet) || !path.isExpensive
+      self?.isUnmeteredNetwork = (path.status == .satisfied) && wifiOrWired
+    }
+    monitor.start(queue: DispatchQueue.global(qos: .utility))
+    pathMonitor = monitor
+  }
+
+  private func installLifecycleObservers() {
+    let nc = NotificationCenter.default
+    lifecycleObservers.append(
+      nc.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+        if let orig = self?.originalBrightness {
+          UIScreen.main.brightness = orig
+        }
+      }
+    )
+    lifecycleObservers.append(
+      nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+        if let overrideVal = self?.playerBrightnessOverride {
+          UIScreen.main.brightness = overrideVal
+        }
+      }
+    )
+    lifecycleObservers.append(
+      nc.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+        if let orig = self?.originalBrightness {
+          UIScreen.main.brightness = orig
+          self?.originalBrightness = nil
+          self?.playerBrightnessOverride = nil
+        }
+      }
+    )
+  }
+
+  private func installRemoteCommands() {
+    if remoteCommandsInstalled { return }
+    remoteCommandsInstalled = true
+    let cc = MPRemoteCommandCenter.shared()
+    cc.playCommand.isEnabled = true
+    cc.playCommand.addTarget { [weak self] _ in
+      self?.channel?.invokeMethod("mediaAction", arguments: ["action": "play"])
+      return .success
+    }
+    cc.pauseCommand.isEnabled = true
+    cc.pauseCommand.addTarget { [weak self] _ in
+      self?.channel?.invokeMethod("mediaAction", arguments: ["action": "pause"])
+      return .success
+    }
+    cc.togglePlayPauseCommand.isEnabled = true
+    cc.togglePlayPauseCommand.addTarget { [weak self] _ in
+      self?.channel?.invokeMethod("mediaAction", arguments: ["action": "toggle_play"])
+      return .success
+    }
+    cc.nextTrackCommand.isEnabled = true
+    cc.nextTrackCommand.addTarget { [weak self] _ in
+      self?.channel?.invokeMethod("mediaAction", arguments: ["action": "next"])
+      return .success
+    }
+    cc.previousTrackCommand.isEnabled = true
+    cc.previousTrackCommand.addTarget { [weak self] _ in
+      self?.channel?.invokeMethod("mediaAction", arguments: ["action": "previous"])
+      return .success
+    }
+    cc.changePlaybackPositionCommand.isEnabled = true
+    cc.changePlaybackPositionCommand.addTarget { [weak self] event in
+      guard let posEv = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+      self?.channel?.invokeMethod("mediaAction", arguments: [
+        "action": "seek",
+        "position_ms": Int(posEv.positionTime * 1000.0)
+      ])
+      return .success
+    }
+  }
+
+  private func removeRemoteCommands() {
+    if !remoteCommandsInstalled { return }
+    remoteCommandsInstalled = false
+    let cc = MPRemoteCommandCenter.shared()
+    cc.playCommand.removeTarget(nil)
+    cc.pauseCommand.removeTarget(nil)
+    cc.togglePlayPauseCommand.removeTarget(nil)
+    cc.nextTrackCommand.removeTarget(nil)
+    cc.previousTrackCommand.removeTarget(nil)
+    cc.changePlaybackPositionCommand.removeTarget(nil)
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+  }
+
+  private func updateNowPlaying(title: String, subtitle: String, durationMs: Int, positionMs: Int, isPlaying: Bool, speed: Double) {
+    DispatchQueue.main.async {
+      if title.isEmpty && !isPlaying {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        return
+      }
+      self.installRemoteCommands()
+      var info: [String: Any] = [
+        MPMediaItemPropertyTitle: title,
+        MPMediaItemPropertyArtist: subtitle,
+        MPMediaItemPropertyPlaybackDuration: Double(max(0, durationMs)) / 1000.0,
+        MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(max(0, positionMs)) / 1000.0,
+        MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? speed : 0.0,
+      ]
+      info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = speed
+      MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
   }
 
   private func isAllowedHttpUrl(_ raw: String) -> URL? {
@@ -132,18 +255,42 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
       DispatchQueue.main.async {
         result(Double(UIScreen.main.brightness))
       }
+    case "updateNowPlaying":
+      let args = call.arguments as? [String: Any]
+      let title = (args?["title"] as? String) ?? ""
+      let subtitle = (args?["subtitle"] as? String) ?? ""
+      let durationMs = (args?["duration_ms"] as? NSNumber)?.intValue ?? 0
+      let positionMs = (args?["position_ms"] as? NSNumber)?.intValue ?? 0
+      let isPlaying = (args?["is_playing"] as? Bool) ?? false
+      let speed = (args?["speed"] as? NSNumber)?.doubleValue ?? 1.0
+      updateNowPlaying(title: title, subtitle: subtitle, durationMs: durationMs, positionMs: positionMs, isPlaying: isPlaying, speed: speed)
+      result(nil)
+    case "saveScreenshotToGallery":
+      let args = call.arguments as? [String: Any]
+      guard let typed = args?["bytes"] as? FlutterStandardTypedData,
+            let image = UIImage(data: typed.data) else {
+        result(nil)
+        return
+      }
+      DispatchQueue.main.async {
+        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+        result("Photos")
+      }
     case "setScreenBrightness":
       let args = call.arguments as? [String: Any]
       let v = CGFloat((args?["value"] as? NSNumber)?.doubleValue ?? 0.5)
+      let clamped = max(0.01, min(1.0, v))
       DispatchQueue.main.async {
         if self.originalBrightness == nil {
           self.originalBrightness = UIScreen.main.brightness
         }
-        UIScreen.main.brightness = max(0.01, min(1.0, v))
+        self.playerBrightnessOverride = clamped
+        UIScreen.main.brightness = clamped
       }
       result(nil)
     case "resetScreenBrightness":
       DispatchQueue.main.async {
+        self.playerBrightnessOverride = nil
         if let orig = self.originalBrightness {
           UIScreen.main.brightness = orig
           self.originalBrightness = nil
@@ -160,7 +307,7 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
         result(["level": pct, "charging": charging])
       }
     case "isWifiConnected":
-      result(true)
+      result(isUnmeteredNetwork)
     case "setKeepScreenOn":
       let args = call.arguments as? [String: Any]
       let enabled = (args?["enabled"] as? Bool) ?? false
@@ -193,9 +340,9 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
           return
         }
         var types: [UTType] = extensions.compactMap { UTType(filenameExtension: $0) }
-        if types.isEmpty {
-          types = [.item, .movie, .data]
-        }
+        // Always include generic .item / .data so .mkv / .srt / .ass / .ttf are never greyed out in iOS Files
+        if !types.contains(.item) { types.append(.item) }
+        if !types.contains(.data) { types.append(.data) }
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
         picker.allowsMultipleSelection = allowMultiple
         picker.delegate = self
@@ -235,9 +382,15 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
       case "outplayer":
         targetUrl = URL(string: "outplayer://\(validStreamUrl.absoluteString)")
       case "nplayer":
-        let replaced = validStreamUrl.absoluteString
-          .replacingOccurrences(of: "https://", with: "nplayer-https://")
-          .replacingOccurrences(of: "http://", with: "nplayer-http://")
+        let rawStr = validStreamUrl.absoluteString
+        let replaced: String
+        if rawStr.lowercased().hasPrefix("https://") {
+          replaced = "nplayer-https://" + rawStr.dropFirst(8)
+        } else if rawStr.lowercased().hasPrefix("http://") {
+          replaced = "nplayer-http://" + rawStr.dropFirst(7)
+        } else {
+          replaced = rawStr
+        }
         targetUrl = URL(string: replaced)
       default:
         targetUrl = validStreamUrl
@@ -282,6 +435,16 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
        let host = dict["HTTPProxy"] as? String, !host.isEmpty {
       let port = (dict["HTTPPort"] as? Int) ?? 80
       return "http://\(host):\(port)"
+    }
+    if let enabled = dict["HTTPSEnable"] as? Int, enabled == 1,
+       let host = dict["HTTPSProxy"] as? String, !host.isEmpty {
+      let port = (dict["HTTPSPort"] as? Int) ?? 443
+      return "http://\(host):\(port)"
+    }
+    if let enabled = dict["SOCKSEnable"] as? Int, enabled == 1,
+       let host = dict["SOCKSProxy"] as? String, !host.isEmpty {
+      let port = (dict["SOCKSPort"] as? Int) ?? 1080
+      return "socks5h://\(host):\(port)"
     }
     return ""
   }

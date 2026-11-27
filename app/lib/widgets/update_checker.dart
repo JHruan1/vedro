@@ -228,7 +228,9 @@ class VedroUpdateChecker extends ChangeNotifier {
 
   bool get canInAppDownload {
     if (_core == null || kIsWeb) return false;
-    return Platform.isAndroid || Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+    // Desktop keeps full in-app download + SHA-256 verification + native installer;
+    // Android & iOS open official GitHub release download links (avoids Android REQUEST_INSTALL_PACKAGES warnings).
+    return Platform.isWindows || Platform.isMacOS || Platform.isLinux;
   }
 
   bool get isDownloading => downloadStatus == 'downloading' || downloadStatus == 'verifying';
@@ -575,6 +577,17 @@ Future<void> showVedroUpdateDialog(
     return '打开安装包';
   }
 
+  Future<void> openOrCopyLink(String url) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final opened = await NativePlaybackChannel.openUrl(url);
+    if (!opened) {
+      await Clipboard.setData(ClipboardData(text: url));
+      messenger?.showSnackBar(
+        SnackBar(content: Text('未检测到系统浏览器，已复制 GitHub 下载链接：$url')),
+      );
+    }
+  }
+
   await showDialog<void>(
     context: context,
     builder: (ctx) => VedroControllerScope<ScrollController>(
@@ -786,11 +799,11 @@ Future<void> showVedroUpdateDialog(
                 ),
               if (matchedAsset != null && !downloading)
                 OutlinedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     Navigator.pop(ctx);
-                    NativePlaybackChannel.openUrl(release.htmlUrl);
+                    await openOrCopyLink(release.htmlUrl);
                   },
-                  child: const Text('浏览器下载'),
+                  child: Text(supportsInApp ? '浏览器下载' : 'GitHub 发布页'),
                 ),
               if (ready)
                 FilledButton.icon(
@@ -818,7 +831,7 @@ Future<void> showVedroUpdateDialog(
                             await checker.startInAppDownload(release, matchedAsset);
                           } else {
                             Navigator.pop(ctx);
-                            await NativePlaybackChannel.openUrl(downloadTarget);
+                            await openOrCopyLink(downloadTarget);
                           }
                         },
                   icon: Icon(
@@ -830,7 +843,7 @@ Future<void> showVedroUpdateDialog(
                         ? '下载中…'
                         : (supportsInApp
                             ? '立即下载更新'
-                            : (matchedAsset != null ? '立即下载' : '前往更新')),
+                            : (matchedAsset != null ? 'GitHub 下载安装包' : '前往 GitHub 更新')),
                   ),
                 ),
             ],

@@ -3140,79 +3140,145 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           ],
         ),
         const SizedBox(height: 16),
-        const _GroupHeader('美颜滤镜（低功耗 GPU）'),
+        const _GroupHeader('人像美颜相机（可叠加 GPU）'),
         KeyedSubtree(
           key: const ValueKey('settings-beauty-filter-card'),
           child: _GroupedCard(
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '当前效果：${BeautyFilterPreset.byId(p.beautyFilterPreset).label} · ${BeautyFilterPreset.byId(p.beautyFilterPreset).subtitle}',
-                      style: TextStyle(color: VedroSkin.of(context).fg2, fontSize: 12.5),
-                    ),
-                    const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: BeautyFilterPreset.all.map((preset) {
-                        return ChoiceChip(
-                          selected: p.beautyFilterPreset == preset.id,
-                          label: Text(preset.label, style: const TextStyle(fontSize: 12.5)),
-                          onSelected: (_) =>
-                              _updatePrefs(p.copyWith(beautyFilterPreset: preset.id)),
-                        );
-                      }).toList(),
-                    ),
-                    if (p.beautyFilterPreset != 'off') ...[
-                      const SizedBox(height: 10),
-                      VedroPrecisionSlider(
-                        label: '默认美颜强度',
-                        value: p.beautyFilterStrength,
-                        min: 0.15,
-                        max: 1.0,
-                        step: 0.05,
-                        defaultValue: 0.55,
-                        snapValues: const [0.35, 0.55, 0.80],
-                        valueText: '${(p.beautyFilterStrength * 100).round()}%',
-                        onChanged: (v) => _updatePrefs(p.copyWith(beautyFilterStrength: v)),
-                      ),
-                    ],
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: const Color(0x1CF59E0B),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: const Color(0x45F59E0B), width: 0.7),
-                      ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(
-                            Icons.local_fire_department_outlined,
-                            size: 15,
-                            color: Color(0xFFD97706),
+              Builder(
+                builder: (context) {
+                  final bp = BeautyFilterEngine.resolveParams(
+                    presetId: p.beautyFilterPreset,
+                    strength: p.beautyFilterStrength,
+                    smooth: p.beautySmooth,
+                    whiten: p.beautyWhiten,
+                    rosy: p.beautyRosy,
+                    clarity: p.beautyClarity,
+                  );
+                  void saveChannel(BeautyFilterParams next) {
+                    _updatePrefs(p.copyWith(
+                      beautyFilterPreset: next.isActive ? 'custom' : 'off',
+                      beautySmooth: next.smooth,
+                      beautyWhiten: next.whiten,
+                      beautyRosy: next.rosy,
+                      beautyClarity: next.clarity,
+                    ));
+                  }
+
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          bp.isActive
+                              ? '当前效果：${BeautyFilterPreset.displayLabelFor(p.beautyFilterPreset, bp)} · ${bp.summaryLabel()}'
+                              : '当前效果：原画关闭 · 可点选综合预设或直接拉动下方维度自由叠加',
+                          style: TextStyle(color: VedroSkin.of(context).fg2, fontSize: 12.5),
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: BeautyFilterPreset.all.map((preset) {
+                            final selected = preset.id == 'off'
+                                ? !bp.isActive
+                                : (p.beautyFilterPreset == preset.id && bp.isActive);
+                            return ChoiceChip(
+                              selected: selected,
+                              label: Text(preset.label, style: const TextStyle(fontSize: 12.5)),
+                              onSelected: (_) => _updatePrefs(p.copyWith(
+                                beautyFilterPreset: preset.id,
+                                beautySmooth: preset.smooth,
+                                beautyWhiten: preset.whiten,
+                                beautyRosy: preset.rosy,
+                                beautyClarity: preset.clarity,
+                              )),
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 10),
+                        VedroPrecisionSlider(
+                          label: '磨皮（肤质保边）',
+                          value: bp.smooth,
+                          min: 0.0,
+                          max: 1.0,
+                          step: 0.05,
+                          defaultValue: 0.58,
+                          snapValues: const [0.0, 0.35, 0.60, 0.85],
+                          valueText: '${(bp.smooth * 100).round()}%',
+                          onChanged: (v) => saveChannel(bp.copyWith(smooth: v)),
+                        ),
+                        const SizedBox(height: 8),
+                        VedroPrecisionSlider(
+                          label: '美白（仅提亮肤色）',
+                          value: bp.whiten,
+                          min: 0.0,
+                          max: 1.0,
+                          step: 0.05,
+                          defaultValue: 0.42,
+                          snapValues: const [0.0, 0.35, 0.60, 0.85],
+                          valueText: '${(bp.whiten * 100).round()}%',
+                          onChanged: (v) => saveChannel(bp.copyWith(whiten: v)),
+                        ),
+                        const SizedBox(height: 8),
+                        VedroPrecisionSlider(
+                          label: '粉嫩（气色与润唇）',
+                          value: bp.rosy,
+                          min: 0.0,
+                          max: 1.0,
+                          step: 0.05,
+                          defaultValue: 0.30,
+                          snapValues: const [0.0, 0.30, 0.55, 0.80],
+                          valueText: '${(bp.rosy * 100).round()}%',
+                          onChanged: (v) => saveChannel(bp.copyWith(rosy: v)),
+                        ),
+                        const SizedBox(height: 8),
+                        VedroPrecisionSlider(
+                          label: '亮眼清晰（五官立体）',
+                          value: bp.clarity,
+                          min: 0.0,
+                          max: 1.0,
+                          step: 0.05,
+                          defaultValue: 0.40,
+                          snapValues: const [0.0, 0.35, 0.60, 0.85],
+                          valueText: '${(bp.clarity * 100).round()}%',
+                          onChanged: (v) => saveChannel(bp.copyWith(clarity: v)),
+                        ),
+                        const SizedBox(height: 10),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0x1CF59E0B),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0x45F59E0B), width: 0.7),
                           ),
-                          const SizedBox(width: 7),
-                          Expanded(
-                            child: Text(
-                              '${BeautyFilterEngine.thermalNotice}（播放时也可直接点击底栏「美颜」按钮实时切换）',
-                              style: TextStyle(
-                                color: VedroSkin.of(context).fg2,
-                                fontSize: 11.5,
-                                height: 1.4,
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(
+                                Icons.local_fire_department_outlined,
+                                size: 15,
+                                color: Color(0xFFD97706),
                               ),
-                            ),
+                              const SizedBox(width: 7),
+                              Expanded(
+                                child: Text(
+                                  '${BeautyFilterEngine.thermalNotice}（播放时也可直接点击底栏「美颜」按钮实时叠加调节）',
+                                  style: TextStyle(
+                                    color: VedroSkin.of(context).fg2,
+                                    fontSize: 11.5,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
+                  );
+                },
               ),
             ],
           ),

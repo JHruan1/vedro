@@ -2931,23 +2931,51 @@ void main() {
     expect(subCtrl.activeCueNotifier.value?.original, equals('おはようございます'));
     expect(subCtrl.activeCueNotifier.value?.translated, equals('[简体中文] おはようございます'));
 
-    // 3. Low-Power Single-Pass GPU Beauty Filter shader generator, ColorMatrix & thermal notice
+    // 3. 2-Pass Portrait Beauty Camera GPU shader generator (stackable smooth/whiten/rosy/clarity)
     expect(BeautyFilterPreset.all.length, equals(6));
     expect(BeautyFilterEngine.buildGlslSource('off', 0.55), isNull);
+    expect(BeautyFilterEngine.buildGlslSourceFromParams(BeautyFilterParams.off), isNull);
     expect(BeautyFilterEngine.buildColorMatrix('off', 0.55), isNull);
     for (final preset in BeautyFilterPreset.all.where((p) => p.id != 'off')) {
       for (final strength in const [0.15, 0.55, 1.0]) {
         final glsl = BeautyFilterEngine.buildGlslSource(preset.id, strength)!;
         expect(glsl, contains('//!HOOK MAIN'));
+        expect(glsl, contains('//!SAVE VEDRO_SKIN_H'));
+        expect(glsl, contains('//!BIND VEDRO_SKIN_H'));
         expect(glsl, contains('HOOKED_texOff(vec2(0.0, 0.0))'));
         expect(glsl, isNot(contains('HOOKED_texOff(0)')));
         expect(glsl, isNot(contains('--')), reason: '${preset.id} must never emit -- operator');
+        expect(glsl, contains('vedro_skin_mask'));
         expect(glsl, contains('skinMask'));
         final matrix = BeautyFilterEngine.buildColorMatrix(preset.id, strength)!;
         expect(matrix.length, equals(20));
         expect(matrix.every((v) => v.isFinite), isTrue);
       }
     }
+    // Stackable custom portrait combination + mobile lean 7-tap shader
+    const customStack = BeautyFilterParams(smooth: 0.70, whiten: 0.65, rosy: 0.45, clarity: 0.50);
+    final desktopShader = BeautyFilterEngine.buildGlslSourceFromParams(customStack, mobileLean: false)!;
+    final mobileShader = BeautyFilterEngine.buildGlslSourceFromParams(customStack, mobileLean: true)!;
+    expect(desktopShader, contains('4.0 * stepX'));
+    expect(mobileShader, isNot(contains('4.0 * stepX')));
+    expect(mobileShader, contains('3.0 * stepX'));
+    expect(customStack.summaryLabel(), contains('磨皮 70%'));
+    expect(customStack.summaryLabel(), contains('美白 65%'));
+    expect(customStack.summaryLabel(), contains('粉嫩 45%'));
+    expect(customStack.summaryLabel(), contains('亮眼 50%'));
+    final prefWithStack = VedroPreferences.fromJson(
+      const VedroPreferences(
+        beautyFilterPreset: 'custom',
+        beautySmooth: 0.70,
+        beautyWhiten: 0.65,
+        beautyRosy: 0.45,
+        beautyClarity: 0.50,
+      ).toJson(),
+    );
+    expect(prefWithStack.beautySmooth, closeTo(0.70, 0.001));
+    expect(prefWithStack.beautyWhiten, closeTo(0.65, 0.001));
+    expect(prefWithStack.beautyRosy, closeTo(0.45, 0.001));
+    expect(prefWithStack.beautyClarity, closeTo(0.50, 0.001));
     expect(BeautyFilterEngine.thermalNotice, contains('发热'));
 
     // 4. In-App Update Checker: semver comparison, per-platform asset selection, and update dialog
@@ -3111,8 +3139,13 @@ void main() {
     await tester.tap(find.text('视频设置'));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('settings-beauty-filter-card')), findsOneWidget);
-    expect(find.text('自然清透'), findsOneWidget);
-    expect(find.text('粉嫩气色'), findsOneWidget);
+    expect(find.text('综合美颜'), findsOneWidget);
+    expect(find.text('清透美白'), findsOneWidget);
+    expect(find.text('粉嫩元气'), findsOneWidget);
+    expect(find.text('磨皮（肤质保边）'), findsOneWidget);
+    expect(find.text('美白（仅提亮肤色）'), findsOneWidget);
+    expect(find.text('粉嫩（气色与润唇）'), findsOneWidget);
+    expect(find.text('亮眼清晰（五官立体）'), findsOneWidget);
   });
 
   testWidgets(

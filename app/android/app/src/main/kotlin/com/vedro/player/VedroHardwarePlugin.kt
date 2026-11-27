@@ -33,7 +33,6 @@ import android.provider.Settings
 import android.util.Rational
 import android.view.Display
 import android.view.WindowManager
-import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
@@ -575,10 +574,6 @@ class VedroHardwarePlugin(
                 }
                 result.success(launchAndroidExternalPlayer(url, player, title))
             }
-            "installUpdatePackage" -> {
-                val rawPath = call.argument<String>("path")?.trim() ?: ""
-                result.success(installApkPackage(rawPath))
-            }
             "createVideoSurface" -> result.success(null)
             else -> result.notImplemented()
         }
@@ -896,47 +891,6 @@ class VedroHardwarePlugin(
             "primary_abi" to primaryAbi,
             "supported_abis" to supportedAbis
         )
-    }
-
-    private fun installApkPackage(rawPath: String): Map<String, Any?> {
-        if (rawPath.isBlank() || !rawPath.lowercase().endsWith(".apk")) {
-            return mapOf("ok" to false, "message" to "无效的 APK 安装包路径")
-        }
-        val file = File(rawPath)
-        if (!file.isFile || file.length() <= 0L) {
-            return mapOf("ok" to false, "message" to "APK 文件不存在或已损坏")
-        }
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                !activity.packageManager.canRequestPackageInstalls()
-            ) {
-                val permIntent = Intent(
-                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                    Uri.parse("package:${activity.packageName}")
-                ).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                activity.startActivity(permIntent)
-                return mapOf(
-                    "ok" to false,
-                    "message" to "请先开启「允许安装未知应用」权限，返回后再次点击立即安装"
-                )
-            }
-            val contentUri = FileProvider.getUriForFile(
-                activity,
-                "${activity.packageName}.fileprovider",
-                file
-            )
-            val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(contentUri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            activity.startActivity(installIntent)
-            mapOf("ok" to true, "message" to null)
-        } catch (e: Throwable) {
-            mapOf("ok" to false, "message" to "调起系统安装器失败：${e.message ?: "未知错误"}")
-        }
     }
 
     private fun detectAndroidProxyUrl(): String? {

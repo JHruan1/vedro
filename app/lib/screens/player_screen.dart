@@ -178,6 +178,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   int _eqGamma = 0;
   String _beautyPreset = 'off';
   double _beautyStrength = 0.55;
+  BeautyFilterParams _beautyParams = BeautyFilterParams.off;
   double _audioDelaySecs = 0.0;
 
   // AI bilingual subtitle + ASR lookahead controller
@@ -397,6 +398,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _dialogueBoost = widget.appState.settings['dialogue_boost'] == true;
     _beautyPreset = p.beautyFilterPreset;
     _beautyStrength = p.beautyFilterStrength;
+    _beautyParams = BeautyFilterEngine.resolveParams(
+      presetId: p.beautyFilterPreset,
+      strength: p.beautyFilterStrength,
+      smooth: p.beautySmooth,
+      whiten: p.beautyWhiten,
+      rosy: p.beautyRosy,
+      clarity: p.beautyClarity,
+    );
     _aiSubFontScale = p.aiSubtitleFontScale;
     _aiSubCtrl = AiSubtitleTranslatorController(
       appState: widget.appState,
@@ -1952,8 +1961,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       await _applyAnime4k(true);
     }
     if (_disposed) return;
-    if (_beautyPreset != 'off') {
-      await _applyBeautyFilter(_beautyPreset, _beautyStrength, persist: false, showHud: false);
+    if (_beautyParams.isActive) {
+      await _applyBeautyParams(_beautyPreset, _beautyParams, persist: false, showHud: false);
     }
     if (_disposed) return;
     await _applyCustomMpvConf(p.customMpvConf);
@@ -1994,66 +2003,87 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     await _applyMpvProperty('sharpen', sharp);
   }
 
-  Future<void> _applyBeautyFilter(
+  Future<void> _applyBeautyPreset(
+    String presetId, {
+    bool persist = true,
+    bool showHud = true,
+  }) async {
+    final preset = BeautyFilterPreset.byId(presetId);
+    await _applyBeautyParams(
+      preset.id,
+      preset.params,
+      persist: persist,
+      showHud: showHud,
+      debounceShader: false,
+    );
+  }
+
+  Future<void> _applyBeautyParams(
     String presetId,
-    double strength, {
+    BeautyFilterParams rawParams, {
     bool persist = true,
     bool showHud = true,
     bool debounceShader = false,
   }) async {
-    final preset = BeautyFilterPreset.byId(presetId);
-    final clamped = strength.clamp(0.15, 1.0);
+    final params = rawParams.clamped();
+    final effectivePreset = !params.isActive ? 'off' : presetId;
     if (mounted) {
       setState(() {
-        _beautyPreset = preset.id;
-        _beautyStrength = clamped;
+        _beautyPreset = effectivePreset;
+        _beautyParams = params;
       });
     } else {
-      _beautyPreset = preset.id;
-      _beautyStrength = clamped;
+      _beautyPreset = effectivePreset;
+      _beautyParams = params;
     }
 
-    Future<void> applyDesktopShader() async {
+    Future<void> applyGpuShader() async {
       if (_disposed) return;
-      if (preset.id == 'off') {
+      if (!params.isActive) {
         await _applyMpvProperty('glsl-shaders', '');
-      } else if (_isDesktop) {
-        try {
-          final shaderPath = await BeautyFilterEngine.prepareShaderFile(preset.id, clamped);
-          if (!_disposed && shaderPath != null && shaderPath.isNotEmpty) {
-            await _applyMpvProperty('glsl-shaders', shaderPath.replaceAll('\\', '/'));
-          }
-        } catch (_) {
-          if (!_disposed) await _applyMpvProperty('glsl-shaders', '');
+        return;
+      }
+      try {
+        final shaderPath = await BeautyFilterEngine.prepareShaderFileForParams(
+          params,
+          label: effectivePreset,
+          mobileLean: _isMobile,
+        );
+        if (!_disposed && shaderPath != null && shaderPath.isNotEmpty) {
+          await _applyMpvProperty('glsl-shaders', shaderPath.replaceAll('\\', '/'));
         }
-      } else {
-        await _applyMpvProperty('glsl-shaders', '');
+      } catch (_) {
+        if (!_disposed) await _applyMpvProperty('glsl-shaders', '');
       }
     }
 
     _beautyShaderDebounce?.cancel();
-    if (debounceShader && _isDesktop && preset.id != 'off') {
+    if (debounceShader && params.isActive) {
       _beautyShaderDebounce = Timer(const Duration(milliseconds: 140), () {
-        unawaited(applyDesktopShader());
+        unawaited(applyGpuShader());
       });
     } else {
-      await applyDesktopShader();
+      await applyGpuShader();
     }
 
     if (persist) {
       unawaited(widget.appState.updatePrefs(
         widget.appState.prefs.copyWith(
-          beautyFilterPreset: preset.id,
-          beautyFilterStrength: clamped,
+          beautyFilterPreset: effectivePreset,
+          beautyFilterStrength: _beautyStrength,
+          beautySmooth: params.smooth,
+          beautyWhiten: params.whiten,
+          beautyRosy: params.rosy,
+          beautyClarity: params.clarity,
         ),
       ));
     }
     if (showHud && mounted) {
       _flashGestureHud(
         'seek_feedback',
-        text: preset.id == 'off'
-            ? '已关闭美颜滤镜'
-            : '美颜滤镜：${preset.label} (${(clamped * 100).round()}%)',
+        text: !params.isActive
+            ? '已关闭美颜'
+            : '美颜：${BeautyFilterPreset.displayLabelFor(effectivePreset, params)}（${params.summaryLabel()}）',
       );
     }
   }
@@ -3475,26 +3505,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                   fit: StackFit.expand,
                   children: [
                     RepaintBoundary(
-                      child: Builder(
-                        builder: (_) {
-                          final videoWidget = Video(
-                            controller: _videoController,
-                            controls: NoVideoControls,
-                            fill: Colors.black,
-                            fit: _aspectMode == 'fill'
-                                ? BoxFit.cover
-                                : (_aspectMode == 'stretch' ? BoxFit.fill : BoxFit.contain),
-                          );
-                          final beautyMatrix = BeautyFilterEngine.buildColorMatrix(
-                            _beautyPreset,
-                            _beautyStrength,
-                          );
-                          if (beautyMatrix == null) return videoWidget;
-                          return ColorFiltered(
-                            colorFilter: ColorFilter.matrix(beautyMatrix),
-                            child: videoWidget,
-                          );
-                        },
+                      child: Video(
+                        controller: _videoController,
+                        controls: NoVideoControls,
+                        fill: Colors.black,
+                        fit: _aspectMode == 'fill'
+                            ? BoxFit.cover
+                            : (_aspectMode == 'stretch' ? BoxFit.fill : BoxFit.contain),
                       ),
                     ),
 
@@ -4604,10 +4621,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                                             const SizedBox(width: 6),
                                                             _DeckPillButton(
                                                               key: const ValueKey('player-beauty-pill'),
-                                                              label: _beautyPreset == 'off'
+                                                              label: !_beautyParams.isActive
                                                                   ? '美颜'
-                                                                  : '美颜·${BeautyFilterPreset.byId(_beautyPreset).label}',
-                                                              active: _beautyPreset != 'off',
+                                                                  : '美颜·${BeautyFilterPreset.displayLabelFor(_beautyPreset, _beautyParams)}',
+                                                              active: _beautyParams.isActive,
                                                               onTap: _openBeautyFilterSheet,
                                                             ),
                                                             const SizedBox(width: 6),
@@ -4668,10 +4685,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                                         const SizedBox(width: 6),
                                                         _DeckPillButton(
                                                           key: const ValueKey('player-beauty-pill-compact'),
-                                                          label: _beautyPreset == 'off'
+                                                          label: !_beautyParams.isActive
                                                               ? '美颜'
-                                                              : '美颜·${BeautyFilterPreset.byId(_beautyPreset).label}',
-                                                          active: _beautyPreset != 'off',
+                                                              : '美颜·${BeautyFilterPreset.displayLabelFor(_beautyPreset, _beautyParams)}',
+                                                          active: _beautyParams.isActive,
                                                           onTap: _openBeautyFilterSheet,
                                                         ),
                                                         const SizedBox(width: 6),
@@ -6658,6 +6675,121 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     );
   }
 
+  List<Widget> _buildBeautyStackControls(BuildContext ctx, StateSetter setModal) {
+    Future<void> updateChannel(BeautyFilterParams next) async {
+      final preset = next.isActive ? 'custom' : 'off';
+      if (ctx.mounted) {
+        setModal(() {
+          _beautyPreset = preset;
+          _beautyParams = next;
+        });
+      }
+      await _applyBeautyParams(
+        preset,
+        next,
+        showHud: false,
+        debounceShader: true,
+      );
+    }
+
+    return [
+      Text(
+        _beautyParams.isActive
+            ? '${BeautyFilterPreset.displayLabelFor(_beautyPreset, _beautyParams)} · ${_beautyParams.summaryLabel()}'
+            : BeautyFilterPreset.byId('off').subtitle,
+        style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
+      ),
+      const SizedBox(height: 10),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: BeautyFilterPreset.all.map((preset) {
+          final isSelected = preset.id == 'off'
+              ? !_beautyParams.isActive
+              : (_beautyPreset == preset.id && _beautyParams.isActive);
+          return _DeckPillButton(
+            label: preset.label,
+            active: isSelected,
+            onTap: () async {
+              await _applyBeautyPreset(preset.id);
+              if (ctx.mounted) setModal(() {});
+            },
+          );
+        }).toList(),
+      ),
+      const SizedBox(height: 12),
+      VedroPrecisionSlider(
+        label: '磨皮（肤质保边）',
+        value: _beautyParams.smooth,
+        min: 0.0,
+        max: 1.0,
+        step: 0.05,
+        defaultValue: 0.58,
+        snapValues: const [0.0, 0.35, 0.60, 0.85],
+        valueText: '${(_beautyParams.smooth * 100).round()}%',
+        onChanged: (v) => updateChannel(_beautyParams.copyWith(smooth: v)),
+      ),
+      const SizedBox(height: 8),
+      VedroPrecisionSlider(
+        label: '美白（仅提亮肤色）',
+        value: _beautyParams.whiten,
+        min: 0.0,
+        max: 1.0,
+        step: 0.05,
+        defaultValue: 0.42,
+        snapValues: const [0.0, 0.35, 0.60, 0.85],
+        valueText: '${(_beautyParams.whiten * 100).round()}%',
+        onChanged: (v) => updateChannel(_beautyParams.copyWith(whiten: v)),
+      ),
+      const SizedBox(height: 8),
+      VedroPrecisionSlider(
+        label: '粉嫩（气色与润唇）',
+        value: _beautyParams.rosy,
+        min: 0.0,
+        max: 1.0,
+        step: 0.05,
+        defaultValue: 0.30,
+        snapValues: const [0.0, 0.30, 0.55, 0.80],
+        valueText: '${(_beautyParams.rosy * 100).round()}%',
+        onChanged: (v) => updateChannel(_beautyParams.copyWith(rosy: v)),
+      ),
+      const SizedBox(height: 8),
+      VedroPrecisionSlider(
+        label: '亮眼清晰（五官立体）',
+        value: _beautyParams.clarity,
+        min: 0.0,
+        max: 1.0,
+        step: 0.05,
+        defaultValue: 0.40,
+        snapValues: const [0.0, 0.35, 0.60, 0.85],
+        valueText: '${(_beautyParams.clarity * 100).round()}%',
+        onChanged: (v) => updateChannel(_beautyParams.copyWith(clarity: v)),
+      ),
+      const SizedBox(height: 12),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0x1CF59E0B),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0x40F59E0B), width: 0.7),
+        ),
+        child: const Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.local_fire_department_outlined, size: 15, color: Color(0xFFFBBF24)),
+            SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                BeautyFilterEngine.thermalNotice,
+                style: TextStyle(color: Color(0xFFFDE68A), fontSize: 11.5, height: 1.4),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ];
+  }
+
   void _openBeautyFilterSheet() {
     _openPlayerSheet<void>(
       builder: (ctx) => StatefulBuilder(
@@ -6665,83 +6797,33 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           shrinkWrap: true,
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 22),
           children: [
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Text(
-                '美颜滤镜（低功耗 GPU）',
-                style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '人像美颜相机（可叠加）',
+                      style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  if (_beautyParams.isActive)
+                    TextButton(
+                      onPressed: () async {
+                        await _applyBeautyPreset('off');
+                        if (ctx.mounted) setModal(() {});
+                      },
+                      child: const Text('全部归零', style: TextStyle(fontSize: 12.5)),
+                    ),
+                ],
               ),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 4),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    BeautyFilterPreset.byId(_beautyPreset).subtitle,
-                    style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
-                  ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: BeautyFilterPreset.all.map((preset) {
-                      return _DeckPillButton(
-                        label: preset.label,
-                        active: _beautyPreset == preset.id,
-                        onTap: () async {
-                          await _applyBeautyFilter(preset.id, _beautyStrength);
-                          if (ctx.mounted) setModal(() {});
-                        },
-                      );
-                    }).toList(),
-                  ),
-                  if (_beautyPreset != 'off') ...[
-                    const SizedBox(height: 12),
-                    VedroPrecisionSlider(
-                      label: '美颜强度',
-                      value: _beautyStrength,
-                      min: 0.15,
-                      max: 1.0,
-                      step: 0.05,
-                      defaultValue: 0.55,
-                      snapValues: const [0.35, 0.55, 0.80],
-                      valueText: '${(_beautyStrength * 100).round()}%',
-                      onChanged: (v) async {
-                        setModal(() => _beautyStrength = v);
-                        await _applyBeautyFilter(
-                          _beautyPreset,
-                          v,
-                          showHud: false,
-                          debounceShader: true,
-                        );
-                      },
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: const Color(0x1CF59E0B),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: const Color(0x40F59E0B), width: 0.7),
-                    ),
-                    child: const Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(Icons.local_fire_department_outlined, size: 15, color: Color(0xFFFBBF24)),
-                        SizedBox(width: 7),
-                        Expanded(
-                          child: Text(
-                            BeautyFilterEngine.thermalNotice,
-                            style: TextStyle(color: Color(0xFFFDE68A), fontSize: 11.5, height: 1.4),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                children: _buildBeautyStackControls(ctx, setModal),
               ),
             ),
           ],
@@ -6883,7 +6965,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
             const Divider(height: 20),
 
-            // Ultra-Low-Power Single-Pass GPU Beauty Filter
+            // 2-Pass Portrait Beauty Camera (stackable smooth / whiten / rosy / clarity)
             Padding(
               key: const ValueKey('player-beauty-filter-section'),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -6893,7 +6975,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                   Row(
                     children: [
                       const Text(
-                        '美颜滤镜',
+                        '人像美颜相机',
                         style: TextStyle(
                           color: VedroTheme.fg2,
                           fontSize: 13,
@@ -6903,7 +6985,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          BeautyFilterPreset.byId(_beautyPreset).subtitle,
+                          _beautyParams.isActive
+                              ? BeautyFilterPreset.displayLabelFor(_beautyPreset, _beautyParams)
+                              : '可自由叠加磨皮/美白/粉嫩/亮眼',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
@@ -6912,64 +6996,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                     ],
                   ),
                   const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: BeautyFilterPreset.all.map((preset) {
-                      return _DeckPillButton(
-                        label: preset.label,
-                        active: _beautyPreset == preset.id,
-                        onTap: () async {
-                          await _applyBeautyFilter(preset.id, _beautyStrength);
-                          if (ctx.mounted) setModal(() {});
-                        },
-                      );
-                    }).toList(),
-                  ),
-                  if (_beautyPreset != 'off') ...[
-                    const SizedBox(height: 8),
-                    VedroPrecisionSlider(
-                      label: '美颜强度',
-                      value: _beautyStrength,
-                      min: 0.15,
-                      max: 1.0,
-                      step: 0.05,
-                      defaultValue: 0.55,
-                      snapValues: const [0.35, 0.55, 0.80],
-                      valueText: '${(_beautyStrength * 100).round()}%',
-                      onChanged: (v) async {
-                        setModal(() => _beautyStrength = v);
-                        await _applyBeautyFilter(
-                          _beautyPreset,
-                          v,
-                          showHud: false,
-                          debounceShader: true,
-                        );
-                      },
-                    ),
-                  ],
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                    decoration: BoxDecoration(
-                      color: const Color(0x1CF59E0B),
-                      borderRadius: BorderRadius.circular(9),
-                      border: Border.all(color: const Color(0x40F59E0B), width: 0.7),
-                    ),
-                    child: const Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(Icons.local_fire_department_outlined, size: 14, color: Color(0xFFFBBF24)),
-                        SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            BeautyFilterEngine.thermalNotice,
-                            style: TextStyle(color: Color(0xFFFDE68A), fontSize: 11, height: 1.35),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                  ..._buildBeautyStackControls(ctx, setModal),
                 ],
               ),
             ),

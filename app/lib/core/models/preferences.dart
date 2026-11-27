@@ -508,9 +508,13 @@ class VedroPreferences {
     this.asrModel = 'whisper-large-v3-turbo',
     this.asrSourceLang = 'auto', // auto | ja | en | zh | ko
     this.asrDirectClientIp = false,
-    // 低功耗 GPU 美颜滤镜
-    this.beautyFilterPreset = 'off', // off | natural | rosy | bright | soft_glow | vivid
+    // 2-Pass 人像肤色 GPU 美颜相机（可自由叠加：磨皮 / 美白 / 粉嫩 / 亮眼清晰）
+    this.beautyFilterPreset = 'off', // off | natural | bright | rosy | soft_glow | vivid | custom
     this.beautyFilterStrength = 0.55,
+    this.beautySmooth = 0.0,
+    this.beautyWhiten = 0.0,
+    this.beautyRosy = 0.0,
+    this.beautyClarity = 0.0,
     // 隐私保护
     this.passcodeEnabled = false,
     this.passcodeHash = '',
@@ -641,6 +645,10 @@ class VedroPreferences {
 
   final String beautyFilterPreset;
   final double beautyFilterStrength;
+  final double beautySmooth;
+  final double beautyWhiten;
+  final double beautyRosy;
+  final double beautyClarity;
 
   final bool passcodeEnabled;
   final String passcodeHash;
@@ -914,6 +922,10 @@ class VedroPreferences {
     bool? asrDirectClientIp,
     String? beautyFilterPreset,
     double? beautyFilterStrength,
+    double? beautySmooth,
+    double? beautyWhiten,
+    double? beautyRosy,
+    double? beautyClarity,
     bool? passcodeEnabled,
     String? passcodeHash,
     int? lockTimeoutSecs,
@@ -1031,6 +1043,10 @@ class VedroPreferences {
         asrDirectClientIp: asrDirectClientIp ?? this.asrDirectClientIp,
         beautyFilterPreset: beautyFilterPreset ?? this.beautyFilterPreset,
         beautyFilterStrength: beautyFilterStrength ?? this.beautyFilterStrength,
+        beautySmooth: beautySmooth ?? this.beautySmooth,
+        beautyWhiten: beautyWhiten ?? this.beautyWhiten,
+        beautyRosy: beautyRosy ?? this.beautyRosy,
+        beautyClarity: beautyClarity ?? this.beautyClarity,
         passcodeEnabled: passcodeEnabled ?? this.passcodeEnabled,
         passcodeHash: passcodeHash ?? this.passcodeHash,
         lockTimeoutSecs: lockTimeoutSecs ?? this.lockTimeoutSecs,
@@ -1149,6 +1165,10 @@ class VedroPreferences {
         'asr_direct_client_ip': asrDirectClientIp,
         'beauty_filter_preset': beautyFilterPreset,
         'beauty_filter_strength': beautyFilterStrength,
+        'beauty_smooth': beautySmooth,
+        'beauty_whiten': beautyWhiten,
+        'beauty_rosy': beautyRosy,
+        'beauty_clarity': beautyClarity,
         'passcode_enabled': passcodeEnabled,
         'passcode_hash': passcodeHash,
         'lock_timeout_secs': lockTimeoutSecs,
@@ -1280,6 +1300,10 @@ class VedroPreferences {
         asrDirectClientIp: j['asr_direct_client_ip'] == true,
         beautyFilterPreset: (j['beauty_filter_preset'] ?? 'off').toString(),
         beautyFilterStrength: _finiteDouble(j['beauty_filter_strength'], 0.55, 0.15, 1.0),
+        beautySmooth: _finiteDouble(j['beauty_smooth'], 0.0, 0.0, 1.0),
+        beautyWhiten: _finiteDouble(j['beauty_whiten'], 0.0, 0.0, 1.0),
+        beautyRosy: _finiteDouble(j['beauty_rosy'], 0.0, 0.0, 1.0),
+        beautyClarity: _finiteDouble(j['beauty_clarity'], 0.0, 0.0, 1.0),
         passcodeEnabled: j['passcode_enabled'] == true,
         passcodeHash: (j['passcode_hash'] ?? '').toString(),
         lockTimeoutSecs: _clampedInt(j['lock_timeout_secs'], 60, 0, 3600),

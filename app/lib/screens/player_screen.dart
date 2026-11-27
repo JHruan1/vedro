@@ -990,12 +990,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
   }
 
-  bool get _isDesktop =>
-      PlatformPerfProfile.isDesktop;
+  bool get _isDesktop => PlatformPerfProfile.isDesktop;
 
   bool get _isTv => PlatformPerfProfile.isTv;
 
-  bool get _isMobile => !kIsWeb && ((Platform.isAndroid && !_isTv) || Platform.isIOS);
+  bool get _isMobile => PlatformPerfProfile.isMobile;
 
   bool _inferInitialPortraitVideo(MediaItemModel item) {
     if (item.mediaSources.isNotEmpty) {

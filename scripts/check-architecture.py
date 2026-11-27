@@ -263,6 +263,9 @@ def check_product_invariants() -> None:
             )
 
 
+GLOBAL_MAX_FILE_LINES = 2200
+
+
 def check_file_size_ratchets() -> None:
     for rel, max_lines in FILE_LINE_LIMITS.items():
         path = ROOT / rel
@@ -271,6 +274,16 @@ def check_file_size_ratchets() -> None:
         lines = len(path.read_text(encoding="utf-8").splitlines())
         if lines > max_lines:
             fail(f"[Complexity Ratchet] {rel} is {lines} lines (limit {max_lines})")
+
+    for base_dir, pattern in ((CORE_DIR, "*.rs"), (APP_LIB, "*.dart")):
+        for path in sorted(base_dir.rglob(pattern)):
+            lines = len(path.read_text(encoding="utf-8").splitlines())
+            if lines > GLOBAL_MAX_FILE_LINES:
+                rel = str(path.relative_to(ROOT)).replace("\\", "/")
+                fail(
+                    f"[Global Ceiling] {rel} is {lines} lines "
+                    f"(global limit {GLOBAL_MAX_FILE_LINES}; decompose into cohesive domain modules)"
+                )
 
 
 def main() -> int:

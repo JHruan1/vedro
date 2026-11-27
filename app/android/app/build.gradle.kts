@@ -56,9 +56,12 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        // Restrict packaged ABIs to match compiled Rust `libvedro_ffi.so` (excludes sherpa-onnx x86)
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+    }
+
+    packaging {
+        jniLibs {
+            // Exclude x86 native libs (e.g. sherpa-onnx) since Rust libvedro_ffi targets arm64-v8a/armeabi-v7a/x86_64.
+            excludes += listOf("lib/x86/**")
         }
     }
 

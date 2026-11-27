@@ -750,6 +750,7 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
     super.key,
     required this.controller,
     required this.subScale,
+    this.translationFontScale = 1.0,
     required this.subPos,
     required this.colorHex,
     required this.outlineWidth,
@@ -758,6 +759,7 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
 
   final AiSubtitleTranslatorController controller;
   final double subScale;
+  final double translationFontScale;
   final int subPos;
   final String colorHex;
   final double outlineWidth;
@@ -787,6 +789,7 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
             final size = MediaQuery.sizeOf(context);
             final compact = size.width < 600;
             final baseFont = (compact ? 17.5 : 23.0) * subScale.clamp(0.5, 2.0);
+            final transScale = translationFontScale.clamp(0.6, 1.8);
             // subPos: 100 => bottom edge (~26px), 60 => lifted ~38% up the screen
             final bottomInset =
                 (22.0 + ((100 - subPos.clamp(60, 100)) / 40.0) * (size.height * 0.34))
@@ -837,20 +840,23 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
 
             String? topLine;
             String? bottomLine;
-            bool topIsPrimary = true;
+            bool topIsTranslated = false;
+            bool bottomIsTranslated = false;
 
             if (mode == 'translated_only') {
               topLine = hasTrans ? snap.translated : snap.original;
+              topIsTranslated = hasTrans;
               bottomLine = null;
             } else if (mode == 'bilingual_orig_top') {
               topLine = snap.original;
               bottomLine = hasTrans ? snap.translated : null;
-              topIsPrimary = !hasTrans;
+              bottomIsTranslated = hasTrans;
             } else {
               // Default: bilingual_trans_top (translated prominent on top, original crisp underneath)
               if (hasTrans) {
                 topLine = snap.translated;
                 bottomLine = snap.original;
+                topIsTranslated = true;
               } else {
                 topLine = snap.original;
                 bottomLine = null;
@@ -885,11 +891,15 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
                             topLine,
                             textAlign: TextAlign.center,
                             style: TextStyle(
-                              color: topIsPrimary
+                              color: (topIsTranslated || !hasTrans)
                                   ? primaryColor
-                                  : primaryColor.withValues(alpha: 0.80),
-                              fontSize: topIsPrimary ? baseFont : baseFont * 0.78,
-                              fontWeight: topIsPrimary ? FontWeight.w600 : FontWeight.w500,
+                                  : primaryColor.withValues(alpha: 0.82),
+                              fontSize: topIsTranslated
+                                  ? baseFont * transScale
+                                  : (hasTrans ? baseFont * 0.78 : baseFont * transScale),
+                              fontWeight: (topIsTranslated || !hasTrans)
+                                  ? FontWeight.w600
+                                  : FontWeight.w500,
                               height: 1.32,
                               shadows: shadows,
                             ),
@@ -900,11 +910,13 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
                             bottomLine,
                             textAlign: TextAlign.center,
                             style: TextStyle(
-                              color: topIsPrimary
-                                  ? primaryColor.withValues(alpha: 0.82)
-                                  : primaryColor,
-                              fontSize: topIsPrimary ? baseFont * 0.78 : baseFont,
-                              fontWeight: topIsPrimary ? FontWeight.w500 : FontWeight.w600,
+                              color: bottomIsTranslated
+                                  ? primaryColor
+                                  : primaryColor.withValues(alpha: 0.82),
+                              fontSize: bottomIsTranslated
+                                  ? baseFont * transScale
+                                  : baseFont * 0.78,
+                              fontWeight: bottomIsTranslated ? FontWeight.w600 : FontWeight.w500,
                               height: 1.3,
                               shadows: shadows,
                             ),

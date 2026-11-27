@@ -3506,6 +3506,21 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               ],
               onChanged: (v) => _updatePrefs(p.copyWith(aiSubtitleMode: v)),
             ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+              child: VedroPrecisionSlider(
+                key: const ValueKey('pref-ai-subtitle-font-scale'),
+                label: '翻译字幕默认字号',
+                valueText: '${(p.aiSubtitleFontScale * 100).round()}%',
+                value: p.aiSubtitleFontScale,
+                min: 0.6,
+                max: 1.8,
+                step: 0.05,
+                defaultValue: 1.0,
+                snapValues: const [0.8, 1.0, 1.25, 1.5],
+                onChanged: (v) => _updatePrefs(p.copyWith(aiSubtitleFontScale: v)),
+              ),
+            ),
             _InlineSegmentedRow<int>(
               title: '字幕预读批量',
               keyPrefix: 'pref-ai-subtitle-batch',

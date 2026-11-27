@@ -416,6 +416,7 @@ class VedroPreferences {
     this.aiTargetLang = '简体中文',
     this.aiBilingualSubtitle = true,
     this.aiSubtitleMode = 'bilingual_trans_top', // bilingual_trans_top | bilingual_orig_top | translated_only
+    this.aiSubtitleFontScale = 1.0,
     this.aiSubtitleBatchSize = 16,
     this.aiSubtitleLookaheadSecs = 120,
     this.aiDirectClientIp = true,
@@ -542,6 +543,7 @@ class VedroPreferences {
   final String aiTargetLang;
   final bool aiBilingualSubtitle;
   final String aiSubtitleMode;
+  final double aiSubtitleFontScale;
   final int aiSubtitleBatchSize;
   final int aiSubtitleLookaheadSecs;
   final bool aiDirectClientIp;
@@ -813,6 +815,7 @@ class VedroPreferences {
     String? aiTargetLang,
     bool? aiBilingualSubtitle,
     String? aiSubtitleMode,
+    double? aiSubtitleFontScale,
     int? aiSubtitleBatchSize,
     int? aiSubtitleLookaheadSecs,
     bool? aiDirectClientIp,
@@ -926,6 +929,7 @@ class VedroPreferences {
         aiTargetLang: aiTargetLang ?? this.aiTargetLang,
         aiBilingualSubtitle: aiBilingualSubtitle ?? this.aiBilingualSubtitle,
         aiSubtitleMode: aiSubtitleMode ?? this.aiSubtitleMode,
+        aiSubtitleFontScale: aiSubtitleFontScale ?? this.aiSubtitleFontScale,
         aiSubtitleBatchSize: aiSubtitleBatchSize ?? this.aiSubtitleBatchSize,
         aiSubtitleLookaheadSecs: aiSubtitleLookaheadSecs ?? this.aiSubtitleLookaheadSecs,
         aiDirectClientIp: aiDirectClientIp ?? this.aiDirectClientIp,
@@ -1040,6 +1044,7 @@ class VedroPreferences {
         'ai_target_lang': aiTargetLang,
         'ai_bilingual_subtitle': aiBilingualSubtitle,
         'ai_subtitle_mode': aiSubtitleMode,
+        'ai_subtitle_font_scale': aiSubtitleFontScale,
         'ai_subtitle_batch_size': aiSubtitleBatchSize,
         'ai_subtitle_lookahead_secs': aiSubtitleLookaheadSecs,
         'ai_direct_client_ip': aiDirectClientIp,
@@ -1164,6 +1169,8 @@ class VedroPreferences {
         aiTargetLang: (j['ai_target_lang'] ?? '简体中文').toString(),
         aiBilingualSubtitle: j['ai_bilingual_subtitle'] != false,
         aiSubtitleMode: (j['ai_subtitle_mode'] ?? 'bilingual_trans_top').toString(),
+        aiSubtitleFontScale:
+            ((j['ai_subtitle_font_scale'] as num?)?.toDouble() ?? 1.0).clamp(0.6, 1.8),
         aiSubtitleBatchSize: ((j['ai_subtitle_batch_size'] as num?)?.toInt() ?? 16).clamp(8, 32),
         aiSubtitleLookaheadSecs:
             ((j['ai_subtitle_lookahead_secs'] as num?)?.toInt() ?? 120).clamp(30, 300),

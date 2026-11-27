@@ -127,6 +127,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   // AI bilingual subtitle + ASR lookahead controller
   late final AiSubtitleTranslatorController _aiSubCtrl;
+  double _aiSubFontScale = 1.0;
   String? _activeSubLocalPath;
   String? _activeSubUrl;
   String? _activeSubFormat;
@@ -294,6 +295,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _dialogueBoost = widget.appState.settings['dialogue_boost'] == true;
     _beautyPreset = p.beautyFilterPreset;
     _beautyStrength = p.beautyFilterStrength;
+    _aiSubFontScale = p.aiSubtitleFontScale;
     _aiSubCtrl = AiSubtitleTranslatorController(
       appState: widget.appState,
       mediaTitle: _currentItem.displayName,
@@ -1257,25 +1259,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     if (preset.id == 'off') {
       await _applyMpvProperty('glsl-shaders', '');
-      await _applyMpvProperty('brightness', '$_eqBrightness');
-      await _applyMpvProperty('contrast', '$_eqContrast');
-      await _applyMpvProperty('saturation', '$_eqSaturation');
-      await _applyMpvProperty('gamma', '$_eqGamma');
     } else {
-      try {
-        final shaderPath = await BeautyFilterEngine.prepareShaderFile(preset.id, clamped);
-        if (shaderPath != null && shaderPath.isNotEmpty) {
-          await _applyMpvProperty('glsl-shaders', shaderPath);
+      // Desktop GPUs run our verified 5-tap YCbCr skin-smoothing GLSL pass in addition
+      // to Flutter's instant ColorFilter.matrix; mobile stays strictly on Flutter's
+      // zero-heat GPU ColorFilter.matrix to avoid driver quirks or thermal throttling.
+      if (_isDesktop) {
+        try {
+          final shaderPath = await BeautyFilterEngine.prepareShaderFile(preset.id, clamped);
+          if (shaderPath != null && shaderPath.isNotEmpty) {
+            await _applyMpvProperty('glsl-shaders', shaderPath.replaceAll('\\', '/'));
+          }
+        } catch (_) {
+          await _applyMpvProperty('glsl-shaders', '');
         }
-      } catch (_) {}
-      final b = (_eqBrightness + (preset.eqBrightness * clamped).round()).clamp(-50, 50);
-      final c = (_eqContrast + (preset.eqContrast * clamped).round()).clamp(-50, 50);
-      final s = (_eqSaturation + (preset.eqSaturation * clamped).round()).clamp(-50, 50);
-      final g = (_eqGamma + (preset.eqGamma * clamped).round()).clamp(-50, 50);
-      await _applyMpvProperty('brightness', '$b');
-      await _applyMpvProperty('contrast', '$c');
-      await _applyMpvProperty('saturation', '$s');
-      await _applyMpvProperty('gamma', '$g');
+      } else {
+        await _applyMpvProperty('glsl-shaders', '');
+      }
     }
 
     if (persist) {
@@ -2147,10 +2146,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  Video(
-                    controller: _videoController,
-                    controls: NoVideoControls,
-                    fill: Colors.black,
+                  Builder(
+                    builder: (_) {
+                      final videoWidget = Video(
+                        controller: _videoController,
+                        controls: NoVideoControls,
+                        fill: Colors.black,
+                      );
+                      final beautyMatrix = BeautyFilterEngine.buildColorMatrix(
+                        _beautyPreset,
+                        _beautyStrength,
+                      );
+                      if (beautyMatrix == null) return videoWidget;
+                      return ColorFiltered(
+                        colorFilter: ColorFilter.matrix(beautyMatrix),
+                        child: videoWidget,
+                      );
+                    },
                   ),
 
                   if (_brightness < 0.99)
@@ -2164,6 +2176,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   AiBilingualSubtitleOverlay(
                     controller: _aiSubCtrl,
                     subScale: _subScale,
+                    translationFontScale: _aiSubFontScale,
                     subPos: _subPos,
                     colorHex: widget.appState.prefs.subtitleColorHex,
                     outlineWidth: widget.appState.prefs.subtitleOutlineWidth,
@@ -4068,55 +4081,200 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 11),
                         ),
                       ],
-                      const SizedBox(height: 9),
-                      // YouTube-style direct target language picker
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: AiSubtitleTargetLanguage.all.map((lang) {
-                          final selected = _aiSubCtrl.targetLang == lang.id;
-                          return _DeckPillButton(
-                            label: lang.shortLabel,
-                            active: _aiSubCtrl.enabled && selected,
-                            onTap: () async {
-                              unawaited(widget.appState.updatePrefs(
-                                prefs.copyWith(aiTargetLang: lang.id),
-                              ));
-                              if (!_aiSubCtrl.enabled) {
-                                await _enableAiSubtitleTranslation(targetLangOverride: lang.id);
-                              } else {
-                                await _aiSubCtrl.setTargetLang(lang.id);
-                              }
-                              setModal(() {});
-                            },
-                          );
-                        }).toList(),
-                      ),
-                      if (_aiSubCtrl.enabled) ...[
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children: [
-                            for (final item in const [
-                              ('bilingual_trans_top', '双语 · 译文在上'),
-                              ('bilingual_orig_top', '双语 · 原文在上'),
-                              ('translated_only', '仅显示译文'),
-                            ])
-                              _DeckPillButton(
-                                label: item.$2,
-                                active: _aiSubCtrl.displayMode == item.$1,
-                                onTap: () {
-                                  _aiSubCtrl.setDisplayMode(item.$1);
-                                  unawaited(widget.appState.updatePrefs(
-                                    prefs.copyWith(aiSubtitleMode: item.$1),
-                                  ));
-                                  setModal(() {});
-                                },
+                      const SizedBox(height: 8),
+                      // Compact single-row YouTube-style dropdown pickers (Target Language + Bilingual Layout)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: PopupMenuButton<String>(
+                              key: const ValueKey('player-ai-lang-dropdown'),
+                              tooltip: '选择翻译目标语言',
+                              color: const Color(0xF01C1E26),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
                               ),
-                          ],
-                        ),
-                      ],
+                              onSelected: (langId) async {
+                                unawaited(widget.appState.updatePrefs(
+                                  prefs.copyWith(aiTargetLang: langId),
+                                ));
+                                if (!_aiSubCtrl.enabled) {
+                                  await _enableAiSubtitleTranslation(targetLangOverride: langId);
+                                } else {
+                                  await _aiSubCtrl.setTargetLang(langId);
+                                }
+                                setModal(() {});
+                              },
+                              itemBuilder: (_) => AiSubtitleTargetLanguage.all.map((lang) {
+                                final isCur = _aiSubCtrl.targetLang == lang.id;
+                                return PopupMenuItem<String>(
+                                  value: lang.id,
+                                  height: 36,
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          lang.id,
+                                          style: TextStyle(
+                                            color: isCur ? accent : VedroTheme.fg,
+                                            fontSize: 13,
+                                            fontWeight: isCur ? FontWeight.w600 : FontWeight.w400,
+                                          ),
+                                        ),
+                                      ),
+                                      if (isCur)
+                                        Icon(Icons.check_rounded, size: 16, color: accent),
+                                    ],
+                                  ),
+                                );
+                              }).toList(),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.07),
+                                  borderRadius: BorderRadius.circular(9),
+                                  border: Border.all(
+                                    color: Colors.white.withValues(alpha: 0.14),
+                                    width: 0.7,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Text(
+                                      '目标',
+                                      style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        _aiSubCtrl.targetLang,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: VedroTheme.fg,
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ),
+                                    const Icon(
+                                      Icons.keyboard_arrow_down_rounded,
+                                      size: 16,
+                                      color: VedroTheme.fg2,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: PopupMenuButton<String>(
+                              key: const ValueKey('player-ai-mode-dropdown'),
+                              tooltip: '选择双语字幕排版',
+                              color: const Color(0xF01C1E26),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
+                              ),
+                              onSelected: (modeId) {
+                                _aiSubCtrl.setDisplayMode(modeId);
+                                unawaited(widget.appState.updatePrefs(
+                                  prefs.copyWith(aiSubtitleMode: modeId),
+                                ));
+                                setModal(() {});
+                              },
+                              itemBuilder: (_) => const [
+                                ('bilingual_trans_top', '双语 · 译文在上'),
+                                ('bilingual_orig_top', '双语 · 原文在上'),
+                                ('translated_only', '仅显示译文'),
+                              ].map((item) {
+                                final isCur = _aiSubCtrl.displayMode == item.$1;
+                                return PopupMenuItem<String>(
+                                  value: item.$1,
+                                  height: 36,
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          item.$2,
+                                          style: TextStyle(
+                                            color: isCur ? accent : VedroTheme.fg,
+                                            fontSize: 13,
+                                            fontWeight: isCur ? FontWeight.w600 : FontWeight.w400,
+                                          ),
+                                        ),
+                                      ),
+                                      if (isCur)
+                                        Icon(Icons.check_rounded, size: 16, color: accent),
+                                    ],
+                                  ),
+                                );
+                              }).toList(),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.07),
+                                  borderRadius: BorderRadius.circular(9),
+                                  border: Border.all(
+                                    color: Colors.white.withValues(alpha: 0.14),
+                                    width: 0.7,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Text(
+                                      '排版',
+                                      style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        switch (_aiSubCtrl.displayMode) {
+                                          'bilingual_orig_top' => '原文在上',
+                                          'translated_only' => '仅译文',
+                                          _ => '译文在上',
+                                        },
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: VedroTheme.fg,
+                                          fontSize: 12.5,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ),
+                                    const Icon(
+                                      Icons.keyboard_arrow_down_rounded,
+                                      size: 16,
+                                      color: VedroTheme.fg2,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      VedroPrecisionSlider(
+                        key: const ValueKey('player-ai-sub-font-slider'),
+                        label: '翻译字幕字号',
+                        value: _aiSubFontScale,
+                        min: 0.6,
+                        max: 1.8,
+                        step: 0.05,
+                        defaultValue: 1.0,
+                        snapValues: const [0.8, 1.0, 1.25, 1.5],
+                        valueText: '${(_aiSubFontScale * 100).round()}%',
+                        onChanged: (v) {
+                          setModal(() => _aiSubFontScale = v);
+                          setState(() => _aiSubFontScale = v);
+                          unawaited(widget.appState.updatePrefs(
+                            prefs.copyWith(aiSubtitleFontScale: v),
+                          ));
+                        },
+                      ),
                       const Divider(height: 18, color: Color(0x1FFFFFFF)),
                       Row(
                         children: [

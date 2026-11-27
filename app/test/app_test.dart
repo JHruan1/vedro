@@ -2774,6 +2774,7 @@ void main() {
     final updated = basePrefs.copyWith(
       aiEnabled: true,
       aiSubtitleMode: 'bilingual_orig_top',
+      aiSubtitleFontScale: 1.35,
       aiSubtitleBatchSize: 24,
       asrEnabled: true,
       asrEngine: 'cloud',
@@ -2785,6 +2786,7 @@ void main() {
     );
     final roundTripped = VedroPreferences.fromJson(updated.toJson());
     expect(roundTripped.aiSubtitleMode, equals('bilingual_orig_top'));
+    expect(roundTripped.aiSubtitleFontScale, closeTo(1.35, 0.001));
     expect(roundTripped.aiSubtitleBatchSize, equals(24));
     expect(roundTripped.isAsrReady, isTrue);
     expect(roundTripped.asrSourceLang, equals('ja'));
@@ -2855,13 +2857,23 @@ void main() {
     expect(subCtrl.activeCueNotifier.value?.original, equals('おはようございます'));
     expect(subCtrl.activeCueNotifier.value?.translated, equals('[简体中文] おはようございます'));
 
-    // 3. Low-Power Single-Pass GPU Beauty Filter shader generator & thermal notice
+    // 3. Low-Power Single-Pass GPU Beauty Filter shader generator, ColorMatrix & thermal notice
     expect(BeautyFilterPreset.all.length, equals(6));
     expect(BeautyFilterEngine.buildGlslSource('off', 0.55), isNull);
-    final glsl = BeautyFilterEngine.buildGlslSource('rosy', 0.65);
-    expect(glsl, isNotNull);
-    expect(glsl!, contains('//!HOOK MAIN'));
-    expect(glsl, contains('skinMask'));
+    expect(BeautyFilterEngine.buildColorMatrix('off', 0.55), isNull);
+    for (final preset in BeautyFilterPreset.all.where((p) => p.id != 'off')) {
+      for (final strength in const [0.15, 0.55, 1.0]) {
+        final glsl = BeautyFilterEngine.buildGlslSource(preset.id, strength)!;
+        expect(glsl, contains('//!HOOK MAIN'));
+        expect(glsl, contains('HOOKED_texOff(vec2(0.0, 0.0))'));
+        expect(glsl, isNot(contains('HOOKED_texOff(0)')));
+        expect(glsl, isNot(contains('--')), reason: '${preset.id} must never emit -- operator');
+        expect(glsl, contains('skinMask'));
+        final matrix = BeautyFilterEngine.buildColorMatrix(preset.id, strength)!;
+        expect(matrix.length, equals(20));
+        expect(matrix.every((v) => v.isFinite), isTrue);
+      }
+    }
     expect(BeautyFilterEngine.thermalNotice, contains('发热'));
 
     // 4. In-App Update Checker: semver comparison, per-platform asset selection, and update dialog

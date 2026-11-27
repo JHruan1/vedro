@@ -21,3 +21,4 @@ http.workspace = true
 futures-util.workspace = true
 url.workspace = true
 uuid.workspace = true
+symphonia = { version = "0.5", default-features = false, features = ["isomp4", "mkv", "aac", "mp3", "pcm", "flac", "vorbis", "alac"] }

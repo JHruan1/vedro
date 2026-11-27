@@ -14,6 +14,7 @@ import '../state/app_state.dart';
 import '../widgets/home_layout_sheet.dart';
 import '../widgets/server_sheets.dart';
 import '../widgets/spotlight_search_dialog.dart';
+import '../widgets/update_checker.dart';
 import '../widgets/vedro_ui.dart';
 import 'detail_screen.dart';
 import 'home_screen.dart';
@@ -57,6 +58,17 @@ class _ShellScreenState extends State<ShellScreen> {
     super.initState();
     NativePlaybackChannel.ensureWindowListener();
     NativePlaybackChannel.droppedFilesNotifier.addListener(_onGlobalFilesDropped);
+    if (!kIsWeb && !Platform.environment.containsKey('FLUTTER_TEST')) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Future<void>.delayed(const Duration(seconds: 3), () {
+          if (!mounted) return;
+          VedroUpdateChecker.instance.checkOnceOnStartup(
+            context,
+            currentVersion: widget.appState.core.coreVersion,
+          );
+        });
+      });
+    }
   }
 
   @override

@@ -20,11 +20,14 @@ import 'package:vedro/screens/settings_screen.dart';
 import 'package:vedro/screens/shell_screen.dart';
 import 'package:vedro/state/app_state.dart';
 import 'package:vedro/widgets/admin_console_pane.dart';
+import 'package:vedro/widgets/ai_bilingual_subtitle.dart';
 import 'package:vedro/widgets/app_lock_gate.dart';
+import 'package:vedro/widgets/beauty_filter.dart';
 import 'package:vedro/widgets/danmaku_engine.dart';
 import 'package:vedro/widgets/media_card.dart';
 import 'package:vedro/widgets/server_card_grid.dart';
 import 'package:vedro/widgets/skin_studio_pane.dart';
+import 'package:vedro/widgets/update_checker.dart';
 import 'package:vedro/widgets/vedro_artwork.dart';
 import 'package:vedro/widgets/vedro_ui.dart';
 import 'package:vedro/widgets/windows_immersive_frame.dart';
@@ -55,6 +58,8 @@ class _MockVedroCore implements VedroCoreClient {
   int mockImageCacheFiles = 42;
   int mockImageCacheBytes = 12 * 1024 * 1024;
   int mockImageCacheMemEntries = 18;
+  int subtitleBatchTranslateCalls = 0;
+  int asrSliceCalls = 0;
   List<Map<String, dynamic>> mockDevices = [
     <String, dynamic>{
       'DeviceId': 'dev-current-win',
@@ -779,6 +784,41 @@ class _MockVedroCore implements VedroCoreClient {
         return <String, dynamic>{
           'removed_files': removed,
           'freed_bytes': freed,
+        };
+      case 'load_subtitle_cues':
+        return <String, dynamic>{
+          'format': 'srt',
+          'total': 3,
+          'cues': <Map<String, dynamic>>[
+            {'idx': 0, 'start_ms': 1000, 'end_ms': 4000, 'text': 'Hello world.'},
+            {'idx': 1, 'start_ms': 5000, 'end_ms': 8000, 'text': 'How are you?'},
+            {'idx': 2, 'start_ms': 150000, 'end_ms': 154000, 'text': 'See you later.'},
+          ],
+        };
+      case 'ai_translate_subtitle_batch':
+        subtitleBatchTranslateCalls += 1;
+        final lang = (params['target_lang'] ?? '简体中文').toString();
+        final lines = (params['lines'] as List<dynamic>? ?? const [])
+            .whereType<Map<String, dynamic>>();
+        final out = <String, String>{};
+        for (final l in lines) {
+          final idx = l['idx'].toString();
+          final txt = l['text'].toString();
+          out[idx] = '[$lang] $txt';
+        }
+        return <String, dynamic>{'translations': out, 'model': 'mock-ai'};
+      case 'ai_transcribe_audio_slice':
+        asrSliceCalls += 1;
+        final startMs = (((params['start_secs'] as num?)?.toDouble() ?? 0.0) * 1000).round();
+        return <String, dynamic>{
+          'detected_language': 'ja',
+          'cues': <Map<String, dynamic>>[
+            {
+              'start_ms': startMs + 500,
+              'end_ms': startMs + 4500,
+              'text': 'おはようございます',
+            },
+          ],
         };
       default:
         return <String, dynamic>{};
@@ -2713,5 +2753,203 @@ void main() {
     expect(find.byKey(const ValueKey('pref-remember-volume')), findsOneWidget);
     expect(find.byKey(const ValueKey('pref-remember-speed')), findsOneWidget);
     expect(find.byKey(const ValueKey('pref-remember-aspect')), findsOneWidget);
+  });
+
+  testWidgets(
+      'v0.3.11: YouTube-style AI bilingual lookahead subtitles, ASR speech-to-subtitle, low-power GPU beauty filter & in-app update checker',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    // 1. Preferences round-trip for AI subtitle, ASR, and beauty filter settings
+    const basePrefs = VedroPreferences();
+    expect(basePrefs.aiSubtitleMode, equals('bilingual_trans_top'));
+    expect(basePrefs.aiSubtitleBatchSize, equals(16));
+    expect(basePrefs.beautyFilterPreset, equals('off'));
+    expect(basePrefs.isAsrReady, isFalse);
+
+    final updated = basePrefs.copyWith(
+      aiEnabled: true,
+      aiSubtitleMode: 'bilingual_orig_top',
+      aiSubtitleBatchSize: 24,
+      asrEnabled: true,
+      asrBaseUrl: 'https://api.siliconflow.cn/v1',
+      asrModel: 'FunAudioLLM/SenseVoiceSmall',
+      asrSourceLang: 'ja',
+      beautyFilterPreset: 'natural',
+      beautyFilterStrength: 0.70,
+    );
+    final roundTripped = VedroPreferences.fromJson(updated.toJson());
+    expect(roundTripped.aiSubtitleMode, equals('bilingual_orig_top'));
+    expect(roundTripped.aiSubtitleBatchSize, equals(24));
+    expect(roundTripped.isAsrReady, isTrue);
+    expect(roundTripped.asrSourceLang, equals('ja'));
+    expect(roundTripped.beautyFilterPreset, equals('natural'));
+    expect(roundTripped.beautyFilterStrength, closeTo(0.70, 0.001));
+
+    // 2. AI Bilingual Lookahead Controller prefetches upcoming cues, switches target lang like YouTube, and supports ASR
+    final mock = _MockVedroCore();
+    final app = VedroAppState(mock);
+    app.prefs = updated.copyWith(aiSubtitleMode: 'bilingual_trans_top');
+    addTearDown(app.dispose);
+
+    final subCtrl = AiSubtitleTranslatorController(appState: app, mediaTitle: 'Test Cinema');
+    addTearDown(subCtrl.dispose);
+
+    await subCtrl.enable(
+      subtitleUrl: 'https://example.com/sub.srt',
+      currentPositionSecs: 2.0,
+      targetLang: '简体中文',
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(subCtrl.totalCues, equals(3));
+    expect(subCtrl.translatedCount, greaterThanOrEqualTo(2));
+    expect(subCtrl.activeCueNotifier.value?.original, equals('Hello world.'));
+    expect(subCtrl.activeCueNotifier.value?.translated, equals('[简体中文] Hello world.'));
+
+    // Switching target language in-place immediately re-translates (YouTube Auto-Translate style)
+    await subCtrl.setTargetLang('日本語');
+    await tester.pump();
+    await tester.pump();
+    expect(subCtrl.activeCueNotifier.value?.translated, equals('[日本語] Hello world.'));
+
+    // Render bilingual overlay and verify both translated & original lines appear
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Stack(
+            children: [
+              AiBilingualSubtitleOverlay(
+                controller: subCtrl,
+                subScale: 1.0,
+                subPos: 96,
+                colorHex: '#FFFFFF',
+                outlineWidth: 2.0,
+                bgOpacity: 0.4,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    expect(find.byKey(const ValueKey('ai-bilingual-subtitle-box')), findsOneWidget);
+    expect(find.text('[日本語] Hello world.'), findsOneWidget);
+    expect(find.text('Hello world.'), findsOneWidget);
+
+    // ASR speech-to-subtitle lookahead mode extracts audio slice cues & auto-translates them
+    await subCtrl.enableAsr(
+      sourceUrl: 'http://127.0.0.1:45678/stream/1',
+      currentPositionSecs: 1.0,
+      durationSecs: 60.0,
+      targetLang: '简体中文',
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(mock.asrSliceCalls, greaterThanOrEqualTo(1));
+    expect(subCtrl.totalCues, greaterThanOrEqualTo(1));
+    expect(subCtrl.activeCueNotifier.value?.original, equals('おはようございます'));
+    expect(subCtrl.activeCueNotifier.value?.translated, equals('[简体中文] おはようございます'));
+
+    // 3. Low-Power Single-Pass GPU Beauty Filter shader generator & thermal notice
+    expect(BeautyFilterPreset.all.length, equals(6));
+    expect(BeautyFilterEngine.buildGlslSource('off', 0.55), isNull);
+    final glsl = BeautyFilterEngine.buildGlslSource('rosy', 0.65);
+    expect(glsl, isNotNull);
+    expect(glsl!, contains('//!HOOK MAIN'));
+    expect(glsl, contains('skinMask'));
+    expect(BeautyFilterEngine.thermalNotice, contains('发热'));
+
+    // 4. In-App Update Checker: semver comparison, per-platform asset selection, and update dialog
+    expect(compareSemver('v0.3.11', '0.3.10+25'), greaterThan(0));
+    expect(compareSemver('0.3.10', 'v0.3.10'), equals(0));
+    expect(compareSemver('0.3.9', '0.3.10'), lessThan(0));
+
+    final mockRelease = VedroReleaseInfo.fromGitHubJson({
+      'tag_name': 'v0.3.12',
+      'name': 'v0.3.12',
+      'body': '- AI 双语字幕与语音识别\n- 低功耗美颜滤镜',
+      'html_url': 'https://github.com/JHruan1/vedro/releases/tag/v0.3.12',
+      'assets': [
+        {
+          'name': 'vedro-v0.3.12-windows-x64-setup.exe',
+          'browser_download_url': 'https://example.com/win.exe',
+          'size': 28000000,
+        },
+        {
+          'name': 'vedro-v0.3.12-macos-universal.dmg',
+          'browser_download_url': 'https://example.com/mac.dmg',
+          'size': 50000000,
+        },
+        {
+          'name': 'vedro-v0.3.12-android-arm64-v8a.apk',
+          'browser_download_url': 'https://example.com/android.apk',
+          'size': 40000000,
+        },
+        {
+          'name': 'vedro-v0.3.12-ios-unsigned.ipa',
+          'browser_download_url': 'https://example.com/ios.ipa',
+          'size': 16000000,
+        },
+      ],
+    });
+    expect(mockRelease.bestAssetForPlatform(osOverride: 'windows')?.name, endsWith('-setup.exe'));
+    expect(mockRelease.bestAssetForPlatform(osOverride: 'macos')?.name, endsWith('.dmg'));
+    expect(mockRelease.bestAssetForPlatform(osOverride: 'android')?.name, contains('arm64-v8a'));
+    expect(mockRelease.bestAssetForPlatform(osOverride: 'ios')?.name, endsWith('.ipa'));
+
+    final checker = VedroUpdateChecker(
+      fetcher: (_) async => {
+        'tag_name': 'v0.3.12',
+        'name': 'v0.3.12',
+        'body': '新版本包含双语字幕和美颜滤镜。',
+        'html_url': 'https://github.com/JHruan1/vedro/releases/tag/v0.3.12',
+        'assets': [
+          {
+            'name': 'vedro-v0.3.12-windows-x64-setup.exe',
+            'browser_download_url': 'https://example.com/win.exe',
+            'size': 28000000,
+          },
+        ],
+      },
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+        home: Builder(
+          builder: (ctx) => Scaffold(
+            body: ElevatedButton(
+              key: const ValueKey('trigger-update-check'),
+              onPressed: () => checker.checkAndPrompt(ctx, currentVersion: '0.3.11'),
+              child: const Text('检查更新'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const ValueKey('trigger-update-check')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('vedro-update-dialog')), findsOneWidget);
+    expect(find.text('发现新版本 v0.3.12'), findsOneWidget);
+    expect(find.byKey(const ValueKey('vedro-update-download-btn')), findsOneWidget);
+
+    // 5. SettingsScreen -> AI 翻译 exposes bilingual subtitle & ASR cards, plus Check Update button
+    app.activeSettingsSection = 'ai';
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+        home: SettingsScreen(
+          appState: app,
+          onOpenServerHub: () {},
+          onOpenAddServer: ([_]) {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings-check-update-btn')), findsOneWidget);
+    expect(find.byKey(const ValueKey('settings-asr-card')), findsOneWidget);
+    expect(find.byKey(const ValueKey('asr-preset-groq')), findsOneWidget);
+    expect(find.byKey(const ValueKey('asr-preset-siliconflow')), findsOneWidget);
   });
 }

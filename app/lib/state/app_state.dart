@@ -1657,6 +1657,91 @@ class VedroAppState extends ChangeNotifier {
     return (res['translated'] ?? '').toString();
   }
 
+  /// Load and parse SRT/VTT/ASS subtitle cues from a remote server URL or local file path.
+  Future<List<Map<String, dynamic>>> loadSubtitleCues({
+    String? url,
+    String? localPath,
+    String? format,
+  }) async {
+    final res = await core.invoke('load_subtitle_cues', {
+      if (url != null && url.trim().isNotEmpty) 'url': url.trim(),
+      if (localPath != null && localPath.trim().isNotEmpty) 'local_path': localPath.trim(),
+      if (format != null && format.trim().isNotEmpty) 'format': format.trim(),
+    }) as Map<String, dynamic>;
+    return ((res['cues'] as List<dynamic>?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
+
+  /// Context-aware numbered batch subtitle translation via Rust FFI.
+  Future<Map<int, String>> aiTranslateSubtitleBatch({
+    required List<Map<String, dynamic>> lines,
+    List<String> context = const [],
+    String? mediaTitle,
+    String? targetLang,
+  }) async {
+    if (!prefs.isAiReady) {
+      throw Exception('请先在「设置 → AI 翻译」开启并配置模型');
+    }
+    if (lines.isEmpty) return const {};
+    final res = await core.invoke('ai_translate_subtitle_batch', {
+      'base_url': prefs.aiBaseUrl.trim(),
+      'api_key': prefs.aiApiKey.trim(),
+      'model': prefs.aiModel.trim(),
+      'target_lang': (targetLang != null && targetLang.trim().isNotEmpty)
+          ? targetLang.trim()
+          : prefs.aiTargetLang,
+      'direct_ip': prefs.aiDirectClientIp,
+      if (mediaTitle != null && mediaTitle.trim().isNotEmpty) 'media_title': mediaTitle.trim(),
+      if (context.isNotEmpty) 'context': context,
+      'lines': lines,
+    }) as Map<String, dynamic>;
+    final rawMap = res['translations'];
+    final out = <int, String>{};
+    if (rawMap is Map) {
+      rawMap.forEach((k, v) {
+        final idx = int.tryParse(k.toString());
+        final text = v?.toString().trim() ?? '';
+        if (idx != null && text.isNotEmpty) {
+          out[idx] = text;
+        }
+      });
+    }
+    return out;
+  }
+
+  /// Extract a `[startSecs, startSecs + durationSecs]` audio slice in pure Rust and transcribe
+  /// it via an OpenAI-compatible Whisper / SenseVoice `/audio/transcriptions` endpoint.
+  Future<List<Map<String, dynamic>>> transcribeAudioSlice({
+    String? sourceUrl,
+    String? localPath,
+    required double startSecs,
+    double durationSecs = 25.0,
+    String? sourceLang,
+    String? prompt,
+  }) async {
+    if (!prefs.isAsrReady) {
+      throw Exception('请先在「设置 → AI 翻译」开启并配置 AI 语音识别 (ASR)');
+    }
+    final res = await core.invoke('ai_transcribe_audio_slice', {
+      if (sourceUrl != null && sourceUrl.trim().isNotEmpty) 'source_url': sourceUrl.trim(),
+      if (localPath != null && localPath.trim().isNotEmpty) 'local_path': localPath.trim(),
+      'start_secs': startSecs,
+      'duration_secs': durationSecs,
+      'asr_base_url': prefs.asrBaseUrl.trim(),
+      'asr_api_key': prefs.asrApiKey.trim(),
+      'asr_model': prefs.asrModel.trim(),
+      'asr_language': (sourceLang != null && sourceLang.trim().isNotEmpty)
+          ? sourceLang.trim()
+          : prefs.asrSourceLang,
+      'direct_ip': prefs.asrDirectClientIp,
+      if (prompt != null && prompt.trim().isNotEmpty) 'prompt': prompt.trim(),
+    }) as Map<String, dynamic>;
+    return ((res['cues'] as List<dynamic>?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
+
   /// Fetch available model IDs from `{base_url}/models`.
   Future<List<String>> fetchAiModels({
     String? baseUrl,

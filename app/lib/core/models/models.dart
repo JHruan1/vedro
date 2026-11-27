@@ -1671,6 +1671,7 @@ class PreparedPlaybackModel {
     required this.backend,
     required this.mpvOptions,
     required this.externalSubtitles,
+    this.textSubtitles = const [],
     required this.allSources,
     this.inspectedJson,
     this.dolbyVisionLabel,
@@ -1687,6 +1688,7 @@ class PreparedPlaybackModel {
   final String backend;
   final Map<String, String> mpvOptions;
   final List<Map<String, dynamic>> externalSubtitles;
+  final List<Map<String, dynamic>> textSubtitles;
   final List<MediaSourceModel> allSources;
   final Map<String, dynamic>? inspectedJson;
   final String? dolbyVisionLabel;
@@ -1730,6 +1732,15 @@ class PreparedPlaybackModel {
       externalSubtitles: ((j['external_subtitles'] as List<dynamic>?) ?? const [])
           .whereType<Map<String, dynamic>>()
           .toList(),
+      textSubtitles: (() {
+        final raw = ((j['text_subtitles'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+        if (raw.isNotEmpty) return raw;
+        return ((j['external_subtitles'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+      })(),
       allSources: ((j['all_sources'] as List<dynamic>?) ?? const [])
           .whereType<Map<String, dynamic>>()
           .map(MediaSourceModel.fromJson)

@@ -14,6 +14,8 @@ import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
+import '../widgets/ai_bilingual_subtitle.dart';
+import '../widgets/beauty_filter.dart';
 import '../widgets/danmaku_engine.dart';
 import '../widgets/nerd_stats_hud.dart';
 import '../widgets/vedro_artwork.dart';
@@ -113,12 +115,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
   double _volume = 100.0;
   double _brightness = 1.0;
 
-  // Color equalizer & audio delay & A-B loop & chapters & sleep timer
+  // Color equalizer & beauty filter & audio delay & A-B loop & chapters & sleep timer
   int _eqBrightness = 0;
   int _eqContrast = 0;
   int _eqSaturation = 0;
   int _eqGamma = 0;
+  String _beautyPreset = 'off';
+  double _beautyStrength = 0.55;
   double _audioDelaySecs = 0.0;
+
+  // AI bilingual subtitle + ASR lookahead controller
+  late final AiSubtitleTranslatorController _aiSubCtrl;
+  String? _activeSubLocalPath;
+  String? _activeSubUrl;
+  String? _activeSubFormat;
+  String? _activeSubLabel;
+  int _lastAiPosTickMs = 0;
   double? _loopPointA;
   double? _loopPointB;
   List<({String title, double timeSecs})> _chapters = const [];
@@ -279,6 +291,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _audioMode = (widget.appState.settings['audio_mode'] ?? 'auto').toString();
     _nightMode = widget.appState.settings['night_mode'] == true;
     _dialogueBoost = widget.appState.settings['dialogue_boost'] == true;
+    _beautyPreset = p.beautyFilterPreset;
+    _beautyStrength = p.beautyFilterStrength;
+    _aiSubCtrl = AiSubtitleTranslatorController(
+      appState: widget.appState,
+      mediaTitle: _currentItem.displayName,
+    );
 
     NativePlaybackChannel.setKeepScreenOn(true);
     NativePlaybackChannel.syncWindowChrome(
@@ -343,6 +361,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _activeSegmentNotifier.value = nextSeg;
       }
       final nowMs = DateTime.now().millisecondsSinceEpoch;
+      if (_aiSubCtrl.enabled && nowMs - _lastAiPosTickMs >= 120) {
+        _lastAiPosTickMs = nowMs;
+        _aiSubCtrl.updatePosition(
+          secs,
+          delaySecs: _subDelaySecs,
+          durationSecs: _durationSecs,
+        );
+      }
       final danmakuActive = _danmakuEnabled && _danmakuComments.isNotEmpty;
       if (danmakuActive) {
         final interval = _isMobile ? 33 : 20;
@@ -391,6 +417,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }));
     _subs.add(_player.stream.videoParams.listen(_onVideoParamsChanged));
     _subs.add(_player.stream.tracks.listen(_onTracksChanged));
+    _subs.add(_player.stream.subtitle.listen((lines) {
+      if (!mounted || !_aiSubCtrl.enabled || !_aiSubCtrl.isLiveFallbackMode) return;
+      _aiSubCtrl.onLiveSubtitleText(
+        lines.where((l) => l.trim().isNotEmpty).join('\n'),
+      );
+    }));
     _subs.add(_player.stream.error.listen((err) {
       if (mounted && err.isNotEmpty) {
         setState(() => _error = err);
@@ -630,7 +662,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
         setState(() {
           _loadedLocalSubtitles.removeWhere((e) => e.path == trimmed);
           _loadedLocalSubtitles.add((title: fileName, path: trimmed));
+          _activeSubLocalPath = trimmed;
+          _activeSubUrl = null;
+          _activeSubFormat = null;
+          _activeSubLabel = fileName;
         });
+        if (_aiSubCtrl.enabled && !_aiSubCtrl.asrMode) {
+          unawaited(_aiSubCtrl.enable(
+            localPath: trimmed,
+            sourceLabel: fileName,
+            currentPositionSecs: _positionSecs,
+          ));
+        }
         _flashGestureHud('seek_feedback', text: '已加载字幕：$fileName');
       }
     } catch (_) {
@@ -714,7 +757,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         const PopupMenuDivider(height: 8),
         _ctxItem('screenshot', Icons.camera_alt_outlined, '高清含字幕截图', 'S'),
         _ctxItem('stats', Icons.info_outline_rounded, _showStats ? '隐藏硬件信息 HUD' : '显示硬件信息 HUD', 'I'),
-        _ctxItem('tools', Icons.tune_rounded, '定时关闭 / A-B 复读 / 色彩均衡器', ''),
+        _ctxItem('tools', Icons.tune_rounded, '美颜滤镜 / 定时关闭 / 色彩均衡器', ''),
         if (_isDesktop) _ctxItem('shortcuts', Icons.keyboard_rounded, '快捷键一览', 'H'),
       ],
     );
@@ -951,6 +994,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _bufferedNotifier.dispose();
     _activeSegmentNotifier.dispose();
     _networkSpeedBpsNotifier.dispose();
+    _aiSubCtrl.dispose();
     _persistRememberedPlayerPrefs();
     if (_isDesktop) {
       NativePlaybackChannel.playerHudAutoHideNotifier.value = false;
@@ -1036,6 +1080,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _completedTriggered = false;
     _customIntroSkipped = false;
     _customOutroSkipped = false;
+    _aiSubCtrl.resetForNewMedia(mediaTitle: ep.displayName);
+    _activeSubLocalPath = null;
+    _activeSubUrl = null;
+    _activeSubFormat = null;
+    _activeSubLabel = null;
+    unawaited(_applyMpvProperty('sub-visibility', 'yes'));
     final localNext = _localPathById[ep.id];
     setState(() {
       _currentItem = ep;
@@ -1155,6 +1205,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
     await _applyMpvProperty('video-zoom', _videoZoom.toStringAsFixed(3));
     await _applyAnime4k(_anime4kActive);
+    if (_beautyPreset != 'off') {
+      await _applyBeautyFilter(_beautyPreset, _beautyStrength, persist: false, showHud: false);
+    }
     await _applyCustomMpvConf(p.customMpvConf);
     await _player.setVolume(_muted ? 0.0 : _volume);
     if ((_speed - 1.0).abs() > 0.01) {
@@ -1180,6 +1233,164 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await _applyMpvProperty('cscale', 'ewa_lanczossharp');
     await _applyMpvProperty('deband', 'yes');
     await _applyMpvProperty('sharpen', sharp);
+  }
+
+  Future<void> _applyBeautyFilter(
+    String presetId,
+    double strength, {
+    bool persist = true,
+    bool showHud = true,
+  }) async {
+    final preset = BeautyFilterPreset.byId(presetId);
+    final clamped = strength.clamp(0.15, 1.0);
+    if (mounted) {
+      setState(() {
+        _beautyPreset = preset.id;
+        _beautyStrength = clamped;
+      });
+    } else {
+      _beautyPreset = preset.id;
+      _beautyStrength = clamped;
+    }
+
+    if (preset.id == 'off') {
+      await _applyMpvProperty('glsl-shaders', '');
+      await _applyMpvProperty('brightness', '$_eqBrightness');
+      await _applyMpvProperty('contrast', '$_eqContrast');
+      await _applyMpvProperty('saturation', '$_eqSaturation');
+      await _applyMpvProperty('gamma', '$_eqGamma');
+    } else {
+      try {
+        final shaderPath = await BeautyFilterEngine.prepareShaderFile(preset.id, clamped);
+        if (shaderPath != null && shaderPath.isNotEmpty) {
+          await _applyMpvProperty('glsl-shaders', shaderPath);
+        }
+      } catch (_) {}
+      final b = (_eqBrightness + (preset.eqBrightness * clamped).round()).clamp(-50, 50);
+      final c = (_eqContrast + (preset.eqContrast * clamped).round()).clamp(-50, 50);
+      final s = (_eqSaturation + (preset.eqSaturation * clamped).round()).clamp(-50, 50);
+      final g = (_eqGamma + (preset.eqGamma * clamped).round()).clamp(-50, 50);
+      await _applyMpvProperty('brightness', '$b');
+      await _applyMpvProperty('contrast', '$c');
+      await _applyMpvProperty('saturation', '$s');
+      await _applyMpvProperty('gamma', '$g');
+    }
+
+    if (persist) {
+      unawaited(widget.appState.updatePrefs(
+        widget.appState.prefs.copyWith(
+          beautyFilterPreset: preset.id,
+          beautyFilterStrength: clamped,
+        ),
+      ));
+    }
+    if (showHud && mounted) {
+      _flashGestureHud(
+        'seek_feedback',
+        text: preset.id == 'off'
+            ? '已关闭美颜滤镜'
+            : '美颜滤镜：${preset.label} (${(clamped * 100).round()}%)',
+      );
+    }
+  }
+
+  ({String? localPath, String? url, String? format, String? label})
+      _resolveBestSubtitleSourceForAi() {
+    if (_activeSubLocalPath != null && _activeSubLocalPath!.isNotEmpty) {
+      return (
+        localPath: _activeSubLocalPath,
+        url: null,
+        format: null,
+        label: _activeSubLabel ?? '本地字幕',
+      );
+    }
+    if (_activeSubUrl != null && _activeSubUrl!.isNotEmpty) {
+      return (
+        localPath: null,
+        url: _activeSubUrl,
+        format: _activeSubFormat,
+        label: _activeSubLabel ?? '外挂字幕',
+      );
+    }
+    final textSubs = _prepared?.textSubtitles ?? const [];
+    if (textSubs.isNotEmpty) {
+      final curTrack = _player.state.track.subtitle;
+      final curId = curTrack.id;
+      final curTitle = (curTrack.title ?? '').toLowerCase();
+      final curLang = (curTrack.language ?? '').toLowerCase();
+      Map<String, dynamic>? matched;
+      for (final s in textSubs) {
+        final idx = s['index']?.toString() ?? '';
+        final title = (s['title'] ?? '').toString().toLowerCase();
+        final lang = (s['language'] ?? '').toString().toLowerCase();
+        if ((curId != 'no' && curId != 'auto' && idx == curId) ||
+            (curTitle.isNotEmpty && title == curTitle) ||
+            (curLang.isNotEmpty && lang == curLang)) {
+          matched = s;
+          break;
+        }
+      }
+      matched ??= textSubs.first;
+      return (
+        localPath: null,
+        url: matched['url']?.toString(),
+        format: matched['codec']?.toString(),
+        label: matched['title']?.toString() ?? '字幕轨',
+      );
+    }
+    return (localPath: null, url: null, format: null, label: null);
+  }
+
+  Future<void> _enableAiSubtitleTranslation({String? targetLangOverride}) async {
+    if (!widget.appState.prefs.isAiReady) {
+      _flashGestureHud('seek_feedback', text: '请先在「设置 → AI 翻译」开启并配置模型');
+      return;
+    }
+    final src = _resolveBestSubtitleSourceForAi();
+    await _applyMpvProperty('sub-visibility', 'no');
+    await _aiSubCtrl.enable(
+      subtitleUrl: src.url,
+      localPath: src.localPath,
+      format: src.format,
+      sourceLabel: src.label,
+      currentPositionSecs: _positionSecs,
+      displayMode: widget.appState.prefs.aiSubtitleMode,
+      targetLang: targetLangOverride ?? _aiSubCtrl.targetLang,
+    );
+    if (mounted) {
+      _flashGestureHud(
+        'seek_feedback',
+        text: 'AI 双语字幕已开启 → ${_aiSubCtrl.targetLang}',
+      );
+    }
+  }
+
+  Future<void> _enableAiAsrSubtitle() async {
+    if (!widget.appState.prefs.isAsrReady) {
+      _flashGestureHud('seek_feedback', text: '请先在「设置 → AI 翻译」配置语音识别 (ASR)');
+      return;
+    }
+    await _applyMpvProperty('sub-visibility', 'no');
+    await _aiSubCtrl.enableAsr(
+      sourceUrl: _prepared?.proxyUrl,
+      localPath: _activeLocalPath,
+      currentPositionSecs: _positionSecs,
+      durationSecs: _durationSecs,
+      sourceLang: widget.appState.prefs.asrSourceLang,
+      targetLang: _aiSubCtrl.targetLang,
+      displayMode: widget.appState.prefs.aiSubtitleMode,
+    );
+    if (mounted) {
+      _flashGestureHud('seek_feedback', text: 'AI 听音识字已开启，正在预读识别…');
+    }
+  }
+
+  Future<void> _disableAiSubtitle() async {
+    _aiSubCtrl.disable();
+    await _applyMpvProperty('sub-visibility', 'yes');
+    if (mounted) {
+      _flashGestureHud('seek_feedback', text: '已关闭 AI 字幕翻译');
+    }
   }
 
   Future<void> _applyCustomMpvConf(String raw) async {
@@ -1340,6 +1551,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
           if (sidecars.isNotEmpty) {
             final subPath = sidecars.first;
             final title = subPath.split(Platform.pathSeparator).last;
+            _activeSubLocalPath = subPath;
+            _activeSubUrl = null;
+            _activeSubFormat = null;
+            _activeSubLabel = title;
             await _player.setSubtitleTrack(
               SubtitleTrack.uri(Uri.file(subPath).toString(), title: title),
             );
@@ -1399,6 +1614,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
           }
         }
         if (chosenExt != null) {
+          _activeSubLocalPath = null;
+          _activeSubUrl = chosenExt['url'].toString();
+          _activeSubFormat = chosenExt['codec']?.toString();
+          _activeSubLabel = chosenExt['title']?.toString();
           await _player.setSubtitleTrack(
             SubtitleTrack.uri(
               chosenExt['url'].toString(),
@@ -1434,6 +1653,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
               orElse: () => prep.externalSubtitles.first,
             );
         if (preferredExt != null && preferredExt['url'] != null) {
+          _activeSubLocalPath = null;
+          _activeSubUrl = preferredExt['url'].toString();
+          _activeSubFormat = preferredExt['codec']?.toString();
+          _activeSubLabel = preferredExt['title']?.toString();
           await _player.setSubtitleTrack(
             SubtitleTrack.uri(
               preferredExt['url'].toString(),
@@ -1920,6 +2143,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         color: Colors.black.withValues(alpha: (1.0 - _brightness).clamp(0.0, 0.85)),
                       ),
                     ),
+
+                  // AI Bilingual / ASR Lookahead Subtitle Overlay (zero full-page rebuild via ValueNotifier)
+                  AiBilingualSubtitleOverlay(
+                    controller: _aiSubCtrl,
+                    subScale: _subScale,
+                    subPos: _subPos,
+                    colorHex: widget.appState.prefs.subtitleColorHex,
+                    outlineWidth: widget.appState.prefs.subtitleOutlineWidth,
+                    bgOpacity: widget.appState.prefs.subtitleBgOpacity,
+                  ),
 
                   // GPU-cached Canvas Danmaku overlay driven solely by _positionNotifier
                   if (_danmakuEnabled)
@@ -3714,6 +3947,188 @@ class _PlayerScreenState extends State<PlayerScreen> {
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               child: Text('字幕与样式', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
             ),
+            // YouTube-style AI Auto-Translate Bilingual Subtitle & ASR Speech-to-Subtitle Card
+            ListenableBuilder(
+              listenable: _aiSubCtrl,
+              builder: (context, _) {
+                final prefs = widget.appState.prefs;
+                final aiReady = prefs.isAiReady;
+                final asrReady = prefs.isAsrReady;
+                final aiTransActive = _aiSubCtrl.enabled && !_aiSubCtrl.asrMode;
+                final asrActive = _aiSubCtrl.enabled && _aiSubCtrl.asrMode;
+                final accent = Theme.of(context).colorScheme.secondary;
+                final statusText = !_aiSubCtrl.enabled
+                    ? (aiReady
+                        ? '像 YouTube 一样一键自动翻译当前字幕为双语，提前预读后续台词'
+                        : '请先在「设置 → AI 翻译」开启并配置模型')
+                    : _aiSubCtrl.isLoadingCues
+                        ? '正在读取完整字幕并提前预读翻译…'
+                        : _aiSubCtrl.asrMode
+                            ? (_aiSubCtrl.isTranscribing
+                                ? 'AI 语音识别中（已识别 ${_aiSubCtrl.totalCues} 句${aiReady ? ' · 已译 ${_aiSubCtrl.translatedCount} 句' : ''}）…'
+                                : 'AI 听音字幕已就绪 · 已识别 ${_aiSubCtrl.totalCues} 句${aiReady ? ' · 已译 ${_aiSubCtrl.translatedCount} 句' : ''}')
+                            : _aiSubCtrl.isLiveFallbackMode
+                                ? '实时逐句翻译模式 → ${_aiSubCtrl.targetLang}'
+                                : '已预读翻译 ${_aiSubCtrl.translatedCount} / ${_aiSubCtrl.totalCues} 句 → ${_aiSubCtrl.targetLang}';
+
+                return Container(
+                  key: const ValueKey('player-ai-sub-card'),
+                  margin: const EdgeInsets.fromLTRB(4, 6, 4, 10),
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                  decoration: BoxDecoration(
+                    color: _aiSubCtrl.enabled
+                        ? accent.withValues(alpha: 0.14)
+                        : Colors.white.withValues(alpha: 0.05),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: _aiSubCtrl.enabled
+                          ? accent.withValues(alpha: 0.45)
+                          : Colors.white.withValues(alpha: 0.12),
+                      width: 0.8,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.translate_rounded, size: 17, color: accent),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text(
+                              'AI 自动翻译（双语字幕）',
+                              style: TextStyle(
+                                color: VedroTheme.fg,
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          Transform.scale(
+                            scale: 0.78,
+                            child: CupertinoSwitch(
+                              key: const ValueKey('player-ai-sub-toggle'),
+                              value: aiTransActive,
+                              onChanged: (v) async {
+                                if (v) {
+                                  await _enableAiSubtitleTranslation();
+                                } else {
+                                  await _disableAiSubtitle();
+                                }
+                                setModal(() {});
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                      Text(
+                        statusText,
+                        style: const TextStyle(color: VedroTheme.fg2, fontSize: 11.5, height: 1.35),
+                      ),
+                      if (_aiSubCtrl.lastError != null && _aiSubCtrl.lastError!.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          _aiSubCtrl.lastError!,
+                          style: const TextStyle(color: Color(0xFFFCA5A5), fontSize: 11),
+                        ),
+                      ],
+                      const SizedBox(height: 9),
+                      // YouTube-style direct target language picker
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: AiSubtitleTargetLanguage.all.map((lang) {
+                          final selected = _aiSubCtrl.targetLang == lang.id;
+                          return _DeckPillButton(
+                            label: lang.shortLabel,
+                            active: _aiSubCtrl.enabled && selected,
+                            onTap: () async {
+                              unawaited(widget.appState.updatePrefs(
+                                prefs.copyWith(aiTargetLang: lang.id),
+                              ));
+                              if (!_aiSubCtrl.enabled) {
+                                await _enableAiSubtitleTranslation(targetLangOverride: lang.id);
+                              } else {
+                                await _aiSubCtrl.setTargetLang(lang.id);
+                              }
+                              setModal(() {});
+                            },
+                          );
+                        }).toList(),
+                      ),
+                      if (_aiSubCtrl.enabled) ...[
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final item in const [
+                              ('bilingual_trans_top', '双语 · 译文在上'),
+                              ('bilingual_orig_top', '双语 · 原文在上'),
+                              ('translated_only', '仅显示译文'),
+                            ])
+                              _DeckPillButton(
+                                label: item.$2,
+                                active: _aiSubCtrl.displayMode == item.$1,
+                                onTap: () {
+                                  _aiSubCtrl.setDisplayMode(item.$1);
+                                  unawaited(widget.appState.updatePrefs(
+                                    prefs.copyWith(aiSubtitleMode: item.$1),
+                                  ));
+                                  setModal(() {});
+                                },
+                              ),
+                          ],
+                        ),
+                      ],
+                      const Divider(height: 18, color: Color(0x1FFFFFFF)),
+                      Row(
+                        children: [
+                          Icon(Icons.graphic_eq_rounded, size: 16, color: accent),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'AI 语音识别生成字幕（无字幕视频适用）',
+                                  style: TextStyle(
+                                    color: VedroTheme.fg,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                Text(
+                                  asrReady
+                                      ? '自动切片识别音频${aiReady ? '并翻译为双语' : ''}（${prefs.asrModel}）'
+                                      : '请先在「设置 → AI 翻译」配置 Groq / 硅基流动 / 本地 Whisper',
+                                  style: const TextStyle(color: VedroTheme.fg3, fontSize: 11),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Transform.scale(
+                            scale: 0.78,
+                            child: CupertinoSwitch(
+                              key: const ValueKey('player-ai-asr-toggle'),
+                              value: asrActive,
+                              onChanged: (v) async {
+                                if (v) {
+                                  await _enableAiAsrSubtitle();
+                                } else {
+                                  await _disableAiSubtitle();
+                                }
+                                setModal(() {});
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
               child: OutlinedButton.icon(
@@ -3742,9 +4157,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 )),
             _SheetOptionRow(
               label: '关闭字幕',
-              selected: _player.state.track.subtitle.id == 'no',
+              selected: _player.state.track.subtitle.id == 'no' && !_aiSubCtrl.enabled,
               onTap: () async {
                 Navigator.pop(ctx);
+                _aiSubCtrl.disable();
+                await _applyMpvProperty('sub-visibility', 'yes');
                 await _player.setSubtitleTrack(SubtitleTrack.no());
               },
             ),
@@ -3754,7 +4171,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   selected: _player.state.track.subtitle.id == t.id,
                   onTap: () async {
                     Navigator.pop(ctx);
+                    _activeSubLocalPath = null;
+                    _activeSubUrl = null;
+                    _activeSubFormat = t.codec;
+                    _activeSubLabel = t.title ?? t.language ?? '字幕 #${t.id}';
                     await _player.setSubtitleTrack(t);
+                    if (_aiSubCtrl.enabled && !_aiSubCtrl.asrMode) {
+                      await _enableAiSubtitleTranslation();
+                    }
                   },
                 )),
             ...extSubs.map((s) => _SheetOptionRow(
@@ -3764,6 +4188,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   onTap: () async {
                     Navigator.pop(ctx);
                     if (s['url'] != null) {
+                      _activeSubLocalPath = null;
+                      _activeSubUrl = s['url'].toString();
+                      _activeSubFormat = s['codec']?.toString();
+                      _activeSubLabel = s['title']?.toString();
                       await _player.setSubtitleTrack(
                         SubtitleTrack.uri(
                           s['url'].toString(),
@@ -3771,6 +4199,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           language: s['language']?.toString(),
                         ),
                       );
+                      if (_aiSubCtrl.enabled && !_aiSubCtrl.asrMode) {
+                        await _enableAiSubtitleTranslation();
+                      }
                     }
                   },
                 )),
@@ -4034,6 +4465,90 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       },
                     ),
                   ],
+                ],
+              ),
+            ),
+
+            const Divider(height: 20),
+
+            // Ultra-Low-Power Single-Pass GPU Beauty Filter
+            Padding(
+              key: const ValueKey('player-beauty-filter-section'),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Text(
+                        '美颜滤镜',
+                        style: TextStyle(
+                          color: VedroTheme.fg2,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        BeautyFilterPreset.byId(_beautyPreset).subtitle,
+                        style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: BeautyFilterPreset.all.map((preset) {
+                      return _DeckPillButton(
+                        label: preset.label,
+                        active: _beautyPreset == preset.id,
+                        onTap: () async {
+                          await _applyBeautyFilter(preset.id, _beautyStrength);
+                          setModal(() {});
+                        },
+                      );
+                    }).toList(),
+                  ),
+                  if (_beautyPreset != 'off') ...[
+                    const SizedBox(height: 8),
+                    VedroPrecisionSlider(
+                      label: '美颜强度',
+                      value: _beautyStrength,
+                      min: 0.15,
+                      max: 1.0,
+                      step: 0.05,
+                      defaultValue: 0.55,
+                      snapValues: const [0.35, 0.55, 0.80],
+                      valueText: '${(_beautyStrength * 100).round()}%',
+                      onChanged: (v) async {
+                        setModal(() => _beautyStrength = v);
+                        await _applyBeautyFilter(_beautyPreset, v, showHud: false);
+                      },
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: const Color(0x1CF59E0B),
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(color: const Color(0x40F59E0B), width: 0.7),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.local_fire_department_outlined, size: 14, color: Color(0xFFFBBF24)),
+                        SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            BeautyFilterEngine.thermalNotice,
+                            style: TextStyle(color: Color(0xFFFDE68A), fontSize: 11, height: 1.35),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),

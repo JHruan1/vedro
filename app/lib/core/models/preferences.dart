@@ -408,15 +408,28 @@ class VedroPreferences {
     this.danmakuHideTop = false,
     this.danmakuHideBottom = false,
     this.danmakuApiUrl = '',
-    // AI 服务（翻译）— 默认预填哔哩哔哩免费 Index-Translate（客户端本机 IP 直连）
+    // AI 服务（翻译 & 语音识别转字幕）— 默认预填哔哩哔哩免费 Index-Translate（客户端本机 IP 直连）
     this.aiEnabled = false,
     this.aiBaseUrl = 'https://index-translate.bilibili.com/v1',
     this.aiApiKey = '',
     this.aiModel = 'Index-Translate-35B-A3B',
     this.aiTargetLang = '简体中文',
     this.aiBilingualSubtitle = true,
+    this.aiSubtitleMode = 'bilingual_trans_top', // bilingual_trans_top | bilingual_orig_top | translated_only
+    this.aiSubtitleBatchSize = 16,
+    this.aiSubtitleLookaheadSecs = 120,
     this.aiDirectClientIp = true,
     this.aiCachedModels = const [],
+    // AI 语音识别 (ASR · 无字幕视频听音转双语字幕)
+    this.asrEnabled = false,
+    this.asrBaseUrl = 'https://api.groq.com/openai/v1',
+    this.asrApiKey = '',
+    this.asrModel = 'whisper-large-v3-turbo',
+    this.asrSourceLang = 'auto', // auto | ja | en | zh | ko
+    this.asrDirectClientIp = false,
+    // 低功耗 GPU 美颜滤镜
+    this.beautyFilterPreset = 'off', // off | natural | rosy | bright | soft_glow | vivid
+    this.beautyFilterStrength = 0.55,
     // 隐私保护
     this.passcodeEnabled = false,
     this.passcodeHash = '',
@@ -526,8 +539,21 @@ class VedroPreferences {
   final String aiModel;
   final String aiTargetLang;
   final bool aiBilingualSubtitle;
+  final String aiSubtitleMode;
+  final int aiSubtitleBatchSize;
+  final int aiSubtitleLookaheadSecs;
   final bool aiDirectClientIp;
   final List<String> aiCachedModels;
+
+  final bool asrEnabled;
+  final String asrBaseUrl;
+  final String asrApiKey;
+  final String asrModel;
+  final String asrSourceLang;
+  final bool asrDirectClientIp;
+
+  final String beautyFilterPreset;
+  final double beautyFilterStrength;
 
   final bool passcodeEnabled;
   final String passcodeHash;
@@ -632,6 +658,9 @@ class VedroPreferences {
 
   bool get isAiReady =>
       aiEnabled && aiBaseUrl.trim().isNotEmpty && aiModel.trim().isNotEmpty;
+
+  bool get isAsrReady =>
+      asrEnabled && asrBaseUrl.trim().isNotEmpty && asrModel.trim().isNotEmpty;
 
   double posterCardWidth(bool wide, [DisplayMetricsProfile? metrics]) {
     final ov = overridesForPlatform(isMobile: !wide && _currentIsMobileOs);
@@ -779,8 +808,19 @@ class VedroPreferences {
     String? aiModel,
     String? aiTargetLang,
     bool? aiBilingualSubtitle,
+    String? aiSubtitleMode,
+    int? aiSubtitleBatchSize,
+    int? aiSubtitleLookaheadSecs,
     bool? aiDirectClientIp,
     List<String>? aiCachedModels,
+    bool? asrEnabled,
+    String? asrBaseUrl,
+    String? asrApiKey,
+    String? asrModel,
+    String? asrSourceLang,
+    bool? asrDirectClientIp,
+    String? beautyFilterPreset,
+    double? beautyFilterStrength,
     bool? passcodeEnabled,
     String? passcodeHash,
     int? lockTimeoutSecs,
@@ -879,8 +919,19 @@ class VedroPreferences {
         aiModel: aiModel ?? this.aiModel,
         aiTargetLang: aiTargetLang ?? this.aiTargetLang,
         aiBilingualSubtitle: aiBilingualSubtitle ?? this.aiBilingualSubtitle,
+        aiSubtitleMode: aiSubtitleMode ?? this.aiSubtitleMode,
+        aiSubtitleBatchSize: aiSubtitleBatchSize ?? this.aiSubtitleBatchSize,
+        aiSubtitleLookaheadSecs: aiSubtitleLookaheadSecs ?? this.aiSubtitleLookaheadSecs,
         aiDirectClientIp: aiDirectClientIp ?? this.aiDirectClientIp,
         aiCachedModels: aiCachedModels ?? this.aiCachedModels,
+        asrEnabled: asrEnabled ?? this.asrEnabled,
+        asrBaseUrl: asrBaseUrl ?? this.asrBaseUrl,
+        asrApiKey: asrApiKey ?? this.asrApiKey,
+        asrModel: asrModel ?? this.asrModel,
+        asrSourceLang: asrSourceLang ?? this.asrSourceLang,
+        asrDirectClientIp: asrDirectClientIp ?? this.asrDirectClientIp,
+        beautyFilterPreset: beautyFilterPreset ?? this.beautyFilterPreset,
+        beautyFilterStrength: beautyFilterStrength ?? this.beautyFilterStrength,
         passcodeEnabled: passcodeEnabled ?? this.passcodeEnabled,
         passcodeHash: passcodeHash ?? this.passcodeHash,
         lockTimeoutSecs: lockTimeoutSecs ?? this.lockTimeoutSecs,
@@ -980,8 +1031,19 @@ class VedroPreferences {
         'ai_model': aiModel,
         'ai_target_lang': aiTargetLang,
         'ai_bilingual_subtitle': aiBilingualSubtitle,
+        'ai_subtitle_mode': aiSubtitleMode,
+        'ai_subtitle_batch_size': aiSubtitleBatchSize,
+        'ai_subtitle_lookahead_secs': aiSubtitleLookaheadSecs,
         'ai_direct_client_ip': aiDirectClientIp,
         'ai_cached_models': aiCachedModels,
+        'asr_enabled': asrEnabled,
+        'asr_base_url': asrBaseUrl,
+        'asr_api_key': asrApiKey,
+        'asr_model': asrModel,
+        'asr_source_lang': asrSourceLang,
+        'asr_direct_client_ip': asrDirectClientIp,
+        'beauty_filter_preset': beautyFilterPreset,
+        'beauty_filter_strength': beautyFilterStrength,
         'passcode_enabled': passcodeEnabled,
         'passcode_hash': passcodeHash,
         'lock_timeout_secs': lockTimeoutSecs,
@@ -1091,11 +1153,24 @@ class VedroPreferences {
         aiModel: (j['ai_model'] ?? 'Index-Translate-35B-A3B').toString(),
         aiTargetLang: (j['ai_target_lang'] ?? '简体中文').toString(),
         aiBilingualSubtitle: j['ai_bilingual_subtitle'] != false,
+        aiSubtitleMode: (j['ai_subtitle_mode'] ?? 'bilingual_trans_top').toString(),
+        aiSubtitleBatchSize: ((j['ai_subtitle_batch_size'] as num?)?.toInt() ?? 16).clamp(8, 32),
+        aiSubtitleLookaheadSecs:
+            ((j['ai_subtitle_lookahead_secs'] as num?)?.toInt() ?? 120).clamp(30, 300),
         aiDirectClientIp: j['ai_direct_client_ip'] != false,
         aiCachedModels: ((j['ai_cached_models'] as List<dynamic>?) ?? const [])
             .map((e) => e.toString())
             .where((s) => s.isNotEmpty)
             .toList(),
+        asrEnabled: j['asr_enabled'] == true,
+        asrBaseUrl: (j['asr_base_url'] ?? 'https://api.groq.com/openai/v1').toString(),
+        asrApiKey: (j['asr_api_key'] ?? '').toString(),
+        asrModel: (j['asr_model'] ?? 'whisper-large-v3-turbo').toString(),
+        asrSourceLang: (j['asr_source_lang'] ?? 'auto').toString(),
+        asrDirectClientIp: j['asr_direct_client_ip'] == true,
+        beautyFilterPreset: (j['beauty_filter_preset'] ?? 'off').toString(),
+        beautyFilterStrength:
+            ((j['beauty_filter_strength'] as num?)?.toDouble() ?? 0.55).clamp(0.15, 1.0),
         passcodeEnabled: j['passcode_enabled'] == true,
         passcodeHash: (j['passcode_hash'] ?? '').toString(),
         lockTimeoutSecs: (j['lock_timeout_secs'] as num?)?.toInt() ?? 60,

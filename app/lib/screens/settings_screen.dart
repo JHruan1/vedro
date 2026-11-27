@@ -14,6 +14,7 @@ import '../state/app_state.dart';
 import '../widgets/admin_console_pane.dart';
 import '../widgets/server_card_grid.dart';
 import '../widgets/skin_studio_pane.dart';
+import '../widgets/update_checker.dart';
 import '../widgets/vedro_ui.dart';
 import 'player_screen.dart';
 
@@ -421,8 +422,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       Divider(height: 1, color: skin.border),
                       Expanded(
                         child: ListView(
-                          padding: const EdgeInsets.fromLTRB(12, 6, 12, 28),
+                          padding: const EdgeInsets.fromLTRB(12, 6, 12, 16),
                           children: _buildGroupedSidebar(items, skin),
+                        ),
+                      ),
+                      Divider(height: 1, color: skin.border),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                        child: UpdateCheckBadgeTile(
+                          currentVersion: widget.appState.core.coreVersion,
+                          compact: true,
                         ),
                       ),
                     ],
@@ -536,7 +545,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 }).toList(),
               ),
             ],
-            const SizedBox(height: 22),
+            const SizedBox(height: 16),
+            _GroupedCard(
+              children: [
+                UpdateCheckBadgeTile(currentVersion: widget.appState.core.coreVersion),
+              ],
+            ),
+            const SizedBox(height: 18),
             Center(
               child: Text(
                 'Vedro v${widget.appState.core.coreVersion}',
@@ -615,13 +630,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ));
       }
     }
-    out.add(Padding(
-      padding: const EdgeInsets.fromLTRB(12, 20, 12, 0),
-      child: Text(
-        'Vedro Core v${widget.appState.core.coreVersion}',
-        style: TextStyle(color: skin.fg3, fontSize: 11),
-      ),
-    ));
     return out;
   }
 }
@@ -820,6 +828,9 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
   final _aiUrlCtrl = TextEditingController();
   final _aiKeyCtrl = TextEditingController();
   final _aiModelCtrl = TextEditingController();
+  final _asrUrlCtrl = TextEditingController();
+  final _asrKeyCtrl = TextEditingController();
+  final _asrModelCtrl = TextEditingController();
   final _danmakuApiCtrl = TextEditingController();
   final _fontPathCtrl = TextEditingController();
   final _downloadDirCtrl = TextEditingController();
@@ -845,6 +856,9 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     _aiUrlCtrl.text = p.aiBaseUrl;
     _aiKeyCtrl.text = p.aiApiKey;
     _aiModelCtrl.text = p.aiModel;
+    _asrUrlCtrl.text = p.asrBaseUrl;
+    _asrKeyCtrl.text = p.asrApiKey;
+    _asrModelCtrl.text = p.asrModel;
     _danmakuApiCtrl.text = p.danmakuApiUrl;
     _downloadDirCtrl.text = p.downloadCustomDir;
     _mpvConfCtrl.text = p.customMpvConf;
@@ -869,6 +883,9 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     _aiUrlCtrl.dispose();
     _aiKeyCtrl.dispose();
     _aiModelCtrl.dispose();
+    _asrUrlCtrl.dispose();
+    _asrKeyCtrl.dispose();
+    _asrModelCtrl.dispose();
     _danmakuApiCtrl.dispose();
     _fontPathCtrl.dispose();
     _downloadDirCtrl.dispose();
@@ -3286,10 +3303,32 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
       ));
     }
 
+    Future<void> applyAsrPreset({
+      required String baseUrl,
+      required String model,
+      required bool directIp,
+      bool clearKey = false,
+    }) async {
+      _asrUrlCtrl.text = baseUrl;
+      _asrModelCtrl.text = model;
+      if (clearKey) _asrKeyCtrl.clear();
+      await _updatePrefs(p.copyWith(
+        asrEnabled: true,
+        asrBaseUrl: baseUrl,
+        asrModel: model,
+        asrApiKey: clearKey ? '' : _asrKeyCtrl.text.trim(),
+        asrDirectClientIp: directIp,
+      ));
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading('AI 翻译'),
+        _heading(
+          'AI 翻译',
+          '支持影片简介翻译、播放器 YouTube 式双语字幕预读翻译，以及无字幕视频 AI 语音识别转译',
+        ),
+        const _GroupHeader('文本与双语字幕翻译'),
         _GroupedCard(
           children: [
             _SwitchRow(
@@ -3370,6 +3409,28 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               title: '双语对照',
               value: p.aiBilingualSubtitle,
               onChanged: (v) => _updatePrefs(p.copyWith(aiBilingualSubtitle: v)),
+            ),
+            _InlineSegmentedRow<String>(
+              title: '双语字幕默认排版',
+              keyPrefix: 'pref-ai-subtitle-mode',
+              value: p.aiSubtitleMode,
+              items: const [
+                ('bilingual_trans_top', '译文在上'),
+                ('bilingual_orig_top', '原文在上'),
+                ('translated_only', '仅译文'),
+              ],
+              onChanged: (v) => _updatePrefs(p.copyWith(aiSubtitleMode: v)),
+            ),
+            _InlineSegmentedRow<int>(
+              title: '字幕预读批量',
+              keyPrefix: 'pref-ai-subtitle-batch',
+              value: p.aiSubtitleBatchSize,
+              items: const [
+                (12, '12 句'),
+                (16, '16 句'),
+                (24, '24 句'),
+              ],
+              onChanged: (v) => _updatePrefs(p.copyWith(aiSubtitleBatchSize: v)),
             ),
             Padding(
               padding: const EdgeInsets.all(16),
@@ -3537,6 +3598,146 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 18),
+        const _GroupHeader('AI 语音识别转字幕 (ASR · 无字幕视频自动听音转译)'),
+        KeyedSubtree(
+          key: const ValueKey('settings-asr-card'),
+          child: _GroupedCard(
+            children: [
+              _SwitchRow(
+                key: const ValueKey('pref-asr-enabled'),
+                title: '启用语音识别转字幕 (ASR)',
+                subtitle: '无字幕视频可在播放器「字幕」菜单中一键实时切片识别音频并生成双语字幕',
+                value: p.asrEnabled,
+                onChanged: (v) => _updatePrefs(p.copyWith(asrEnabled: v)),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ChoiceChip(
+                      key: const ValueKey('asr-preset-groq'),
+                      selected: p.asrBaseUrl.contains('groq.com'),
+                      label: const Text('Groq Whisper（极速）'),
+                      onSelected: (_) => applyAsrPreset(
+                        baseUrl: 'https://api.groq.com/openai/v1',
+                        model: 'whisper-large-v3-turbo',
+                        directIp: false,
+                      ),
+                    ),
+                    ChoiceChip(
+                      key: const ValueKey('asr-preset-siliconflow'),
+                      selected: p.asrBaseUrl.contains('siliconflow.cn'),
+                      label: const Text('硅基流动 SenseVoice'),
+                      onSelected: (_) => applyAsrPreset(
+                        baseUrl: 'https://api.siliconflow.cn/v1',
+                        model: 'FunAudioLLM/SenseVoiceSmall',
+                        directIp: true,
+                      ),
+                    ),
+                    ChoiceChip(
+                      selected: p.asrBaseUrl.contains('openai.com'),
+                      label: const Text('OpenAI Whisper'),
+                      onSelected: (_) => applyAsrPreset(
+                        baseUrl: 'https://api.openai.com/v1',
+                        model: 'whisper-1',
+                        directIp: false,
+                      ),
+                    ),
+                    ChoiceChip(
+                      selected: p.asrBaseUrl.contains('127.0.0.1') ||
+                          p.asrBaseUrl.contains('localhost'),
+                      label: const Text('本地 / NAS Whisper'),
+                      onSelected: (_) => applyAsrPreset(
+                        baseUrl: 'http://127.0.0.1:8000/v1',
+                        model: 'whisper-large-v3-turbo',
+                        directIp: true,
+                        clearKey: true,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              _InlineSegmentedRow<String>(
+                title: '视频原声语言',
+                keyPrefix: 'asr-lang',
+                value: p.asrSourceLang,
+                items: const [
+                  ('auto', '自动'),
+                  ('ja', '日语'),
+                  ('en', '英语'),
+                  ('zh', '中文'),
+                  ('ko', '韩语'),
+                ],
+                onChanged: (v) => _updatePrefs(p.copyWith(asrSourceLang: v)),
+              ),
+              _InlineSegmentedRow<bool>(
+                title: 'ASR 网络出口',
+                value: p.asrDirectClientIp,
+                items: const [
+                  (true, '本机直连'),
+                  (false, '跟随系统'),
+                ],
+                onChanged: (v) => _updatePrefs(p.copyWith(asrDirectClientIp: v)),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    TextField(
+                      controller: _asrUrlCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'ASR API Base URL（OpenAI /audio/transcriptions 兼容）',
+                        hintText: 'https://api.groq.com/openai/v1',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _asrKeyCtrl,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'ASR API Key',
+                        hintText: 'gsk_... / sk-...（本地自建可留空）',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _asrModelCtrl,
+                      decoration: const InputDecoration(
+                        labelText: '语音识别模型',
+                        hintText: 'whisper-large-v3-turbo',
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        FilledButton(
+                          onPressed: () async {
+                            await _updatePrefs(p.copyWith(
+                              asrEnabled: true,
+                              asrBaseUrl: _asrUrlCtrl.text.trim(),
+                              asrApiKey: _asrKeyCtrl.text.trim(),
+                              asrModel: _asrModelCtrl.text.trim(),
+                            ));
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('语音识别 (ASR) 配置已保存')),
+                              );
+                            }
+                          },
+                          child: const Text('保存语音识别配置', style: TextStyle(fontSize: 13)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ],
     );

@@ -257,7 +257,9 @@ class _ShellScreenState extends State<ShellScreen> {
         !skin.isLight &&
         skin.heroStyle == 'full_bleed';
     final childTopInset = wide
-        ? (isLeftRail ? 16.0 : (isMinimalAutoHide ? 52.0 : 68.0))
+        ? (isLeftRail
+            ? ((!kIsWeb && Platform.isWindows) ? 26.0 : 16.0)
+            : (isMinimalAutoHide ? 52.0 : 68.0))
         : 0.0;
 
     final pages = [
@@ -630,7 +632,9 @@ class _VerticalSidebarRail extends StatelessWidget {
     return ValueListenableBuilder<bool>(
       valueListenable: NativePlaybackChannel.fullscreenNotifier,
       builder: (context, isFullscreen, _) {
-        final topPad = (!kIsWeb && Platform.isMacOS && !isFullscreen) ? 44.0 : 18.0;
+        final topPad = (!kIsWeb && Platform.isMacOS && !isFullscreen)
+            ? 44.0
+            : ((!kIsWeb && Platform.isWindows && !isFullscreen) ? 24.0 : 18.0);
         final w = compact ? 76.0 : 216.0;
         final serverLabel = appState.isSignedIn ? appState.activeServerDisplayName : '选择服务器';
         final routeName = appState.activeRouteDisplayName;
@@ -1007,6 +1011,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
       valueListenable: NativePlaybackChannel.fullscreenNotifier,
       builder: (context, isFullscreen, _) {
         final macTrafficClearance = (!kIsWeb && Platform.isMacOS && !isFullscreen) ? 82.0 : 28.0;
+        final winCaptionClearance = (!kIsWeb && Platform.isWindows && !isFullscreen) ? 148.0 : 28.0;
         final routeName = appState.activeRouteDisplayName;
         final serverLabel = appState.isSignedIn ? appState.activeServerDisplayName : '选择服务器';
         final activeSrv = appState.activeServer;
@@ -1052,7 +1057,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
           bottom: false,
           child: Container(
             height: 58,
-            padding: EdgeInsets.fromLTRB(macTrafficClearance, 0, 28, 0),
+            padding: EdgeInsets.fromLTRB(macTrafficClearance, 0, winCaptionClearance, 0),
             child: Row(
               children: [
                 PressableScale(
@@ -1173,7 +1178,9 @@ class _FloatingDesktopHeader extends StatelessWidget {
                 Expanded(
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
+                    onPanStart: (_) => NativePlaybackChannel.startWindowDrag(),
                     onDoubleTap: NativePlaybackChannel.toggleZoom,
+                    onSecondaryTapUp: (_) => NativePlaybackChannel.showWindowSystemMenu(),
                     child: const SizedBox.expand(),
                   ),
                 ),

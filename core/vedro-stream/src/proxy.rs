@@ -1,4 +1,6 @@
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,7 +12,8 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use parking_lot::RwLock;
+use lru::LruCache;
+use parking_lot::{Mutex, RwLock};
 use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
@@ -80,13 +83,18 @@ struct RegisteredStream {
 pub struct StreamProxy {
     listen_addr: SocketAddr,
     http: RwLock<reqwest::Client>,
+    transport_sig: RwLock<(Option<String>, bool)>,
     config: StreamProxyConfig,
     cache: ChunkCache,
     streams: Arc<DashMap<String, Arc<RegisteredStream>>>,
     image_upstream_base: RwLock<Option<String>>,
     image_upstream_headers: RwLock<HeaderMap>,
     server_image_upstreams: DashMap<String, (String, HeaderMap)>,
-    image_cache: DashMap<String, (String, Bytes)>,
+    image_cache: Mutex<LruCache<String, (String, Bytes)>>,
+    image_cache_dir: RwLock<Option<PathBuf>>,
+    image_sem: Semaphore,
+    image_in_flight: DashMap<String, Arc<Notify>>,
+    disk_write_counter: AtomicUsize,
     active_conns: Arc<AtomicUsize>,
     total_upstream_bytes: Arc<AtomicU64>,
     total_served_bytes: Arc<AtomicU64>,
@@ -100,9 +108,9 @@ fn build_proxy_http_client(
     accept_invalid_certs: bool,
 ) -> std::io::Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
-        .pool_max_idle_per_host(4)
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(60))
+        .pool_max_idle_per_host(12)
+        .connect_timeout(Duration::from_secs(12))
+        .timeout(Duration::from_secs(30))
         .tcp_nodelay(true)
         .danger_accept_invalid_certs(accept_invalid_certs);
     if let Some(p) = proxy_url.map(str::trim).filter(|s| !s.is_empty()) {
@@ -110,6 +118,18 @@ fn build_proxy_http_client(
         builder = builder.proxy(proxy);
     }
     builder.build().map_err(std::io::Error::other)
+}
+
+/// Deterministic 128-bit FNV-1a hex key for persistent on-disk artwork cache files.
+fn image_disk_cache_filename(key: &str) -> String {
+    let mut h1: u64 = 0xcbf29ce484222325;
+    let mut h2: u64 = 0x84222325cbf29ce4;
+    for &b in key.as_bytes() {
+        h1 ^= b as u64;
+        h1 = h1.wrapping_mul(0x100000001b3);
+        h2 = h2.wrapping_mul(0x100000001b3) ^ (b as u64);
+    }
+    format!("{h1:016x}{h2:016x}")
 }
 
 impl StreamProxy {
@@ -125,13 +145,20 @@ impl StreamProxy {
         let proxy = Arc::new(Self {
             listen_addr,
             http: RwLock::new(http),
+            transport_sig: RwLock::new((None, false)),
             config,
             cache,
             streams: Arc::new(DashMap::new()),
             image_upstream_base: RwLock::new(None),
             image_upstream_headers: RwLock::new(HeaderMap::new()),
             server_image_upstreams: DashMap::new(),
-            image_cache: DashMap::new(),
+            image_cache: Mutex::new(LruCache::new(NonZeroUsize::new(512).unwrap())),
+            image_cache_dir: RwLock::new(None),
+            // Bound concurrent upstream image fetches to 8 so cold Home mount (70+ posters)
+            // never triggers a 70-connection TLS/SOCKS5 handshake stampede or HTTP 429!
+            image_sem: Semaphore::new(8),
+            image_in_flight: DashMap::new(),
+            disk_write_counter: AtomicUsize::new(0),
             active_conns: Arc::new(AtomicUsize::new(0)),
             total_upstream_bytes: Arc::new(AtomicU64::new(0)),
             total_served_bytes: Arc::new(AtomicU64::new(0)),
@@ -178,26 +205,40 @@ impl StreamProxy {
         self.listen_addr
     }
 
+    pub fn set_image_cache_dir(&self, dir: PathBuf) {
+        let _ = std::fs::create_dir_all(&dir);
+        *self.image_cache_dir.write() = Some(dir);
+    }
+
     /// Reconfigure upstream HTTP proxy / TLS verification for the local stream proxy.
+    /// Idempotent when `(proxy_url, accept_invalid_certs)` has not changed so warm HTTP/2
+    /// connection pools and RAM artwork caches are never needlessly torn down mid-render!
     pub fn configure_transport(
         &self,
         proxy_url: Option<&str>,
         accept_invalid_certs: bool,
     ) -> std::io::Result<()> {
-        let client = build_proxy_http_client(proxy_url, accept_invalid_certs)?;
+        let norm_proxy = proxy_url
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        if *self.transport_sig.read() == (norm_proxy.clone(), accept_invalid_certs) {
+            return Ok(());
+        }
+        let client = build_proxy_http_client(norm_proxy.as_deref(), accept_invalid_certs)?;
         *self.http.write() = client;
-        self.image_cache.clear();
+        *self.transport_sig.write() = (norm_proxy, accept_invalid_certs);
         Ok(())
     }
 
-    /// Configure upstream server base URL + auth headers for local RAM-cached artwork proxying (`/img/...`).
+    /// Configure upstream server base URL + auth headers for local RAM/disk-cached artwork proxying (`/img/...`).
     pub fn set_image_upstream(&self, base_url: String, headers: HeaderMap) {
         let normalized = base_url.trim_end_matches('/').to_string();
         let changed = self.image_upstream_base.read().as_deref() != Some(normalized.as_str());
         *self.image_upstream_base.write() = Some(normalized);
         *self.image_upstream_headers.write() = headers;
         if changed {
-            self.image_cache.clear();
+            self.image_cache.lock().clear();
         }
     }
 
@@ -435,65 +476,206 @@ impl StreamProxy {
             Some(q) if !q.is_empty() => format!("{rel_path}?{q}"),
             _ => rel_path.to_string(),
         };
-        let cache_key = match server_id {
-            Some(sid) => format!("{sid}::{rel_with_q}"),
-            None => rel_with_q.clone(),
+        let (base, hdrs) = if let Some(sid) = server_id {
+            let Some(entry) = self.server_image_upstreams.get(sid) else {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::CACHE_CONTROL, "no-store")
+                    .body(Full::new(Bytes::from_static(
+                        b"unknown server image upstream",
+                    )))
+                    .unwrap();
+            };
+            entry.value().clone()
+        } else {
+            let Some(b) = self.image_upstream_base.read().clone() else {
+                return Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .header(header::CACHE_CONTROL, "no-store")
+                    .body(Full::new(Bytes::from_static(b"no image upstream")))
+                    .unwrap();
+            };
+            (b, self.image_upstream_headers.read().clone())
         };
-        if let Some(hit) = self.image_cache.get(&cache_key) {
-            let (ct, body) = hit.value();
+
+        let url = format!("{base}/{rel_with_q}");
+        let cache_key = url.clone();
+
+        // 1. Sub-microsecond RAM LRU cache hit
+        if let Some((ct, body)) = self.image_cache.lock().get(&cache_key).cloned() {
             return Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, ct.as_str())
                 .header(header::CONTENT_LENGTH, body.len())
                 .header(header::CACHE_CONTROL, "public, max-age=86400, immutable")
-                .body(Full::new(body.clone()))
+                .body(Full::new(body))
                 .unwrap();
         }
 
-        let (base, hdrs) = if let Some(sid) = server_id {
-            let Some(entry) = self.server_image_upstreams.get(sid) else {
-                return simple_response(StatusCode::NOT_FOUND, "unknown server image upstream");
-            };
-            entry.value().clone()
-        } else {
-            let Some(b) = self.image_upstream_base.read().clone() else {
-                return simple_response(StatusCode::SERVICE_UNAVAILABLE, "no image upstream");
-            };
-            (b, self.image_upstream_headers.read().clone())
-        };
-        let url = format!("{base}/{rel_with_q}");
-        let client = self.http.read().clone();
-
-        let Ok(resp) = client.get(&url).headers(hdrs).send().await else {
-            return simple_response(StatusCode::BAD_GATEWAY, "image upstream unreachable");
-        };
-        let status =
-            StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-        let ct = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("image/jpeg")
-            .to_string();
-        let Ok(bytes) = resp.bytes().await else {
-            return simple_response(StatusCode::BAD_GATEWAY, "failed to read image body");
-        };
-
-        if status == StatusCode::OK && bytes.len() <= 4 * 1024 * 1024 {
-            if self.image_cache.len() >= 360 {
-                self.image_cache.clear();
+        // 2. Persistent local disk cache hit (<2ms cold-start posters & hero banners with 0 network I/O!)
+        let disk_dir = self.image_cache_dir.read().clone();
+        let disk_stem = disk_dir
+            .as_ref()
+            .map(|_| image_disk_cache_filename(&cache_key));
+        if let (Some(ref dir), Some(ref stem)) = (&disk_dir, &disk_stem) {
+            let bin_path = dir.join(format!("{stem}.img"));
+            let ct_path = dir.join(format!("{stem}.ct"));
+            if let Ok(bytes_vec) = tokio::fs::read(&bin_path).await {
+                if !bytes_vec.is_empty() {
+                    let ct = tokio::fs::read_to_string(&ct_path)
+                        .await
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "image/jpeg".to_string());
+                    let body = Bytes::from(bytes_vec);
+                    self.image_cache
+                        .lock()
+                        .put(cache_key.clone(), (ct.clone(), body.clone()));
+                    return Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, ct.as_str())
+                        .header(header::CONTENT_LENGTH, body.len())
+                        .header(header::CACHE_CONTROL, "public, max-age=86400, immutable")
+                        .body(Full::new(body))
+                        .unwrap();
+                }
             }
-            self.image_cache
-                .insert(cache_key, (ct.clone(), bytes.clone()));
         }
 
+        // 3. Singleflight deduplication: coalesce identical concurrent artwork fetches
+        if let Some(notify) = self.image_in_flight.get(&cache_key).map(|n| Arc::clone(&n)) {
+            notify.notified().await;
+            if let Some((ct, body)) = self.image_cache.lock().get(&cache_key).cloned() {
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, ct.as_str())
+                    .header(header::CONTENT_LENGTH, body.len())
+                    .header(header::CACHE_CONTROL, "public, max-age=86400, immutable")
+                    .body(Full::new(body))
+                    .unwrap();
+            }
+        }
+
+        let notify = Arc::new(Notify::new());
+        self.image_in_flight
+            .insert(cache_key.clone(), Arc::clone(&notify));
+
+        let fetched = self.fetch_image_upstream_bounded(&url, &hdrs).await;
+
+        if let (StatusCode::OK, ref ct, ref bytes) = fetched {
+            if !bytes.is_empty() && bytes.len() <= 4 * 1024 * 1024 && ct.starts_with("image/") {
+                self.image_cache
+                    .lock()
+                    .put(cache_key.clone(), (ct.clone(), bytes.clone()));
+                if let (Some(dir), Some(stem)) = (disk_dir, disk_stem) {
+                    let ct_clone = ct.clone();
+                    let bytes_clone = bytes.clone();
+                    let write_idx = self.disk_write_counter.fetch_add(1, Ordering::Relaxed);
+                    tokio::spawn(async move {
+                        let bin_path = dir.join(format!("{stem}.img"));
+                        let ct_path = dir.join(format!("{stem}.ct"));
+                        let tmp_path = dir.join(format!("{stem}.tmp"));
+                        if tokio::fs::write(&tmp_path, &bytes_clone).await.is_ok() {
+                            let _ = tokio::fs::write(&ct_path, ct_clone.as_bytes()).await;
+                            let _ = tokio::fs::rename(&tmp_path, &bin_path).await;
+                        }
+                        if write_idx % 128 == 127 {
+                            prune_image_disk_cache(&dir, 900).await;
+                        }
+                    });
+                }
+            }
+        }
+
+        self.image_in_flight.remove(&cache_key);
+        notify.notify_waiters();
+
+        let (status, ct, bytes) = fetched;
+        let cache_hdr = if status == StatusCode::OK {
+            "public, max-age=86400"
+        } else {
+            "no-store"
+        };
         Response::builder()
             .status(status)
             .header(header::CONTENT_TYPE, ct)
             .header(header::CONTENT_LENGTH, bytes.len())
-            .header(header::CACHE_CONTROL, "public, max-age=86400")
+            .header(header::CACHE_CONTROL, cache_hdr)
             .body(Full::new(bytes))
             .unwrap()
+    }
+
+    async fn fetch_image_upstream_bounded(
+        &self,
+        url: &str,
+        hdrs: &HeaderMap,
+    ) -> (StatusCode, String, Bytes) {
+        let Ok(_permit) = self.image_sem.acquire().await else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "text/plain; charset=utf-8".to_string(),
+                Bytes::from_static(b"image proxy shutting down"),
+            );
+        };
+
+        let mut last_status = StatusCode::BAD_GATEWAY;
+        for attempt in 0..3u64 {
+            let client = self.http.read().clone();
+            match client.get(url).headers(hdrs.clone()).send().await {
+                Ok(resp) => {
+                    let raw_status = resp.status();
+                    if raw_status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                        self.rate_limit_retries.fetch_add(1, Ordering::Relaxed);
+                        let wait_ms = resp
+                            .headers()
+                            .get("Retry-After")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .map(|s| (s * 1000).min(3000))
+                            .unwrap_or(350 * (attempt + 1));
+                        if attempt < 2 {
+                            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                            continue;
+                        }
+                    }
+                    if raw_status.is_server_error() && attempt < 2 {
+                        tokio::time::sleep(Duration::from_millis(250 * (attempt + 1))).await;
+                        continue;
+                    }
+                    let status = StatusCode::from_u16(raw_status.as_u16())
+                        .unwrap_or(StatusCode::BAD_GATEWAY);
+                    let ct = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("image/jpeg")
+                        .to_string();
+                    match resp.bytes().await {
+                        Ok(bytes) => return (status, ct, bytes),
+                        Err(_) if attempt < 2 => {
+                            tokio::time::sleep(Duration::from_millis(200 * (attempt + 1))).await;
+                            continue;
+                        }
+                        Err(_) => {
+                            last_status = StatusCode::BAD_GATEWAY;
+                        }
+                    }
+                }
+                Err(_) => {
+                    last_status = StatusCode::BAD_GATEWAY;
+                    if attempt < 2 {
+                        tokio::time::sleep(Duration::from_millis(220 * (attempt + 1))).await;
+                        continue;
+                    }
+                }
+            }
+        }
+        (
+            last_status,
+            "text/plain; charset=utf-8".to_string(),
+            Bytes::from_static(b"image upstream unreachable"),
+        )
     }
 
     async fn ensure_size(&self, entry: &Arc<RegisteredStream>) -> Option<u64> {
@@ -750,6 +932,36 @@ pub fn parse_range_header(header_val: &str, total_size: u64) -> Option<(u64, u64
 fn parse_content_range_total(header_val: &str) -> Option<u64> {
     let (_, total_str) = header_val.rsplit_once('/')?;
     total_str.trim().parse::<u64>().ok()
+}
+
+async fn prune_image_disk_cache(dir: &std::path::Path, max_images: usize) {
+    let Ok(mut rd) = tokio::fs::read_dir(dir).await else {
+        return;
+    };
+    let mut entries = Vec::new();
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("img") {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .await
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        entries.push((mtime, p));
+    }
+    if entries.len() <= max_images {
+        return;
+    }
+    entries.sort_by_key(|(m, _)| *m);
+    let remove_count = entries.len().saturating_sub(max_images * 3 / 4);
+    for (_, img_path) in entries.into_iter().take(remove_count) {
+        let ct_path = img_path.with_extension("ct");
+        let _ = tokio::fs::remove_file(&img_path).await;
+        let _ = tokio::fs::remove_file(&ct_path).await;
+    }
 }
 
 #[cfg(test)]

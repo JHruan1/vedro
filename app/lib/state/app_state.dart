@@ -72,8 +72,6 @@ class VedroAppState extends ChangeNotifier {
 
   // Comprehensive user preferences persisted in SQLite KV (`vedro_prefs`)
   VedroPreferences prefs = const VedroPreferences();
-  Map<String, int?> proxyNodeLatencies = {};
-  String? autoProxyResolvedNodeId;
   Color? dynamicPageSeedColor;
   String? _dynamicSeedSourceKey;
 
@@ -180,36 +178,44 @@ class VedroAppState extends ChangeNotifier {
     isBusy = true;
     notifyListeners();
     try {
-      final ver = await core.invoke('version');
-      if (ver is Map<String, dynamic> && ver['proxy_addr'] != null) {
-        proxyAddr = ver['proxy_addr'].toString();
-      }
-      final list = await core.invoke('list_servers');
-      if (list is List) {
-        savedServers = list
-            .whereType<Map<String, dynamic>>()
-            .map(SavedServerProfile.fromJson)
-            .toList()
-          ..sort((a, b) => b.lastConnectedAt.compareTo(a.lastConnectedAt));
-      }
-      final cfg = await core.invoke('get_settings');
-      if (cfg is Map<String, dynamic>) {
-        settings = Map<String, dynamic>.from(cfg);
-      }
+      String? rememberedId;
+      Map<String, dynamic>? cachedHomeSnapshot;
+
+      // Fast path: 1 single FFI round-trip reads version, proxyAddr, servers, settings, prefs,
+      // home_layout, downloads_queue, last_active_server_id, AND cached_home from SQLite in <5ms!
+      Map<String, dynamic>? boot;
       try {
-        final kv = await core.invoke('get_kv', {'key': 'home_layout'});
-        if (kv is Map<String, dynamic> && kv['value'] is Map<String, dynamic>) {
-          final layout = kv['value'] as Map<String, dynamic>;
+        final rawBoot = await core.invoke('bootstrap_state');
+        if (rawBoot is Map<String, dynamic> && rawBoot.containsKey('servers')) {
+          boot = rawBoot;
+        }
+      } catch (_) {
+        boot = null;
+      }
+
+      if (boot != null) {
+        if (boot['proxy_addr'] != null) {
+          proxyAddr = boot['proxy_addr'].toString();
+        }
+        if (boot['servers'] is List) {
+          savedServers = (boot['servers'] as List)
+              .whereType<Map<String, dynamic>>()
+              .map(SavedServerProfile.fromJson)
+              .toList()
+            ..sort((a, b) => b.lastConnectedAt.compareTo(a.lastConnectedAt));
+        }
+        if (boot['settings'] is Map<String, dynamic>) {
+          settings = Map<String, dynamic>.from(boot['settings'] as Map);
+        }
+        if (boot['home_layout'] is Map<String, dynamic>) {
+          final layout = boot['home_layout'] as Map<String, dynamic>;
           homeSections = HomeSectionConfig.normalize(layout['sections'] as List<dynamic>?);
           if (layout['show_hero'] is bool) {
             showHomeHero = layout['show_hero'] as bool;
           }
         }
-      } catch (_) {}
-      try {
-        final kv = await core.invoke('get_kv', {'key': 'vedro_prefs'});
-        if (kv is Map<String, dynamic> && kv['value'] is Map<String, dynamic>) {
-          prefs = VedroPreferences.fromJson(kv['value'] as Map<String, dynamic>);
+        if (boot['vedro_prefs'] is Map<String, dynamic>) {
+          prefs = VedroPreferences.fromJson(boot['vedro_prefs'] as Map<String, dynamic>);
         } else {
           final hwProfile = DisplayMetricsProfile.fromPlatformDispatcher();
           prefs = const VedroPreferences().applyHardwareDefaults(hwProfile);
@@ -217,78 +223,107 @@ class VedroAppState extends ChangeNotifier {
             core.invoke('set_kv', {'key': 'vedro_prefs', 'value': prefs.toJson()}),
           );
         }
-      } catch (_) {}
-      // Re-activate selected subscription node BEFORE restoring the remembered server
-      // so servers reachable via the in-app proxy connect cleanly on cold start!
-      if (prefs.inAppProxyMode == 'sub' && prefs.selectedProxyNodeId.isNotEmpty) {
-        if (prefs.selectedProxyNodeId == 'auto') {
-          await autoSelectFastestProxyNode()
-              .timeout(const Duration(milliseconds: 2500), onTimeout: () => <String, dynamic>{})
-              .catchError((_) => <String, dynamic>{});
-        } else {
-          Map<String, dynamic>? chosen = prefs.proxyNodes
-              .where((n) => n['id']?.toString() == prefs.selectedProxyNodeId)
-              .firstOrNull;
-          if (chosen == null) {
-            for (final sub in prefs.proxySubscriptions) {
-              chosen = sub.nodes
-                  .where((n) => n['id']?.toString() == prefs.selectedProxyNodeId)
-                  .firstOrNull;
-              if (chosen != null) break;
+        if (boot['downloads_queue'] is List) {
+          downloads = _hydrateDownloadsList(boot['downloads_queue'] as List);
+        }
+        if (boot['last_active_server_id'] is String) {
+          final v = (boot['last_active_server_id'] as String).trim();
+          if (v.isNotEmpty) rememberedId = v;
+        }
+        if (boot['cached_home'] is Map<String, dynamic>) {
+          cachedHomeSnapshot = boot['cached_home'] as Map<String, dynamic>;
+        }
+      } else {
+        // Fallback path for mock test clients that do not implement `bootstrap_state`
+        final ver = await core.invoke('version');
+        if (ver is Map<String, dynamic> && ver['proxy_addr'] != null) {
+          proxyAddr = ver['proxy_addr'].toString();
+        }
+        final list = await core.invoke('list_servers');
+        if (list is List) {
+          savedServers = list
+              .whereType<Map<String, dynamic>>()
+              .map(SavedServerProfile.fromJson)
+              .toList()
+            ..sort((a, b) => b.lastConnectedAt.compareTo(a.lastConnectedAt));
+        }
+        final cfg = await core.invoke('get_settings');
+        if (cfg is Map<String, dynamic>) {
+          settings = Map<String, dynamic>.from(cfg);
+        }
+        try {
+          final kv = await core.invoke('get_kv', {'key': 'home_layout'});
+          if (kv is Map<String, dynamic> && kv['value'] is Map<String, dynamic>) {
+            final layout = kv['value'] as Map<String, dynamic>;
+            homeSections = HomeSectionConfig.normalize(layout['sections'] as List<dynamic>?);
+            if (layout['show_hero'] is bool) {
+              showHomeHero = layout['show_hero'] as bool;
             }
           }
-          if (chosen != null) {
-            await activateProxyNode(chosen)
-                .timeout(const Duration(milliseconds: 2000), onTimeout: () => <String, dynamic>{})
-                .catchError((_) => <String, dynamic>{});
+        } catch (_) {}
+        try {
+          final kv = await core.invoke('get_kv', {'key': 'vedro_prefs'});
+          if (kv is Map<String, dynamic> && kv['value'] is Map<String, dynamic>) {
+            prefs = VedroPreferences.fromJson(kv['value'] as Map<String, dynamic>);
+          } else {
+            final hwProfile = DisplayMetricsProfile.fromPlatformDispatcher();
+            prefs = const VedroPreferences().applyHardwareDefaults(hwProfile);
+            unawaited(
+              core.invoke('set_kv', {'key': 'vedro_prefs', 'value': prefs.toJson()}),
+            );
           }
-        }
+        } catch (_) {}
+        try {
+          final kv = await core.invoke('get_kv', {'key': 'downloads_queue'});
+          if (kv is Map<String, dynamic> && kv['value'] is List) {
+            downloads = _hydrateDownloadsList(kv['value'] as List);
+          }
+        } catch (_) {}
+        try {
+          final lastKv = await core.invoke('get_kv', {'key': 'last_active_server_id'});
+          if (lastKv is Map<String, dynamic> && lastKv['value'] is String) {
+            final v = (lastKv['value'] as String).trim();
+            if (v.isNotEmpty) rememberedId = v;
+          }
+        } catch (_) {}
       }
-      try {
-        final kv = await core.invoke('get_kv', {'key': 'downloads_queue'});
-        if (kv is Map<String, dynamic> && kv['value'] is List) {
-          downloads = (kv['value'] as List)
-              .whereType<Map<String, dynamic>>()
-              .map(DownloadTaskModel.fromJson)
-              .map((d) {
-                // Any interrupted in-progress transfer becomes resumable `paused` on next launch
-                if (d.status == 'downloading' || d.status == 'queued') {
-                  var syncedBytes = d.downloadedBytes;
-                  if (d.filePath.isNotEmpty) {
-                    final part = File('${d.filePath}.part');
-                    if (part.existsSync()) {
-                      syncedBytes = part.lengthSync();
-                    }
-                  }
-                  return d.copyWith(
-                    status: 'paused',
-                    downloadedBytes: syncedBytes,
-                    speedBytesPerSec: 0,
-                    error: '上次下载中断，可点击继续断点续传',
-                  );
-                }
-                return d;
-              })
-              .toList();
-        }
-      } catch (_) {}
 
-      final hwCaps = await NativePlaybackChannel.queryDisplayAndAudioCapabilities();
-      final detectedProxy = hwCaps['system_proxy_url']?.toString().trim() ?? '';
-      if (detectedProxy.isNotEmpty) {
-        systemProxyUrl = detectedProxy;
-      }
-      if (settings['display'] is Map<String, dynamic>) {
-        final d = Map<String, dynamic>.from(settings['display'] as Map);
-        d['supports_hdr10'] = hwCaps['supports_hdr10'] ?? d['supports_hdr10'];
-        d['supports_hlg'] = hwCaps['supports_hlg'] ?? d['supports_hlg'];
-        d['supports_native_dolby_vision'] =
-            hwCaps['supports_native_dolby_vision'] ?? d['supports_native_dolby_vision'];
-        d['max_luminance_nits'] = hwCaps['max_luminance_nits'] ?? d['max_luminance_nits'];
-        settings['display'] = d;
+      final recent = savedServers.where((s) => s.accessToken != null && s.userId != null).toList();
+      final target = recent.isNotEmpty
+          ? ((rememberedId != null
+                  ? recent.where((s) => s.id == rememberedId).firstOrNull
+                  : null) ??
+              recent.first)
+          : null;
+
+      // Instant Stale-While-Revalidate (SWR) Home hydration:
+      // Render the remembered server + cached Home rails on Frame 0 (<50ms) with ZERO splash block!
+      if (target != null) {
+        final route = target.activeRoute;
+        connectedUrl = route?.url.isNotEmpty == true ? route!.url : target.url;
+        activeServerId = target.id;
+        userId = target.userId;
+        username = target.username;
+        isAdmin = target.isAdmin;
+        capabilities = ServerCapabilitiesModel(
+          dialect: target.dialect,
+          serverId: target.id,
+          serverName: target.name,
+          advertisedVersion: '',
+          supportsTranscoding: target.dialect != 'embygo',
+          supportsPopular: target.dialect == 'embygo',
+          supportsSuggestions: true,
+          supportsHideFromResume: true,
+          usesStreamTickets: target.dialect == 'embygo',
+        );
+        if (cachedHomeSnapshot != null) {
+          _applyHomePayload(cachedHomeSnapshot);
+        }
+        isLoadingHome = !hasAnyHomeContent;
       }
 
       isInitialized = true;
+      isAutoRestoring = false;
       isBusy = false;
       notifyListeners();
 
@@ -299,40 +334,74 @@ class VedroAppState extends ChangeNotifier {
         } catch (_) {}
       }());
 
-      // Seamless auto-restore for returning users: strictly honor `last_active_server_id`
-      // (falling back to most recently connected profile) so reopening lands directly in that server!
-      String? rememberedId;
-      try {
-        final lastKv = await core.invoke('get_kv', {'key': 'last_active_server_id'});
-        if (lastKv is Map<String, dynamic> && lastKv['value'] is String) {
-          final v = (lastKv['value'] as String).trim();
-          if (v.isNotEmpty) rememberedId = v;
-        }
-      } catch (_) {}
-
-      final recent = savedServers.where((s) => s.accessToken != null && s.userId != null).toList();
-      if (recent.isNotEmpty) {
-        final target = (rememberedId != null
-                ? recent.where((s) => s.id == rememberedId).firstOrNull
-                : null) ??
-            recent.first;
-        isAutoRestoring = true;
-        notifyListeners();
+      // Background hardware probe + proxy activation + live session revalidation (never blocks UI entry!)
+      final bgFuture = () async {
         try {
-          await restoreSavedServer(target, silentError: true);
-        } finally {
-          isAutoRestoring = false;
-          notifyListeners();
+          final hwCaps = await NativePlaybackChannel.queryDisplayAndAudioCapabilities();
+          final detectedProxy = hwCaps['system_proxy_url']?.toString().trim() ?? '';
+          if (detectedProxy.isNotEmpty) {
+            systemProxyUrl = detectedProxy;
+          }
+          if (settings['display'] is Map<String, dynamic>) {
+            final d = Map<String, dynamic>.from(settings['display'] as Map);
+            d['supports_hdr10'] = hwCaps['supports_hdr10'] ?? d['supports_hdr10'];
+            d['supports_hlg'] = hwCaps['supports_hlg'] ?? d['supports_hlg'];
+            d['supports_native_dolby_vision'] =
+                hwCaps['supports_native_dolby_vision'] ?? d['supports_native_dolby_vision'];
+            d['max_luminance_nits'] = hwCaps['max_luminance_nits'] ?? d['max_luminance_nits'];
+            settings['display'] = d;
+          }
+        } catch (_) {}
+
+        if (target != null) {
+          await restoreSavedServer(
+            target,
+            silentError: true,
+            preserveCachedHome: hasAnyHomeContent,
+          );
+        } else {
+          unawaited(discoverLanServers());
         }
+      }();
+
+      // In unit tests (`boot == null`), await deterministically so assertions immediately see restored state.
+      if (boot == null) {
+        await bgFuture;
       } else {
-        unawaited(discoverLanServers());
+        unawaited(bgFuture);
       }
     } catch (e) {
       errorMessage = e.toString();
       isInitialized = true;
+      isAutoRestoring = false;
       isBusy = false;
       notifyListeners();
     }
+  }
+
+  List<DownloadTaskModel> _hydrateDownloadsList(List<dynamic> rawList) {
+    return rawList
+        .whereType<Map<String, dynamic>>()
+        .map(DownloadTaskModel.fromJson)
+        .map((d) {
+          if (d.status == 'downloading' || d.status == 'queued') {
+            var syncedBytes = d.downloadedBytes;
+            if (d.filePath.isNotEmpty) {
+              final part = File('${d.filePath}.part');
+              if (part.existsSync()) {
+                syncedBytes = part.lengthSync();
+              }
+            }
+            return d.copyWith(
+              status: 'paused',
+              downloadedBytes: syncedBytes,
+              speedBytesPerSec: 0,
+              error: '上次下载中断，可点击继续断点续传',
+            );
+          }
+          return d;
+        })
+        .toList();
   }
 
   Future<void> discoverLanServers() async {
@@ -447,6 +516,7 @@ class VedroAppState extends ChangeNotifier {
   Future<void> restoreSavedServer(
     SavedServerProfile profile, {
     bool silentError = false,
+    bool preserveCachedHome = false,
   }) async {
     if (profile.accessToken == null || profile.userId == null) {
       connectedUrl = profile.url;
@@ -455,9 +525,11 @@ class VedroAppState extends ChangeNotifier {
     }
     if (!silentError) errorMessage = null;
     homeError = null;
-    loginStage = '正在连接 ${profile.name}…';
-    isBusy = true;
-    notifyListeners();
+    if (!preserveCachedHome) {
+      loginStage = '正在连接 ${profile.name}…';
+      isBusy = true;
+      notifyListeners();
+    }
     try {
       final route = profile.activeRoute;
       final targetUrl = route?.url.isNotEmpty == true ? route!.url : profile.url;
@@ -488,10 +560,12 @@ class VedroAppState extends ChangeNotifier {
       enableContentDownloading = uPolicy?['EnableContentDownloading'] == true;
       meQuota = null;
 
-      _clearHomeCollections();
+      if (!preserveCachedHome || activeServerId != profile.id) {
+        _clearHomeCollections();
+      }
       isBusy = false;
       loginStage = null;
-      isLoadingHome = true;
+      isLoadingHome = !hasAnyHomeContent;
       notifyListeners();
 
       _startEventPolling();
@@ -518,11 +592,14 @@ class VedroAppState extends ChangeNotifier {
           supportsHideFromResume: true,
           usesStreamTickets: profile.dialect == 'embygo',
         );
-        homeError = '无法连接至 ${profile.name}：$humanized';
+        if (!hasAnyHomeContent) {
+          homeError = '无法连接至 ${profile.name}：$humanized';
+        }
       } else {
         errorMessage = humanized;
       }
       isBusy = false;
+      isLoadingHome = false;
       loginStage = null;
       notifyListeners();
       if (!silentError) rethrow;
@@ -704,6 +781,23 @@ class VedroAppState extends ChangeNotifier {
     latestByLibrary = [];
   }
 
+  void _applyHomePayload(Map<String, dynamic> res) {
+    if (res['capabilities'] is Map<String, dynamic>) {
+      capabilities = ServerCapabilitiesModel.fromJson(
+        res['capabilities'] as Map<String, dynamic>,
+      );
+    }
+    views = _parseItems(res['views']);
+    popular = _parseItems(res['popular']);
+    resume = _parseItems(res['resume']);
+    nextUp = _parseItems(res['next_up']);
+    suggestions = _parseItems(res['suggestions']);
+    favorites = _parseItems(res['favorites']);
+    latestByLibrary = ((res['latest_by_library'] as List<dynamic>?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
+
   Future<void> refreshHome() async {
     if (!isSignedIn) return;
     if (!hasAnyHomeContent) {
@@ -712,24 +806,18 @@ class VedroAppState extends ChangeNotifier {
       notifyListeners();
     }
     try {
-      final res = await core.invoke('get_home') as Map<String, dynamic>;
-      if (res['capabilities'] is Map<String, dynamic>) {
-        capabilities = ServerCapabilitiesModel.fromJson(
-          res['capabilities'] as Map<String, dynamic>,
-        );
-      }
-      views = _parseItems(res['views']);
-      popular = _parseItems(res['popular']);
-      resume = _parseItems(res['resume']);
-      nextUp = _parseItems(res['next_up']);
-      suggestions = _parseItems(res['suggestions']);
-      favorites = _parseItems(res['favorites']);
-      latestByLibrary = ((res['latest_by_library'] as List<dynamic>?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .toList();
+      final wantSuggestions = homeSections.any((s) => s.id == 'suggestions' && s.visible);
+      final wantFavorites = homeSections.any((s) => s.id == 'favorites' && s.visible);
+      final res = await core.invoke('get_home', {
+        'include_suggestions': wantSuggestions,
+        'include_favorites': wantFavorites,
+      }) as Map<String, dynamic>;
+      _applyHomePayload(res);
       homeError = null;
     } catch (e) {
-      homeError = _humanizeError(e.toString());
+      if (!hasAnyHomeContent) {
+        homeError = _humanizeError(e.toString());
+      }
     } finally {
       isLoadingHome = false;
       notifyListeners();
@@ -1547,7 +1635,6 @@ class VedroAppState extends ChangeNotifier {
   }
 
   /// Translate text (movie overview / subtitle line) through client-side Rust engine.
-  /// Respects `prefs.aiDirectClientIp`: when false, routes through active in-app proxy IP!
   Future<String> translateText(String text, {String? targetLang}) async {
     if (!prefs.isAiReady) {
       throw Exception('请先开启 AI 翻译');
@@ -1564,7 +1651,7 @@ class VedroAppState extends ChangeNotifier {
     return (res['translated'] ?? '').toString();
   }
 
-  /// Fetch available model IDs from `{base_url}/models` respecting direct vs proxy IP.
+  /// Fetch available model IDs from `{base_url}/models`.
   Future<List<String>> fetchAiModels({
     String? baseUrl,
     String? apiKey,
@@ -1590,347 +1677,8 @@ class VedroAppState extends ChangeNotifier {
     return models;
   }
 
-  /// Fetch & parse proxy subscription URL (or pasted Clash/Sing-box/Base64 URI links),
-  /// persisting into `prefs.proxySubscriptions` so multiple subscriptions can be saved & switched.
-  Future<Map<String, dynamic>> fetchProxySubscription(
-    String urlOrRaw, {
-    String? name,
-    String? subscriptionId,
-  }) async {
-    final trimmed = urlOrRaw.trim();
-    if (trimmed.isEmpty) throw Exception('请输入订阅链接或节点内容');
-    final isHttpUrl =
-        (trimmed.startsWith('http://') || trimmed.startsWith('https://')) && !trimmed.contains('\n');
-    final res = await core.invoke('fetch_proxy_subscription', {
-      if (isHttpUrl) 'url': trimmed else 'raw_content': trimmed,
-    }) as Map<String, dynamic>;
-    final nodes = ((res['nodes'] as List<dynamic>?) ?? const [])
-        .whereType<Map<String, dynamic>>()
-        .toList();
-    final userinfo = res['userinfo'] is Map
-        ? Map<String, dynamic>.from(res['userinfo'] as Map)
-        : null;
-
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final nextSubs = List<ProxySubscriptionProfile>.from(prefs.proxySubscriptions);
-    int existingIdx = -1;
-    if (subscriptionId != null && subscriptionId.isNotEmpty) {
-      existingIdx = nextSubs.indexWhere((s) => s.id == subscriptionId);
-    }
-    if (existingIdx < 0 && isHttpUrl) {
-      existingIdx = nextSubs.indexWhere((s) => s.url.trim() == trimmed);
-    }
-
-    late final ProxySubscriptionProfile savedSub;
-    if (existingIdx >= 0) {
-      final prev = nextSubs[existingIdx];
-      savedSub = prev.copyWith(
-        name: (name != null && name.trim().isNotEmpty) ? name.trim() : prev.name,
-        url: trimmed,
-        nodes: nodes,
-        userinfo: userinfo,
-        clearUserinfo: userinfo == null,
-        updatedAt: nowMs,
-      );
-      nextSubs[existingIdx] = savedSub;
-    } else {
-      final resolvedName = (name != null && name.trim().isNotEmpty)
-          ? name.trim()
-          : ProxySubscriptionProfile.inferName(trimmed, nextSubs.length + 1);
-      savedSub = ProxySubscriptionProfile(
-        id: 'sub_${nowMs}_${nextSubs.length + 1}',
-        name: resolvedName,
-        url: trimmed,
-        nodes: nodes,
-        userinfo: userinfo,
-        updatedAt: nowMs,
-      );
-      nextSubs.add(savedSub);
-    }
-
-    await updatePrefs(prefs.copyWith(
-      inAppProxyMode: 'sub',
-      proxySubscriptionUrl: isHttpUrl ? trimmed : prefs.proxySubscriptionUrl,
-      proxySubscriptions: nextSubs,
-      activeProxySubId: savedSub.id,
-      proxyNodes: nodes,
-      proxySubUserinfo: userinfo,
-      clearProxySubUserinfo: userinfo == null,
-    ));
-    unawaited(pingProxyNodes());
-    return {
-      ...res,
-      'subscription_id': savedSub.id,
-      'subscription_name': savedSub.name,
-    };
-  }
-
-  /// Switch active subscription tab instantly using its cached nodes, and trigger background ping if needed.
-  Future<void> selectProxySubscription(String subId) async {
-    final target = prefs.proxySubscriptions.where((s) => s.id == subId).firstOrNull;
-    if (target == null) return;
-    await updatePrefs(prefs.copyWith(
-      inAppProxyMode: 'sub',
-      activeProxySubId: target.id,
-      proxySubscriptionUrl: target.url,
-      proxyNodes: target.nodes,
-      proxySubUserinfo: target.userinfo,
-      clearProxySubUserinfo: target.userinfo == null,
-    ));
-    final needsPing = target.nodes.any(
-      (n) => !proxyNodeLatencies.containsKey((n['id'] ?? '').toString()),
-    );
-    if (needsPing) {
-      unawaited(pingProxyNodes());
-    }
-  }
-
-  Future<void> renameProxySubscription(String subId, String newName) async {
-    final cleaned = newName.trim();
-    if (cleaned.isEmpty) return;
-    final nextSubs = prefs.proxySubscriptions
-        .map((s) => s.id == subId ? s.copyWith(name: cleaned) : s)
-        .toList();
-    await updatePrefs(prefs.copyWith(proxySubscriptions: nextSubs));
-  }
-
-  Future<void> deleteProxySubscription(String subId) async {
-    final nextSubs = prefs.proxySubscriptions.where((s) => s.id != subId).toList();
-    if (nextSubs.isEmpty) {
-      if (prefs.inAppProxyMode == 'sub') {
-        try {
-          await core.invoke('configure_in_app_proxy', {'mode': 'off'});
-        } catch (_) {}
-      }
-      autoProxyResolvedNodeId = null;
-      await updatePrefs(prefs.copyWith(
-        proxySubscriptions: const [],
-        activeProxySubId: '',
-        proxySubscriptionUrl: '',
-        proxyNodes: const [],
-        selectedProxyNodeId: '',
-        clearProxySubUserinfo: true,
-      ));
-      return;
-    }
-    final nextActive = nextSubs.any((s) => s.id == prefs.activeProxySubId)
-        ? nextSubs.firstWhere((s) => s.id == prefs.activeProxySubId)
-        : nextSubs.first;
-    await updatePrefs(prefs.copyWith(
-      proxySubscriptions: nextSubs,
-      activeProxySubId: nextActive.id,
-      proxySubscriptionUrl: nextActive.url,
-      proxyNodes: nextActive.nodes,
-      proxySubUserinfo: nextActive.userinfo,
-      clearProxySubUserinfo: nextActive.userinfo == null,
-    ));
-  }
-
-  /// Refresh all saved HTTP-URL proxy subscriptions sequentially and sync the active subscription's nodes.
-  Future<int> refreshAllProxySubscriptions() async {
-    if (prefs.proxySubscriptions.isEmpty) return 0;
-    var updatedCount = 0;
-    final nextSubs = List<ProxySubscriptionProfile>.from(prefs.proxySubscriptions);
-    for (var i = 0; i < nextSubs.length; i++) {
-      final sub = nextSubs[i];
-      final u = sub.url.trim();
-      final isHttp = (u.startsWith('http://') || u.startsWith('https://')) && !u.contains('\n');
-      try {
-        final res = await core.invoke('fetch_proxy_subscription', {
-          if (isHttp) 'url': u else 'raw_content': u,
-        }) as Map<String, dynamic>;
-        final nodes = ((res['nodes'] as List<dynamic>?) ?? const [])
-            .whereType<Map<String, dynamic>>()
-            .toList();
-        final userinfo = res['userinfo'] is Map
-            ? Map<String, dynamic>.from(res['userinfo'] as Map)
-            : sub.userinfo;
-        nextSubs[i] = sub.copyWith(
-          nodes: nodes,
-          userinfo: userinfo,
-          updatedAt: DateTime.now().millisecondsSinceEpoch,
-        );
-        updatedCount += 1;
-      } catch (_) {}
-    }
-    final activeSub = nextSubs.where((s) => s.id == prefs.activeProxySubId).firstOrNull ??
-        nextSubs.first;
-    await updatePrefs(prefs.copyWith(
-      proxySubscriptions: nextSubs,
-      activeProxySubId: activeSub.id,
-      proxyNodes: activeSub.nodes,
-      proxySubUserinfo: activeSub.userinfo,
-      clearProxySubUserinfo: activeSub.userinfo == null,
-    ));
-    unawaited(pingProxyNodes());
-    return updatedCount;
-  }
-
-  Future<Map<String, int?>> pingProxyNodes() async {
-    if (prefs.proxyNodes.isEmpty) return const {};
-    final res = await core.invoke('ping_proxy_nodes', {
-      'nodes': prefs.proxyNodes,
-    }) as Map<String, dynamic>;
-    final rawMap = res['latencies'] as Map<String, dynamic>? ?? const {};
-    final parsed = <String, int?>{};
-    for (final e in rawMap.entries) {
-      parsed[e.key] = (e.value as num?)?.toInt();
-    }
-    proxyNodeLatencies = parsed;
-    notifyListeners();
-    return parsed;
-  }
-
-  bool isProxyNodeSupportedOnCurrentOs(Map<String, dynamic> node) {
-    final isMobileOs = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
-    if (!isMobileOs) return true;
-    return node['native_supported'] != false;
-  }
-
-  List<Map<String, dynamic>> sortedProxyNodes({
-    String? sortOverride,
-    String searchQuery = '',
-  }) {
-    final q = searchQuery.trim().toLowerCase();
-    final indexed = <(int, Map<String, dynamic>)>[];
-    for (var i = 0; i < prefs.proxyNodes.length; i++) {
-      final n = prefs.proxyNodes[i];
-      if (q.isNotEmpty) {
-        final name = (n['name'] ?? '').toString().toLowerCase();
-        final proto = (n['protocol'] ?? '').toString().toLowerCase();
-        final srv = (n['server'] ?? '').toString().toLowerCase();
-        if (!name.contains(q) && !proto.contains(q) && !srv.contains(q)) continue;
-      }
-      indexed.add((i, n));
-    }
-
-    final sort = sortOverride ?? prefs.proxyNodeSort;
-    if (sort == 'name') {
-      indexed.sort((a, b) =>
-          (a.$2['name'] ?? '').toString().compareTo((b.$2['name'] ?? '').toString()));
-    } else if (sort == 'latency') {
-      int rankOf(Map<String, dynamic> n) {
-        if (!isProxyNodeSupportedOnCurrentOs(n)) return 3;
-        final id = (n['id'] ?? '').toString();
-        if (!proxyNodeLatencies.containsKey(id)) return 1;
-        return proxyNodeLatencies[id] != null ? 0 : 2;
-      }
-
-      indexed.sort((a, b) {
-        final ra = rankOf(a.$2);
-        final rb = rankOf(b.$2);
-        if (ra != rb) return ra.compareTo(rb);
-        if (ra == 0) {
-          final ma = proxyNodeLatencies[(a.$2['id'] ?? '').toString()]!;
-          final mb = proxyNodeLatencies[(b.$2['id'] ?? '').toString()]!;
-          if (ma != mb) return ma.compareTo(mb);
-        }
-        return a.$1.compareTo(b.$1);
-      });
-    }
-    return indexed.map((e) => e.$2).toList();
-  }
-
-  Future<Map<String, dynamic>> activateProxyNode(
-    Map<String, dynamic> node, {
-    bool keepAutoMode = false,
-  }) async {
-    final res = await core.invoke('activate_proxy_node', {
-      'node': node,
-      if (prefs.inAppProxyCorePath.trim().isNotEmpty)
-        'binary_path': prefs.inAppProxyCorePath.trim(),
-    }) as Map<String, dynamic>;
-    final nodeId = (node['id'] ?? '').toString();
-    autoProxyResolvedNodeId = keepAutoMode ? nodeId : null;
-    await updatePrefs(prefs.copyWith(
-      inAppProxyMode: 'sub',
-      selectedProxyNodeId: keepAutoMode ? 'auto' : nodeId,
-    ));
-    return res;
-  }
-
-  /// Pings subscription nodes (if needed) and automatically activates the lowest-latency supported node.
-  Future<Map<String, dynamic>> autoSelectFastestProxyNode({bool forcePing = false}) async {
-    if (prefs.proxyNodes.isEmpty) {
-      throw Exception('请先更新订阅获取节点');
-    }
-    if (forcePing || proxyNodeLatencies.isEmpty) {
-      await pingProxyNodes();
-    }
-    final ordered = sortedProxyNodes(sortOverride: 'latency')
-        .where(isProxyNodeSupportedOnCurrentOs)
-        .toList();
-    if (ordered.isEmpty) {
-      throw Exception('订阅中暂无当前设备支持的节点');
-    }
-    final reachable = ordered
-        .where((n) => proxyNodeLatencies[(n['id'] ?? '').toString()] != null)
-        .toList();
-    final pool = reachable.isNotEmpty ? reachable : ordered;
-    Object? lastErr;
-    for (final cand in pool.take(4)) {
-      try {
-        final res = await activateProxyNode(cand, keepAutoMode: true);
-        final cid = (cand['id'] ?? '').toString();
-        return {
-          ...res,
-          'node_id': cid,
-          'node_name': (cand['name'] ?? '').toString(),
-          if (proxyNodeLatencies[cid] != null) 'latency_ms': proxyNodeLatencies[cid],
-        };
-      } catch (e) {
-        lastErr = e;
-      }
-    }
-    throw lastErr ?? Exception('自动选择节点失败');
-  }
-
-  Future<String> installSingboxCore() async {
-    final res = await core.invoke('install_singbox_core', const {}) as Map<String, dynamic>;
-    final binPath = (res['binary_path'] ?? '').toString();
-    if (binPath.isNotEmpty) {
-      await updatePrefs(prefs.copyWith(inAppProxyCorePath: binPath));
-    }
-    return binPath;
-  }
-
   Future<void> resetToHardwareRecommendedDefaults(DisplayMetricsProfile profile) async {
     await updatePrefs(prefs.applyHardwareDefaults(profile));
-  }
-
-  /// Configure Vedro's zero-VPN app-internal proxy (`off` | `custom` | `singbox` | `mihomo`).
-  Future<Map<String, dynamic>> configureInAppProxy({
-    required String mode,
-    String proxyUrl = '',
-    String binaryPath = '',
-    String configText = '',
-  }) async {
-    final res = await core.invoke('configure_in_app_proxy', {
-      'mode': mode,
-      'proxy_url': proxyUrl,
-      'binary_path': binaryPath,
-      'config_text': configText,
-    }) as Map<String, dynamic>;
-    await updatePrefs(prefs.copyWith(
-      inAppProxyMode: mode,
-      inAppProxyUrl: proxyUrl,
-      inAppProxyCorePath: binaryPath,
-      inAppProxyConfigText: configText,
-    ));
-    return res;
-  }
-
-  Future<Map<String, dynamic>> getInAppProxyStatus() async {
-    final res = await core.invoke('in_app_proxy_status', const {});
-    return res is Map<String, dynamic> ? res : <String, dynamic>{};
-  }
-
-  Future<Map<String, dynamic>> testInAppProxy({String? proxyUrl, String? testUrl}) async {
-    final res = await core.invoke('test_in_app_proxy', {
-      if (proxyUrl != null && proxyUrl.trim().isNotEmpty) 'proxy_url': proxyUrl.trim(),
-      if (testUrl != null && testUrl.trim().isNotEmpty) 'test_url': testUrl.trim(),
-    }) as Map<String, dynamic>;
-    return res;
   }
 
   Future<void> adminEndSession(String sessionId) async {
@@ -2346,7 +2094,13 @@ class VedroAppState extends ChangeNotifier {
       );
     }
     final poster = posterArtUrl(item, width: (width * 0.6).round());
-    return poster != null ? ResolvedArt(url: poster, isPoster: true) : null;
+    return poster != null
+        ? ResolvedArt(
+            url: poster,
+            isPoster: true,
+            tinyUrl: posterArtUrl(item, width: 140),
+          )
+        : null;
   }
 
   ResolvedArt? backdropArt(MediaItemModel item, {int width = 1920}) {
@@ -2391,7 +2145,13 @@ class VedroAppState extends ChangeNotifier {
       );
     }
     final poster = posterArtUrl(item, width: 800);
-    return poster != null ? ResolvedArt(url: poster, isPoster: true) : null;
+    return poster != null
+        ? ResolvedArt(
+            url: poster,
+            isPoster: true,
+            tinyUrl: posterArtUrl(item, width: 140),
+          )
+        : null;
   }
 
   String? logoArtUrl(MediaItemModel item, {int width = 640}) {

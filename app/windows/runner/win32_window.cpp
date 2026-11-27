@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
+#include <windowsx.h>
 
 #include "resource.h"
 
@@ -18,6 +19,9 @@ namespace {
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1
 #define DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 19
 #endif
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
 #ifndef DWMWA_BORDER_COLOR
 #define DWMWA_BORDER_COLOR 34
 #endif
@@ -31,6 +35,7 @@ namespace {
 constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
 
 static bool g_vedro_is_light = false;
+static bool g_vedro_is_fullscreen = false;
 static COLORREF g_vedro_caption_rgb = RGB(11, 11, 13);
 static COLORREF g_vedro_text_rgb = RGB(244, 244, 246);
 static HBRUSH g_vedro_bg_brush = nullptr;
@@ -156,7 +161,18 @@ bool Win32Window::Create(const std::wstring& title,
     return false;
   }
 
+  // Seamless full-bleed DWM client frame: removes the separate Win32 titlebar strip
+  // so Hero artwork, blurred headers, and video bleed to y = 0 while preserving native
+  // Windows 11 rounded corners, DWM drop shadow, and Aero Snap!
+  const MARGINS margins = {0, 0, 0, 1};
+  DwmExtendFrameIntoClientArea(window, &margins);
+  const DWORD corner_pref = 2;  // DWMWCP_ROUND
+  DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE, &corner_pref,
+                        sizeof(corner_pref));
   UpdateTheme(window);
+  SetWindowPos(window, nullptr, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                   SWP_FRAMECHANGED);
 
   return OnCreate();
 }
@@ -191,6 +207,45 @@ Win32Window::MessageHandler(HWND hwnd,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
   switch (message) {
+    case WM_NCCALCSIZE: {
+      if (wparam == TRUE && !g_vedro_is_fullscreen) {
+        auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
+        if (IsZoomed(hwnd)) {
+          HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+          MONITORINFO mi = {sizeof(MONITORINFO)};
+          if (GetMonitorInfo(monitor, &mi)) {
+            params->rgrc[0] = mi.rcWork;
+          }
+        }
+        return 0;
+      }
+      break;
+    }
+
+    case WM_NCHITTEST: {
+      if (!g_vedro_is_fullscreen && !IsZoomed(hwnd)) {
+        POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        RECT rc = {};
+        GetWindowRect(hwnd, &rc);
+        HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
+        const LONG border = static_cast<LONG>(6.0 * (dpi / 96.0));
+        const bool left = pt.x >= rc.left && pt.x < rc.left + border;
+        const bool right = pt.x <= rc.right && pt.x > rc.right - border;
+        const bool top = pt.y >= rc.top && pt.y < rc.top + border;
+        const bool bottom = pt.y <= rc.bottom && pt.y > rc.bottom - border;
+        if (top && left) return HTTOPLEFT;
+        if (top && right) return HTTOPRIGHT;
+        if (bottom && left) return HTBOTTOMLEFT;
+        if (bottom && right) return HTBOTTOMRIGHT;
+        if (left) return HTLEFT;
+        if (right) return HTRIGHT;
+        if (top) return HTTOP;
+        if (bottom) return HTBOTTOM;
+      }
+      break;
+    }
+
     case WM_DESTROY:
       window_handle_ = nullptr;
       Destroy();
@@ -284,6 +339,10 @@ void Win32Window::OnDestroy() {
   // No-op; provided for subclasses.
 }
 
+void VedroSetWin32FullscreenFlag(bool is_fullscreen) {
+  g_vedro_is_fullscreen = is_fullscreen;
+}
+
 void VedroApplyWin32WindowChrome(HWND const window,
                                  bool is_light,
                                  COLORREF caption_rgb,
@@ -298,11 +357,11 @@ void VedroApplyWin32WindowChrome(HWND const window,
                         &enable_dark_mode, sizeof(enable_dark_mode));
   DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1,
                         &enable_dark_mode, sizeof(enable_dark_mode));
-  // Windows 11 (Build 22000+) seamless page-matched DWM titlebar & border tinting
+  COLORREF border_rgb = is_light ? RGB(214, 214, 220) : RGB(38, 39, 46);
   DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR,
                         &g_vedro_caption_rgb, sizeof(g_vedro_caption_rgb));
   DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
-                        &g_vedro_caption_rgb, sizeof(g_vedro_caption_rgb));
+                        &border_rgb, sizeof(border_rgb));
   DwmSetWindowAttribute(window, DWMWA_TEXT_COLOR,
                         &g_vedro_text_rgb, sizeof(g_vedro_text_rgb));
 }

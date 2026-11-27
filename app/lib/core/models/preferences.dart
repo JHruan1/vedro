@@ -319,81 +319,6 @@ class DownloadTaskModel {
       );
 }
 
-/// Saved proxy subscription source supporting multiple airport / self-hosted subscriptions.
-class ProxySubscriptionProfile {
-  const ProxySubscriptionProfile({
-    required this.id,
-    required this.name,
-    required this.url,
-    this.nodes = const [],
-    this.userinfo,
-    this.updatedAt = 0,
-  });
-
-  final String id;
-  final String name;
-  final String url;
-  final List<Map<String, dynamic>> nodes;
-  final Map<String, dynamic>? userinfo;
-  final int updatedAt;
-
-  static String inferName(String rawUrl, int index) {
-    final trimmed = rawUrl.trim();
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-      final host = Uri.tryParse(trimmed)?.host ?? '';
-      if (host.isNotEmpty) {
-        final cleaned = host
-            .replaceFirst(RegExp(r'^(sub|api|www|client|link)\.'), '');
-        return cleaned.isNotEmpty ? cleaned : host;
-      }
-    }
-    return '订阅 $index';
-  }
-
-  ProxySubscriptionProfile copyWith({
-    String? name,
-    String? url,
-    List<Map<String, dynamic>>? nodes,
-    Map<String, dynamic>? userinfo,
-    bool clearUserinfo = false,
-    int? updatedAt,
-  }) =>
-      ProxySubscriptionProfile(
-        id: id,
-        name: name ?? this.name,
-        url: url ?? this.url,
-        nodes: nodes ?? this.nodes,
-        userinfo: clearUserinfo ? null : (userinfo ?? this.userinfo),
-        updatedAt: updatedAt ?? this.updatedAt,
-      );
-
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'url': url,
-        'nodes': nodes,
-        if (userinfo != null) 'userinfo': userinfo,
-        'updated_at': updatedAt,
-      };
-
-  factory ProxySubscriptionProfile.fromJson(Map<String, dynamic> j) =>
-      ProxySubscriptionProfile(
-        id: (j['id'] ?? 'sub_${DateTime.now().millisecondsSinceEpoch}').toString(),
-        name: (j['name'] ?? '默认订阅').toString(),
-        url: (j['url'] ?? '').toString(),
-        nodes: ((j['nodes'] as List<dynamic>?) ?? const [])
-            .map((e) => e is Map<String, dynamic>
-                ? e
-                : (e is Map ? Map<String, dynamic>.from(e) : null))
-            .whereType<Map<String, dynamic>>()
-            .toList(),
-        userinfo: j['userinfo'] is Map
-            ? Map<String, dynamic>.from(j['userinfo'] as Map)
-            : null,
-        updatedAt: (j['updated_at'] as num?)?.toInt() ?? 0,
-      );
-}
-
 class VedroPreferences {
   const VedroPreferences({
     // 应用风格 & 主题引擎
@@ -487,18 +412,6 @@ class VedroPreferences {
     this.aiBilingualSubtitle = true,
     this.aiDirectClientIp = true,
     this.aiCachedModels = const [],
-    // 应用内代理与节点订阅
-    this.inAppProxyMode = 'off', // off | sub | custom | singbox | mihomo
-    this.inAppProxyUrl = '',
-    this.inAppProxyCorePath = '',
-    this.inAppProxyConfigText = '',
-    this.proxySubscriptionUrl = '',
-    this.proxySubscriptions = const [],
-    this.activeProxySubId = '',
-    this.proxyNodes = const [],
-    this.selectedProxyNodeId = '',
-    this.proxyNodeSort = 'latency', // latency | default | name
-    this.proxySubUserinfo,
     // 隐私保护
     this.passcodeEnabled = false,
     this.passcodeHash = '',
@@ -605,18 +518,6 @@ class VedroPreferences {
   final bool aiBilingualSubtitle;
   final bool aiDirectClientIp;
   final List<String> aiCachedModels;
-
-  final String inAppProxyMode;
-  final String inAppProxyUrl;
-  final String inAppProxyCorePath;
-  final String inAppProxyConfigText;
-  final String proxySubscriptionUrl;
-  final List<ProxySubscriptionProfile> proxySubscriptions;
-  final String activeProxySubId;
-  final List<Map<String, dynamic>> proxyNodes;
-  final String selectedProxyNodeId;
-  final String proxyNodeSort;
-  final Map<String, dynamic>? proxySubUserinfo;
 
   final bool passcodeEnabled;
   final String passcodeHash;
@@ -865,18 +766,6 @@ class VedroPreferences {
     bool? aiBilingualSubtitle,
     bool? aiDirectClientIp,
     List<String>? aiCachedModels,
-    String? inAppProxyMode,
-    String? inAppProxyUrl,
-    String? inAppProxyCorePath,
-    String? inAppProxyConfigText,
-    String? proxySubscriptionUrl,
-    List<ProxySubscriptionProfile>? proxySubscriptions,
-    String? activeProxySubId,
-    List<Map<String, dynamic>>? proxyNodes,
-    String? selectedProxyNodeId,
-    String? proxyNodeSort,
-    Map<String, dynamic>? proxySubUserinfo,
-    bool clearProxySubUserinfo = false,
     bool? passcodeEnabled,
     String? passcodeHash,
     int? lockTimeoutSecs,
@@ -972,18 +861,6 @@ class VedroPreferences {
         aiBilingualSubtitle: aiBilingualSubtitle ?? this.aiBilingualSubtitle,
         aiDirectClientIp: aiDirectClientIp ?? this.aiDirectClientIp,
         aiCachedModels: aiCachedModels ?? this.aiCachedModels,
-        inAppProxyMode: inAppProxyMode ?? this.inAppProxyMode,
-        inAppProxyUrl: inAppProxyUrl ?? this.inAppProxyUrl,
-        inAppProxyCorePath: inAppProxyCorePath ?? this.inAppProxyCorePath,
-        inAppProxyConfigText: inAppProxyConfigText ?? this.inAppProxyConfigText,
-        proxySubscriptionUrl: proxySubscriptionUrl ?? this.proxySubscriptionUrl,
-        proxySubscriptions: proxySubscriptions ?? this.proxySubscriptions,
-        activeProxySubId: activeProxySubId ?? this.activeProxySubId,
-        proxyNodes: proxyNodes ?? this.proxyNodes,
-        selectedProxyNodeId: selectedProxyNodeId ?? this.selectedProxyNodeId,
-        proxyNodeSort: proxyNodeSort ?? this.proxyNodeSort,
-        proxySubUserinfo:
-            clearProxySubUserinfo ? null : (proxySubUserinfo ?? this.proxySubUserinfo),
         passcodeEnabled: passcodeEnabled ?? this.passcodeEnabled,
         passcodeHash: passcodeHash ?? this.passcodeHash,
         lockTimeoutSecs: lockTimeoutSecs ?? this.lockTimeoutSecs,
@@ -1080,17 +957,6 @@ class VedroPreferences {
         'ai_bilingual_subtitle': aiBilingualSubtitle,
         'ai_direct_client_ip': aiDirectClientIp,
         'ai_cached_models': aiCachedModels,
-        'in_app_proxy_mode': inAppProxyMode,
-        'in_app_proxy_url': inAppProxyUrl,
-        'in_app_proxy_core_path': inAppProxyCorePath,
-        'in_app_proxy_config_text': inAppProxyConfigText,
-        'proxy_subscription_url': proxySubscriptionUrl,
-        'proxy_subscriptions': proxySubscriptions.map((s) => s.toJson()).toList(),
-        'active_proxy_sub_id': activeProxySubId,
-        'proxy_nodes': proxyNodes,
-        'selected_proxy_node_id': selectedProxyNodeId,
-        'proxy_node_sort': proxyNodeSort,
-        if (proxySubUserinfo != null) 'proxy_sub_userinfo': proxySubUserinfo,
         'passcode_enabled': passcodeEnabled,
         'passcode_hash': passcodeHash,
         'lock_timeout_secs': lockTimeoutSecs,
@@ -1105,43 +971,6 @@ class VedroPreferences {
       };
 
   factory VedroPreferences.fromJson(Map<String, dynamic> j) {
-    final legacySubUrl = (j['proxy_subscription_url'] ?? '').toString();
-    final legacyNodes = ((j['proxy_nodes'] as List<dynamic>?) ?? const [])
-        .map((e) => e is Map<String, dynamic>
-            ? e
-            : (e is Map ? Map<String, dynamic>.from(e) : null))
-        .whereType<Map<String, dynamic>>()
-        .toList();
-    final legacyUserinfo = j['proxy_sub_userinfo'] is Map
-        ? Map<String, dynamic>.from(j['proxy_sub_userinfo'] as Map)
-        : null;
-    var subs = ((j['proxy_subscriptions'] as List<dynamic>?) ?? const [])
-        .map((e) => e is Map<String, dynamic>
-            ? ProxySubscriptionProfile.fromJson(e)
-            : (e is Map
-                ? ProxySubscriptionProfile.fromJson(Map<String, dynamic>.from(e))
-                : null))
-        .whereType<ProxySubscriptionProfile>()
-        .toList();
-    if (subs.isEmpty && (legacySubUrl.trim().isNotEmpty || legacyNodes.isNotEmpty)) {
-      subs = [
-        ProxySubscriptionProfile(
-          id: 'sub_default',
-          name: ProxySubscriptionProfile.inferName(legacySubUrl, 1),
-          url: legacySubUrl,
-          nodes: legacyNodes,
-          userinfo: legacyUserinfo,
-        ),
-      ];
-    }
-    var activeSubId = (j['active_proxy_sub_id'] ?? '').toString();
-    if (subs.isNotEmpty && !subs.any((s) => s.id == activeSubId)) {
-      activeSubId = subs.first.id;
-    }
-    final activeSub = subs.where((s) => s.id == activeSubId).firstOrNull;
-    final resolvedNodes = legacyNodes.isNotEmpty ? legacyNodes : (activeSub?.nodes ?? const []);
-    final resolvedUserinfo = legacyUserinfo ?? activeSub?.userinfo;
-
     return VedroPreferences(
         skinId: (j['skin_id'] ?? 'immersive_cinema').toString(),
         themeMode: (j['theme_mode'] ?? 'dark').toString(),
@@ -1237,17 +1066,6 @@ class VedroPreferences {
             .map((e) => e.toString())
             .where((s) => s.isNotEmpty)
             .toList(),
-        inAppProxyMode: (j['in_app_proxy_mode'] ?? 'off').toString(),
-        inAppProxyUrl: (j['in_app_proxy_url'] ?? '').toString(),
-        inAppProxyCorePath: (j['in_app_proxy_core_path'] ?? '').toString(),
-        inAppProxyConfigText: (j['in_app_proxy_config_text'] ?? '').toString(),
-        proxySubscriptionUrl: legacySubUrl,
-        proxySubscriptions: subs,
-        activeProxySubId: activeSubId,
-        proxyNodes: resolvedNodes,
-        selectedProxyNodeId: (j['selected_proxy_node_id'] ?? '').toString(),
-        proxyNodeSort: (j['proxy_node_sort'] ?? 'latency').toString(),
-        proxySubUserinfo: resolvedUserinfo,
         passcodeEnabled: j['passcode_enabled'] == true,
         passcodeHash: (j['passcode_hash'] ?? '').toString(),
         lockTimeoutSecs: (j['lock_timeout_secs'] as num?)?.toInt() ?? 60,

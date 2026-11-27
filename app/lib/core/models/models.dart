@@ -182,12 +182,15 @@ class ServerLiveStatus {
 }
 
 class ResolvedArt {
-  const ResolvedArt({required this.url, required this.isPoster});
+  const ResolvedArt({required this.url, required this.isPoster, this.tinyUrl});
   final String url;
 
   /// True when only a 2:3 portrait poster exists for a 16:9 slot —
   /// callers render it with a blurred ambient backdrop + framed poster instead of cropping.
   final bool isPoster;
+
+  /// Optional compact thumbnail (`maxWidth=140`) used for blurred ambient fill in `FramedPoster`.
+  final String? tinyUrl;
 }
 
 class HomeSectionConfig {

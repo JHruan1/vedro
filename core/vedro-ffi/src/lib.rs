@@ -5,9 +5,6 @@ use std::os::raw::c_char;
 use std::sync::Arc;
 use std::time::Duration;
 
-mod proxy_engine;
-mod proxy_sub;
-
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -74,25 +71,9 @@ struct ActivePlaybackSession {
 }
 
 /// Core runtime backing both the C-ABI FFI library (`libvedro_ffi`) and native Rust hosts.
-struct ManagedProxyProcess {
-    engine_kind: String,
-    listen_port: u16,
-    temp_dir: std::path::PathBuf,
-    child: std::process::Child,
-}
-
-impl Drop for ManagedProxyProcess {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.temp_dir);
-    }
-}
-
 pub struct VedroRuntime {
     rt: Runtime,
     store: VedroStore,
-    db_dir: Option<std::path::PathBuf>,
     proxy: Arc<StreamProxy>,
     client: Mutex<Option<EmbyClient>>,
     ws: Mutex<Option<WebSocketSession>>,
@@ -101,9 +82,6 @@ pub struct VedroRuntime {
     active_session: Mutex<Option<ActivePlaybackSession>>,
     events: Arc<Mutex<VecDeque<Value>>>,
     identity: Mutex<ClientIdentity>,
-    in_app_proxy_url: Mutex<Option<String>>,
-    in_process_proxy: Mutex<Option<proxy_engine::InProcessProxyHandle>>,
-    managed_proxy: Mutex<Option<ManagedProxyProcess>>,
     speedtest_cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -154,34 +132,59 @@ impl VedroRuntime {
             ..Default::default()
         };
 
-        let saved_in_app_proxy: Option<String> = store
-            .get_setting::<Value>("in_app_proxy_config_v1")
-            .ok()
-            .flatten()
-            .and_then(|v| {
-                let mode = v.get("mode").and_then(Value::as_str).unwrap_or("off");
-                if mode == "custom" || mode == "node_direct" {
-                    v.get("proxy_url")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(ToString::to_string)
-                } else {
-                    None
-                }
-            });
-
         let proxy = rt
             .block_on(StreamProxy::start(StreamProxyConfig::default()))
             .map_err(|e| format!("failed to start local stream proxy: {e}"))?;
-        if let Some(ref p_url) = saved_in_app_proxy {
-            let _ = proxy.configure_transport(Some(p_url.as_str()), false);
+        if let Some(ref d) = db_dir {
+            proxy.set_image_cache_dir(d.join("img_cache"));
+        }
+
+        // Pre-register saved server image upstreams + remembered active upstream IMMEDIATELY on cold start
+        // so `http://127.0.0.1:<port>/img/...` serves cached/live artwork at millisecond 0 without waiting
+        // for `restore_session` network round-trips!
+        if let Ok(saved_list) = store.list_servers() {
+            let remembered_id = store
+                .get_setting::<String>("last_active_server_id")
+                .ok()
+                .flatten()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            for srv in &saved_list {
+                let route_url = srv
+                    .active_route()
+                    .map(|r| r.url.clone())
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or_else(|| srv.url.clone());
+                let hdrs = identity.build_headers(srv.access_token.as_deref());
+                proxy.register_server_image_upstream(srv.id.clone(), route_url, hdrs);
+            }
+            let target_srv = remembered_id
+                .as_deref()
+                .and_then(|rid| {
+                    saved_list
+                        .iter()
+                        .find(|s| s.id == rid && s.access_token.is_some())
+                })
+                .or_else(|| {
+                    saved_list
+                        .iter()
+                        .filter(|s| s.access_token.is_some())
+                        .max_by_key(|s| s.last_connected_at)
+                });
+            if let Some(srv) = target_srv {
+                let route_url = srv
+                    .active_route()
+                    .map(|r| r.url.clone())
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or_else(|| srv.url.clone());
+                let hdrs = identity.build_headers(srv.access_token.as_deref());
+                proxy.set_image_upstream(route_url, hdrs);
+            }
         }
 
         Ok(Self {
             rt,
             store,
-            db_dir,
             proxy,
             client: Mutex::new(None),
             ws: Mutex::new(None),
@@ -190,49 +193,8 @@ impl VedroRuntime {
             active_session: Mutex::new(None),
             events: Arc::new(Mutex::new(VecDeque::with_capacity(256))),
             identity: Mutex::new(identity),
-            in_app_proxy_url: Mutex::new(saved_in_app_proxy),
-            in_process_proxy: Mutex::new(None),
-            managed_proxy: Mutex::new(None),
             speedtest_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
-    }
-
-    fn effective_proxy_url(&self, explicit: Option<&str>) -> Option<String> {
-        if let Some(p) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
-            return Some(p.to_string());
-        }
-        self.in_app_proxy_url.lock().clone()
-    }
-
-    fn rebuild_active_client_transport(&self) {
-        let mut guard = self.client.lock();
-        let Some(existing) = guard.as_ref() else {
-            let eff = self.in_app_proxy_url.lock().clone();
-            let _ = self.proxy.configure_transport(eff.as_deref(), false);
-            return;
-        };
-        let accept_invalid = existing.transport_options().accept_invalid_certs;
-        let eff_proxy = self.in_app_proxy_url.lock().clone();
-        let _ = self
-            .proxy
-            .configure_transport(eff_proxy.as_deref(), accept_invalid);
-        let url_str = existing.base_url().to_string();
-        let identity = existing.identity().clone();
-        let tok = existing.access_token();
-        let uid = existing.user_id();
-        if let Ok(rebuilt) = EmbyClient::with_options(
-            &url_str,
-            identity,
-            ClientTransportOptions {
-                proxy_url: eff_proxy,
-                accept_invalid_certs: accept_invalid,
-            },
-        ) {
-            if let (Some(t), Some(u)) = (tok, uid) {
-                rebuilt.set_credentials(t, u);
-            }
-            *guard = Some(rebuilt);
-        }
     }
 
     pub fn poll_events(&self) -> Vec<Value> {
@@ -335,6 +297,83 @@ impl VedroRuntime {
                 "version": env!("CARGO_PKG_VERSION"),
                 "proxy_addr": self.proxy.listen_addr().to_string(),
             })),
+
+            "bootstrap_state" => {
+                let list = self.store.list_servers().unwrap_or_default();
+                let id_snap = self.identity.lock().clone();
+                for srv in &list {
+                    let route_url = srv
+                        .active_route()
+                        .map(|r| r.url.clone())
+                        .filter(|u| !u.is_empty())
+                        .unwrap_or_else(|| srv.url.clone());
+                    let hdrs = id_snap.build_headers(srv.access_token.as_deref());
+                    self.proxy
+                        .register_server_image_upstream(srv.id.clone(), route_url, hdrs);
+                }
+                let remembered_id = self
+                    .store
+                    .get_setting::<String>("last_active_server_id")
+                    .ok()
+                    .flatten()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                let target_srv = remembered_id
+                    .as_deref()
+                    .and_then(|rid| {
+                        list.iter().find(|s| {
+                            s.id == rid && s.access_token.is_some() && s.user_id.is_some()
+                        })
+                    })
+                    .or_else(|| {
+                        list.iter()
+                            .filter(|s| s.access_token.is_some() && s.user_id.is_some())
+                            .max_by_key(|s| s.last_connected_at)
+                    });
+                let mut cached_home: Option<Value> = None;
+                if let Some(srv) = target_srv {
+                    let route_url = srv
+                        .active_route()
+                        .map(|r| r.url.clone())
+                        .filter(|u| !u.is_empty())
+                        .unwrap_or_else(|| srv.url.clone());
+                    let hdrs = id_snap.build_headers(srv.access_token.as_deref());
+                    self.proxy.set_image_upstream(route_url, hdrs);
+                    cached_home = self
+                        .store
+                        .get_setting::<Value>(&format!("home_cache_v1:{}", srv.id))
+                        .ok()
+                        .flatten();
+                }
+                let cfg = self.playback_config.lock().clone();
+                let home_layout = self
+                    .store
+                    .get_setting::<Value>("home_layout")
+                    .ok()
+                    .flatten();
+                let vedro_prefs = self
+                    .store
+                    .get_setting::<Value>("vedro_prefs")
+                    .ok()
+                    .flatten();
+                let downloads_queue = self
+                    .store
+                    .get_setting::<Value>("downloads_queue")
+                    .ok()
+                    .flatten();
+
+                Ok(json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "proxy_addr": self.proxy.listen_addr().to_string(),
+                    "servers": list,
+                    "settings": cfg,
+                    "home_layout": home_layout,
+                    "vedro_prefs": vedro_prefs,
+                    "downloads_queue": downloads_queue,
+                    "last_active_server_id": remembered_id,
+                    "cached_home": cached_home,
+                }))
+            }
 
             "discover_servers" => {
                 let timeout_ms = params
@@ -612,7 +651,12 @@ impl VedroRuntime {
                     .clone()
                     .ok_or_else(|| "server has no saved user_id".to_string())?;
 
-                let eff_route_proxy = self.effective_proxy_url(route.proxy_url.as_deref());
+                let eff_route_proxy = route
+                    .proxy_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string);
                 let _ = self
                     .proxy
                     .configure_transport(eff_route_proxy.as_deref(), route.accept_invalid_certs);
@@ -665,7 +709,7 @@ impl VedroRuntime {
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|s| !s.is_empty());
-                let proxy_url = self.effective_proxy_url(raw_proxy);
+                let proxy_url = raw_proxy.map(ToString::to_string);
                 let accept_invalid_certs = params
                     .get("accept_invalid_certs")
                     .and_then(Value::as_bool)
@@ -795,7 +839,7 @@ impl VedroRuntime {
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|s| !s.is_empty());
-                let proxy_url = self.effective_proxy_url(raw_proxy);
+                let proxy_url = raw_proxy.map(ToString::to_string);
                 let accept_invalid_certs = params
                     .get("accept_invalid_certs")
                     .and_then(Value::as_bool)
@@ -814,9 +858,12 @@ impl VedroRuntime {
                     },
                 )
                 .map_err(|e| e.to_string())?;
-                let (info, caps) = client.probe_server().await.map_err(|e| e.to_string())?;
                 client.set_credentials(token.clone(), user_id.clone());
-                let user = client.current_user().await.map_err(|e| e.to_string())?;
+                // Probe server capabilities AND validate current user in ONE single network RTT!
+                let (probe_res, user_res) =
+                    tokio::join!(client.probe_server(), client.current_user());
+                let (info, caps) = probe_res.map_err(|e| e.to_string())?;
+                let user = user_res.map_err(|e| e.to_string())?;
 
                 // Update last_connected_at & last_active_server_id so next launch remembers this exact server
                 let resolved_sid = explicit_server_id
@@ -871,64 +918,106 @@ impl VedroRuntime {
 
             "get_home" => {
                 let client = self.require_client()?;
-                let fav_query = ItemsQuery {
-                    filters: Some("IsFavorite".to_string()),
-                    recursive: Some(true),
-                    limit: Some(16),
-                    ..Default::default()
+                let include_suggestions = params
+                    .get("include_suggestions")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let include_favorites = params
+                    .get("include_favorites")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+
+                // Kick off `views` + `latest` pipeline concurrently with `resume`, `next_up`, `popular`,
+                // `suggestions`, and `favorites` so `latest` NEVER waits for slower secondary rails!
+                let views_and_latest_fut = async {
+                    let views = client.views().await.map_err(|e| e.to_string())?;
+                    let mut join_set = tokio::task::JoinSet::new();
+                    for (idx, lib) in views.items.iter().take(8).cloned().enumerate() {
+                        let c = client.clone();
+                        join_set.spawn(async move {
+                            let items = c.latest(Some(&lib.id), 16).await.unwrap_or_default();
+                            (idx, lib, items)
+                        });
+                    }
+                    let mut fetched_latest = Vec::new();
+                    while let Some(res) = join_set.join_next().await {
+                        if let Ok(tuple) = res {
+                            fetched_latest.push(tuple);
+                        }
+                    }
+                    fetched_latest.sort_by_key(|(idx, _, _)| *idx);
+                    let latest_by_library: Vec<Value> = fetched_latest
+                        .into_iter()
+                        .filter(|(_, _, items)| !items.is_empty())
+                        .map(|(_, lib, items)| {
+                            json!({
+                                "library": lib,
+                                "items": items,
+                            })
+                        })
+                        .collect();
+                    Ok::<_, String>((views.items, latest_by_library))
                 };
-                let (views_r, resume_r, next_up_r, popular_r, suggestions_r, favorites_r) = tokio::join!(
-                    client.views(),
+
+                let suggestions_fut = async {
+                    if include_suggestions {
+                        client.suggestions(16).await.unwrap_or_default().items
+                    } else {
+                        Vec::new()
+                    }
+                };
+                let favorites_fut = async {
+                    if include_favorites {
+                        client.home_favorites(16).await.unwrap_or_default().items
+                    } else {
+                        Vec::new()
+                    }
+                };
+
+                let (vl_r, resume_r, next_up_r, popular_r, suggestions, favorites) = tokio::join!(
+                    views_and_latest_fut,
                     client.resume(20, None),
                     client.next_up(20, None),
                     client.popular(10),
-                    client.suggestions(16),
-                    client.items(&fav_query),
+                    suggestions_fut,
+                    favorites_fut,
                 );
-                let views = views_r.map_err(|e| e.to_string())?;
+                let (views_items, latest_by_library) = vl_r?;
                 let resume = resume_r.unwrap_or_default();
                 let next_up = next_up_r.unwrap_or_default();
                 let popular = popular_r.unwrap_or_default();
-                let suggestions = suggestions_r.unwrap_or_default();
-                let favorites = favorites_r.unwrap_or_default();
 
-                // Truly fetch Latest for up to 8 libraries concurrently in one round-trip
-                let mut join_set = tokio::task::JoinSet::new();
-                for (idx, lib) in views.items.iter().take(8).cloned().enumerate() {
-                    let c = client.clone();
-                    join_set.spawn(async move {
-                        let items = c.latest(Some(&lib.id), 18).await.unwrap_or_default();
-                        (idx, lib, items)
-                    });
-                }
-                let mut fetched_latest = Vec::new();
-                while let Some(res) = join_set.join_next().await {
-                    if let Ok(tuple) = res {
-                        fetched_latest.push(tuple);
-                    }
-                }
-                fetched_latest.sort_by_key(|(idx, _, _)| *idx);
-                let latest_by_library: Vec<Value> = fetched_latest
-                    .into_iter()
-                    .filter(|(_, _, items)| !items.is_empty())
-                    .map(|(_, lib, items)| {
-                        json!({
-                            "library": lib,
-                            "items": items,
-                        })
-                    })
-                    .collect();
-
-                Ok(json!({
+                let out = json!({
                     "capabilities": client.capabilities(),
-                    "views": views.items,
+                    "views": views_items,
                     "popular": popular,
                     "resume": resume.items,
                     "next_up": next_up.items,
-                    "suggestions": suggestions.items,
-                    "favorites": favorites.items,
+                    "suggestions": suggestions,
+                    "favorites": favorites,
                     "latest_by_library": latest_by_library,
-                }))
+                });
+
+                // Persist Home SWR snapshot keyed by server ID for 0ms instant Home render on next launch!
+                let cache_sid = self
+                    .store
+                    .get_setting::<String>("last_active_server_id")
+                    .ok()
+                    .flatten()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        let cid = client.capabilities().server_id;
+                        if cid.is_empty() {
+                            client.base_url().to_string()
+                        } else {
+                            cid
+                        }
+                    });
+                let _ = self
+                    .store
+                    .set_setting(&format!("home_cache_v1:{cache_sid}"), &out);
+
+                Ok(out)
             }
 
             "get_items" => {
@@ -2057,10 +2146,15 @@ impl VedroRuntime {
                     .and_then(Value::as_i64)
                     .unwrap_or(-1);
 
-                // Build a clean ticket-only HTTP client honoring active in-app proxy & TLS settings
+                // Build a clean ticket-only HTTP client honoring active route TLS/proxy settings
                 let accept_invalid = client.transport_options().accept_invalid_certs;
-                let eff_proxy =
-                    self.effective_proxy_url(client.transport_options().proxy_url.as_deref());
+                let eff_proxy = client
+                    .transport_options()
+                    .proxy_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string);
                 let mut builder = reqwest::Client::builder()
                     .danger_accept_invalid_certs(accept_invalid)
                     .connect_timeout(Duration::from_secs(5));
@@ -2481,10 +2575,6 @@ impl VedroRuntime {
                 let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(30));
                 if direct_ip {
                     builder = builder.no_proxy();
-                } else if let Some(ref p_url) = *self.in_app_proxy_url.lock() {
-                    if let Ok(proxy) = reqwest::Proxy::all(p_url) {
-                        builder = builder.proxy(proxy);
-                    }
                 }
                 let http = builder.build().map_err(|e| e.to_string())?;
 
@@ -2576,10 +2666,6 @@ impl VedroRuntime {
                 let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(12));
                 if direct_ip {
                     builder = builder.no_proxy();
-                } else if let Some(ref p_url) = *self.in_app_proxy_url.lock() {
-                    if let Ok(proxy) = reqwest::Proxy::all(p_url) {
-                        builder = builder.proxy(proxy);
-                    }
                 }
                 let http = builder.build().map_err(|e| e.to_string())?;
                 let mut req = http.get(&endpoint).header(
@@ -2651,773 +2737,6 @@ impl VedroRuntime {
                 Ok(json!({
                     "models": models,
                     "direct_ip": direct_ip,
-                }))
-            }
-
-            "fetch_proxy_subscription" => {
-                let raw_inline = params
-                    .get("raw_content")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty());
-
-                let (body_text, userinfo) = if let Some(inline) = raw_inline {
-                    (inline.to_string(), None)
-                } else {
-                    let sub_url = str_param(&params, "url")?;
-                    let active_px = self.in_app_proxy_url.lock().clone();
-                    // Try via active proxy first if present, falling back to direct IP
-                    let mut fetched: Option<(String, Option<Value>)> = None;
-                    let mut last_err = String::new();
-                    let attempts: Vec<Option<String>> = if let Some(px) = active_px {
-                        vec![Some(px), None]
-                    } else {
-                        vec![None]
-                    };
-                    for px_opt in attempts {
-                        let mut b = reqwest::Client::builder()
-                            .timeout(Duration::from_secs(15))
-                            .user_agent(concat!(
-                                "ClashMetaForAndroid/2.11.2 sing-box/1.10.7 Vedro/",
-                                env!("CARGO_PKG_VERSION")
-                            ));
-                        if let Some(ref p) = px_opt {
-                            if let Ok(proxy) = reqwest::Proxy::all(p) {
-                                b = b.proxy(proxy);
-                            }
-                        } else {
-                            b = b.no_proxy();
-                        }
-                        if let Ok(http) = b.build() {
-                            match http.get(sub_url.trim()).send().await {
-                                Ok(resp) if resp.status().is_success() => {
-                                    let ui = resp
-                                        .headers()
-                                        .get("subscription-userinfo")
-                                        .or_else(|| resp.headers().get("Subscription-Userinfo"))
-                                        .and_then(|h| h.to_str().ok())
-                                        .and_then(proxy_sub::parse_subscription_userinfo);
-                                    match resp.text().await {
-                                        Ok(txt) => {
-                                            fetched = Some((txt, ui));
-                                            break;
-                                        }
-                                        Err(e) => last_err = e.to_string(),
-                                    }
-                                }
-                                Ok(resp) => {
-                                    last_err = format!("HTTP {}", resp.status().as_u16());
-                                }
-                                Err(e) => {
-                                    last_err = e.to_string();
-                                }
-                            }
-                        }
-                    }
-                    fetched.ok_or_else(|| format!("订阅拉取失败: {last_err}"))?
-                };
-
-                let nodes = proxy_sub::parse_subscription_content(&body_text)?;
-                Ok(json!({
-                    "nodes": nodes,
-                    "count": nodes.len(),
-                    "userinfo": userinfo,
-                }))
-            }
-
-            "ping_proxy_nodes" => {
-                let arr = params
-                    .get("nodes")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                let targets: Vec<(String, String, u16)> = arr
-                    .into_iter()
-                    .filter_map(|v| {
-                        let id = v.get("id")?.as_str()?.to_string();
-                        let server = v.get("server")?.as_str()?.to_string();
-                        let port = v.get("port")?.as_u64()? as u16;
-                        Some((id, server, port))
-                    })
-                    .collect();
-                let latencies = proxy_sub::ping_nodes_tcp(targets).await;
-                Ok(json!({ "latencies": latencies }))
-            }
-
-            "activate_proxy_node" => {
-                let node_val = params
-                    .get("node")
-                    .cloned()
-                    .ok_or_else(|| "缺少节点信息".to_string())?;
-                let mut node: proxy_sub::ProxyNodeInfo =
-                    serde_json::from_value(node_val).map_err(|e| format!("节点格式无效: {e}"))?;
-                node.refresh_native_support();
-
-                *self.in_process_proxy.lock() = None;
-                *self.managed_proxy.lock() = None;
-
-                // 1. Direct SOCKS5 / HTTP node
-                if let Some(ref direct_url) = node.direct_proxy_url {
-                    reqwest::Proxy::all(direct_url).map_err(|e| format!("节点地址无效: {e}"))?;
-                    *self.in_app_proxy_url.lock() = Some(direct_url.clone());
-                    let _ = self.store.set_setting(
-                        "in_app_proxy_config_v1",
-                        &json!({
-                            "mode": "node_direct",
-                            "proxy_url": direct_url,
-                            "node_id": node.id,
-                            "node_name": node.name,
-                        }),
-                    );
-                    self.rebuild_active_client_transport();
-                    return Ok(json!({
-                        "ok": true,
-                        "mode": "node",
-                        "engine": "direct",
-                        "active": true,
-                        "proxy_url": direct_url,
-                        "node_id": node.id,
-                        "node_name": node.name,
-                    }));
-                }
-
-                let outbound = node
-                    .singbox_outbound
-                    .clone()
-                    .ok_or_else(|| "该节点缺少协议参数".to_string())?;
-
-                // 2. First-class In-Process Rust Multi-Protocol Engine (VLESS / Trojan / SS / VMess over TCP/TLS/WS/HTTPUpgrade).
-                // Works natively on Android 10–16 (W^X SELinux), iOS Sandbox, macOS, Windows, and Linux with ZERO external binary!
-                if proxy_engine::can_handle_outbound(&outbound) {
-                    let handle = proxy_engine::start_local_proxy(outbound).await?;
-                    let port = handle.listen_port;
-                    let local_proxy = format!("socks5h://127.0.0.1:{port}");
-                    *self.in_process_proxy.lock() = Some(handle);
-                    *self.in_app_proxy_url.lock() = Some(local_proxy.clone());
-                    let _ = self.store.set_setting(
-                        "in_app_proxy_config_v1",
-                        &json!({
-                            "mode": "node_native",
-                            "node_id": node.id,
-                            "node_name": node.name,
-                        }),
-                    );
-                    self.rebuild_active_client_transport();
-                    return Ok(json!({
-                        "ok": true,
-                        "mode": "node",
-                        "engine": "native_rust",
-                        "active": true,
-                        "proxy_url": local_proxy,
-                        "listen_port": port,
-                        "node_id": node.id,
-                        "node_name": node.name,
-                    }));
-                }
-
-                // 3. Mobile OSes (Android W^X SELinux & iOS Sandbox) forbid spawning dynamically downloaded binaries:
-                // return a clean, accurate message without ever looking for `sing-box` or `.exe`!
-                #[cfg(any(target_os = "android", target_os = "ios"))]
-                {
-                    return Err(format!(
-                        "当前移动端免内核引擎暂不支持 {}（Reality/QUIC）协议，请切换 VLESS / Trojan / SS / VMess 节点",
-                        node.protocol.to_uppercase()
-                    ));
-                }
-
-                // 4. Desktop fallback (`macOS` / `Windows` / `Linux`) for Reality / Hysteria2 / TUIC via OS-matched `sing-box`
-                #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                {
-                    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-                        .map_err(|e| format!("无法分配回环端口: {e}"))?;
-                    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-                    drop(listener);
-
-                    let temp_dir = std::env::temp_dir()
-                        .join(format!("vedro-node-{}", uuid::Uuid::new_v4().simple()));
-                    std::fs::create_dir_all(&temp_dir)
-                        .map_err(|e| format!("无法创建工作目录: {e}"))?;
-
-                    let mut ob = outbound;
-                    ob["tag"] = Value::String("proxy".into());
-                    let sb_doc = json!({
-                        "log": { "level": "warn" },
-                        "inbounds": [
-                            {
-                                "type": "mixed",
-                                "tag": "vedro-in",
-                                "listen": "127.0.0.1",
-                                "listen_port": port
-                            }
-                        ],
-                        "outbounds": [
-                            ob,
-                            { "type": "direct", "tag": "direct" }
-                        ],
-                        "route": { "final": "proxy" }
-                    });
-                    let cfg_file = temp_dir.join("config.json");
-                    std::fs::write(
-                        &cfg_file,
-                        serde_json::to_string_pretty(&sb_doc).map_err(|e| e.to_string())?,
-                    )
-                    .map_err(|e| e.to_string())?;
-
-                    let os_bin_name = if cfg!(windows) {
-                        "sing-box.exe"
-                    } else {
-                        "sing-box"
-                    };
-                    let mut bin_candidates = Vec::new();
-                    if let Some(explicit) = params
-                        .get("binary_path")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                    {
-                        bin_candidates.push(explicit.to_string());
-                    }
-                    if let Some(ref d) = self.db_dir {
-                        let managed_bin = d.join("cores").join(os_bin_name);
-                        if managed_bin.exists() {
-                            bin_candidates.push(managed_bin.to_string_lossy().into_owned());
-                        }
-                    }
-                    bin_candidates.push(os_bin_name.to_string());
-
-                    let mut spawned: Option<std::process::Child> = None;
-                    let mut last_err = String::new();
-                    for bin in &bin_candidates {
-                        let mut cmd = std::process::Command::new(bin);
-                        cmd.arg("run")
-                            .arg("-c")
-                            .arg(&cfg_file)
-                            .arg("-D")
-                            .arg(&temp_dir)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::piped());
-                        match cmd.spawn() {
-                            Ok(c) => {
-                                spawned = Some(c);
-                                break;
-                            }
-                            Err(e) => last_err = format!("{bin}: {e}"),
-                        }
-                    }
-
-                    let mut child = match spawned {
-                        Some(c) => c,
-                        None => {
-                            let _ = std::fs::remove_dir_all(&temp_dir);
-                            return Err(format!(
-                                "NEEDS_CORE:该节点使用 Reality/QUIC 协议，需桌面端 {os_bin_name} 内核（{last_err}），可点击「一键下载内核」"
-                            ));
-                        }
-                    };
-
-                    let mut ready = false;
-                    for _ in 0..30 {
-                        if let Ok(Some(exit)) = child.try_wait() {
-                            let _ = std::fs::remove_dir_all(&temp_dir);
-                            return Err(format!("节点启动退出 ({exit})，请检查节点协议参数"));
-                        }
-                        if tokio::net::TcpStream::connect(("127.0.0.1", port))
-                            .await
-                            .is_ok()
-                        {
-                            ready = true;
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                    if !ready {
-                        let _ = child.kill();
-                        let _ = std::fs::remove_dir_all(&temp_dir);
-                        return Err("节点本地端口启动超时".into());
-                    }
-
-                    let local_proxy = format!("socks5h://127.0.0.1:{port}");
-                    *self.managed_proxy.lock() = Some(ManagedProxyProcess {
-                        engine_kind: "singbox".into(),
-                        listen_port: port,
-                        temp_dir,
-                        child,
-                    });
-                    *self.in_app_proxy_url.lock() = Some(local_proxy.clone());
-                    let _ = self.store.set_setting(
-                        "in_app_proxy_config_v1",
-                        &json!({
-                            "mode": "node_singbox",
-                            "node_id": node.id,
-                            "node_name": node.name,
-                        }),
-                    );
-                    self.rebuild_active_client_transport();
-                    Ok(json!({
-                        "ok": true,
-                        "mode": "node",
-                        "engine": "singbox",
-                        "active": true,
-                        "proxy_url": local_proxy,
-                        "listen_port": port,
-                        "node_id": node.id,
-                        "node_name": node.name,
-                    }))
-                }
-            }
-
-            "install_singbox_core" => {
-                #[cfg(any(target_os = "android", target_os = "ios"))]
-                {
-                    return Err(
-                        "移动端已内置 Rust 原生多协议代理引擎，无需下载外部内核即可直接连接节点"
-                            .into(),
-                    );
-                }
-                #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                {
-                    let ver = "1.10.7";
-                    let (os_slug, arch_slug, ext) =
-                        match (std::env::consts::OS, std::env::consts::ARCH) {
-                            ("macos", "aarch64") => ("darwin", "arm64", "tar.gz"),
-                            ("macos", "x86_64") => ("darwin", "amd64", "tar.gz"),
-                            ("linux", "aarch64") => ("linux", "arm64", "tar.gz"),
-                            ("linux", "x86_64") => ("linux", "amd64", "tar.gz"),
-                            ("windows", "x86_64") => ("windows", "amd64", "zip"),
-                            ("windows", "aarch64") => ("windows", "arm64", "zip"),
-                            (o, a) => return Err(format!("当前平台 ({o}/{a}) 请手动指定内核路径")),
-                        };
-                    let url = format!(
-                        "https://github.com/SagerNet/sing-box/releases/download/v{ver}/sing-box-{ver}-{os_slug}-{arch_slug}.{ext}"
-                    );
-                    let cores_dir = self
-                        .db_dir
-                        .clone()
-                        .unwrap_or_else(|| std::env::temp_dir().join("vedro-cores"))
-                        .join("cores");
-                    std::fs::create_dir_all(&cores_dir).map_err(|e| e.to_string())?;
-                    let exe_name = if cfg!(windows) {
-                        "sing-box.exe"
-                    } else {
-                        "sing-box"
-                    };
-                    let dest_bin = cores_dir.join(exe_name);
-
-                    let active_proxy = self.in_app_proxy_url.lock().clone();
-                    let mut archive_bytes = None;
-                    let mut last_dl_err = String::new();
-                    for use_proxy in [true, false] {
-                        if use_proxy && active_proxy.is_none() {
-                            continue;
-                        }
-                        let mut b = reqwest::Client::builder()
-                            .timeout(Duration::from_secs(90))
-                            .user_agent(concat!("Vedro/", env!("CARGO_PKG_VERSION")));
-                        if use_proxy {
-                            if let Some(ref p_url) = active_proxy {
-                                if let Ok(px) = reqwest::Proxy::all(p_url) {
-                                    b = b.proxy(px);
-                                }
-                            }
-                        }
-                        if let Ok(http) = b.build() {
-                            match http.get(&url).send().await {
-                                Ok(resp) if resp.status().is_success() => {
-                                    if let Ok(bytes) = resp.bytes().await {
-                                        archive_bytes = Some(bytes);
-                                        break;
-                                    }
-                                }
-                                Ok(resp) => {
-                                    last_dl_err = format!("HTTP {}", resp.status().as_u16());
-                                }
-                                Err(e) => {
-                                    last_dl_err = e.to_string();
-                                }
-                            }
-                        }
-                    }
-                    let archive_bytes =
-                        archive_bytes.ok_or_else(|| format!("下载失败: {last_dl_err}"))?;
-
-                    if ext == "tar.gz" {
-                        let bin_bytes =
-                            proxy_sub::extract_binary_from_targz(&archive_bytes, &["sing-box"])?;
-                        std::fs::write(&dest_bin, &bin_bytes).map_err(|e| e.to_string())?;
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            let _ = std::fs::set_permissions(
-                                &dest_bin,
-                                std::fs::Permissions::from_mode(0o755),
-                            );
-                        }
-                    } else {
-                        let zip_path = cores_dir.join("sing-box.zip");
-                        let extract_dir = cores_dir.join("extract_tmp");
-                        let _ = std::fs::remove_dir_all(&extract_dir);
-                        std::fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
-                        std::fs::write(&zip_path, &archive_bytes).map_err(|e| e.to_string())?;
-                        let status = std::process::Command::new("tar")
-                            .arg("-xf")
-                            .arg(&zip_path)
-                            .arg("-C")
-                            .arg(&extract_dir)
-                            .status()
-                            .map_err(|e| format!("解压失败: {e}"))?;
-                        let _ = std::fs::remove_file(&zip_path);
-                        if !status.success() {
-                            return Err("解压 sing-box.zip 失败".into());
-                        }
-                        let mut found = None;
-                        if let Ok(entries) = std::fs::read_dir(&extract_dir) {
-                            for entry in entries.flatten() {
-                                let p = entry.path();
-                                if p.is_dir() {
-                                    let cand = p.join("sing-box.exe");
-                                    if cand.exists() {
-                                        found = Some(cand);
-                                        break;
-                                    }
-                                } else if p.file_name().and_then(|n| n.to_str())
-                                    == Some("sing-box.exe")
-                                {
-                                    found = Some(p);
-                                    break;
-                                }
-                            }
-                        }
-                        let src = found.ok_or_else(|| "压缩包内未找到 sing-box.exe".to_string())?;
-                        std::fs::copy(&src, &dest_bin).map_err(|e| e.to_string())?;
-                        let _ = std::fs::remove_dir_all(&extract_dir);
-                    }
-
-                    Ok(json!({
-                        "binary_path": dest_bin.to_string_lossy().into_owned(),
-                        "version": ver,
-                    }))
-                }
-            }
-
-            "in_app_proxy_status" => {
-                let active_url = self.in_app_proxy_url.lock().clone();
-                let mut running_core: Option<(String, u16)> = self
-                    .in_process_proxy
-                    .lock()
-                    .as_ref()
-                    .map(|h| ("native_rust".to_string(), h.listen_port));
-                if running_core.is_none() {
-                    let mut managed_guard = self.managed_proxy.lock();
-                    if let Some(proc_ref) = managed_guard.as_mut() {
-                        match proc_ref.child.try_wait() {
-                            Ok(None) => {
-                                running_core =
-                                    Some((proc_ref.engine_kind.clone(), proc_ref.listen_port));
-                            }
-                            _ => {
-                                *managed_guard = None;
-                            }
-                        }
-                    }
-                }
-                Ok(json!({
-                    "active": active_url.is_some(),
-                    "proxy_url": active_url,
-                    "managed_running": running_core.is_some(),
-                    "managed_engine": running_core.as_ref().map(|x| x.0.clone()),
-                    "managed_port": running_core.as_ref().map(|x| x.1),
-                    "uses_system_vpn": false,
-                }))
-            }
-
-            "configure_in_app_proxy" => {
-                let mode = params
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .unwrap_or("off")
-                    .trim()
-                    .to_ascii_lowercase();
-
-                // Always stop any previous in-process or managed subprocess proxy first
-                *self.in_process_proxy.lock() = None;
-                *self.managed_proxy.lock() = None;
-
-                match mode.as_str() {
-                    "off" | "" => {
-                        *self.in_app_proxy_url.lock() = None;
-                        let _ = self
-                            .store
-                            .set_setting("in_app_proxy_config_v1", &json!({"mode": "off"}));
-                        self.rebuild_active_client_transport();
-                        Ok(json!({
-                            "ok": true,
-                            "mode": "off",
-                            "active": false,
-                            "uses_system_vpn": false,
-                        }))
-                    }
-                    "custom" => {
-                        let raw = str_param(&params, "proxy_url")?;
-                        let trimmed = raw.trim().to_string();
-                        if trimmed.is_empty() {
-                            return Err("代理地址不能为空（例如 socks5h://127.0.0.1:7890）".into());
-                        }
-                        reqwest::Proxy::all(&trimmed)
-                            .map_err(|e| format!("代理地址格式无效: {e}"))?;
-                        *self.in_app_proxy_url.lock() = Some(trimmed.clone());
-                        let _ = self.store.set_setting(
-                            "in_app_proxy_config_v1",
-                            &json!({"mode": "custom", "proxy_url": trimmed}),
-                        );
-                        self.rebuild_active_client_transport();
-                        Ok(json!({
-                            "ok": true,
-                            "mode": "custom",
-                            "active": true,
-                            "proxy_url": trimmed,
-                            "uses_system_vpn": false,
-                        }))
-                    }
-                    "singbox" | "mihomo" => {
-                        #[cfg(any(target_os = "android", target_os = "ios"))]
-                        {
-                            return Err(
-                                "移动端请使用「节点订阅」（内置免内核引擎）或「本地端口」连接代理"
-                                    .into(),
-                            );
-                        }
-                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                        {
-                            let config_text = str_param(&params, "config_text")?;
-                            if config_text.trim().is_empty() {
-                                return Err(format!("请先粘贴或导入 {mode} 配置文件内容"));
-                            }
-                            let explicit_bin = params
-                                .get("binary_path")
-                                .and_then(Value::as_str)
-                                .map(str::trim)
-                                .filter(|s| !s.is_empty())
-                                .map(ToString::to_string);
-                            let bin_candidates: Vec<String> = if let Some(b) = explicit_bin {
-                                vec![b]
-                            } else if mode == "singbox" {
-                                if cfg!(windows) {
-                                    vec!["sing-box.exe".into()]
-                                } else {
-                                    vec!["sing-box".into()]
-                                }
-                            } else if cfg!(windows) {
-                                vec!["mihomo.exe".into(), "clash-meta.exe".into()]
-                            } else {
-                                vec!["mihomo".into(), "clash-meta".into()]
-                            };
-
-                            // Pick an ephemeral loopback port on 127.0.0.1 (strictly local, ZERO TUN/VPN!)
-                            let listener = std::net::TcpListener::bind("127.0.0.1:0")
-                                .map_err(|e| format!("无法分配本地回环端口: {e}"))?;
-                            let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-                            drop(listener);
-
-                            let temp_dir = std::env::temp_dir()
-                                .join(format!("vedro-{mode}-{}", uuid::Uuid::new_v4().simple()));
-                            std::fs::create_dir_all(&temp_dir)
-                                .map_err(|e| format!("无法创建代理工作目录: {e}"))?;
-
-                            let cfg_file = if mode == "singbox" {
-                                let mut doc: Value = serde_json::from_str(&config_text)
-                                    .map_err(|e| format!("sing-box JSON 解析失败: {e}"))?;
-                                // Strip ANY tun/redirect/tproxy inbound so OS VPN is NEVER touched!
-                                let mut clean_inbounds = vec![json!({
-                                    "type": "mixed",
-                                    "tag": "vedro-in-app-mixed",
-                                    "listen": "127.0.0.1",
-                                    "listen_port": port
-                                })];
-                                if let Some(arr) = doc.get("inbounds").and_then(Value::as_array) {
-                                    for ib in arr {
-                                        let t =
-                                            ib.get("type").and_then(Value::as_str).unwrap_or("");
-                                        if !matches!(t, "tun" | "redirect" | "tproxy") {
-                                            let _ = ib;
-                                        }
-                                    }
-                                    let _ = &mut clean_inbounds;
-                                }
-                                doc["inbounds"] = Value::Array(clean_inbounds);
-                                let path = temp_dir.join("config.json");
-                                std::fs::write(
-                                    &path,
-                                    serde_json::to_string_pretty(&doc)
-                                        .map_err(|e| e.to_string())?,
-                                )
-                                .map_err(|e| e.to_string())?;
-                                path
-                            } else {
-                                // Rewrite mihomo YAML header to force loopback mixed-port & disable TUN!
-                                let mut filtered_lines = Vec::new();
-                                let mut in_tun_block = false;
-                                for line in config_text.lines() {
-                                    let trimmed_start = line.trim_start();
-                                    let is_top_key = !line.starts_with(' ')
-                                        && !line.starts_with('\t')
-                                        && !trimmed_start.is_empty()
-                                        && !trimmed_start.starts_with('#');
-                                    if is_top_key {
-                                        in_tun_block = trimmed_start.starts_with("tun:");
-                                        if trimmed_start.starts_with("port:")
-                                            || trimmed_start.starts_with("socks-port:")
-                                            || trimmed_start.starts_with("mixed-port:")
-                                            || trimmed_start.starts_with("redir-port:")
-                                            || trimmed_start.starts_with("tproxy-port:")
-                                            || trimmed_start.starts_with("allow-lan:")
-                                            || trimmed_start.starts_with("bind-address:")
-                                        {
-                                            continue;
-                                        }
-                                    }
-                                    if in_tun_block {
-                                        continue;
-                                    }
-                                    filtered_lines.push(line);
-                                }
-                                let final_yaml = format!(
-                                    "mixed-port: {port}\nallow-lan: false\nbind-address: '127.0.0.1'\ntun:\n  enable: false\n{}\n",
-                                    filtered_lines.join("\n")
-                                );
-                                let path = temp_dir.join("config.yaml");
-                                std::fs::write(&path, final_yaml).map_err(|e| e.to_string())?;
-                                path
-                            };
-
-                            let mut spawned: Option<std::process::Child> = None;
-                            let mut last_err = String::new();
-                            for bin in &bin_candidates {
-                                let mut cmd = std::process::Command::new(bin);
-                                if mode == "singbox" {
-                                    cmd.arg("run")
-                                        .arg("-c")
-                                        .arg(&cfg_file)
-                                        .arg("-D")
-                                        .arg(&temp_dir);
-                                } else {
-                                    cmd.arg("-f").arg(&cfg_file).arg("-d").arg(&temp_dir);
-                                }
-                                cmd.stdin(std::process::Stdio::null())
-                                    .stdout(std::process::Stdio::null())
-                                    .stderr(std::process::Stdio::piped());
-                                match cmd.spawn() {
-                                    Ok(c) => {
-                                        spawned = Some(c);
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        last_err = format!("{bin}: {e}");
-                                    }
-                                }
-                            }
-
-                            let mut child = match spawned {
-                                Some(c) => c,
-                                None => {
-                                    let _ = std::fs::remove_dir_all(&temp_dir);
-                                    return Err(format!(
-                                        "未找到 {mode} 可执行内核（{last_err}）。请指定内核文件路径，或直接使用「SOCKS5 / HTTP 端口模式」"
-                                    ));
-                                }
-                            };
-
-                            // Wait up to 3s for 127.0.0.1:{port} to accept TCP connections
-                            let mut ready = false;
-                            for _ in 0..30 {
-                                if let Ok(Some(exit)) = child.try_wait() {
-                                    let _ = std::fs::remove_dir_all(&temp_dir);
-                                    return Err(format!(
-                                        "{mode} 内核启动后立即退出 (code: {exit})，请检查节点配置格式"
-                                    ));
-                                }
-                                if tokio::net::TcpStream::connect(("127.0.0.1", port))
-                                    .await
-                                    .is_ok()
-                                {
-                                    ready = true;
-                                    break;
-                                }
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                            }
-                            if !ready {
-                                let _ = child.kill();
-                                let _ = std::fs::remove_dir_all(&temp_dir);
-                                return Err(format!(
-                                    "{mode} 本地回环端口 127.0.0.1:{port} 启动超时"
-                                ));
-                            }
-
-                            let local_proxy = format!("socks5h://127.0.0.1:{port}");
-                            *self.managed_proxy.lock() = Some(ManagedProxyProcess {
-                                engine_kind: mode.clone(),
-                                listen_port: port,
-                                temp_dir,
-                                child,
-                            });
-                            *self.in_app_proxy_url.lock() = Some(local_proxy.clone());
-                            self.rebuild_active_client_transport();
-                            Ok(json!({
-                                "mode": mode,
-                                "active": true,
-                                "proxy_url": local_proxy,
-                                "listen_port": port,
-                                "uses_system_vpn": false,
-                            }))
-                        }
-                    }
-                    other => Err(format!("未知代理模式: {other}")),
-                }
-            }
-
-            "test_in_app_proxy" => {
-                let test_url = params
-                    .get("test_url")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.trim().is_empty())
-                    .map(ToString::to_string)
-                    .or_else(|| {
-                        self.client
-                            .lock()
-                            .as_ref()
-                            .map(|c| format!("{}System/Ping", c.base_url()))
-                    })
-                    .unwrap_or_else(|| "https://cp.cloudflare.com/generate_204".to_string());
-                let proxy_url = params
-                    .get("proxy_url")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(ToString::to_string)
-                    .or_else(|| self.in_app_proxy_url.lock().clone());
-
-                let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(8));
-                if let Some(ref p) = proxy_url {
-                    let px =
-                        reqwest::Proxy::all(p).map_err(|e| format!("代理地址格式错误: {e}"))?;
-                    builder = builder.proxy(px);
-                } else {
-                    builder = builder.no_proxy();
-                }
-                let http = builder.build().map_err(|e| e.to_string())?;
-                let started = std::time::Instant::now();
-                let resp = http
-                    .get(&test_url)
-                    .send()
-                    .await
-                    .map_err(|e| format!("连通测试失败: {e}"))?;
-                let latency_ms = started.elapsed().as_millis() as u64;
-                Ok(json!({
-                    "ok": resp.status().is_success() || resp.status().as_u16() < 500,
-                    "status": resp.status().as_u16(),
-                    "latency_ms": latency_ms,
-                    "proxy_url": proxy_url,
-                    "test_url": test_url,
                 }))
             }
 

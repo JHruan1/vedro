@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
 
@@ -89,9 +90,10 @@ class GeneratedArt extends StatelessWidget {
   }
 }
 
-/// Network image that smoothly fades in once decoded and gracefully disappears
-/// on error so `GeneratedArt` beneath remains visible with zero layout jump.
-class FadeNetworkImage extends StatelessWidget {
+/// Network image that smoothly fades in once decoded and automatically retries
+/// transient cold-start / proxy warm-up errors in-place so posters NEVER stay blank
+/// until the user switches tabs!
+class FadeNetworkImage extends StatefulWidget {
   const FadeNetworkImage({
     super.key,
     required this.url,
@@ -104,51 +106,104 @@ class FadeNetworkImage extends StatelessWidget {
   final Alignment alignment;
 
   @override
+  State<FadeNetworkImage> createState() => _FadeNetworkImageState();
+}
+
+class _FadeNetworkImageState extends State<FadeNetworkImage> {
+  int _attempt = 0;
+  Timer? _retryTimer;
+
+  @override
+  void didUpdateWidget(covariant FadeNetworkImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _retryTimer?.cancel();
+      _attempt = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _retryTimer?.cancel();
+    super.dispose();
+  }
+
+  void _scheduleTransientRetry() {
+    if (_attempt >= 3 || (_retryTimer?.isActive ?? false)) return;
+    final delayMs = switch (_attempt) {
+      0 => 650,
+      1 => 1600,
+      _ => 3200,
+    };
+    _retryTimer = Timer(Duration(milliseconds: delayMs), () {
+      if (!mounted) return;
+      PaintingBinding.instance.imageCache.evict(NetworkImage(widget.url));
+      setState(() => _attempt += 1);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (url.isEmpty) return const SizedBox.shrink();
+    if (widget.url.isEmpty) return const SizedBox.shrink();
     return Image.network(
-      url,
-      fit: fit,
-      alignment: alignment,
+      widget.url,
+      key: ValueKey('${widget.url}#$_attempt'),
+      fit: widget.fit,
+      alignment: widget.alignment,
       gaplessPlayback: true,
       frameBuilder: (_, child, frame, wasSynchronouslyLoaded) {
         if (wasSynchronouslyLoaded) return child;
         return AnimatedOpacity(
           opacity: frame == null ? 0.0 : 1.0,
-          duration: const Duration(milliseconds: 240),
+          duration: const Duration(milliseconds: 220),
           curve: Curves.easeOut,
           child: child,
         );
       },
-      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+      errorBuilder: (_, __, ___) {
+        _scheduleTransientRetry();
+        return const SizedBox.shrink();
+      },
     );
   }
 }
 
-/// Portrait poster displayed inside a 16:9 slot: clipped soft ambient poster fills
-/// the field while the crisp poster sits framed with a soft cinema float shadow.
+/// Portrait poster displayed inside a 16:9 slot (exact `embygo` Web `FramedPoster` treatment):
+/// compact blurred, darkened, saturated ambient fill + soft cinema scrim + crisp centered 2:3 cover.
 class FramedPoster extends StatelessWidget {
-  const FramedPoster({super.key, required this.url});
+  const FramedPoster({super.key, required this.url, this.tinyUrl});
   final String url;
+  final String? tinyUrl;
 
   @override
   Widget build(BuildContext context) {
+    final bgUrl = (tinyUrl != null && tinyUrl!.isNotEmpty) ? tinyUrl! : url;
     return ClipRect(
       child: Stack(
         fit: StackFit.expand,
         children: [
           Transform.scale(
-            scale: 1.18,
+            scale: 1.14,
             child: ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+              imageFilter: ImageFilter.blur(sigmaX: 10, sigmaY: 10, tileMode: TileMode.clamp),
               child: ColorFiltered(
+                // Matches embygo Web `brightness-[.55] saturate-[1.3]`
                 colorFilter: const ColorFilter.matrix(<double>[
-                  0.62, 0, 0, 0, 0,
-                  0, 0.62, 0, 0, 0,
-                  0, 0, 0.62, 0, 0,
+                  0.667, -0.058, -0.058, 0, 0,
+                  -0.115, 0.610, -0.058, 0, 0,
+                  -0.115, -0.115, 0.725, 0, 0,
                   0, 0, 0, 1, 0,
                 ]),
-                child: FadeNetworkImage(url: url, fit: BoxFit.cover),
+                child: FadeNetworkImage(url: bgUrl, fit: BoxFit.cover),
+              ),
+            ),
+          ),
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.bottomCenter,
+                end: Alignment.topCenter,
+                colors: [Color(0x99000000), Color(0x33000000)],
               ),
             ),
           ),
@@ -261,12 +316,23 @@ class VedroArtwork extends StatelessWidget {
             : FadeNetworkImage(url: art.url, fit: BoxFit.cover, alignment: alignment);
       }
     } else if (landscape) {
-      final art = appState.wideArt(item, width: width ?? 640) ??
-          (fallbackItem != null ? appState.wideArt(fallbackItem!, width: width ?? 640) : null);
-      if (art != null) {
-        artLayer = art.isPoster
-            ? FramedPoster(url: art.url)
-            : FadeNetworkImage(url: art.url, fit: BoxFit.cover, alignment: alignment);
+      final w = width ?? 640;
+      final primaryArt = appState.wideArt(item, width: w);
+      final fbArt = fallbackItem != null ? appState.wideArt(fallbackItem!, width: w) : null;
+      // Prefer real 16:9 landscape still/backdrop from item first, then from fallbackItem (Season/Series),
+      // then fall back to item/Season/Series portrait cover via `FramedPoster` (matching embygo Web!).
+      final ResolvedArt? chosen;
+      if (primaryArt != null && !primaryArt.isPoster) {
+        chosen = primaryArt;
+      } else if (fbArt != null && !fbArt.isPoster) {
+        chosen = fbArt;
+      } else {
+        chosen = primaryArt ?? fbArt;
+      }
+      if (chosen != null) {
+        artLayer = chosen.isPoster
+            ? FramedPoster(url: chosen.url, tinyUrl: chosen.tinyUrl)
+            : FadeNetworkImage(url: chosen.url, fit: BoxFit.cover, alignment: alignment);
       }
     } else {
       final url = appState.posterArtUrl(item, width: width ?? 420) ??

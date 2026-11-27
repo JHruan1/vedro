@@ -228,10 +228,10 @@ class _AddServerFormState extends State<_AddServerForm> {
                               enabled: !busy,
                               style: TextStyle(color: skin.fg, fontSize: 13.5),
                               decoration: InputDecoration(
-                                labelText: '代理地址（留空自动跟随应用内代理或系统）',
+                                labelText: 'HTTP 代理（可选，留空跟随系统）',
                                 hintText: widget.appState.systemProxyUrl.isNotEmpty
                                     ? '系统代理: ${widget.appState.systemProxyUrl}'
-                                    : 'socks5h://127.0.0.1:7890',
+                                    : 'http://127.0.0.1:7890',
                               ),
                             ),
                             const SizedBox(height: 6),

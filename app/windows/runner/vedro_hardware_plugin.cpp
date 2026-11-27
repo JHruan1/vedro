@@ -22,6 +22,7 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
 
+extern void VedroSetWin32FullscreenFlag(bool is_fullscreen);
 extern void VedroApplyWin32WindowChrome(HWND const window,
                                         bool is_light,
                                         COLORREF caption_rgb,
@@ -117,6 +118,7 @@ bool SetWindowsFullscreen(HWND hwnd, WindowModeState* state, bool enable) {
     GetWindowPlacement(hwnd, &state->saved_placement);
     MONITORINFO mi = {sizeof(MONITORINFO)};
     if (GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) {
+      VedroSetWin32FullscreenFlag(true);
       SetWindowLong(hwnd, GWL_STYLE, state->saved_style & ~WS_OVERLAPPEDWINDOW);
       SetWindowPos(
           hwnd,
@@ -129,7 +131,10 @@ bool SetWindowsFullscreen(HWND hwnd, WindowModeState* state, bool enable) {
       state->is_fullscreen = true;
     }
   } else {
+    VedroSetWin32FullscreenFlag(false);
     SetWindowLong(hwnd, GWL_STYLE, state->saved_style != 0 ? state->saved_style : WS_OVERLAPPEDWINDOW);
+    const MARGINS margins = {0, 0, 0, 1};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
     SetWindowPlacement(hwnd, &state->saved_placement);
     SetWindowPos(
         hwnd,
@@ -263,9 +268,72 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
           }
           bool next = SetWindowsFullscreen(hwnd, mode_state.get(), enabled);
           result->Success(flutter::EncodableValue(next));
+        } else if (method == "isMaximized") {
+          result->Success(flutter::EncodableValue(hwnd != nullptr && IsZoomed(hwnd) != FALSE));
         } else if (method == "toggleZoom") {
+          bool zoomed = false;
           if (hwnd) {
             ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+            zoomed = IsZoomed(hwnd) != FALSE;
+          }
+          result->Success(flutter::EncodableValue(zoomed));
+        } else if (method == "minimizeWindow") {
+          if (hwnd) {
+            ShowWindow(hwnd, SW_MINIMIZE);
+          }
+          result->Success();
+        } else if (method == "closeWindow") {
+          if (hwnd) {
+            PostMessage(hwnd, WM_CLOSE, 0, 0);
+          }
+          result->Success();
+        } else if (method == "startWindowDrag") {
+          if (hwnd && !mode_state->is_fullscreen) {
+            ReleaseCapture();
+            SendMessage(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+          }
+          result->Success();
+        } else if (method == "startWindowResize") {
+          std::string edge;
+          if (const auto* args = std::get_if<flutter::EncodableMap>(call.arguments())) {
+            auto eit = args->find(flutter::EncodableValue("edge"));
+            if (eit != args->end()) {
+              if (const auto* s = std::get_if<std::string>(&eit->second)) edge = *s;
+            }
+          }
+          if (hwnd && !mode_state->is_fullscreen && !IsZoomed(hwnd)) {
+            WPARAM ht = 0;
+            if (edge == "left") ht = HTLEFT;
+            else if (edge == "right") ht = HTRIGHT;
+            else if (edge == "top") ht = HTTOP;
+            else if (edge == "bottom") ht = HTBOTTOM;
+            else if (edge == "topLeft") ht = HTTOPLEFT;
+            else if (edge == "topRight") ht = HTTOPRIGHT;
+            else if (edge == "bottomLeft") ht = HTBOTTOMLEFT;
+            else if (edge == "bottomRight") ht = HTBOTTOMRIGHT;
+            if (ht != 0) {
+              ReleaseCapture();
+              SendMessage(hwnd, WM_NCLBUTTONDOWN, ht, 0);
+            }
+          }
+          result->Success();
+        } else if (method == "showWindowSystemMenu") {
+          if (hwnd && !mode_state->is_fullscreen) {
+            HMENU menu = GetSystemMenu(hwnd, FALSE);
+            if (menu) {
+              const bool zoomed = IsZoomed(hwnd) != FALSE;
+              EnableMenuItem(menu, SC_RESTORE, MF_BYCOMMAND | (zoomed ? MF_ENABLED : MF_GRAYED));
+              EnableMenuItem(menu, SC_MOVE, MF_BYCOMMAND | (!zoomed ? MF_ENABLED : MF_GRAYED));
+              EnableMenuItem(menu, SC_SIZE, MF_BYCOMMAND | (!zoomed ? MF_ENABLED : MF_GRAYED));
+              EnableMenuItem(menu, SC_MAXIMIZE, MF_BYCOMMAND | (!zoomed ? MF_ENABLED : MF_GRAYED));
+              POINT pt = {};
+              GetCursorPos(&pt);
+              int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                                       pt.x, pt.y, 0, hwnd, nullptr);
+              if (cmd != 0) {
+                PostMessage(hwnd, WM_SYSCOMMAND, static_cast<WPARAM>(cmd), 0);
+              }
+            }
           }
           result->Success();
         } else if (method == "setAlwaysOnTop") {

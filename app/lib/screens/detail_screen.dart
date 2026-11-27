@@ -3110,9 +3110,15 @@ class _DetailScreenState extends State<DetailScreen> {
             itemCount: visibleEps.length,
             itemBuilder: (_, idx) {
               final ep = visibleEps[idx];
+              final season = _activeSeason;
+              final fallback = (season != null &&
+                      widget.appState.wideArt(season) != null &&
+                      widget.appState.wideArt(_item)?.isPoster != false)
+                  ? season
+                  : _item;
               return _EpisodeHorizontalCard(
                 episode: ep,
-                seriesFallback: _item,
+                seriesFallback: fallback,
                 appState: widget.appState,
                 width: wide ? 284 : 232,
                 accent: accent,
@@ -3126,17 +3132,23 @@ class _DetailScreenState extends State<DetailScreen> {
           Padding(
             padding: EdgeInsets.symmetric(horizontal: padX),
             child: Column(
-              children: visibleEps
-                  .map((ep) => _EpisodeRow(
-                        episode: ep,
-                        seriesFallback: _item,
-                        appState: widget.appState,
-                        onTap: () => _play(ep, sourceId: _matchingSourceIdForEpisode(ep)),
-                        onOpenDetail: () => _openItemDetail(ep),
-                        onPickVersion:
-                            ep.versionCount > 1 ? () => _openEpisodeVersionSheet(ep) : null,
-                      ))
-                  .toList(),
+              children: visibleEps.map((ep) {
+                final season = _activeSeason;
+                final fallback = (season != null &&
+                        widget.appState.wideArt(season) != null &&
+                        widget.appState.wideArt(_item)?.isPoster != false)
+                    ? season
+                    : _item;
+                return _EpisodeRow(
+                  episode: ep,
+                  seriesFallback: fallback,
+                  appState: widget.appState,
+                  onTap: () => _play(ep, sourceId: _matchingSourceIdForEpisode(ep)),
+                  onOpenDetail: () => _openItemDetail(ep),
+                  onPickVersion:
+                      ep.versionCount > 1 ? () => _openEpisodeVersionSheet(ep) : null,
+                );
+              }).toList(),
             ),
           ),
       ],
@@ -4048,21 +4060,13 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    if (widget.appState.wideArt(ep)?.isPoster == false ||
-                        widget.appState.wideArt(widget.seriesFallback)?.isPoster == false)
-                      VedroArtwork(
-                        item: ep,
-                        fallbackItem: widget.seriesFallback,
-                        appState: widget.appState,
-                        landscape: true,
-                        width: 520,
-                      )
-                    else
-                      GeneratedArt(
-                        seed: '${widget.seriesFallback.id}_ep_${ep.indexNumber ?? ep.id}',
-                        label: ep.episodeCode ??
-                            (ep.indexNumber != null ? 'EP ${ep.indexNumber}' : ep.displayName),
-                      ),
+                    VedroArtwork(
+                      item: ep,
+                      fallbackItem: widget.seriesFallback,
+                      appState: widget.appState,
+                      landscape: true,
+                      width: 520,
+                    ),
                     const DecoratedBox(
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
@@ -4636,21 +4640,13 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        if (widget.appState.wideArt(ep)?.isPoster == false ||
-                            widget.appState.wideArt(widget.seriesFallback)?.isPoster == false)
-                          VedroArtwork(
-                            item: ep,
-                            fallbackItem: widget.seriesFallback,
-                            appState: widget.appState,
-                            landscape: true,
-                            width: 420,
-                          )
-                        else
-                          GeneratedArt(
-                            seed: '${widget.seriesFallback.id}_ep_${ep.indexNumber ?? ep.id}',
-                            label: ep.episodeCode ??
-                                (ep.indexNumber != null ? 'EP ${ep.indexNumber}' : ep.displayName),
-                          ),
+                        VedroArtwork(
+                          item: ep,
+                          fallbackItem: widget.seriesFallback,
+                          appState: widget.appState,
+                          landscape: true,
+                          width: 420,
+                        ),
                         if (ep.indexNumber != null)
                           Positioned(
                             left: 5,

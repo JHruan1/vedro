@@ -14,6 +14,10 @@ use crate::models::*;
 
 const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,CanDownload,Overview,Taglines,ChildCount,RecursiveItemCount,People,Genres,Tags,Studios,ProviderIds,ExternalUrls,OriginalTitle,SortName,DateCreated,ProductionLocations,PremiereDate,EndDate,Status,OfficialRating,CustomRating,CriticRating,Path,AirDays,AirTime,RemoteTrailers,Chapters,AspectRatio,Budget,Revenue,AwardSummary";
 
+/// Lightweight fields for Home screen rails & Hero banner (avoids serializing megabytes of
+/// `People`, `Chapters`, `MediaSources` track arrays, `Studios`, `Tags` across ~200 Home items).
+const HOME_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,Overview,Genres,Taglines,ChildCount,RecursiveItemCount,CanDownload,MediaSourceCount,ProductionYear,CommunityRating,OfficialRating,PremiereDate,EndDate,Status";
+
 /// High-performance async REST client supporting `embygo`, `Emby`, and `Jellyfin`.
 ///
 /// Key invariants tailored for `embygo`:
@@ -445,7 +449,7 @@ impl EmbyClient {
         let mut q = vec![
             ("Limit", limit.to_string()),
             ("EnableUserData", "true".into()),
-            ("Fields", DEFAULT_ITEM_FIELDS.into()),
+            ("Fields", HOME_ITEM_FIELDS.into()),
         ];
         if let Some(pid) = parent_id {
             q.push(("ParentId", pid.to_string()));
@@ -477,7 +481,7 @@ impl EmbyClient {
             ("UserId", uid),
             ("Limit", limit.to_string()),
             ("EnableUserData", "true".into()),
-            ("Fields", DEFAULT_ITEM_FIELDS.into()),
+            ("Fields", HOME_ITEM_FIELDS.into()),
         ];
         if let Some(sid) = series_id {
             q.push(("SeriesId", sid.to_string()));
@@ -495,7 +499,7 @@ impl EmbyClient {
             ("Limit", limit.to_string()),
             ("IncludeItemTypes", "Series,Movie".into()),
             ("EnableUserData", "true".into()),
-            ("Fields", DEFAULT_ITEM_FIELDS.into()),
+            ("Fields", HOME_ITEM_FIELDS.into()),
         ];
         match self
             .request_json::<Vec<BaseItemDto>>(
@@ -513,15 +517,22 @@ impl EmbyClient {
             }
             Err(ProtocolError::NotFound(_)) => {
                 self.state.write().capabilities.supports_popular = false;
-                let fallback = self
-                    .items(&ItemsQuery {
-                        include_item_types: Some("Series".into()),
-                        recursive: Some(true),
-                        sort_by: Some("PlayCount,CommunityRating,DateCreated".into()),
-                        sort_order: Some("Descending".into()),
-                        limit: Some(limit.into()),
-                        ..Default::default()
-                    })
+                let fallback_q = vec![
+                    ("IncludeItemTypes", "Series".into()),
+                    ("Recursive", "true".into()),
+                    ("SortBy", "PlayCount,CommunityRating,DateCreated".into()),
+                    ("SortOrder", "Descending".into()),
+                    ("Limit", limit.to_string()),
+                    ("EnableUserData", "true".into()),
+                    ("Fields", HOME_ITEM_FIELDS.into()),
+                ];
+                let fallback: Result<ItemsResult<BaseItemDto>> = self
+                    .request_json(
+                        Method::GET,
+                        &format!("Users/{uid}/Items"),
+                        &fallback_q,
+                        None,
+                    )
                     .await;
                 Ok(fallback.map(|r| r.items).unwrap_or_default())
             }
@@ -535,7 +546,7 @@ impl EmbyClient {
         let q = vec![
             ("Limit", limit.to_string()),
             ("EnableUserData", "true".into()),
-            ("Fields", DEFAULT_ITEM_FIELDS.into()),
+            ("Fields", HOME_ITEM_FIELDS.into()),
         ];
         match self
             .request_json::<ItemsResult<BaseItemDto>>(
@@ -552,13 +563,26 @@ impl EmbyClient {
         }
     }
 
+    pub async fn home_favorites(&self, limit: u32) -> Result<ItemsResult<BaseItemDto>> {
+        let uid = self.require_user_id()?;
+        let q = vec![
+            ("Filters", "IsFavorite".into()),
+            ("Recursive", "true".into()),
+            ("Limit", limit.to_string()),
+            ("EnableUserData", "true".into()),
+            ("Fields", HOME_ITEM_FIELDS.into()),
+        ];
+        self.request_json(Method::GET, &format!("Users/{uid}/Items"), &q, None)
+            .await
+    }
+
     pub async fn latest(&self, parent_id: Option<&str>, limit: u32) -> Result<Vec<BaseItemDto>> {
         let uid = self.require_user_id()?;
         let mut q = vec![
             ("Limit", limit.to_string()),
             ("GroupItems", "true".into()),
             ("EnableUserData", "true".into()),
-            ("Fields", DEFAULT_ITEM_FIELDS.into()),
+            ("Fields", HOME_ITEM_FIELDS.into()),
         ];
         if let Some(pid) = parent_id {
             q.push(("ParentId", pid.to_string()));

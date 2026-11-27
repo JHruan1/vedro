@@ -712,7 +712,7 @@ class _LibraryCardState extends State<LibraryCard> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    if (widget.coverItem != null)
+                    if (!hasServerCover && widget.coverItem != null)
                       VedroArtwork(
                         item: widget.coverItem!,
                         appState: widget.appState,

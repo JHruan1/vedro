@@ -11,6 +11,7 @@ import 'screens/shell_screen.dart';
 import 'state/app_state.dart';
 import 'widgets/app_lock_gate.dart';
 import 'widgets/vedro_ui.dart';
+import 'widgets/windows_immersive_frame.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -129,6 +130,10 @@ class _VedroAppState extends State<VedroApp> {
           debugShowCheckedModeBanner: false,
           theme: VedroTheme.fromSkin(skin),
           scrollBehavior: const VedroScrollBehavior(),
+          builder: (ctx, navChild) => WindowsImmersiveFrame(
+            isLight: skin.isLight,
+            child: navChild ?? const SizedBox.shrink(),
+          ),
           home: AnnotatedRegion<SystemUiOverlayStyle>(
             value: overlayStyle,
             child: AppLockGate(

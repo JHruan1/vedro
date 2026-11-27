@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vedro/core/ffi/vedro_bridge.dart';
 import 'package:vedro/core/models/models.dart';
 import 'package:vedro/core/models/preferences.dart';
+import 'package:vedro/core/platform/native_playback_channel.dart';
 import 'package:vedro/core/theme/display_profile.dart';
 import 'package:vedro/core/theme/dynamic_color_engine.dart';
 import 'package:vedro/core/theme/vedro_skin.dart';
@@ -23,7 +24,9 @@ import 'package:vedro/widgets/danmaku_engine.dart';
 import 'package:vedro/widgets/media_card.dart';
 import 'package:vedro/widgets/server_card_grid.dart';
 import 'package:vedro/widgets/skin_studio_pane.dart';
+import 'package:vedro/widgets/vedro_artwork.dart';
 import 'package:vedro/widgets/vedro_ui.dart';
+import 'package:vedro/widgets/windows_immersive_frame.dart';
 
 class _MockVedroCore implements VedroCoreClient {
   _MockVedroCore({
@@ -34,6 +37,7 @@ class _MockVedroCore implements VedroCoreClient {
     this.meQuotaJson,
     this.savedServersList = const [],
     this.lastActiveServerId,
+    this.cachedHomeForBootstrap,
   });
   final bool isAdmin;
   final String dialect;
@@ -42,11 +46,10 @@ class _MockVedroCore implements VedroCoreClient {
   final Map<String, dynamic>? meQuotaJson;
   final List<Map<String, dynamic>> savedServersList;
   String? lastActiveServerId;
+  final Map<String, dynamic>? cachedHomeForBootstrap;
   int probeMediaSourceCalls = 0;
   Map<String, dynamic>? lastAiTranslateParams;
   Map<String, dynamic>? lastAiModelsParams;
-  Map<String, dynamic>? lastProxyConfigParams;
-  Map<String, dynamic>? lastActivatedNode;
   Map<String, dynamic>? lastRestoreParams;
   List<Map<String, dynamic>> mockDevices = [
     <String, dynamic>{
@@ -76,7 +79,19 @@ class _MockVedroCore implements VedroCoreClient {
   Future<dynamic> invoke(String method, [Map<String, dynamic> params = const {}]) async {
     switch (method) {
       case 'version':
-        return <String, dynamic>{'version': '0.3.7-test'};
+        return <String, dynamic>{'version': '0.3.8-test'};
+      case 'bootstrap_state':
+        if (cachedHomeForBootstrap != null) {
+          return <String, dynamic>{
+            'version': '0.3.8-test',
+            'proxy_addr': '127.0.0.1:45678',
+            'servers': savedServersList,
+            'settings': <String, dynamic>{'hwdec': 'auto_zero_copy'},
+            'last_active_server_id': lastActiveServerId,
+            'cached_home': cachedHomeForBootstrap,
+          };
+        }
+        return <String, dynamic>{};
       case 'get_me_quota':
         return meQuotaJson;
       case 'list_servers':
@@ -604,29 +619,6 @@ class _MockVedroCore implements VedroCoreClient {
           }
         }
         return <String, dynamic>{};
-      case 'in_app_proxy_status':
-        return <String, dynamic>{
-          'active': lastProxyConfigParams != null && lastProxyConfigParams!['mode'] != 'off',
-          'mode': lastProxyConfigParams?['mode'] ?? 'off',
-          'proxy_url': lastProxyConfigParams?['proxy_url'],
-          'managed_core': false,
-        };
-      case 'configure_in_app_proxy':
-        lastProxyConfigParams = Map<String, dynamic>.from(params);
-        return <String, dynamic>{
-          'ok': true,
-          'active': params['mode'] != 'off',
-          'mode': params['mode'] ?? 'off',
-          'proxy_url': params['proxy_url'],
-          'managed_core': params['mode'] == 'singbox' || params['mode'] == 'mihomo',
-        };
-      case 'test_in_app_proxy':
-        return <String, dynamic>{
-          'ok': true,
-          'status': 204,
-          'latency_ms': 42,
-          'proxy_url': lastProxyConfigParams?['proxy_url'] ?? 'socks5h://127.0.0.1:1080',
-        };
       case 'ai_translate':
         lastAiTranslateParams = Map<String, dynamic>.from(params);
         return <String, dynamic>{
@@ -638,79 +630,6 @@ class _MockVedroCore implements VedroCoreClient {
         return <String, dynamic>{
           'models': <String>['gpt-4o-mini', 'deepseek-chat', 'qwen-plus'],
           'direct_ip': params['direct_ip'] == true,
-        };
-      case 'fetch_proxy_subscription':
-        final reqUrl = (params['url'] ?? '').toString();
-        if (reqUrl.contains('sub2.example.com')) {
-          return <String, dynamic>{
-            'count': 2,
-            'userinfo': <String, dynamic>{
-              'used': 5368709120,
-              'total': 53687091200,
-            },
-            'nodes': <Map<String, dynamic>>[
-              <String, dynamic>{
-                'id': 'node_jp_01',
-                'name': '🇯🇵 东京专线 01',
-                'protocol': 'vless',
-                'server': 'jp1.sub2.example.com',
-                'port': 443,
-                'native_supported': true,
-              },
-              <String, dynamic>{
-                'id': 'node_tw_02',
-                'name': '🇹🇼 台北 Hinet 02',
-                'protocol': 'trojan',
-                'server': 'tw2.sub2.example.com',
-                'port': 443,
-                'native_supported': true,
-              },
-            ],
-          };
-        }
-        return <String, dynamic>{
-          'count': 3,
-          'userinfo': <String, dynamic>{
-            'used': 10737418240,
-            'total': 107374182400,
-          },
-          'nodes': <Map<String, dynamic>>[
-            <String, dynamic>{
-              'id': 'node_us_slow',
-              'name': '🇺🇸 洛杉矶 BGP 03',
-              'protocol': 'trojan',
-              'server': 'us3.example.com',
-              'port': 443,
-              'native_supported': true,
-            },
-            <String, dynamic>{
-              'id': 'node_sg_02',
-              'name': '🇸🇬 新加坡网关',
-              'protocol': 'socks5',
-              'server': '127.0.0.1',
-              'port': 7890,
-              'direct_proxy_url': 'socks5h://127.0.0.1:7890',
-              'native_supported': true,
-            },
-            <String, dynamic>{
-              'id': 'node_hk_01',
-              'name': '🇭🇰 香港 IEPL 01',
-              'protocol': 'vless',
-              'server': 'hk1.example.com',
-              'port': 443,
-              'native_supported': true,
-            },
-          ],
-        };
-      case 'ping_proxy_nodes':
-        return <String, dynamic>{
-          'latencies': <String, dynamic>{
-            'node_us_slow': 240,
-            'node_hk_01': 26,
-            'node_sg_02': 48,
-            'node_jp_01': 32,
-            'node_tw_02': 44,
-          },
         };
       case 'get_items':
         final items = List<Map<String, dynamic>>.generate(12, (i) {
@@ -727,17 +646,6 @@ class _MockVedroCore implements VedroCoreClient {
         return <String, dynamic>{
           'Items': items,
           'TotalRecordCount': items.length,
-        };
-      case 'activate_proxy_node':
-        final n = Map<String, dynamic>.from(params['node'] as Map);
-        lastActivatedNode = n;
-        return <String, dynamic>{
-          'ok': true,
-          'mode': 'node',
-          'active': true,
-          'proxy_url': 'socks5h://127.0.0.1:20801',
-          'node_id': n['id'],
-          'node_name': n['name'],
         };
       case 'get_embygo_admin_dashboard':
         return <String, dynamic>{
@@ -1764,62 +1672,10 @@ void main() {
     expect(find.byKey(const ValueKey('font-live-preview-card')), findsOneWidget);
     expect(find.text('不要温顺地走进那个良夜'), findsOneWidget);
 
-    // 5. Settings -> 网络代理 supports Subscription URL -> Node Grid -> Click to activate node (zero essay!)
-    await tester.tap(find.text('网络代理'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('原理说明'), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('proxy-mode-sub')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.inAppProxyMode, equals('sub'));
-    await tester.enterText(
-      find.byKey(const ValueKey('proxy-sub-url-field')),
-      'https://sub.example.com/api/v1/client/subscribe?token=abc',
-    );
-    await tester.tap(find.byKey(const ValueKey('proxy-sub-fetch-btn')));
-    await tester.pumpAndSettle();
-    expect(find.text('🇭🇰 香港 IEPL 01'), findsOneWidget);
-    expect(
-      find.descendant(
-        of: find.byKey(const ValueKey('proxy-node-node_hk_01')),
-        matching: find.text('26 ms'),
-      ),
-      findsOneWidget,
-    );
-    expect(find.byKey(const ValueKey('proxy-node-auto')), findsOneWidget);
+    // 5. Settings no longer includes in-app proxy ('网络代理') section
+    expect(find.text('网络代理'), findsNothing);
 
-    // Default sort is 'latency': HK (26 ms) MUST appear before US (240 ms) even though US was index 0!
-    final hkPos = tester.getTopLeft(find.byKey(const ValueKey('proxy-node-node_hk_01')));
-    final usPos = tester.getTopLeft(find.byKey(const ValueKey('proxy-node-node_us_slow')));
-    expect(hkPos.dy < usPos.dy || (hkPos.dy == usPos.dy && hkPos.dx < usPos.dx), isTrue);
-
-    // Tapping '自动选择' auto-picks lowest-latency HK (26 ms) node!
-    await tester.tap(find.byKey(const ValueKey('proxy-node-auto')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.selectedProxyNodeId, equals('auto'));
-    expect(app.autoProxyResolvedNodeId, equals('node_hk_01'));
-    expect(mock.lastActivatedNode?['name'], equals('🇭🇰 香港 IEPL 01'));
-
-    // Switching sort dropdown to '默认顺序' moves US (index 0) ahead of HK!
-    await tester.tap(find.byKey(const ValueKey('proxy-node-sort-dropdown')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('proxy-sort-default')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.proxyNodeSort, equals('default'));
-    final hkDefaultPos = tester.getTopLeft(find.byKey(const ValueKey('proxy-node-node_hk_01')));
-    final usDefaultPos = tester.getTopLeft(find.byKey(const ValueKey('proxy-node-node_us_slow')));
-    expect(
-      usDefaultPos.dy < hkDefaultPos.dy ||
-          (usDefaultPos.dy == hkDefaultPos.dy && usDefaultPos.dx < hkDefaultPos.dx),
-      isTrue,
-    );
-
-    // Direct manual node selection also works cleanly
-    await tester.tap(find.byKey(const ValueKey('proxy-node-node_hk_01')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.selectedProxyNodeId, equals('node_hk_01'));
-    expect(mock.lastActivatedNode?['name'], equals('🇭🇰 香港 IEPL 01'));
-
-    // 6. Settings -> AI 翻译 fetches model list (`/models`) via Proxy IP & zero "100% 不经过" essay!
+    // 6. Settings -> AI 翻译 fetches model list (`/models`) cleanly!
     await tester.drag(find.byType(ListView).first, const Offset(0, -340));
     await tester.pumpAndSettle();
     await tester.tap(find.text('AI 翻译'));
@@ -2184,20 +2040,11 @@ void main() {
   });
 
   testWidgets(
-      'Multi-subscription proxy management, default rating ON / 2x OFF badges, and zero-overlap adaptive Library grid across PPI & TextScaler',
+      'Default rating ON / 2x OFF badges, and zero-overlap adaptive Library grid across PPI & TextScaler',
       (tester) async {
-    // 1. Legacy single-subscription JSON migrates cleanly to ProxySubscriptionProfile
-    final migrated = VedroPreferences.fromJson({
-      'proxy_subscription_url': 'https://legacy-airport.example.com/api/v1/client/subscribe?token=xyz',
-      'proxy_nodes': [
-        {'id': 'n1', 'name': 'Legacy HK', 'protocol': 'vless', 'server': 'hk.example.com', 'port': 443},
-      ],
-    });
-    expect(migrated.proxySubscriptions.length, equals(1));
-    expect(migrated.proxySubscriptions.first.name, equals('legacy-airport.example.com'));
-    expect(migrated.activeProxySubId, equals('sub_default'));
-    expect(migrated.showRatings, isTrue);
-    expect(migrated.showMultiVersionBadge, isFalse);
+    final defaults = VedroPreferences.fromJson(const {});
+    expect(defaults.showRatings, isTrue);
+    expect(defaults.showMultiVersionBadge, isFalse);
     for (final s in VedroSkin.presets) {
       expect(s.showCardRating, isTrue, reason: 'Preset ${s.id} must show card rating by default');
     }
@@ -2255,74 +2102,6 @@ void main() {
     await app.updatePrefs(app.prefs.copyWith(showMultiVersionBadge: false));
     await tester.pumpAndSettle();
     expect(find.text('2×'), findsNothing);
-
-    // 3. Multi-Subscription Proxy Management: Save 2 named subscriptions, switch, refresh all, delete
-    await tester.pumpWidget(
-      AnimatedBuilder(
-        animation: app,
-        builder: (_, __) => MaterialApp(
-          theme: VedroTheme.fromSkin(app.prefs.activeSkin),
-          home: SettingsScreen(
-            appState: app,
-            onOpenServerHub: () {},
-            onOpenAddServer: ([_]) {},
-          ),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.tap(find.text('网络代理'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('proxy-mode-sub')));
-    await tester.pumpAndSettle();
-
-    // Save Subscription #1 ("主力机场")
-    await tester.enterText(find.byKey(const ValueKey('proxy-sub-name-field')), '主力机场');
-    await tester.enterText(
-      find.byKey(const ValueKey('proxy-sub-url-field')),
-      'https://sub1.example.com/api/v1/client/subscribe?token=111',
-    );
-    await tester.tap(find.byKey(const ValueKey('proxy-sub-fetch-btn')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.proxySubscriptions.length, equals(1));
-    expect(find.text('主力机场'), findsOneWidget);
-    expect(find.text('🇭🇰 香港 IEPL 01'), findsOneWidget);
-
-    // Add Subscription #2 ("日本专线") via '添加订阅' button
-    await tester.tap(find.byKey(const ValueKey('proxy-sub-show-add-btn')));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const ValueKey('proxy-sub-name-field')), '日本专线');
-    await tester.enterText(
-      find.byKey(const ValueKey('proxy-sub-url-field')),
-      'https://sub2.example.com/api/v1/client/subscribe?token=222',
-    );
-    await tester.tap(find.byKey(const ValueKey('proxy-sub-fetch-btn')));
-    await tester.pumpAndSettle();
-
-    expect(app.prefs.proxySubscriptions.length, equals(2));
-    expect(find.text('已存订阅 (2)'), findsOneWidget);
-    expect(find.text('🇯🇵 东京专线 01'), findsOneWidget);
-    expect(find.text('🇭🇰 香港 IEPL 01'), findsNothing);
-
-    final sub1Id = app.prefs.proxySubscriptions.first.id;
-    final sub2Id = app.prefs.proxySubscriptions.last.id;
-
-    // Tap Subscription #1 card -> switches active node list back to HK/SG/US live!
-    await tester.tap(find.byKey(ValueKey('proxy-sub-card-$sub1Id')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.activeProxySubId, equals(sub1Id));
-    expect(find.text('🇭🇰 香港 IEPL 01'), findsOneWidget);
-    expect(find.text('🇯🇵 东京专线 01'), findsNothing);
-
-    // Refresh all subscriptions & delete Subscription #2
-    await tester.tap(find.byKey(const ValueKey('proxy-sub-refresh-all-btn')));
-    await tester.pumpAndSettle();
-    expect(find.text('已刷新 2 个订阅'), findsOneWidget);
-
-    await tester.tap(find.byKey(ValueKey('proxy-sub-delete-$sub2Id')));
-    await tester.pumpAndSettle();
-    expect(app.prefs.proxySubscriptions.length, equals(1));
 
     // 4. Mathematical Zero-Overlap Proof for LibraryScreen across Extreme Resolutions, PPI & OS TextScaler
     Future<void> verifyZeroGridOverlap({
@@ -2635,35 +2414,135 @@ void main() {
         ],
       }) as Map<String, dynamic>;
       expect(savedTracks['saved'], isTrue);
-      final proxyStatus = await bridge.invoke('in_app_proxy_status') as Map<String, dynamic>;
-      expect(proxyStatus['active'], isFalse);
-      final setCustomProxy = await bridge.invoke('configure_in_app_proxy', {
-        'mode': 'custom',
-        'proxy_url': 'socks5h://127.0.0.1:10808',
-      }) as Map<String, dynamic>;
-      expect(setCustomProxy['ok'], isTrue);
-      expect(setCustomProxy['active'], isTrue);
-      final subRes = await bridge.invoke('fetch_proxy_subscription', {
-        'raw_content': 'socks5://127.0.0.1:1080#LocalNode\nvless://11111111-2222-3333-4444-555555555555@hk.example.com:443?security=tls#HK-VLESS',
-      }) as Map<String, dynamic>;
-      expect(subRes['count'], equals(2));
-      final subNodes = (subRes['nodes'] as List).cast<Map<String, dynamic>>();
-      expect(subNodes[1]['native_supported'], isTrue);
-      // Activate VLESS node via real in-process Rust multi-protocol engine (ZERO external sing-box binary!)
-      final actRes = await bridge.invoke('activate_proxy_node', {
-        'node': subNodes[1],
-      }) as Map<String, dynamic>;
-      expect(actRes['ok'], isTrue);
-      expect(actRes['engine'], equals('native_rust'));
-      final nativeStatus = await bridge.invoke('in_app_proxy_status') as Map<String, dynamic>;
-      expect(nativeStatus['active'], isTrue);
-      expect(nativeStatus['managed_engine'], equals('native_rust'));
-      final resetProxy = await bridge.invoke('configure_in_app_proxy', {
-        'mode': 'off',
-      }) as Map<String, dynamic>;
-      expect(resetProxy['active'], isFalse);
+      final boot = await bridge.invoke('bootstrap_state') as Map<String, dynamic>;
+      expect(boot['version'], isNotEmpty);
+      expect(boot['proxy_addr']?.toString(), contains('127.0.0.1:'));
+      expect(boot['servers'], isA<List<dynamic>>());
+      expect(boot['settings'], isA<Map<String, dynamic>>());
     } finally {
       bridge.dispose();
     }
+  });
+
+  testWidgets(
+      'v0.3.8: Instant bootstrap_state SWR Home hydration, Series cover FramedPoster fallback for missing episode stills, and WindowsImmersiveFrame',
+      (tester) async {
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    // 1. Instant bootstrap_state + cached_home SWR cold-start hydration (zero splash block!)
+    final swrMock = _MockVedroCore(
+      lastActiveServerId: 'srv-swr',
+      savedServersList: const [
+        <String, dynamic>{
+          'id': 'srv-swr',
+          'name': '极速冷启动服',
+          'url': 'https://swr.example.com',
+          'dialect': 'embygo',
+          'user_id': 'u1',
+          'username': 'alice',
+          'access_token': 'tok-swr',
+          'is_admin': false,
+          'last_connected_at': 3000,
+        },
+      ],
+      cachedHomeForBootstrap: const <String, dynamic>{
+        'views': <dynamic>[
+          <String, dynamic>{'Id': 'lib-swr', 'Name': '秒开电影库', 'Type': 'CollectionFolder'},
+        ],
+        'resume': <dynamic>[],
+        'next_up': <dynamic>[],
+        'popular': <dynamic>[
+          <String, dynamic>{'Id': 'm-swr', 'Name': '冷启动秒出大片', 'Type': 'Movie'},
+        ],
+        'suggestions': <dynamic>[],
+        'latest': <String, dynamic>{},
+      },
+    );
+    final swrApp = VedroAppState(swrMock);
+    addTearDown(swrApp.dispose);
+    await swrApp.initialize();
+    expect(swrApp.isInitialized, isTrue);
+    expect(swrApp.isAutoRestoring, isFalse);
+    expect(swrApp.activeServerId, equals('srv-swr'));
+    expect(swrApp.views.map((v) => v.name), contains('秒开电影库'));
+    expect(swrApp.popular.map((p) => p.name), contains('冷启动秒出大片'));
+
+    // 2. Series episode without Thumb/Primary still falls back to Series/Season portrait cover via FramedPoster (matching EmbyGo Web)
+    final app = VedroAppState(_MockVedroCore())
+      ..userId = 'u1'
+      ..connectedUrl = 'https://embygo.example.com'
+      ..proxyAddr = '127.0.0.1:45678';
+
+    final seriesWithCover = MediaItemModel(
+      id: 'series-cover-1',
+      name: '繁花',
+      type: 'Series',
+      primaryImageTag: 'series_poster_tag',
+    );
+    final epWithoutStill = MediaItemModel(
+      id: 'ep-no-still-1',
+      name: '第一集',
+      type: 'Episode',
+      seriesId: 'series-cover-1',
+      seriesName: '繁花',
+      seriesPrimaryImageTag: 'series_poster_tag',
+      parentIndexNumber: 1,
+      indexNumber: 1,
+    );
+
+    final resolvedWide = app.wideArt(epWithoutStill);
+    expect(resolvedWide, isNotNull);
+    expect(resolvedWide!.isPoster, isTrue);
+    expect(resolvedWide.url, contains('/Items/series-cover-1/Images/Primary'));
+    expect(resolvedWide.tinyUrl, contains('maxWidth=140'));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+        home: Scaffold(
+          body: SizedBox(
+            width: 240,
+            height: 135,
+            child: VedroArtwork(
+              item: epWithoutStill,
+              fallbackItem: seriesWithCover,
+              appState: app,
+              landscape: true,
+              width: 440,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byType(FramedPoster), findsOneWidget);
+
+    // 2. WindowsImmersiveFrame renders borderless caption buttons & auto-hides during cinema playback
+    NativePlaybackChannel.fullscreenNotifier.value = false;
+    NativePlaybackChannel.maximizedNotifier.value = false;
+    NativePlaybackChannel.playerHudAutoHideNotifier.value = false;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+        home: const WindowsImmersiveFrame(
+          isLight: false,
+          forceEnableForTest: true,
+          child: Scaffold(body: Center(child: Text('Full-Bleed Windows Canvas'))),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byKey(const ValueKey('win-caption-minimize')), findsOneWidget);
+    expect(find.byKey(const ValueKey('win-caption-maximize')), findsOneWidget);
+    expect(find.byKey(const ValueKey('win-caption-close')), findsOneWidget);
+
+    NativePlaybackChannel.playerHudAutoHideNotifier.value = true;
+    await tester.pump(const Duration(milliseconds: 220));
+    final animOpacity = tester.widget<AnimatedOpacity>(find.byType(AnimatedOpacity).first);
+    expect(animOpacity.opacity, equals(0.0));
+    NativePlaybackChannel.playerHudAutoHideNotifier.value = false;
   });
 }

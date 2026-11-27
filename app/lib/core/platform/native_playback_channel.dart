@@ -11,6 +11,8 @@ import 'package:flutter/services.dart';
 class NativePlaybackChannel {
   static const MethodChannel _channel = MethodChannel('com.vedro.player/hardware');
   static final ValueNotifier<bool> fullscreenNotifier = ValueNotifier<bool>(false);
+  static final ValueNotifier<bool> maximizedNotifier = ValueNotifier<bool>(false);
+  static final ValueNotifier<bool> playerHudAutoHideNotifier = ValueNotifier<bool>(false);
   static final ValueNotifier<List<String>> droppedFilesNotifier = ValueNotifier<List<String>>(const []);
   static bool _listenerBound = false;
   static String? _lastChromeSig;
@@ -212,7 +214,56 @@ class NativePlaybackChannel {
 
   static Future<void> toggleZoom() async {
     try {
-      await _channel.invokeMethod<void>('toggleZoom');
+      final zoomed = await _channel.invokeMethod<bool>('toggleZoom');
+      if (zoomed != null) {
+        maximizedNotifier.value = zoomed;
+      }
+    } catch (_) {}
+  }
+
+  static Future<bool> syncMaximizedState() async {
+    if (kIsWeb || !Platform.isWindows) return false;
+    try {
+      final zoomed = (await _channel.invokeMethod<bool>('isMaximized')) ?? false;
+      if (maximizedNotifier.value != zoomed) {
+        maximizedNotifier.value = zoomed;
+      }
+      return zoomed;
+    } catch (_) {
+      return maximizedNotifier.value;
+    }
+  }
+
+  static Future<void> minimizeWindow() async {
+    try {
+      await _channel.invokeMethod<void>('minimizeWindow');
+    } catch (_) {}
+  }
+
+  static Future<void> closeWindow() async {
+    try {
+      await _channel.invokeMethod<void>('closeWindow');
+    } catch (_) {}
+  }
+
+  static Future<void> startWindowDrag() async {
+    if (kIsWeb || !Platform.isWindows) return;
+    try {
+      await _channel.invokeMethod<void>('startWindowDrag');
+    } catch (_) {}
+  }
+
+  static Future<void> startWindowResize(String edge) async {
+    if (kIsWeb || !Platform.isWindows) return;
+    try {
+      await _channel.invokeMethod<void>('startWindowResize', {'edge': edge});
+    } catch (_) {}
+  }
+
+  static Future<void> showWindowSystemMenu() async {
+    if (kIsWeb || !Platform.isWindows) return;
+    try {
+      await _channel.invokeMethod<void>('showWindowSystemMenu');
     } catch (_) {}
   }
 

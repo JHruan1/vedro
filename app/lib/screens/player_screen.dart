@@ -871,6 +871,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ));
     }
     if (_isDesktop) {
+      NativePlaybackChannel.playerHudAutoHideNotifier.value = false;
       NativePlaybackChannel.fullscreenNotifier.removeListener(_onNativeFullscreenChanged);
       NativePlaybackChannel.droppedFilesNotifier.removeListener(_onFilesDropped);
     }
@@ -1628,6 +1629,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final size = MediaQuery.sizeOf(context);
     final wide = size.width >= 760;
     final isMac = !kIsWeb && Platform.isMacOS;
+    final isWin = !kIsWeb && Platform.isWindows;
     final topPad = MediaQuery.paddingOf(context).top;
     final seg = _activeSegment;
     final step = widget.appState.prefs.seekStepSecs;
@@ -1640,6 +1642,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
         : const <String>[];
 
     final hideCursor = !_controlsVisible && !_showEpisodeDrawer && !_paused && !_loading;
+    final shouldAutoHideWinCaption = !_controlsVisible && !_showEpisodeDrawer;
+    if (NativePlaybackChannel.playerHudAutoHideNotifier.value != shouldAutoHideWinCaption) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          NativePlaybackChannel.playerHudAutoHideNotifier.value = shouldAutoHideWinCaption;
+        }
+      });
+    }
 
     return KeyboardListener(
       focusNode: _focusNode,
@@ -1992,10 +2002,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 child: Container(
                                   padding: EdgeInsets.fromLTRB(
                                     (isMac && !_isFullscreen) ? 82 : 20,
-                                  topPad + 12,
-                                  20,
-                                  28,
-                                ),
+                                    topPad + 12,
+                                    (!kIsWeb && Platform.isWindows && !_isFullscreen) ? 148 : 20,
+                                    28,
+                                  ),
                                 decoration: const BoxDecoration(
                                   gradient: LinearGradient(
                                     begin: Alignment.topCenter,
@@ -2510,7 +2520,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           return Column(
                             children: [
                               Padding(
-                                padding: const EdgeInsets.fromLTRB(16, 10, 8, 8),
+                                padding: EdgeInsets.fromLTRB(
+                                  16,
+                                  (isWin && !_isFullscreen) ? 38 : 10,
+                                  8,
+                                  8,
+                                ),
                                 child: Row(
                                   children: [
                                     Text(

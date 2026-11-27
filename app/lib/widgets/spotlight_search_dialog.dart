@@ -19,21 +19,12 @@ Future<void> showSpotlightSearch({
     barrierDismissible: true,
     barrierLabel: '关闭搜索',
     barrierColor: const Color(0x8A000000),
-    transitionDuration: const Duration(milliseconds: 220),
+    transitionDuration: const Duration(milliseconds: 440),
     pageBuilder: (_, __, ___) => _SpotlightSearchOverlay(
       appState: appState,
       onSelectHit: onSelectHit,
     ),
-    transitionBuilder: (_, animation, __, child) {
-      final curved = CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
-      return FadeTransition(
-        opacity: curved,
-        child: ScaleTransition(
-          scale: Tween<double>(begin: 0.96, end: 1.0).animate(curved),
-          child: child,
-        ),
-      );
-    },
+    transitionBuilder: vedroDialogTransition,
   );
 }
 

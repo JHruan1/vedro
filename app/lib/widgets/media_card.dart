@@ -255,7 +255,7 @@ class _MediaCardState extends State<MediaCard> {
               child: AnimatedOpacity(
                 opacity: isOverlayCard ? 1.0 : (_highlighted ? 1.0 : 0.0),
                 duration: const Duration(milliseconds: 190),
-                curve: Curves.easeOut,
+                curve: VedroTheme.easeOut,
                 child: Container(
                   padding: EdgeInsets.fromLTRB(
                     10,
@@ -480,7 +480,7 @@ class _MediaCardState extends State<MediaCard> {
               child: AnimatedOpacity(
                 opacity: _hovered ? 1.0 : 0.0,
                 duration: const Duration(milliseconds: 180),
-                curve: Curves.easeOut,
+                curve: VedroTheme.easeOut,
                 child: AnimatedScale(
                   scale: _hovered ? 1.0 : 0.72,
                   duration: const Duration(milliseconds: 460),

@@ -580,7 +580,7 @@ Future<void> showVedroUpdateDialog(
     }
   }
 
-  await showDialog<void>(
+  await showVedroDialog<void>(
     context: context,
     builder: (ctx) => VedroControllerScope<ScrollController>(
       create: () => ScrollController(),

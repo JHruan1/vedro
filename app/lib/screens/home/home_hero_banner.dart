@@ -589,7 +589,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                                   AnimatedOpacity(
                                     opacity: i == _active ? 1.0 : 0.0,
                                     duration: const Duration(milliseconds: 480),
-                                    curve: Curves.easeOutCubic,
+                                    curve: VedroTheme.easeOut,
                                     child: VedroArtwork(
                                       item: widget.featured[i].item,
                                       appState: widget.appState,

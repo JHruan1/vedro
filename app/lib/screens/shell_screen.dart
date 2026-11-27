@@ -132,7 +132,7 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
     var pickFolder = false;
     if ((PlatformPerfProfile.isWindows || PlatformPerfProfile.isLinux)) {
       final skin = VedroSkin.of(context);
-      final choice = await showDialog<String>(
+      final choice = await showVedroDialog<String>(
         context: context,
         builder: (ctx) => AlertDialog(
           backgroundColor: skin.surface,
@@ -236,7 +236,7 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
   Future<void> _openNetworkUrlDialog() async {
     final skin = VedroSkin.of(context);
     String? err;
-    final submitted = await showDialog<String>(
+    final submitted = await showVedroDialog<String>(
       context: context,
       builder: (ctx) => VedroControllerScope<TextEditingController>(
         create: () => TextEditingController(),

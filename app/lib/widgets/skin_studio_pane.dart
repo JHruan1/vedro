@@ -135,7 +135,7 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
         ? p.customAccentHex
         : VedroSkin.colorToHex(skin.accent);
     final ctrl = TextEditingController(text: initial);
-    final hex = await showDialog<String>(
+    final hex = await showVedroDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('自定义主题色'),

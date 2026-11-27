@@ -236,7 +236,7 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
                               child: AnimatedScale(
                                 scale: active ? 1.0 : 0.0,
                                 duration: const Duration(milliseconds: 140),
-                                curve: Curves.easeOutCubic,
+                                curve: VedroTheme.easeOut,
                                 child: Container(
                                   width: 12,
                                   height: 12,

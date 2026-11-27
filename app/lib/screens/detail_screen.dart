@@ -470,7 +470,7 @@ class _DetailScreenState extends State<DetailScreen> {
     if (!mounted) return;
     final isDesktop = PlatformPerfProfile.isDesktop;
     if (!isDesktop) {
-      final p = await showDialog<String>(
+      final p = await showVedroDialog<String>(
         context: context,
         builder: (ctx) => VedroControllerScope<TextEditingController>(
           create: () => TextEditingController(),
@@ -622,7 +622,7 @@ class _DetailScreenState extends State<DetailScreen> {
   void _openPosterLightbox() {
     final posterUrl = widget.appState.posterArtUrl(_item, width: 1200);
     if (posterUrl == null || posterUrl.isEmpty) return;
-    showDialog<void>(
+    showVedroDialog<void>(
       context: context,
       barrierColor: const Color(0xDE000000),
       builder: (ctx) => GestureDetector(
@@ -1020,7 +1020,7 @@ class _DetailScreenState extends State<DetailScreen> {
   Future<void> _openBatchDownloadDialog() async {
     final target = _resolveDownloadTarget();
     if (!widget.appState.canDownloadItem(target)) return;
-    await showDialog<void>(
+    await showVedroDialog<void>(
       context: context,
       barrierDismissible: true,
       builder: (ctx) => _BatchDownloadDialog(

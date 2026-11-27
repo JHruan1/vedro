@@ -84,7 +84,7 @@ extension _PlayerControlsExt on _PlayerScreenState {
 
   Future<void> _requestExit() async {
     if (widget.appState.prefs.confirmExitPlayer && !_paused && _error == null) {
-      final ok = await showDialog<bool>(
+      final ok = await showVedroDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('退出播放？'),

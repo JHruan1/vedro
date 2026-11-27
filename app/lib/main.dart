@@ -348,7 +348,7 @@ class _VedroAppState extends State<VedroApp> with WidgetsBindingObserver {
             value: overlayStyle,
             child: AnimatedSwitcher(
               duration: Duration(milliseconds: _appState.prefs.reduceMotion ? 0 : 260),
-              switchInCurve: Curves.easeOutCubic,
+              switchInCurve: VedroTheme.easeOut,
               switchOutCurve: Curves.easeInCubic,
               child: child,
             ),

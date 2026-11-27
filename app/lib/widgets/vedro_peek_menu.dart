@@ -247,7 +247,7 @@ class _VedroPeekMenuStage extends StatelessWidget {
 
     final bgAnim = CurvedAnimation(
       parent: animation,
-      curve: Curves.easeOutCubic,
+      curve: VedroTheme.easeOut,
       reverseCurve: Curves.easeInCubic,
     );
     final cardSpring = CurvedAnimation(

@@ -360,7 +360,7 @@ class _AddServerFormState extends State<_AddServerForm> {
               ),
               AnimatedSize(
                 duration: const Duration(milliseconds: 200),
-                curve: Curves.easeOutCubic,
+                curve: VedroTheme.easeOut,
                 child: _showAdvanced
                     ? Padding(
                         padding: const EdgeInsets.only(top: 6),

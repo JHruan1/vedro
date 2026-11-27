@@ -1001,7 +1001,7 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
 
   Future<void> _addRouteDialog(SavedServerProfile server) async {
     var allowSelfSigned = false;
-    final created = await showDialog<ServerRouteModel>(
+    final created = await showVedroDialog<ServerRouteModel>(
       context: context,
       builder: (ctx) => VedroControllerScope<List<TextEditingController>>(
         create: () => [
@@ -1510,7 +1510,7 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                 child: TextButton.icon(
                   style: TextButton.styleFrom(foregroundColor: VedroTheme.danger),
                   onPressed: () async {
-                    final confirm = await showDialog<bool>(
+                    final confirm = await showVedroDialog<bool>(
                       context: context,
                       builder: (ctx) => AlertDialog(
                         backgroundColor: skin.surface,

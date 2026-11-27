@@ -247,7 +247,7 @@ extension _SettingsServerDownloadSectionsExt on _SettingsDetailPaneState {
     final regCount = devices.isNotEmpty ? devices.length : (quota?.registeredDevices ?? 0);
 
     Future<void> confirmRemove(String devId, String label, bool isCurrent) async {
-      final ok = await showDialog<bool>(
+      final ok = await showVedroDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
           backgroundColor: skin.surface,

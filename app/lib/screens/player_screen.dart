@@ -1214,7 +1214,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (!mounted) return;
     // Fallback manual path input when native dialog isn't available or cancelled on mobile
     if (!_isDesktop) {
-      final pickedPath = await showDialog<String>(
+      final pickedPath = await showVedroDialog<String>(
         context: context,
         builder: (ctx) => VedroControllerScope<TextEditingController>(
           create: () => TextEditingController(),

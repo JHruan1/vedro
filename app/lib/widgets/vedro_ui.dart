@@ -524,7 +524,7 @@ class _PressableScaleState extends State<PressableScale> with SingleTickerProvid
             context,
             alignment: 0.45,
             duration: const Duration(milliseconds: 170),
-            curve: Curves.easeOutCubic,
+            curve: VedroTheme.easeOut,
           );
         }
       });
@@ -985,7 +985,7 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
                       context,
                       alignment: 0.45,
                       duration: const Duration(milliseconds: 170),
-                      curve: Curves.easeOutCubic,
+                      curve: VedroTheme.easeOut,
                     );
                   }
                 });
@@ -1188,27 +1188,8 @@ Future<T?> showGlassSheet<T>({
       barrierDismissible: true,
       barrierLabel: 'Dismiss',
       barrierColor: Colors.black.withValues(alpha: effectiveSkin.isLight ? 0.36 : 0.62),
-      transitionDuration: const Duration(milliseconds: 460),
-      transitionBuilder: (ctx, anim, _, child) {
-        // macOS / iPadOS sheet presentation: quick fade, spring-settled depth pop.
-        final fade = CurvedAnimation(
-          parent: anim,
-          curve: const Interval(0.0, 0.5, curve: Curves.easeOut),
-          reverseCurve: Curves.easeInCubic,
-        );
-        final spring = CurvedAnimation(
-          parent: anim,
-          curve: VedroSpringCurve.bouncy,
-          reverseCurve: Curves.easeInCubic,
-        );
-        return FadeTransition(
-          opacity: fade,
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 0.92, end: 1.0).animate(spring),
-            child: child,
-          ),
-        );
-      },
+      transitionDuration: const Duration(milliseconds: 440),
+      transitionBuilder: vedroDialogTransition,
       pageBuilder: (ctx, _, __) {
         final s = MediaQuery.sizeOf(ctx);
         final skin = overrideTheme != null ? effectiveSkin : VedroSkin.of(ctx);
@@ -1329,6 +1310,63 @@ Future<T?> showGlassSheet<T>({
   );
 }
 
+
+/// Unified spring-presented dialog (drop-in for `showDialog`) used app-wide so
+/// every alert / form / lightbox shares the same iOS / macOS presentation:
+/// quick fade-in with a spring-settled depth pop, brisk fade-out on dismissal.
+/// Captures inherited themes exactly like `showDialog` (e.g. the always-dark player).
+Future<T?> showVedroDialog<T>({
+  required BuildContext context,
+  required WidgetBuilder builder,
+  bool barrierDismissible = true,
+  Color? barrierColor,
+  bool useRootNavigator = true,
+  bool useSafeArea = true,
+}) {
+  final navigator = Navigator.of(context, rootNavigator: useRootNavigator);
+  final themes = InheritedTheme.capture(from: context, to: navigator.context);
+  final skin = VedroSkin.of(context);
+  return navigator.push<T>(
+    RawDialogRoute<T>(
+      barrierDismissible: barrierDismissible,
+      barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+      barrierColor: barrierColor ?? Colors.black.withValues(alpha: skin.isLight ? 0.32 : 0.56),
+      transitionDuration: const Duration(milliseconds: 440),
+      pageBuilder: (ctx, _, __) {
+        final dialog = themes.wrap(Builder(builder: builder));
+        return useSafeArea ? SafeArea(child: dialog) : dialog;
+      },
+      transitionBuilder: vedroDialogTransition,
+    ),
+  );
+}
+
+/// Shared dialog presentation: fade + spring depth pop (overshoot-free opacity).
+Widget vedroDialogTransition(
+  BuildContext context,
+  Animation<double> animation,
+  Animation<double> secondaryAnimation,
+  Widget child,
+) {
+  if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) return child;
+  final fade = CurvedAnimation(
+    parent: animation,
+    curve: const Interval(0.0, 0.5, curve: Curves.easeOut),
+    reverseCurve: Curves.easeInCubic,
+  );
+  final pop = CurvedAnimation(
+    parent: animation,
+    curve: VedroSpringCurve.bouncy,
+    reverseCurve: Curves.easeInCubic,
+  );
+  return FadeTransition(
+    opacity: fade,
+    child: ScaleTransition(
+      scale: Tween<double>(begin: 0.92, end: 1.0).animate(pop),
+      child: child,
+    ),
+  );
+}
 
 /// Present an anchored floating glass action menu (macOS / iOS pull-down style)
 /// from [anchorRect]. Each item should carry an `onTapOverride` action.

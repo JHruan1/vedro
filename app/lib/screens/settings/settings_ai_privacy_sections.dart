@@ -765,7 +765,7 @@ extension _SettingsAiPrivacySectionsExt on _SettingsDetailPaneState {
       final jsonText = app.exportConfigJson();
       await Clipboard.setData(ClipboardData(text: jsonText));
       if (!mounted) return;
-      await showDialog<void>(
+      await showVedroDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
           backgroundColor: skin.surface,
@@ -821,7 +821,7 @@ extension _SettingsAiPrivacySectionsExt on _SettingsDetailPaneState {
 
     Future<void> importBackup() async {
       String? err;
-      final ok = await showDialog<bool>(
+      final ok = await showVedroDialog<bool>(
         context: context,
         builder: (ctx) => VedroControllerScope<TextEditingController>(
           create: () => TextEditingController(),
@@ -891,7 +891,7 @@ extension _SettingsAiPrivacySectionsExt on _SettingsDetailPaneState {
     }
 
     Future<void> confirmResetPrefs() async {
-      final ok = await showDialog<bool>(
+      final ok = await showVedroDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
           backgroundColor: skin.surface,
@@ -1011,7 +1011,7 @@ extension _SettingsAiPrivacySectionsExt on _SettingsDetailPaneState {
     final lockout = PinLockoutController.forState(widget.appState);
     final initRem = lockout.remainingLockoutSecs;
     String? err = initRem > 0 ? '尝试次数过多，请 $initRem 秒后重试' : null;
-    final ok = await showDialog<bool>(
+    final ok = await showVedroDialog<bool>(
       context: context,
       builder: (ctx) => VedroControllerScope<TextEditingController>(
         create: () => TextEditingController(),
@@ -1062,7 +1062,7 @@ extension _SettingsAiPrivacySectionsExt on _SettingsDetailPaneState {
 
   Future<void> _openSetPinDialog(VedroPreferences p) async {
     String? err;
-    final chosenPin = await showDialog<String>(
+    final chosenPin = await showVedroDialog<String>(
       context: context,
       builder: (ctx) => VedroControllerScope<List<TextEditingController>>(
         create: () => [TextEditingController(), TextEditingController()],

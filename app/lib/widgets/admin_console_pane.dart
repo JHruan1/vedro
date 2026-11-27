@@ -91,7 +91,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final skin = VedroSkin.of(context);
     final nameCtrl = TextEditingController();
     final passCtrl = TextEditingController();
-    final ok = await showDialog<bool>(
+    final ok = await showVedroDialog<bool>(
       context: context,
       builder: (ctx) => Dialog(
         backgroundColor: skin.surface,
@@ -687,7 +687,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                 label: '断开',
                 danger: true,
                 onTap: () async {
-                  final ok = await showDialog<bool>(
+                  final ok = await showVedroDialog<bool>(
                     context: context,
                     builder: (ctx) => AlertDialog(
                       backgroundColor: skin.surface,
@@ -940,7 +940,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                         ),
                         onPressed: () async {
                           final firstUser = d.users.entries.first;
-                          final ok = await showDialog<bool>(
+                          final ok = await showVedroDialog<bool>(
                             context: context,
                             builder: (ctx) => AlertDialog(
                               backgroundColor: skin.surface,
@@ -992,7 +992,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     final skin = VedroSkin.of(context);
     List<Map<String, dynamic>> list = const [];
     bool loading = true;
-    await showDialog<void>(
+    await showVedroDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) {
@@ -1164,7 +1164,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
 
   Future<void> _confirmDeleteUser(String uid, String name) async {
     final skin = VedroSkin.of(context);
-    final confirm = await showDialog<bool>(
+    final confirm = await showVedroDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: skin.surface,
@@ -1336,7 +1336,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
     String name,
     Map<String, dynamic> initialPolicy,
   ) async {
-    await showDialog<void>(
+    await showVedroDialog<void>(
       context: context,
       builder: (ctx) => _UserDownloadQuotaDialog(
         appState: widget.appState,

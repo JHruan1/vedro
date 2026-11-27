@@ -39,7 +39,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
 
   Future<void> _createDialog() async {
     final ctrl = TextEditingController();
-    final name = await showDialog<String>(
+    final name = await showVedroDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('新建片单', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
@@ -312,7 +312,7 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
   }
 
   Future<void> _removeEntry(MediaItemModel item) async {
-    final ok = await showDialog<bool>(
+    final ok = await showVedroDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text('移出片单「${item.displayName}」？'),
@@ -349,7 +349,7 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
   }
 
   Future<void> _confirmDeletePlaylist() async {
-    final ok = await showDialog<bool>(
+    final ok = await showVedroDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text('删除片单「${widget.playlist.name}」？'),

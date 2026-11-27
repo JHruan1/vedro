@@ -1189,7 +1189,7 @@ extension _PlayerSheetsExt on _PlayerScreenState {
       ('M', '静音切换'),
       ('P / N', '上一集 / 下一集'),
     ];
-    showDialog<void>(
+    showVedroDialog<void>(
       context: context,
       builder: (ctx) => Theme(
         data: VedroTheme.dark(),

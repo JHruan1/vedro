@@ -38,7 +38,8 @@ class VedroTheme {
   static const Duration normal = Duration(milliseconds: 260);
   static const Duration slow = Duration(milliseconds: 420);
   static const Curve easeOut = Cubic(0.16, 1.0, 0.3, 1.0);
-  static const Curve springCurve = Cubic(0.16, 1.0, 0.3, 1.0);
+  static const Curve springCurve = Cubic(0.175, 0.885, 0.32, 1.15);
+  static const Curve snappySpring = Cubic(0.20, 0.90, 0.28, 1.18);
 
   static Color highContrastOn(Color bg) =>
       bg.computeLuminance() > 0.52 ? const Color(0xFF09090B) : Colors.white;
@@ -308,8 +309,8 @@ Route<T> vedroRoute<T>(Widget page) {
     return CupertinoPageRoute<T>(builder: (_) => page);
   }
   return PageRouteBuilder<T>(
-    transitionDuration: const Duration(milliseconds: 220),
-    reverseTransitionDuration: const Duration(milliseconds: 180),
+    transitionDuration: const Duration(milliseconds: 260),
+    reverseTransitionDuration: const Duration(milliseconds: 200),
     pageBuilder: (_, __, ___) => page,
     transitionsBuilder: (_, animation, __, child) {
       final curved = CurvedAnimation(
@@ -319,12 +320,15 @@ Route<T> vedroRoute<T>(Widget page) {
       );
       return FadeTransition(
         opacity: curved,
-        child: SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0, 0.014),
-            end: Offset.zero,
-          ).animate(curved),
-          child: child,
+        child: ScaleTransition(
+          scale: Tween<double>(begin: 0.985, end: 1.0).animate(curved),
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.014),
+              end: Offset.zero,
+            ).animate(curved),
+            child: child,
+          ),
         ),
       );
     },

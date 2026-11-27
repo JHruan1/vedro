@@ -91,11 +91,13 @@ FILE_LINE_LIMITS: dict[str, int] = {
     "app/lib/widgets/admin_console/admin_ui_components.dart": 580,
     "app/lib/widgets/admin_console/admin_quota_dialog.dart": 550,
     "app/lib/screens/home_screen.dart": 850,
+    "app/lib/screens/home/home_context_menu.dart": 360,
     "app/lib/screens/home/home_welcome_hub.dart": 320,
     "app/lib/screens/home/home_hero_banner.dart": 1200,
     "app/lib/screens/shell_screen.dart": 1000,
     "app/lib/screens/shell/shell_nav_chrome.dart": 950,
     # Flutter core & widgets
+    "app/lib/widgets/vedro_peek_menu.dart": 640,
     "app/lib/widgets/beauty_filter.dart": 600,
     "app/lib/widgets/danmaku_engine.dart": 350,
     "app/lib/core/services/danmaku_parser.dart": 150,

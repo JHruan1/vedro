@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -2111,16 +2112,16 @@ void main() {
   });
 
   testWidgets(
-      'Default rating ON / 2x OFF badges, and zero-overlap adaptive Library grid across PPI & TextScaler',
+      'Default rating OFF / 2x OFF badges, toggleable ratings, and zero-overlap adaptive Library grid across PPI & TextScaler',
       (tester) async {
     final defaults = VedroPreferences.fromJson(const {});
-    expect(defaults.showRatings, isTrue);
+    expect(defaults.showRatings, isFalse);
     expect(defaults.showMultiVersionBadge, isFalse);
     for (final s in VedroSkin.presets) {
-      expect(s.showCardRating, isTrue, reason: 'Preset ${s.id} must show card rating by default');
+      expect(s.showCardRating, isTrue, reason: 'Preset ${s.id} keeps rating badge support when enabled');
     }
 
-    // 2. Default Poster Badges: Rating star badge ON ('8.6'), Multi-version '2×' OFF by default
+    // 2. Default Poster Badges: clean poster with Rating star badge OFF & Multi-version '2×' OFF by default
     tester.view.physicalSize = const Size(1280, 960);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
@@ -2162,9 +2163,18 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('8.6'), findsOneWidget);
-    expect(find.textContaining('★'), findsNothing); // Not duplicated in subtitle text!
+    expect(find.text('8.6'), findsNothing); // Clean poster by default!
+    expect(find.textContaining('★'), findsNothing);
     expect(find.text('2×'), findsNothing); // Hidden by default!
+
+    // Explicitly toggling showRatings ON displays '8.6' badge (without duplicating in subtitle)
+    await app.updatePrefs(app.prefs.copyWith(showRatings: true));
+    await tester.pumpAndSettle();
+    expect(find.text('8.6'), findsOneWidget);
+    expect(find.textContaining('★'), findsNothing);
+    await app.updatePrefs(app.prefs.copyWith(showRatings: false));
+    await tester.pumpAndSettle();
+    expect(find.text('8.6'), findsNothing);
 
     // Explicitly toggling showMultiVersionBadge ON displays '2×', and OFF hides it again
     await app.updatePrefs(app.prefs.copyWith(showMultiVersionBadge: true));
@@ -3665,4 +3675,149 @@ void main() {
     expect(find.byKey(const ValueKey('settings-image-cache-card')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+      'Instant 0ms server-switch transition stage & iOS Peek & Pop contextual menu on MediaCard long-press',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final restoreGate = Completer<void>();
+    final mock = _DelayedRestoreMockCore(restoreGate);
+    final app = VedroAppState(mock)
+      ..activeServerId = 'srv-a'
+      ..connectedUrl = 'https://a.example.com'
+      ..userId = 'u1'
+      ..username = 'Alice'
+      ..views = [MediaItemModel(id: 'v1', name: '电影', type: 'CollectionFolder')]
+      ..popular = [
+        MediaItemModel(id: 'm-old', name: '旧服务器电影', type: 'Movie', productionYear: 2024),
+      ]
+      ..savedServers = [
+        SavedServerProfile(
+          id: 'srv-a',
+          name: '主服 A',
+          url: 'https://a.example.com',
+          dialect: 'embygo',
+          accessToken: 'tok-a',
+          userId: 'u1',
+        ),
+        SavedServerProfile(
+          id: 'srv-b',
+          name: '备用服 B',
+          url: 'https://b.example.com',
+          dialect: 'embygo',
+          accessToken: 'tok-b',
+          userId: 'u2',
+        ),
+      ];
+    addTearDown(app.dispose);
+
+    await tester.pumpWidget(
+      AnimatedBuilder(
+        animation: app,
+        builder: (_, __) => MaterialApp(
+          theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+          home: Scaffold(
+            body: HomeScreen(
+              appState: app,
+              onItemTap: (item, {heroPrefix}) {},
+              onQuickPlay: (_) {},
+              onLibraryTap: (_) {},
+              onOpenServerHub: () {},
+              onOpenAddServer: ([_]) {},
+              onOpenSettings: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 1. Triggering server switch sets switchingToServerName & clears stale Home at t=0ms
+    final switchFuture = app.restoreSavedServer(app.savedServers[1]);
+    expect(app.switchingToServerName, '备用服 B');
+    expect(app.activeServerId, 'srv-b');
+    expect(app.hasAnyHomeContent, isFalse);
+    expect(app.isLoadingHome, isTrue);
+
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(find.byKey(const ValueKey('home-server-switching-stage')), findsOneWidget);
+    expect(find.text('正在切换至「备用服 B」'), findsOneWidget);
+
+    // Release slow server network response -> switching stage smoothly transitions out
+    restoreGate.complete();
+    await switchFuture;
+    await tester.pumpAndSettle();
+    expect(app.switchingToServerName, isNull);
+    expect(find.byKey(const ValueKey('home-server-switching-stage')), findsNothing);
+
+    // 2. Long-pressing a MediaCard lifts it and pops the anchored iOS Peek & Pop menu
+    var openedDetail = false;
+    final sampleEp = MediaItemModel(
+      id: 'ep-1',
+      name: '权力的游戏 S01E01',
+      type: 'Episode',
+      indexNumber: 1,
+      productionYear: 2011,
+      communityRating: 9.2,
+      mediaSourceCount: 2,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(app.prefs.activeSkin),
+        home: Scaffold(
+          body: Builder(
+            builder: (ctx) => Center(
+              child: MediaCard(
+                item: sampleEp,
+                appState: app,
+                width: 180,
+                landscape: true,
+                onTap: () {},
+                onLongPressWithRect: (rect) => showMediaItemContextSheet(
+                  context: ctx,
+                  item: sampleEp,
+                  appState: app,
+                  anchorRect: rect,
+                  landscapePreview: true,
+                  onOpenDetail: () => openedDetail = true,
+                  onQuickPlay: () {},
+                  onPickVersion: () {},
+                  versionCount: 2,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.longPress(find.byType(MediaCard));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('vedro-peek-context-menu')), findsOneWidget);
+    expect(find.text('切换播放版本'), findsOneWidget);
+    expect(find.text('查看详情'), findsOneWidget);
+
+    await tester.tap(find.text('查看详情'));
+    await tester.pumpAndSettle();
+    expect(openedDetail, isTrue);
+    expect(find.byKey(const ValueKey('vedro-peek-context-menu')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+}
+
+class _DelayedRestoreMockCore extends _MockVedroCore {
+  _DelayedRestoreMockCore(this.gate);
+  final Completer<void> gate;
+
+  @override
+  Future<dynamic> invoke(String method, [Map<String, dynamic> params = const {}]) async {
+    if (method == 'restore_session') {
+      await gate.future;
+    }
+    return super.invoke(method, params);
+  }
 }

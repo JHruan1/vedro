@@ -164,16 +164,31 @@ extension VedroAppStateServers on VedroAppState {
     }
     final epoch = ++_sessionEpoch;
     final prevServerId = activeServerId;
+    final route = profile.activeRoute;
+    final targetUrl = route?.url.isNotEmpty == true ? route!.url : profile.url;
+    final targetName = displayNameForServer(profile);
+    final isSwitchingServer = !preserveCachedHome && prevServerId != profile.id;
+
     if (!silentError) errorMessage = null;
     homeError = null;
     if (!preserveCachedHome) {
-      loginStage = '正在连接 ${profile.name}…';
+      loginStage = '正在连接 $targetName…';
       isBusy = true;
+      if (isSwitchingServer) {
+        // 0ms immediate state transition so HomeScreen cross-fades out the old server
+        // right away and shows a smooth switching state instead of hanging on stale cards.
+        switchingToServerName = targetName;
+        activeServerId = profile.id;
+        connectedUrl = targetUrl;
+        userId = profile.userId;
+        username = profile.username;
+        isAdmin = profile.isAdmin;
+        _clearHomeCollections();
+        isLoadingHome = true;
+      }
       notifyListeners();
     }
     try {
-      final route = profile.activeRoute;
-      final targetUrl = route?.url.isNotEmpty == true ? route!.url : profile.url;
       final routeProxy = (route?.proxyUrl?.trim().isNotEmpty == true)
           ? route!.proxyUrl!.trim()
           : effectiveProxyUrl;
@@ -209,6 +224,7 @@ extension VedroAppStateServers on VedroAppState {
       isBusy = false;
       loginStage = null;
       isLoadingHome = !hasAnyHomeContent;
+      if (hasAnyHomeContent) switchingToServerName = null;
       notifyListeners();
       VedroArtworkSignal.notifyRefresh();
 
@@ -219,9 +235,9 @@ extension VedroAppStateServers on VedroAppState {
     } catch (e) {
       if (epoch != _sessionEpoch || _disposed) return;
       final humanized = VedroErrorFormatter.format(e.toString());
-      if (silentError) {
-        // Keep the remembered server selected even if network/proxy is temporarily unreachable on cold start
-        connectedUrl = profile.activeRoute?.url.isNotEmpty == true ? profile.activeRoute!.url : profile.url;
+      if (silentError || isSwitchingServer) {
+        // Keep target server selected and surface a clear retryable state on Home
+        connectedUrl = targetUrl;
         activeServerId = profile.id;
         userId = profile.userId;
         username = profile.username;
@@ -238,13 +254,15 @@ extension VedroAppStateServers on VedroAppState {
           usesStreamTickets: profile.dialect == 'embygo',
         );
         if (!hasAnyHomeContent) {
-          homeError = '无法连接至 ${profile.name}：$humanized';
+          homeError = '无法连接至 $targetName：$humanized';
         }
-      } else {
+      }
+      if (!silentError) {
         errorMessage = humanized;
       }
       isBusy = false;
       isLoadingHome = false;
+      switchingToServerName = null;
       loginStage = null;
       notifyListeners();
       if (!silentError) rethrow;

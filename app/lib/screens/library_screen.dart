@@ -700,10 +700,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           onQuickPlay: widget.onQuickPlay == null
                               ? null
                               : () => widget.onQuickPlay!(item),
-                          onLongPress: () => showMediaItemContextSheet(
+                          onLongPressWithRect: (rect) => showMediaItemContextSheet(
                             context: context,
                             item: item,
                             appState: widget.appState,
+                            anchorRect: rect,
+                            landscapePreview: isWideThumb,
                             onOpenDetail: () => _handleItemTap(item),
                             onQuickPlay: widget.onQuickPlay == null
                                 ? null

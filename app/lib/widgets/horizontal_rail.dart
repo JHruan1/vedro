@@ -22,6 +22,7 @@ class HorizontalMediaRail extends StatefulWidget {
     required this.onItemTap,
     this.onItemQuickPlay,
     this.onItemLongPress,
+    this.onItemLongPressWithRect,
     this.onSeeAll,
     this.landscape = false,
     this.isResume = false,
@@ -34,6 +35,7 @@ class HorizontalMediaRail extends StatefulWidget {
   final void Function(MediaItemModel) onItemTap;
   final void Function(MediaItemModel)? onItemQuickPlay;
   final void Function(MediaItemModel)? onItemLongPress;
+  final void Function(MediaItemModel, Rect)? onItemLongPressWithRect;
   final VoidCallback? onSeeAll;
   final bool landscape;
   final bool isResume;
@@ -153,6 +155,9 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
                 onLongPress: widget.onItemLongPress == null
                     ? null
                     : () => widget.onItemLongPress!(item),
+                onLongPressWithRect: widget.onItemLongPressWithRect == null
+                    ? null
+                    : (rect) => widget.onItemLongPressWithRect!(item, rect),
               );
             }
             return MediaCard(
@@ -168,6 +173,9 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
               onLongPress: widget.onItemLongPress == null
                   ? null
                   : () => widget.onItemLongPress!(item),
+              onLongPressWithRect: widget.onItemLongPressWithRect == null
+                  ? null
+                  : (rect) => widget.onItemLongPressWithRect!(item, rect),
             );
           },
         ),

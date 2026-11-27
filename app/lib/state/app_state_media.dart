@@ -87,6 +87,7 @@ extension VedroAppStateMedia on VedroAppState {
     } finally {
       if (epoch == _sessionEpoch) {
         isLoadingHome = false;
+        switchingToServerName = null;
         notifyListeners();
       }
     }

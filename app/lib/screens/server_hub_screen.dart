@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/models/models.dart';
 import '../core/theme/vedro_skin.dart';
@@ -50,8 +52,13 @@ class _ServerHubScreenState extends State<ServerHubScreen> {
 
   Future<void> _handleSelectServer(SavedServerProfile server) async {
     if (server.accessToken != null && server.userId != null) {
-      if (server.id != widget.appState.activeServerId || !widget.appState.isSignedIn) {
-        await widget.appState.restoreSavedServer(server);
+      HapticFeedback.lightImpact();
+      final isDifferent =
+          server.id != widget.appState.activeServerId || !widget.appState.isSignedIn;
+      if (isDifferent) {
+        // Trigger immediate 0ms switching state + navigate smoothly to Home so user
+        // sees the server-switch transition instead of a 2s stall or stale Home flash.
+        unawaited(widget.appState.restoreSavedServer(server).catchError((_) {}));
       }
       if (mounted) widget.onServerSelected();
     } else {

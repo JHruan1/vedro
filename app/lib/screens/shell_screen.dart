@@ -40,7 +40,7 @@ class ShellScreen extends StatefulWidget {
   State<ShellScreen> createState() => _ShellScreenState();
 }
 
-class _ShellScreenState extends State<ShellScreen> {
+class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStateMixin {
   int _index = 0;
   final Set<int> _visitedTabs = {0};
   final ValueNotifier<bool> _homeScrolledNotifier = ValueNotifier<bool>(false);
@@ -49,6 +49,11 @@ class _ShellScreenState extends State<ShellScreen> {
   DateTime? _lastBackPressedAt;
   final GlobalKey _pageStageKey = GlobalKey(debugLabel: 'vedro-shell-page-stage');
   final FocusScopeNode _navFocusScope = FocusScopeNode(debugLabel: 'vedro-shell-nav-scope');
+  late final AnimationController _tabAnimCtrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+    value: 1.0,
+  );
 
   void _selectTab(int next) {
     if (_index == next && _visitedTabs.contains(next)) return;
@@ -56,6 +61,7 @@ class _ShellScreenState extends State<ShellScreen> {
       _index = next;
       _visitedTabs.add(next);
     });
+    _tabAnimCtrl.forward(from: 0.0);
   }
 
   void _onUpdateCheckerChanged() {
@@ -97,6 +103,7 @@ class _ShellScreenState extends State<ShellScreen> {
 
   @override
   void dispose() {
+    _tabAnimCtrl.dispose();
     _navFocusScope.dispose();
     _homeScrolledNotifier.dispose();
     VedroUpdateChecker.instance.removeListener(_onUpdateCheckerChanged);
@@ -456,7 +463,11 @@ class _ShellScreenState extends State<ShellScreen> {
   }
 
   void _openServerHub() {
-    showServerHubSheet(context: context, appState: widget.appState);
+    showServerHubSheet(
+      context: context,
+      appState: widget.appState,
+      onServerSwitched: () => _selectTab(0),
+    );
   }
 
   Future<void> _openAddServer([String? initialUrl]) async {
@@ -565,12 +576,23 @@ class _ShellScreenState extends State<ShellScreen> {
       );
     }
 
-    // Lazy-mounted IndexedStack: instant 0ms tab switching with preserved Home
-    // scroll position & decoded textures, plus zero background tickers on inactive tabs!
+    // Lazy-mounted IndexedStack: preserves Home scroll position & decoded textures
+    // while applying a crisp 220ms Apple fade + depth-scale glide on each tab switch.
+    final reduceMotion = PlatformPerfProfile.shouldReduceMotion(context);
+    final tabCurve = CurvedAnimation(parent: _tabAnimCtrl, curve: VedroTheme.easeOut);
     final pageSwitcher = IndexedStack(
       index: _index,
       children: [
-        for (var i = 0; i < 5; i++) buildTab(i),
+        for (var i = 0; i < 5; i++)
+          (i == _index && !reduceMotion)
+              ? FadeTransition(
+                  opacity: Tween<double>(begin: 0.90, end: 1.0).animate(tabCurve),
+                  child: ScaleTransition(
+                    scale: Tween<double>(begin: 0.988, end: 1.0).animate(tabCurve),
+                    child: buildTab(i),
+                  ),
+                )
+              : buildTab(i),
       ],
     );
 

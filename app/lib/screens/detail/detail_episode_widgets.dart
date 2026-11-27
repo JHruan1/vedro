@@ -43,8 +43,18 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
       width: widget.width,
       child: PressableScale(
         onTap: widget.onTap,
-        onLongPress: widget.onPickVersion ?? widget.onOpenDetail,
-        onSecondaryTap: widget.onPickVersion ?? widget.onOpenDetail,
+        onLongPressWithRect: (rect) => showMediaItemContextSheet(
+          context: context,
+          item: ep,
+          appState: widget.appState,
+          anchorRect: rect,
+          landscapePreview: true,
+          previewFallbackItem: widget.seriesFallback,
+          onQuickPlay: widget.onTap,
+          onOpenDetail: widget.onOpenDetail,
+          onPickVersion: widget.onPickVersion,
+          versionCount: ep.versionCount,
+        ),
         onHoverChanged: (v) => setState(() => _hovered = v),
         hoverScale: 1.02,
         pressScale: 0.97,
@@ -222,7 +232,9 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
               [
                 if (dur.isNotEmpty) dur,
                 if (airDate.isNotEmpty) airDate,
-                if (ep.communityRating != null && ep.communityRating! > 0)
+                if (widget.appState.prefs.showRatings &&
+                    ep.communityRating != null &&
+                    ep.communityRating! > 0)
                   '★ ${ep.communityRating!.toStringAsFixed(1)}',
               ].join(' · '),
               maxLines: 1,
@@ -289,7 +301,9 @@ class _EpisodeRowState extends State<_EpisodeRow> {
     final metaParts = <String>[
       if (dur.isNotEmpty) dur,
       if (airDate.isNotEmpty) airDate,
-      if (ep.communityRating != null && ep.communityRating! > 0)
+      if (widget.appState.prefs.showRatings &&
+          ep.communityRating != null &&
+          ep.communityRating! > 0)
         '★ ${ep.communityRating!.toStringAsFixed(1)}',
     ];
 
@@ -298,8 +312,18 @@ class _EpisodeRowState extends State<_EpisodeRow> {
       padding: const EdgeInsets.only(bottom: 10),
       child: PressableScale(
         onTap: widget.onTap,
-        onLongPress: widget.onPickVersion ?? widget.onOpenDetail,
-        onSecondaryTap: widget.onPickVersion ?? widget.onOpenDetail,
+        onLongPressWithRect: (rect) => showMediaItemContextSheet(
+          context: context,
+          item: ep,
+          appState: widget.appState,
+          anchorRect: rect,
+          landscapePreview: true,
+          previewFallbackItem: widget.seriesFallback,
+          onQuickPlay: widget.onTap,
+          onOpenDetail: widget.onOpenDetail,
+          onPickVersion: widget.onPickVersion,
+          versionCount: ep.versionCount,
+        ),
         onHoverChanged: (v) => setState(() => _hovered = v),
         hoverScale: 1.006,
         pressScale: 0.985,

@@ -50,6 +50,7 @@ class VedroAppState extends ChangeNotifier {
   bool isAutoRestoring = false;
   bool isBusy = false;
   bool isLoadingHome = false;
+  String? switchingToServerName;
   String? loginStage;
   String? errorMessage;
   String? homeError;

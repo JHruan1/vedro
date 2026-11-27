@@ -28,12 +28,14 @@ Future<bool?> showAddServerSheet({
 Future<void> showServerHubSheet({
   required BuildContext context,
   required VedroAppState appState,
+  VoidCallback? onServerSwitched,
 }) {
   return showGlassSheet<void>(
     context: context,
     builder: (ctx) => _ServerHubSheetBody(
       appState: appState,
       parentContext: context,
+      onServerSwitched: onServerSwitched,
     ),
   );
 }
@@ -493,9 +495,11 @@ class _ServerHubSheetBody extends StatelessWidget {
   const _ServerHubSheetBody({
     required this.appState,
     required this.parentContext,
+    this.onServerSwitched,
   });
   final VedroAppState appState;
   final BuildContext parentContext;
+  final VoidCallback? onServerSwitched;
 
   @override
   Widget build(BuildContext context) {
@@ -564,8 +568,9 @@ class _ServerHubSheetBody extends StatelessWidget {
                 onSelectServer: (srv) async {
                   Navigator.pop(context);
                   if (srv.id != appState.activeServerId || !appState.isSignedIn) {
-                    await appState.restoreSavedServer(srv);
+                    unawaited(appState.restoreSavedServer(srv).catchError((_) {}));
                   }
+                  onServerSwitched?.call();
                 },
                 onAddServer: () async {
                   Navigator.pop(context);

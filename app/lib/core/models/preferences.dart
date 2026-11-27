@@ -417,7 +417,7 @@ class VedroPreferences {
     this.listDensity = 'comfortable', // compact | comfortable | spacious
     this.sectionSpacing = 'compact', // compact | standard | spacious
     this.posterScale = 1.0, // 0.75 .. 1.25
-    this.showRatings = true,
+    this.showRatings = false,
     this.showYear = true,
     this.showWatchedBadge = true,
     this.showUnplayedCount = true,
@@ -1212,7 +1212,7 @@ class VedroPreferences {
         listDensity: (j['list_density'] ?? 'comfortable').toString(),
         sectionSpacing: (j['section_spacing'] ?? 'compact').toString(),
         posterScale: _finiteDouble(j['poster_scale'], 1.0, 0.75, 1.25),
-        showRatings: j['show_ratings'] != false,
+        showRatings: j['show_ratings'] == true,
         showYear: j['show_year'] != false,
         showWatchedBadge: j['show_watched_badge'] != false,
         showUnplayedCount: j['show_unplayed_count'] != false,

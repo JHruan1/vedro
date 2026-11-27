@@ -1453,10 +1453,11 @@ extension _DetailBodyExt on _DetailScreenState {
                         appState: widget.appState,
                         onItemTap: _openItemDetail,
                         onItemQuickPlay: (it) => it.isPlayable ? _play(it) : _openItemDetail(it),
-                        onItemLongPress: (it) => showMediaItemContextSheet(
+                        onItemLongPressWithRect: (it, rect) => showMediaItemContextSheet(
                           context: context,
                           item: it,
                           appState: widget.appState,
+                          anchorRect: rect,
                           onOpenDetail: () => _openItemDetail(it),
                           onQuickPlay: it.isPlayable ? () => _play(it) : null,
                         ),
@@ -1652,10 +1653,11 @@ extension _DetailBodyExt on _DetailScreenState {
               width: gridLayout.cardWidth,
               onTap: () => _openItemDetail(c),
               onQuickPlay: c.isPlayable ? () => _play(c) : null,
-              onLongPress: () => showMediaItemContextSheet(
+              onLongPressWithRect: (rect) => showMediaItemContextSheet(
                 context: context,
                 item: c,
                 appState: widget.appState,
+                anchorRect: rect,
                 onOpenDetail: () => _openItemDetail(c),
                 onQuickPlay: c.isPlayable ? () => _play(c) : null,
               ),

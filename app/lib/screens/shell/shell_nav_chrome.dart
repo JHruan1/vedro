@@ -836,9 +836,9 @@ class _BottomTabButton extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               AnimatedScale(
-                scale: selected ? 1.08 : 1.0,
-                duration: const Duration(milliseconds: 220),
-                curve: VedroTheme.easeOut,
+                scale: selected ? 1.12 : 1.0,
+                duration: const Duration(milliseconds: 280),
+                curve: VedroTheme.snappySpring,
                 child: Icon(
                   selected ? tab.activeIcon : tab.icon,
                   size: iconOnly ? 21.5 : 20.5,

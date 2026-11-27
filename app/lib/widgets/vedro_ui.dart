@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
 
@@ -279,18 +280,21 @@ class GlassSurface extends StatelessWidget {
   }
 }
 
-/// Tactile Apple-style damped press + desktop hover lift + 10-foot TV D-Pad focus ring.
+/// Tactile Apple-style damped press + progressive long-press peek lift + desktop hover lift + 10-foot TV D-Pad focus ring.
 class PressableScale extends StatefulWidget {
   const PressableScale({
     super.key,
     required this.child,
     this.onTap,
     this.onLongPress,
+    this.onLongPressWithRect,
     this.onSecondaryTap,
+    this.onSecondaryTapWithRect,
     this.onHoverChanged,
     this.onFocusChanged,
     this.hoverScale = 1.028,
     this.pressScale = 0.965,
+    this.peekScale = 1.032,
     this.autofocus = false,
     this.canRequestFocus = true,
     this.focusNode,
@@ -302,11 +306,14 @@ class PressableScale extends StatefulWidget {
   final Widget child;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
+  final void Function(Rect anchorRect)? onLongPressWithRect;
   final VoidCallback? onSecondaryTap;
+  final void Function(Rect anchorRect)? onSecondaryTapWithRect;
   final ValueChanged<bool>? onHoverChanged;
   final ValueChanged<bool>? onFocusChanged;
   final double hoverScale;
   final double pressScale;
+  final double peekScale;
   final bool autofocus;
   final bool canRequestFocus;
   final FocusNode? focusNode;
@@ -336,17 +343,92 @@ class _PressableScaleState extends State<PressableScale> {
 
   bool _hovering = false;
   bool _pressing = false;
+  bool _peeking = false;
   bool _focused = false;
   bool _showFocusHighlight = false;
+  Timer? _peekChargeTimer;
   FocusNode? _internalFocusNode;
+
+  bool get _hasLongPress => widget.onLongPress != null || widget.onLongPressWithRect != null;
+  bool get _hasSecondaryTap =>
+      widget.onSecondaryTap != null || widget.onSecondaryTapWithRect != null;
 
   FocusNode get _effectiveFocusNode =>
       widget.focusNode ?? (_internalFocusNode ??= FocusNode(debugLabel: 'pressable_scale'));
 
   @override
   void dispose() {
+    _peekChargeTimer?.cancel();
     _internalFocusNode?.dispose();
     super.dispose();
+  }
+
+  Rect? _currentGlobalRect() {
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    final overlay = Overlay.maybeOf(context)?.context.findRenderObject() as RenderBox?;
+    return box.localToGlobal(Offset.zero, ancestor: overlay) & box.size;
+  }
+
+  void _startPress() {
+    _peekChargeTimer?.cancel();
+    setState(() {
+      _pressing = true;
+      _peeking = false;
+    });
+    if (_hasLongPress) {
+      // Progressive iOS Peek & Pop charge-up: after initial tactile press dip,
+      // gently swell the card so it feels alive right before popping into the menu.
+      _peekChargeTimer = Timer(const Duration(milliseconds: 165), () {
+        if (!mounted || !_pressing) return;
+        HapticFeedback.selectionClick();
+        setState(() => _peeking = true);
+      });
+    }
+  }
+
+  void _endPress() {
+    _peekChargeTimer?.cancel();
+    if (_pressing || _peeking) {
+      setState(() {
+        _pressing = false;
+        _peeking = false;
+      });
+    }
+  }
+
+  void _triggerLongPress() {
+    _endPress();
+    if (widget.onLongPressWithRect != null) {
+      final rect = _currentGlobalRect();
+      if (rect != null) {
+        widget.onLongPressWithRect!(rect);
+        return;
+      }
+    }
+    widget.onLongPress?.call();
+  }
+
+  void _triggerSecondaryTap() {
+    _endPress();
+    if (widget.onSecondaryTapWithRect != null) {
+      final rect = _currentGlobalRect();
+      if (rect != null) {
+        widget.onSecondaryTapWithRect!(rect);
+        return;
+      }
+    }
+    if (widget.onSecondaryTap != null) {
+      widget.onSecondaryTap!();
+    } else if (widget.onLongPressWithRect != null) {
+      final rect = _currentGlobalRect();
+      if (rect != null) {
+        widget.onLongPressWithRect!(rect);
+        return;
+      }
+    } else {
+      widget.onLongPress?.call();
+    }
   }
 
   void _setHover(bool v) {
@@ -382,11 +464,13 @@ class _PressableScaleState extends State<PressableScale> {
         : _focused;
     final focusActive = hasFocusForRing && (_showFocusHighlight || PlatformPerfProfile.isTv);
     final focusScale = widget.hoverScale > 1.0 ? widget.hoverScale : 1.018;
-    final targetScale = _pressing
-        ? widget.pressScale
-        : (focusActive
-            ? focusScale
-            : (_hovering ? widget.hoverScale : 1.0));
+    final targetScale = _peeking
+        ? widget.peekScale
+        : (_pressing
+            ? widget.pressScale
+            : (focusActive
+                ? focusScale
+                : (_hovering ? widget.hoverScale : 1.0)));
 
     Widget content = widget.child;
     if (focusActive && widget.showFocusRing) {
@@ -416,19 +500,21 @@ class _PressableScaleState extends State<PressableScale> {
       );
     }
 
-    final interactive = widget.onTap != null || widget.onLongPress != null;
+    final interactive = widget.onTap != null || _hasLongPress || _hasSecondaryTap;
     Widget result = GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTapDown: interactive ? (_) => setState(() => _pressing = true) : null,
-      onTapUp: interactive ? (_) => setState(() => _pressing = false) : null,
-      onTapCancel: interactive ? () => setState(() => _pressing = false) : null,
+      onTapDown: interactive ? (_) => _startPress() : null,
+      onTapUp: interactive ? (_) => _endPress() : null,
+      onTapCancel: interactive ? _endPress : null,
       onTap: widget.onTap,
-      onLongPress: widget.onLongPress,
-      onSecondaryTap: widget.onSecondaryTap,
+      onLongPress: _hasLongPress ? _triggerLongPress : null,
+      onSecondaryTap: (_hasSecondaryTap || _hasLongPress) ? _triggerSecondaryTap : null,
       child: AnimatedScale(
         scale: targetScale,
-        duration: Duration(milliseconds: _pressing ? 100 : 200),
-        curve: _pressing ? Curves.easeOutQuad : VedroTheme.springCurve,
+        duration: Duration(milliseconds: _peeking ? 260 : (_pressing ? 105 : 270)),
+        curve: _peeking
+            ? Curves.easeOutCubic
+            : (_pressing ? Curves.easeOutQuad : VedroTheme.springCurve),
         child: content,
       ),
     );
@@ -447,7 +533,11 @@ class _PressableScaleState extends State<PressableScale> {
           ),
           _ContextMenuIntent: CallbackAction<_ContextMenuIntent>(
             onInvoke: (_) {
-              (widget.onLongPress ?? widget.onSecondaryTap)?.call();
+              if (_hasLongPress) {
+                _triggerLongPress();
+              } else {
+                _triggerSecondaryTap();
+              }
               return null;
             },
           ),
@@ -459,7 +549,7 @@ class _PressableScaleState extends State<PressableScale> {
             ? null
             : (v) {
                 _setHover(v);
-                if (!v && _pressing) setState(() => _pressing = false);
+                if (!v && (_pressing || _peeking)) _endPress();
               },
         onShowFocusHighlight: (v) {
           if (_showFocusHighlight != v) {
@@ -1067,17 +1157,22 @@ Future<T?> showGlassSheet<T>({
       barrierDismissible: true,
       barrierLabel: 'Dismiss',
       barrierColor: Colors.black.withValues(alpha: effectiveSkin.isLight ? 0.36 : 0.62),
-      transitionDuration: const Duration(milliseconds: 230),
+      transitionDuration: const Duration(milliseconds: 280),
       transitionBuilder: (ctx, anim, _, child) {
-        final curved = CurvedAnimation(
+        final fade = CurvedAnimation(
           parent: anim,
-          curve: VedroTheme.easeOut,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        );
+        final spring = CurvedAnimation(
+          parent: anim,
+          curve: VedroTheme.snappySpring,
           reverseCurve: Curves.easeInCubic,
         );
         return FadeTransition(
-          opacity: curved,
+          opacity: fade,
           child: ScaleTransition(
-            scale: Tween<double>(begin: 0.94, end: 1.0).animate(curved),
+            scale: Tween<double>(begin: 0.90, end: 1.0).animate(spring),
             child: child,
           ),
         );
@@ -1499,10 +1594,10 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
   String? get barrierLabel => 'Dismiss menu';
 
   @override
-  Duration get transitionDuration => const Duration(milliseconds: 190);
+  Duration get transitionDuration => const Duration(milliseconds: 250);
 
   @override
-  Duration get reverseTransitionDuration => const Duration(milliseconds: 140);
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 165);
 
   @override
   Widget buildPage(
@@ -1528,9 +1623,14 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
 
     final alignX = (((triggerRect.center.dx - left) / menuW) * 2.0 - 1.0).clamp(-0.85, 0.85);
     final scaleOrigin = Alignment(alignX, openUpward ? 1.0 : -1.0);
-    final curved = CurvedAnimation(
+    final fadeCurve = CurvedAnimation(
       parent: animation,
-      curve: VedroTheme.easeOut,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    final springCurve = CurvedAnimation(
+      parent: animation,
+      curve: VedroTheme.snappySpring,
       reverseCurve: Curves.easeInCubic,
     );
 
@@ -1719,10 +1819,10 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
             top: openUpward ? null : (triggerRect.bottom + 6.0),
             bottom: openUpward ? (screen.height - triggerRect.top + 6.0) : null,
             child: FadeTransition(
-              opacity: curved,
+              opacity: fadeCurve,
               child: ScaleTransition(
                 alignment: scaleOrigin,
-                scale: Tween<double>(begin: 0.92, end: 1.0).animate(curved),
+                scale: Tween<double>(begin: 0.84, end: 1.0).animate(springCurve),
                 child: menuCard,
               ),
             ),

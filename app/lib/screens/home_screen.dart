@@ -14,9 +14,11 @@ import '../widgets/horizontal_rail.dart';
 import '../widgets/media_card.dart';
 import '../widgets/server_card_grid.dart';
 import '../widgets/vedro_artwork.dart';
+import '../widgets/vedro_peek_menu.dart';
 import '../widgets/vedro_ui.dart';
 import 'player_screen.dart';
 
+part 'home/home_context_menu.dart';
 part 'home/home_hero_banner.dart';
 part 'home/home_welcome_hub.dart';
 
@@ -126,9 +128,15 @@ class _HomeScreenState extends State<HomeScreen> {
     final app = widget.appState;
     final skin = VedroSkin.of(context);
     final wide = MediaQuery.sizeOf(context).width >= 820;
+    final reduceMotion = PlatformPerfProfile.shouldReduceMotion(context);
+    final serverTag = app.activeServerId ?? 'none';
+
+    late final Widget stageChild;
+    late final String stageKey;
 
     if (!app.isSignedIn) {
-      return _ServerWelcomeHub(
+      stageKey = 'welcome';
+      stageChild = _ServerWelcomeHub(
         appState: app,
         wide: wide,
         onOpenAddServer: widget.onOpenAddServer,
@@ -137,10 +145,12 @@ class _HomeScreenState extends State<HomeScreen> {
         onOpenServerHub: widget.onOpenServerHub,
         onOpenSettings: widget.onOpenSettings,
       );
-    }
-
-    if (app.isLoadingHome && !app.hasAnyHomeContent) {
-      return ListView(
+    } else if (app.switchingToServerName != null && !app.hasAnyHomeContent) {
+      stageKey = 'switching:$serverTag';
+      stageChild = _buildServerSwitchingStage(skin, app.switchingToServerName!);
+    } else if (app.isLoadingHome && !app.hasAnyHomeContent) {
+      stageKey = 'loading:$serverTag';
+      stageChild = ListView(
         physics: const NeverScrollableScrollPhysics(),
         children: const [
           HeroSkeleton(),
@@ -148,10 +158,9 @@ class _HomeScreenState extends State<HomeScreen> {
           RailSkeleton(landscape: false),
         ],
       );
-    }
-
-    if (app.homeError != null && !app.hasAnyHomeContent) {
-      return Center(
+    } else if (app.homeError != null && !app.hasAnyHomeContent) {
+      stageKey = 'error:$serverTag';
+      stageChild = Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
           child: Column(
@@ -182,10 +191,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       );
-    }
-
-    if (!app.isLoadingHome && !app.hasAnyHomeContent && app.homeError == null) {
-      return Center(
+    } else if (!app.isLoadingHome && !app.hasAnyHomeContent && app.homeError == null) {
+      stageKey = 'empty:$serverTag';
+      stageChild = Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
           child: Column(
@@ -221,7 +229,93 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       );
+    } else {
+      stageKey = 'ready:$serverTag';
+      stageChild = _buildLoadedHomeBody(context, app, skin, wide);
     }
+
+    return AnimatedSwitcher(
+      duration: Duration(milliseconds: reduceMotion ? 0 : 320),
+      switchInCurve: VedroTheme.easeOut,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, anim) {
+        if (reduceMotion) return child;
+        return FadeTransition(
+          opacity: anim,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.985, end: 1.0).animate(anim),
+            child: child,
+          ),
+        );
+      },
+      child: KeyedSubtree(
+        key: ValueKey(stageKey),
+        child: stageChild,
+      ),
+    );
+  }
+
+  Widget _buildServerSwitchingStage(VedroSkin skin, String serverName) {
+    return Stack(
+      key: const ValueKey('home-server-switching-stage'),
+      fit: StackFit.expand,
+      children: [
+        ListView(
+          physics: const NeverScrollableScrollPhysics(),
+          children: const [
+            HeroSkeleton(),
+            RailSkeleton(landscape: true),
+            RailSkeleton(landscape: false),
+          ],
+        ),
+        Center(
+          child: GlassSurface(
+            borderRadius: 20,
+            blur: 28,
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const BreathingBrandMark(size: 32),
+                const SizedBox(width: 14),
+                Flexible(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '正在切换至「$serverName」',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: skin.fg,
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: -0.15,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '正在同步媒体库与海报墙…',
+                        style: TextStyle(color: skin.fg3, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLoadedHomeBody(
+    BuildContext context,
+    VedroAppState app,
+    VedroSkin skin,
+    bool wide,
+  ) {
 
     final showHero = app.showHomeHero && skin.heroStyle != 'compact_minimal';
     final featured = showHero
@@ -300,10 +394,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   isResume: true,
                   onItemTap: (item) => widget.onItemTap(item),
                   onItemQuickPlay: widget.onQuickPlay,
-                  onItemLongPress: (item) => showMediaItemContextSheet(
+                  onItemLongPressWithRect: (item, rect) => showMediaItemContextSheet(
                     context: context,
                     item: item,
                     appState: app,
+                    anchorRect: rect,
+                    landscapePreview: true,
                     onOpenDetail: () => widget.onItemTap(item),
                     onQuickPlay: () => widget.onQuickPlay(item),
                     allowHideFromResume: caps?.supportsHideFromResume == true,
@@ -324,10 +420,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   landscape: true,
                   onItemTap: (item) => widget.onItemTap(item),
                   onItemQuickPlay: widget.onQuickPlay,
-                  onItemLongPress: (item) => showMediaItemContextSheet(
+                  onItemLongPressWithRect: (item, rect) => showMediaItemContextSheet(
                     context: context,
                     item: item,
                     appState: app,
+                    anchorRect: rect,
+                    landscapePreview: true,
                     onOpenDetail: () => widget.onItemTap(item),
                     onQuickPlay: () => widget.onQuickPlay(item),
                   ),
@@ -347,10 +445,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   heroPrefix: 'fav',
                   onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'fav'),
                   onItemQuickPlay: widget.onQuickPlay,
-                  onItemLongPress: (item) => showMediaItemContextSheet(
+                  onItemLongPressWithRect: (item, rect) => showMediaItemContextSheet(
                     context: context,
                     item: item,
                     appState: app,
+                    anchorRect: rect,
                     onOpenDetail: () => widget.onItemTap(item, heroPrefix: 'fav'),
                     onQuickPlay: () => widget.onQuickPlay(item),
                   ),
@@ -373,10 +472,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   heroPrefix: 'lat-${lib.id}',
                   onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'lat-${lib.id}'),
                   onItemQuickPlay: widget.onQuickPlay,
-                  onItemLongPress: (item) => showMediaItemContextSheet(
+                  onItemLongPressWithRect: (item, rect) => showMediaItemContextSheet(
                     context: context,
                     item: item,
                     appState: app,
+                    anchorRect: rect,
                     onOpenDetail: () => widget.onItemTap(item, heroPrefix: 'lat-${lib.id}'),
                     onQuickPlay: () => widget.onQuickPlay(item),
                   ),
@@ -397,10 +497,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   heroPrefix: 'sug',
                   onItemTap: (item) => widget.onItemTap(item, heroPrefix: 'sug'),
                   onItemQuickPlay: widget.onQuickPlay,
-                  onItemLongPress: (item) => showMediaItemContextSheet(
+                  onItemLongPressWithRect: (item, rect) => showMediaItemContextSheet(
                     context: context,
                     item: item,
                     appState: app,
+                    anchorRect: rect,
                     onOpenDetail: () => widget.onItemTap(item, heroPrefix: 'sug'),
                     onQuickPlay: () => widget.onQuickPlay(item),
                   ),
@@ -514,236 +615,4 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-}
-
-/// Universal long-press / right-click / TV context-menu action sheet for media cards.
-void showMediaItemContextSheet({
-  required BuildContext context,
-  required MediaItemModel item,
-  required VedroAppState appState,
-  required VoidCallback onOpenDetail,
-  VoidCallback? onQuickPlay,
-  bool allowHideFromResume = false,
-  VoidCallback? onMutated,
-}) {
-  final skin = VedroSkin.of(context);
-  final messenger = ScaffoldMessenger.of(context);
-  final navigator = Navigator.of(context);
-
-  Future<void> openAddToPlaylistSheet() async {
-    try {
-      await appState.refreshPlaylists();
-    } catch (e) {
-      if (context.mounted) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('加载片单失败：${VedroErrorFormatter.friendly(e)}')),
-        );
-      }
-      return;
-    }
-    if (!context.mounted) return;
-    showGlassSheet<void>(
-      context: context,
-      builder: (ctx) {
-        final s = VedroSkin.of(ctx);
-        final lists = appState.playlists;
-        return ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Text(
-                '加入片单',
-                style: TextStyle(color: s.fg, fontSize: 16, fontWeight: FontWeight.w600),
-              ),
-            ),
-            if (lists.isEmpty)
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text('暂无片单，请先在片单页新建', style: TextStyle(color: s.fg3, fontSize: 13)),
-              )
-            else
-              for (var i = 0; i < lists.length; i++)
-                ListTile(
-                  autofocus: i == 0,
-                  leading: Icon(Icons.bookmark_outline_rounded, color: s.fg2),
-                  title: Text(lists[i].name, style: TextStyle(color: s.fg, fontSize: 14)),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    try {
-                      await appState.core.invoke('add_to_playlist', {
-                        'playlist_id': lists[i].id,
-                        'item_ids': [item.id],
-                      });
-                      messenger.showSnackBar(
-                        SnackBar(content: Text('已加入片单「${lists[i].name}」')),
-                      );
-                    } catch (e) {
-                      messenger.showSnackBar(
-                        SnackBar(content: Text('加入片单失败：${VedroErrorFormatter.friendly(e)}')),
-                      );
-                    }
-                  },
-                ),
-          ],
-        );
-      },
-    );
-  }
-
-  showGlassSheet<void>(
-    context: context,
-    builder: (ctx) => ListView(
-      shrinkWrap: true,
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(8, 2, 8, 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                item.cardTitle,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w600),
-              ),
-              if (item.cardSubtitle.isNotEmpty) ...[
-                const SizedBox(height: 2),
-                Text(
-                  item.cardSubtitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: skin.fg3, fontSize: 12.5),
-                ),
-              ],
-            ],
-          ),
-        ),
-        if (onQuickPlay != null && item.isPlayable)
-          ListTile(
-            autofocus: true,
-            leading: Icon(Icons.play_arrow_rounded, color: skin.accent),
-            title: Text(
-              item.playbackPositionTicks > 0 ? '继续播放' : '立即播放',
-              style: TextStyle(color: skin.fg, fontSize: 14.5, fontWeight: FontWeight.w500),
-            ),
-            onTap: () {
-              Navigator.pop(ctx);
-              onQuickPlay();
-            },
-          ),
-        if (item.isPlayable && item.playbackPositionTicks > 0)
-          ListTile(
-            leading: Icon(Icons.replay_rounded, color: skin.fg2),
-            title: Text('从头播放', style: TextStyle(color: skin.fg, fontSize: 14.5)),
-            onTap: () {
-              Navigator.pop(ctx);
-              final restartItem = MediaItemModel(
-                id: item.id,
-                name: item.name,
-                type: item.type,
-                seriesId: item.seriesId,
-                seriesName: item.seriesName,
-                parentIndexNumber: item.parentIndexNumber,
-                indexNumber: item.indexNumber,
-                runTimeTicks: item.runTimeTicks,
-                playbackPositionTicks: 0,
-                mediaSources: item.mediaSources,
-                chapters: item.chapters,
-              );
-              navigator.push(vedroRoute(PlayerScreen(item: restartItem, appState: appState)));
-            },
-          ),
-        ListTile(
-          autofocus: !(onQuickPlay != null && item.isPlayable),
-          leading: Icon(Icons.info_outline_rounded, color: skin.fg2),
-          title: Text('查看详情', style: TextStyle(color: skin.fg, fontSize: 14.5)),
-          onTap: () {
-            Navigator.pop(ctx);
-            onOpenDetail();
-          },
-        ),
-        if (item.type != 'Person' && item.type != 'Folder') ...[
-          ListTile(
-            leading: Icon(
-              item.played ? Icons.check_circle_rounded : Icons.check_circle_outline_rounded,
-              color: item.played ? skin.accent : skin.fg2,
-            ),
-            title: Text(
-              item.played ? '标为未看' : '标为已看',
-              style: TextStyle(color: skin.fg, fontSize: 14.5),
-            ),
-            onTap: () async {
-              Navigator.pop(ctx);
-              try {
-                await appState.togglePlayed(item);
-                onMutated?.call();
-                messenger.showSnackBar(
-                  SnackBar(content: Text(item.played ? '已标为未看' : '已标为已看')),
-                );
-              } catch (e) {
-                messenger.showSnackBar(
-                  SnackBar(content: Text('操作失败：${VedroErrorFormatter.friendly(e)}')),
-                );
-              }
-            },
-          ),
-          ListTile(
-            leading: Icon(
-              item.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-              color: item.isFavorite ? VedroTheme.danger : skin.fg2,
-            ),
-            title: Text(
-              item.isFavorite ? '取消收藏' : '加入收藏',
-              style: TextStyle(color: skin.fg, fontSize: 14.5),
-            ),
-            onTap: () async {
-              Navigator.pop(ctx);
-              try {
-                await appState.toggleFavorite(item);
-                onMutated?.call();
-                messenger.showSnackBar(
-                  SnackBar(content: Text(item.isFavorite ? '已取消收藏' : '已加入收藏')),
-                );
-              } catch (e) {
-                messenger.showSnackBar(
-                  SnackBar(content: Text('操作失败：${VedroErrorFormatter.friendly(e)}')),
-                );
-              }
-            },
-          ),
-          ListTile(
-            leading: Icon(Icons.playlist_add_rounded, color: skin.fg2),
-            title: Text('加入片单', style: TextStyle(color: skin.fg, fontSize: 14.5)),
-            onTap: () {
-              Navigator.pop(ctx);
-              unawaited(openAddToPlaylistSheet());
-            },
-          ),
-        ],
-        if (allowHideFromResume)
-          ListTile(
-            leading: const Icon(Icons.visibility_off_outlined, color: VedroTheme.danger),
-            title: const Text(
-              '从继续观看移除',
-              style: TextStyle(color: VedroTheme.danger, fontSize: 14.5),
-            ),
-            onTap: () {
-              Navigator.pop(ctx);
-              unawaited(appState.hideFromResume(item.id).then((_) {
-                onMutated?.call();
-              }).catchError((Object e) {
-                if (context.mounted) {
-                  messenger.showSnackBar(
-                    SnackBar(content: Text('移除失败：${VedroErrorFormatter.friendly(e)}')),
-                  );
-                }
-              }));
-            },
-          ),
-      ],
-    ),
-  );
 }

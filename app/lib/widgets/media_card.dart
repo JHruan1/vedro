@@ -21,6 +21,7 @@ class MediaCard extends StatefulWidget {
     required this.onTap,
     this.onQuickPlay,
     this.onLongPress,
+    this.onLongPressWithRect,
     this.width = 152,
     this.landscape = false,
     this.heroPrefix,
@@ -31,6 +32,7 @@ class MediaCard extends StatefulWidget {
   final VoidCallback onTap;
   final VoidCallback? onQuickPlay;
   final VoidCallback? onLongPress;
+  final void Function(Rect anchorRect)? onLongPressWithRect;
   final double width;
   final bool landscape;
   final String? heroPrefix;
@@ -123,7 +125,9 @@ class _MediaCardState extends State<MediaCard> {
             return PressableScale(
               onTap: widget.onTap,
               onLongPress: widget.onLongPress,
+              onLongPressWithRect: widget.onLongPressWithRect,
               onSecondaryTap: widget.onLongPress,
+              onSecondaryTapWithRect: widget.onLongPressWithRect,
               onHoverChanged: touchPrimary ? null : (v) => setState(() => _hovered = v),
               onFocusChanged: (v) => setState(() => _focused = v),
               borderRadius: BorderRadius.circular(radius),
@@ -527,6 +531,7 @@ class ResumeCard extends StatefulWidget {
     required this.onTap,
     required this.onResumePlay,
     this.onLongPress,
+    this.onLongPressWithRect,
     this.width = 296,
   });
 
@@ -535,6 +540,7 @@ class ResumeCard extends StatefulWidget {
   final VoidCallback onTap;
   final VoidCallback onResumePlay;
   final VoidCallback? onLongPress;
+  final void Function(Rect anchorRect)? onLongPressWithRect;
   final double width;
 
   @override
@@ -663,7 +669,9 @@ class _ResumeCardState extends State<ResumeCard> {
         child: PressableScale(
           onTap: widget.onTap,
           onLongPress: widget.onLongPress,
+          onLongPressWithRect: widget.onLongPressWithRect,
           onSecondaryTap: widget.onLongPress,
+          onSecondaryTapWithRect: widget.onLongPressWithRect,
           onHoverChanged: touchPrimary ? null : (v) => setState(() => _hovered = v),
           onFocusChanged: (v) => setState(() => _focused = v),
           borderRadius: BorderRadius.circular(radius),

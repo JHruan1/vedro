@@ -64,6 +64,14 @@ FILE_LINE_LIMITS: dict[str, int] = {
     "app/lib/state/app_state_downloads.dart": 950,
     "app/lib/state/app_state_ai_admin.dart": 550,
     "app/lib/state/app_state_artwork.dart": 300,
+    # Flutter player screen subsystem (decomposed in Round 4 from 7,935L monolith)
+    "app/lib/screens/player_screen.dart": 1750,
+    "app/lib/screens/player/player_controls.dart": 650,
+    "app/lib/screens/player/player_engine.dart": 1250,
+    "app/lib/screens/player/player_hud.dart": 1950,
+    "app/lib/screens/player/player_sheets.dart": 1400,
+    "app/lib/screens/player/player_subtitle_sheet.dart": 850,
+    "app/lib/screens/player/player_widgets.dart": 750,
     # Flutter core & widgets
     "app/lib/widgets/beauty_filter.dart": 600,
     "app/lib/widgets/danmaku_engine.dart": 350,

@@ -69,6 +69,11 @@ class _ShellScreenState extends State<ShellScreen> {
     super.initState();
     NativePlaybackChannel.ensureWindowListener();
     NativePlaybackChannel.droppedFilesNotifier.addListener(_onGlobalFilesDropped);
+    if (NativePlaybackChannel.droppedFilesNotifier.value.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _onGlobalFilesDropped();
+      });
+    }
     if (widget.appState.prefs.ignoredUpdateVersion.isNotEmpty) {
       VedroUpdateChecker.instance.ignoredVersion = widget.appState.prefs.ignoredUpdateVersion;
     }
@@ -160,14 +165,20 @@ class _ShellScreenState extends State<ShellScreen> {
 
   void _launchLocalMedia(List<String> files, int startIndex) {
     final targetPath = files[startIndex.clamp(0, files.length - 1)];
-    final name = targetPath.replaceAll('\\', '/').split('/').last;
-    final dot = name.lastIndexOf('.');
-    final stem = dot > 0 ? name.substring(0, dot) : name;
+    var rawName = targetPath.replaceAll('\\', '/').split('/').last;
+    if (targetPath.startsWith('content://')) {
+      try {
+        rawName = Uri.decodeComponent(rawName).split(':').last.split('/').last;
+      } catch (_) {}
+    }
+    final dot = rawName.lastIndexOf('.');
+    final stem = (dot > 0 ? rawName.substring(0, dot) : rawName).trim();
+    final title = stem.isNotEmpty ? stem : '本地视频';
     Navigator.of(context).push(
       vedroRoute(PlayerScreen(
         item: MediaItemModel(
           id: 'local_$startIndex',
-          name: stem,
+          name: title,
           type: 'Video',
           indexNumber: startIndex + 1,
         ),

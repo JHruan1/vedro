@@ -167,6 +167,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   double _preBoostSpeed = 1.0;
   bool _isSpeedBoost = false;
   double _volume = 100.0;
+  bool _audioDucked = false;
   double _brightness = 1.0;
 
   // Color equalizer & beauty filter & audio delay & A-B loop & chapters & sleep timer
@@ -304,7 +305,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     return null;
   }
 
-  double get _maxVolume => widget.appState.prefs.maxVolumePercent.toDouble().clamp(100.0, 300.0);
+  double get _maxVolume => widget.appState.prefs.maxVolumePercent.toDouble().clamp(100.0, 150.0);
 
   static String _normalizeToneMapping(String raw) {
     return switch (raw.trim().toLowerCase()) {
@@ -679,6 +680,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         unawaited(_player.pause());
         break;
       case 'toggle':
+      case 'toggle_play':
         unawaited(_togglePause());
         break;
       case 'next':
@@ -695,8 +697,24 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         unawaited(_seekBy(-step, showHud: true));
         break;
       case 'seek':
-        final pos = (payload['position_secs'] as num?)?.toDouble();
-        if (pos != null && pos.isFinite) unawaited(_seekTo(pos));
+        final posSecs = (payload['position_secs'] as num?)?.toDouble();
+        final posMs = (payload['position_ms'] as num?)?.toDouble();
+        final target = posSecs ?? (posMs != null ? posMs / 1000.0 : null);
+        if (target != null && target.isFinite && target >= 0) {
+          unawaited(_seekTo(target));
+        }
+        break;
+      case 'duck':
+        if (!_audioDucked && !_muted) {
+          _audioDucked = true;
+          unawaited(_applyVolumeToEngine((_volume * 0.25).clamp(0.0, 40.0)));
+        }
+        break;
+      case 'unduck':
+        if (_audioDucked) {
+          _audioDucked = false;
+          unawaited(_applyVolumeToEngine(_muted ? 0.0 : _volume));
+        }
         break;
       case 'stop':
         unawaited(_requestExit());
@@ -1513,6 +1531,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     NativePlaybackChannel.audioInterruptCountNotifier.removeListener(_onAudioInterrupted);
     NativePlaybackChannel.pipModeNotifier.removeListener(_onPipModeChanged);
     NativePlaybackChannel.mediaActionNotifier.removeListener(_onNativeMediaAction);
+    unawaited(NativePlaybackChannel.updateNowPlaying(title: '', playing: false, active: false));
     unawaited(NativePlaybackChannel.setAutoPipEnabled(false));
     unawaited(NativePlaybackChannel.setAudioPlaybackActive(false));
     for (final s in _subs) {

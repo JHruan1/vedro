@@ -98,6 +98,11 @@ pub struct VedroStore {
 impl VedroStore {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let p = path.as_ref();
+        if let Some(parent) = p.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
         let conn = Connection::open(p)?;
         restrict_unix_file_perms(p);
         let store = Self {

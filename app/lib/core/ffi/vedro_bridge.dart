@@ -273,7 +273,22 @@ class VedroFfiBridge implements VedroCoreClient {
       }
       final handle = bindings.init(pathPtr);
       if (handle == nullptr) {
-        throw VedroCoreException('vedro_init returned null handle');
+        String detail = 'vedro_init returned null handle';
+        final errFn = bindings.lastInitError;
+        if (errFn != null) {
+          final errPtr = errFn();
+          if (errPtr != nullptr) {
+            try {
+              final msg = errPtr.toDartString().trim();
+              if (msg.isNotEmpty) {
+                detail = msg;
+              }
+            } finally {
+              bindings.freeString(errPtr);
+            }
+          }
+        }
+        throw VedroCoreException(detail);
       }
       return VedroFfiBridge._(bindings, handle, libraryPath);
     } finally {

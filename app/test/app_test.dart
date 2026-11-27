@@ -3316,10 +3316,30 @@ void main() {
         passcodeHash: salted1,
         aiApiKey: 'sk-secret-ai-key',
         asrApiKey: 'sk-secret-asr-key',
-        maxVolumePercent: 250,
+        maxVolumePercent: 300,
       ),
       immediate: true,
     );
+    // Max volume boost is strictly capped at 150% (never 300%)
+    expect(cfgApp.prefs.maxVolumePercent, equals(150));
+    expect(
+      VedroPreferences.fromJson(const {'max_volume_percent': 300, 'saved_volume': 280.0})
+          .maxVolumePercent,
+      equals(150),
+    );
+    expect(
+      VedroPreferences.fromJson(const {'max_volume_percent': 300, 'saved_volume': 280.0})
+          .savedVolume,
+      equals(150.0),
+    );
+
+    // Android SAF content:// URI local playlist support
+    final safResolved = NativePlaybackChannel.resolveLocalPlaylist(
+      'content://com.android.providers.downloads.documents/document/raw%3A%2Fmovie.mkv',
+    );
+    expect(safResolved.files.length, equals(1));
+    expect(safResolved.startIndex, equals(0));
+
     final exportedStr = cfgApp.exportConfigJson();
     final exportedMap = jsonDecode(exportedStr) as Map<String, dynamic>;
     final exportedPrefs = exportedMap['preferences'] as Map<String, dynamic>;
@@ -3327,7 +3347,7 @@ void main() {
     expect(exportedPrefs.containsKey('passcode_enabled'), isFalse);
     expect(exportedPrefs.containsKey('ai_api_key'), isFalse);
     expect(exportedPrefs.containsKey('asr_api_key'), isFalse);
-    expect(exportedPrefs['max_volume_percent'], equals(250));
+    expect(exportedPrefs['max_volume_percent'], equals(150));
 
     // Resetting defaults preserves passcode lock
     await cfgApp.resetPreferencesToDefaults();
@@ -3342,7 +3362,7 @@ void main() {
     );
     await cfgApp.importConfigJson(exportedStr);
     expect(cfgApp.prefs.skinId, equals('liquid_glass'));
-    expect(cfgApp.prefs.maxVolumePercent, equals(250));
+    expect(cfgApp.prefs.maxVolumePercent, equals(150));
     expect(cfgApp.prefs.passcodeHash, equals(salted1));
     expect(cfgApp.prefs.aiApiKey, equals('sk-local-keep'));
 

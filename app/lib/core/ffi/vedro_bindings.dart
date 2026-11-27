@@ -10,6 +10,9 @@ final class VedroRuntime extends Opaque {}
 typedef VedroInitNative = Pointer<VedroRuntime> Function(Pointer<Utf8> dbPath);
 typedef VedroInitDart = Pointer<VedroRuntime> Function(Pointer<Utf8> dbPath);
 
+typedef VedroLastInitErrorNative = Pointer<Utf8> Function();
+typedef VedroLastInitErrorDart = Pointer<Utf8> Function();
+
 typedef VedroInvokeNative = Pointer<Utf8> Function(
   Pointer<VedroRuntime> rt,
   Pointer<Utf8> method,
@@ -40,6 +43,7 @@ typedef VedroDestroyDart = void Function(Pointer<VedroRuntime> rt);
 class VedroNativeBindings {
   VedroNativeBindings(DynamicLibrary lib)
       : init = lib.lookupFunction<VedroInitNative, VedroInitDart>('vedro_init'),
+        lastInitError = _lookupLastInitErrorOptional(lib),
         invoke = lib.lookupFunction<VedroInvokeNative, VedroInvokeDart>('vedro_invoke'),
         pollEvents = lib.lookupFunction<VedroPollEventsNative, VedroPollEventsDart>(
           'vedro_poll_events',
@@ -50,6 +54,16 @@ class VedroNativeBindings {
           'vedro_free_string',
         ),
         destroy = lib.lookupFunction<VedroDestroyNative, VedroDestroyDart>('vedro_destroy');
+
+  static VedroLastInitErrorDart? _lookupLastInitErrorOptional(DynamicLibrary lib) {
+    try {
+      return lib.lookupFunction<VedroLastInitErrorNative, VedroLastInitErrorDart>(
+        'vedro_last_init_error',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
 
   static VedroProxySpeedBpsDart? _lookupSpeedOptional(DynamicLibrary lib) {
     try {
@@ -62,6 +76,7 @@ class VedroNativeBindings {
   }
 
   final VedroInitDart init;
+  final VedroLastInitErrorDart? lastInitError;
   final VedroInvokeDart invoke;
   final VedroPollEventsDart pollEvents;
   final VedroProxySpeedBpsDart? proxySpeedBps;

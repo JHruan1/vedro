@@ -3324,8 +3324,10 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
             ),
             _InlineSegmentedRow<int>(
               title: '最大音量增益',
-              value: p.maxVolumePercent,
-              items: const [(100, '100%'), (150, '150%'), (200, '200%'), (300, '300%')],
+              value: p.maxVolumePercent <= 112
+                  ? 100
+                  : (p.maxVolumePercent <= 137 ? 125 : 150),
+              items: const [(100, '100%'), (125, '125%'), (150, '150%')],
               onChanged: (v) => _updatePrefs(p.copyWith(maxVolumePercent: v)),
             ),
             _SwitchRow(

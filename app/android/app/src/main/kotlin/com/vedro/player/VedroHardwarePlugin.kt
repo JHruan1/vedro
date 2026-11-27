@@ -221,13 +221,17 @@ class VedroHardwarePlugin(
         durationMs: Long,
         positionMs: Long,
         isPlaying: Boolean,
-        speed: Float
+        speed: Float,
+        hasNext: Boolean,
+        hasPrevious: Boolean,
+        active: Boolean
     ) {
-        nowPlayingActive = isPlaying
-        if (title.isBlank() && !isPlaying) {
+        if (!active || (title.isBlank() && !isPlaying)) {
             releaseMediaSession()
+            updatePipParamsIfSupported(false)
             return
         }
+        nowPlayingActive = isPlaying
         ensureMediaSession()
         val session = mediaSession ?: return
         try {
@@ -237,12 +241,12 @@ class VedroHardwarePlugin(
                 .putLong(MediaMetadata.METADATA_KEY_DURATION, durationMs.coerceAtLeast(0L))
                 .build()
             session.setMetadata(meta)
-            val actions = PlaybackState.ACTION_PLAY or
+            var actions = PlaybackState.ACTION_PLAY or
                 PlaybackState.ACTION_PAUSE or
                 PlaybackState.ACTION_PLAY_PAUSE or
-                PlaybackState.ACTION_SKIP_TO_NEXT or
-                PlaybackState.ACTION_SKIP_TO_PREVIOUS or
                 PlaybackState.ACTION_SEEK_TO
+            if (hasNext) actions = actions or PlaybackState.ACTION_SKIP_TO_NEXT
+            if (hasPrevious) actions = actions or PlaybackState.ACTION_SKIP_TO_PREVIOUS
             val state = PlaybackState.Builder()
                 .setActions(actions)
                 .setState(
@@ -401,11 +405,18 @@ class VedroHardwarePlugin(
             "updateNowPlaying" -> {
                 val title = call.argument<String>("title") ?: ""
                 val subtitle = call.argument<String>("subtitle") ?: ""
-                val durationMs = (call.argument<Number>("duration_ms")?.toLong()) ?: 0L
-                val positionMs = (call.argument<Number>("position_ms")?.toLong()) ?: 0L
-                val isPlaying = call.argument<Boolean>("is_playing") ?: false
+                val durationMs = call.argument<Number>("duration_ms")?.toLong()
+                    ?: ((call.argument<Number>("duration_secs")?.toDouble() ?: 0.0) * 1000.0).toLong()
+                val positionMs = call.argument<Number>("position_ms")?.toLong()
+                    ?: ((call.argument<Number>("position_secs")?.toDouble() ?: 0.0) * 1000.0).toLong()
+                val isPlaying = call.argument<Boolean>("is_playing")
+                    ?: call.argument<Boolean>("playing")
+                    ?: false
                 val speed = (call.argument<Number>("speed")?.toFloat()) ?: 1.0f
-                updateNowPlaying(title, subtitle, durationMs, positionMs, isPlaying, speed)
+                val hasNext = call.argument<Boolean>("has_next") ?: false
+                val hasPrevious = call.argument<Boolean>("has_previous") ?: false
+                val active = call.argument<Boolean>("active") ?: true
+                updateNowPlaying(title, subtitle, durationMs, positionMs, isPlaying, speed, hasNext, hasPrevious, active)
                 result.success(null)
             }
             "setAutoPipEnabled" -> {

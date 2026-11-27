@@ -219,7 +219,7 @@ impl PlaybackConfig {
         }
         set("framedrop", "vo");
         set("gpu-shader-cache", "yes");
-        set("volume-max", "200");
+        set("volume-max", "150");
 
         // 3. Dolby Vision RPU & HDR10/HDR10+/HLG Pipeline
         let hdr_decision = resolve_hdr_pipeline(

@@ -150,13 +150,26 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
     MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
   }
 
-  private func updateNowPlaying(title: String, subtitle: String, durationMs: Int, positionMs: Int, isPlaying: Bool, speed: Double) {
+  private func updateNowPlaying(
+    title: String,
+    subtitle: String,
+    durationMs: Int,
+    positionMs: Int,
+    isPlaying: Bool,
+    speed: Double,
+    hasNext: Bool,
+    hasPrevious: Bool,
+    active: Bool
+  ) {
     DispatchQueue.main.async {
-      if title.isEmpty && !isPlaying {
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+      if !active || (title.isEmpty && !isPlaying) {
+        self.removeRemoteCommands()
         return
       }
       self.installRemoteCommands()
+      let cc = MPRemoteCommandCenter.shared()
+      cc.nextTrackCommand.isEnabled = hasNext
+      cc.previousTrackCommand.isEnabled = hasPrevious
       var info: [String: Any] = [
         MPMediaItemPropertyTitle: title,
         MPMediaItemPropertyArtist: subtitle,
@@ -259,11 +272,26 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
       let args = call.arguments as? [String: Any]
       let title = (args?["title"] as? String) ?? ""
       let subtitle = (args?["subtitle"] as? String) ?? ""
-      let durationMs = (args?["duration_ms"] as? NSNumber)?.intValue ?? 0
-      let positionMs = (args?["position_ms"] as? NSNumber)?.intValue ?? 0
-      let isPlaying = (args?["is_playing"] as? Bool) ?? false
+      let durationMs = (args?["duration_ms"] as? NSNumber)?.intValue
+        ?? Int(((args?["duration_secs"] as? NSNumber)?.doubleValue ?? 0.0) * 1000.0)
+      let positionMs = (args?["position_ms"] as? NSNumber)?.intValue
+        ?? Int(((args?["position_secs"] as? NSNumber)?.doubleValue ?? 0.0) * 1000.0)
+      let isPlaying = (args?["is_playing"] as? Bool) ?? (args?["playing"] as? Bool) ?? false
       let speed = (args?["speed"] as? NSNumber)?.doubleValue ?? 1.0
-      updateNowPlaying(title: title, subtitle: subtitle, durationMs: durationMs, positionMs: positionMs, isPlaying: isPlaying, speed: speed)
+      let hasNext = (args?["has_next"] as? Bool) ?? false
+      let hasPrevious = (args?["has_previous"] as? Bool) ?? false
+      let active = (args?["active"] as? Bool) ?? true
+      updateNowPlaying(
+        title: title,
+        subtitle: subtitle,
+        durationMs: durationMs,
+        positionMs: positionMs,
+        isPlaying: isPlaying,
+        speed: speed,
+        hasNext: hasNext,
+        hasPrevious: hasPrevious,
+        active: active
+      )
       result(nil)
     case "saveScreenshotToGallery":
       let args = call.arguments as? [String: Any]

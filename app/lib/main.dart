@@ -93,6 +93,9 @@ Future<void> main(List<String> args) async {
       String? dbPath;
       try {
         final dir = await getApplicationSupportDirectory();
+        if (!await dir.exists()) {
+          await dir.create(recursive: true);
+        }
         dbPath = '${dir.path}/vedro.db';
       } catch (_) {
         dbPath = null;
@@ -102,7 +105,7 @@ Future<void> main(List<String> args) async {
         final core = VedroFfiBridge.open(dbPath: dbPath);
         runApp(VedroApp(core: core));
       } catch (e) {
-        runApp(_VedroStartupFailureApp(error: e.toString()));
+        runApp(_VedroStartupFailureApp(error: e.toString(), dbPath: dbPath));
       }
     },
     (Object error, StackTrace stack) {
@@ -111,9 +114,37 @@ Future<void> main(List<String> args) async {
   );
 }
 
-class _VedroStartupFailureApp extends StatelessWidget {
-  const _VedroStartupFailureApp({required this.error});
+class _VedroStartupFailureApp extends StatefulWidget {
+  const _VedroStartupFailureApp({required this.error, required this.dbPath});
   final String error;
+  final String? dbPath;
+
+  @override
+  State<_VedroStartupFailureApp> createState() => _VedroStartupFailureAppState();
+}
+
+class _VedroStartupFailureAppState extends State<_VedroStartupFailureApp> {
+  late String _error = widget.error;
+  bool _copied = false;
+
+  void _retry() {
+    try {
+      final core = VedroFfiBridge.open(dbPath: widget.dbPath);
+      runApp(VedroApp(core: core));
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+        _copied = false;
+      });
+    }
+  }
+
+  Future<void> _copyError() async {
+    try {
+      await Clipboard.setData(ClipboardData(text: _error));
+      if (mounted) setState(() => _copied = true);
+    } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -142,10 +173,32 @@ class _VedroStartupFailureApp extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 10),
-                  Text(
-                    error,
+                  SelectableText(
+                    _error,
                     textAlign: TextAlign.center,
                     style: const TextStyle(color: Color(0xB3FFFFFF), fontSize: 13, height: 1.45),
+                  ),
+                  const SizedBox(height: 20),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      FilledButton.icon(
+                        autofocus: true,
+                        onPressed: _retry,
+                        icon: const Icon(Icons.refresh_rounded, size: 17),
+                        label: const Text('重试启动'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: _copyError,
+                        icon: Icon(
+                          _copied ? Icons.check_rounded : Icons.copy_rounded,
+                          size: 16,
+                        ),
+                        label: Text(_copied ? '已复制' : '复制错误详情'),
+                      ),
+                    ],
                   ),
                 ],
               ),

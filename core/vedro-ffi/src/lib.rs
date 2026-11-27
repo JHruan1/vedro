@@ -191,12 +191,16 @@ pub struct VedroRuntime {
 
 impl Drop for VedroRuntime {
     fn drop(&mut self) {
+        let in_tokio = tokio::runtime::Handle::try_current().is_ok();
         // 1. Terminate libmpv first so it stops reading from StreamProxy
         self.engine.lock().take();
         // 2. Stop active WebSocket session
         if let Some(mut ws) = self.ws.lock().take() {
-            if let Some(ref rt) = self.rt {
-                let _ = rt.block_on(tokio::time::timeout(Duration::from_millis(500), ws.stop()));
+            if !in_tokio {
+                if let Some(ref rt) = self.rt {
+                    let _ =
+                        rt.block_on(tokio::time::timeout(Duration::from_millis(500), ws.stop()));
+                }
             }
         }
         // 3. Unregister active stream and explicitly signal proxy listener shutdown
@@ -206,7 +210,11 @@ impl Drop for VedroRuntime {
         self.proxy.shutdown();
         // 4. Shut down Tokio runtime with bounded timeout so shutdown never hangs
         if let Some(rt) = self.rt.take() {
-            rt.shutdown_timeout(Duration::from_secs(2));
+            if in_tokio {
+                rt.shutdown_background();
+            } else {
+                rt.shutdown_timeout(Duration::from_secs(2));
+            }
         }
     }
 }
@@ -337,21 +345,40 @@ impl VedroRuntime {
             }
         });
 
-        let http_default = reqwest::Client::builder()
-            .pool_max_idle_per_host(8)
-            .connect_timeout(Duration::from_secs(12))
-            .timeout(Duration::from_secs(45))
-            .tcp_nodelay(true)
-            .build()
+        let build_http = |timeout_secs: u64, direct: bool| -> Result<reqwest::Client, String> {
+            let attempt = |disable_native_certs: bool, force_no_proxy: bool| {
+                let mut b = reqwest::Client::builder()
+                    .pool_max_idle_per_host(8)
+                    .connect_timeout(Duration::from_secs(12))
+                    .timeout(Duration::from_secs(timeout_secs))
+                    .tcp_nodelay(true);
+                if disable_native_certs {
+                    b = b.tls_built_in_native_certs(false);
+                }
+                if direct || force_no_proxy {
+                    b = b.no_proxy();
+                }
+                b.build()
+            };
+            match attempt(false, false) {
+                Ok(c) => Ok(c),
+                Err(first_err) => {
+                    warn!(
+                        error = %first_err,
+                        direct,
+                        "reqwest client build failed with OS certs/proxy; falling back to bundled WebPKI roots"
+                    );
+                    attempt(true, false)
+                        .or_else(|_| attempt(true, true))
+                        .map_err(|e| format!("{first_err} (fallback: {e})"))
+                }
+            }
+        };
+
+        let http_default = build_http(45, false)
             .map_err(|e| format!("failed to build default http client: {e}"))?;
-        let http_direct = reqwest::Client::builder()
-            .pool_max_idle_per_host(8)
-            .connect_timeout(Duration::from_secs(12))
-            .timeout(Duration::from_secs(60))
-            .tcp_nodelay(true)
-            .no_proxy()
-            .build()
-            .map_err(|e| format!("failed to build direct http client: {e}"))?;
+        let http_direct =
+            build_http(60, true).map_err(|e| format!("failed to build direct http client: {e}"))?;
 
         let saved_cfg: PlaybackConfig = store
             .get_setting("playback_config")
@@ -378,6 +405,7 @@ impl VedroRuntime {
             .block_on(StreamProxy::start(StreamProxyConfig::default()))
             .map_err(|e| format!("failed to start local stream proxy: {e}"))?;
         if let Some(ref d) = db_dir {
+            let _rt_guard = rt.enter();
             proxy.set_image_cache_dir(d.join("img_cache"));
         }
 
@@ -5062,9 +5090,28 @@ fn container_mime_type(container: &str) -> String {
 
 static RUNTIME_REGISTRY: OnceLock<DashMap<usize, Arc<VedroRuntime>>> = OnceLock::new();
 static NEXT_RUNTIME_ID: AtomicUsize = AtomicUsize::new(1);
+static LAST_INIT_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 fn registry() -> &'static DashMap<usize, Arc<VedroRuntime>> {
     RUNTIME_REGISTRY.get_or_init(DashMap::new)
+}
+
+fn last_init_error_slot() -> &'static Mutex<Option<String>> {
+    LAST_INIT_ERROR.get_or_init(|| Mutex::new(None))
+}
+
+fn set_last_init_error(msg: Option<String>) {
+    *last_init_error_slot().lock() = msg;
+}
+
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 fn lookup_runtime(rt: *mut VedroRuntime) -> Option<Arc<VedroRuntime>> {
@@ -5078,6 +5125,7 @@ fn lookup_runtime(rt: *mut VedroRuntime) -> Option<Arc<VedroRuntime>> {
 
 #[no_mangle]
 pub extern "C" fn vedro_init(db_path_utf8: *const c_char) -> *mut VedroRuntime {
+    set_last_init_error(None);
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let db_path = if db_path_utf8.is_null() {
             None
@@ -5092,8 +5140,29 @@ pub extern "C" fn vedro_init(db_path_utf8: *const c_char) -> *mut VedroRuntime {
             }
             Err(e) => {
                 warn!(error = %e, "vedro_init failed");
+                set_last_init_error(Some(e));
                 std::ptr::null_mut()
             }
+        }
+    }));
+    match res {
+        Ok(ptr) => ptr,
+        Err(payload) => {
+            let msg = format!("vedro_init panic: {}", panic_payload_to_string(payload));
+            warn!(error = %msg, "vedro_init panicked");
+            set_last_init_error(Some(msg));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn vedro_last_init_error() -> *mut c_char {
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let guard = last_init_error_slot().lock();
+        match guard.as_deref() {
+            Some(msg) if !msg.is_empty() => to_c_string(msg),
+            _ => std::ptr::null_mut(),
         }
     }));
     res.unwrap_or(std::ptr::null_mut())
@@ -5235,5 +5304,47 @@ mod tests {
         assert_eq!(ev_str, "[]");
 
         vedro_destroy(rt);
+    }
+
+    #[test]
+    fn c_abi_init_with_real_file_db_and_nested_dir_and_error_reporting() {
+        let uniq = format!(
+            "vedro_ffi_test_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let root = std::env::temp_dir().join(uniq);
+        let nested_db = root.join("nested").join("app_support").join("vedro.db");
+        let db_c = CString::new(nested_db.to_string_lossy().as_ref()).unwrap();
+
+        // 1. Fresh install with non-existent nested parent directory must succeed
+        let rt1 = vedro_init(db_c.as_ptr());
+        assert!(!rt1.is_null(), "vedro_init failed for nested file db");
+        assert!(nested_db.exists());
+        assert!(vedro_last_init_error().is_null());
+        vedro_destroy(rt1);
+
+        // 2. Subsequent cold launch with existing directory & existing DB must succeed
+        let rt2 = vedro_init(db_c.as_ptr());
+        assert!(!rt2.is_null(), "vedro_init failed for existing file db");
+        vedro_destroy(rt2);
+
+        // 3. Invalid DB path (pointing at a directory) fails and exposes diagnostic via vedro_last_init_error()
+        let dir_c = CString::new(root.to_string_lossy().as_ref()).unwrap();
+        let rt_bad = vedro_init(dir_c.as_ptr());
+        assert!(rt_bad.is_null());
+        let err_ptr = vedro_last_init_error();
+        assert!(!err_ptr.is_null());
+        let err_msg = unsafe { CStr::from_ptr(err_ptr) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        vedro_free_string(err_ptr);
+        assert!(
+            err_msg.contains("failed to open storage"),
+            "unexpected init error: {err_msg}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

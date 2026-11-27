@@ -86,10 +86,17 @@ class NativePlaybackChannel {
   }
 
   static ({List<String> files, int startIndex}) resolveLocalPlaylist(String path) {
+    final trimmed = path.trim();
+    if (trimmed.isEmpty) return (files: const [], startIndex: 0);
+    // Android SAF content:// URIs cannot be queried via dart:io FileSystemEntity,
+    // and libmpv / media_kit opens content:// directly via ContentResolver.
+    if (trimmed.startsWith('content://')) {
+      return (files: [trimmed], startIndex: 0);
+    }
     try {
-      final type = FileSystemEntity.typeSync(path);
+      final type = FileSystemEntity.typeSync(trimmed);
       if (type == FileSystemEntityType.directory) {
-        final dir = Directory(path);
+        final dir = Directory(trimmed);
         final list = dir
             .listSync()
             .whereType<File>()
@@ -99,8 +106,8 @@ class NativePlaybackChannel {
           ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
         return (files: list, startIndex: 0);
       }
-      if (type == FileSystemEntityType.file && isVideoFile(path)) {
-        final parent = File(path).parent;
+      if (type == FileSystemEntityType.file && isVideoFile(trimmed)) {
+        final parent = File(trimmed).parent;
         final siblings = parent
             .listSync()
             .whereType<File>()
@@ -108,17 +115,18 @@ class NativePlaybackChannel {
             .where(isVideoFile)
             .toList()
           ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-        final idx = siblings.indexOf(path);
+        final idx = siblings.indexOf(trimmed);
         if (siblings.isNotEmpty && idx >= 0) {
           return (files: siblings, startIndex: idx);
         }
-        return (files: [path], startIndex: 0);
+        return (files: [trimmed], startIndex: 0);
       }
     } catch (_) {}
     return (files: const [], startIndex: 0);
   }
 
   static List<String> findSidecarSubtitles(String videoPath) {
+    if (videoPath.trim().startsWith('content://')) return const [];
     try {
       final file = File(videoPath);
       final name = file.uri.pathSegments.isNotEmpty ? file.uri.pathSegments.last : '';
@@ -304,13 +312,18 @@ class NativePlaybackChannel {
   }) async {
     if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS && !Platform.isMacOS)) return;
     ensureWindowListener();
+    final safePos = positionSecs.isFinite && positionSecs > 0 ? positionSecs : 0.0;
+    final safeDur = durationSecs.isFinite && durationSecs > 0 ? durationSecs : 0.0;
     try {
       await _channel.invokeMethod<void>('updateNowPlaying', {
         'title': title,
         'subtitle': subtitle,
+        'is_playing': playing,
         'playing': playing,
-        'position_secs': positionSecs.isFinite ? positionSecs : 0.0,
-        'duration_secs': durationSecs.isFinite ? durationSecs : 0.0,
+        'position_ms': (safePos * 1000).round(),
+        'duration_ms': (safeDur * 1000).round(),
+        'position_secs': safePos,
+        'duration_secs': safeDur,
         'speed': speed.isFinite ? speed : 1.0,
         'has_next': hasNext,
         'has_previous': hasPrevious,

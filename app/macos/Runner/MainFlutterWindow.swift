@@ -168,6 +168,15 @@ final class VedroHardwarePlugin: NSObject {
       self?.channel?.invokeMethod("mediaAction", arguments: ["action": "previous"])
       return .success
     }
+    cc.changePlaybackPositionCommand.isEnabled = true
+    cc.changePlaybackPositionCommand.addTarget { [weak self] event in
+      guard let posEv = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+      self?.channel?.invokeMethod("mediaAction", arguments: [
+        "action": "seek",
+        "position_ms": Int(posEv.positionTime * 1000.0)
+      ])
+      return .success
+    }
   }
 
   private func removeRemoteCommands() {
@@ -179,7 +188,9 @@ final class VedroHardwarePlugin: NSObject {
     cc.togglePlayPauseCommand.removeTarget(nil)
     cc.nextTrackCommand.removeTarget(nil)
     cc.previousTrackCommand.removeTarget(nil)
+    cc.changePlaybackPositionCommand.removeTarget(nil)
     MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    MPNowPlayingInfoCenter.default().playbackState = .stopped
   }
 
   private func resolveWindow() -> NSWindow? {
@@ -195,16 +206,25 @@ final class VedroHardwarePlugin: NSObject {
       let args = call.arguments as? [String: Any]
       let title = (args?["title"] as? String) ?? ""
       let subtitle = (args?["subtitle"] as? String) ?? ""
-      let durationMs = (args?["duration_ms"] as? NSNumber)?.intValue ?? 0
-      let positionMs = (args?["position_ms"] as? NSNumber)?.intValue ?? 0
-      let isPlaying = (args?["is_playing"] as? Bool) ?? false
+      let durationMs = (args?["duration_ms"] as? NSNumber)?.intValue
+        ?? Int(((args?["duration_secs"] as? NSNumber)?.doubleValue ?? 0.0) * 1000.0)
+      let positionMs = (args?["position_ms"] as? NSNumber)?.intValue
+        ?? Int(((args?["position_secs"] as? NSNumber)?.doubleValue ?? 0.0) * 1000.0)
+      let isPlaying = (args?["is_playing"] as? Bool) ?? (args?["playing"] as? Bool) ?? false
       let speed = (args?["speed"] as? NSNumber)?.doubleValue ?? 1.0
+      let hasNext = (args?["has_next"] as? Bool) ?? false
+      let hasPrevious = (args?["has_previous"] as? Bool) ?? false
+      let active = (args?["active"] as? Bool) ?? true
       DispatchQueue.main.async {
-        if title.isEmpty && !isPlaying {
+        if !active || (title.isEmpty && !isPlaying) {
+          self.removeRemoteCommands()
           MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
           MPNowPlayingInfoCenter.default().playbackState = .stopped
         } else {
           self.installRemoteCommands()
+          let cc = MPRemoteCommandCenter.shared()
+          cc.nextTrackCommand.isEnabled = hasNext
+          cc.previousTrackCommand.isEnabled = hasPrevious
           MPNowPlayingInfoCenter.default().nowPlayingInfo = [
             MPMediaItemPropertyTitle: title,
             MPMediaItemPropertyArtist: subtitle,

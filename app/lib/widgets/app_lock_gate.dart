@@ -97,10 +97,16 @@ class PinLockoutController {
 
   Future<void> _loadPersisted() async {
     try {
-      final raw = await _appState.core.invoke('get_kv', {'key': _kvKey});
-      if (raw is! String || raw.isEmpty) return;
-      final map = jsonDecode(raw);
-      if (map is! Map) return;
+      final resp = await _appState.core.invoke('get_kv', {'key': _kvKey});
+      final val = resp is Map ? resp['value'] : resp;
+      Map<dynamic, dynamic>? map;
+      if (val is Map) {
+        map = val;
+      } else if (val is String && val.isNotEmpty) {
+        final decoded = jsonDecode(val);
+        if (decoded is Map) map = decoded;
+      }
+      if (map == null) return;
       final savedFails = (map['failed'] as num?)?.toInt() ?? 0;
       final savedUntil = (map['until_ms'] as num?)?.toInt() ?? 0;
       if (savedFails > failedAttempts) failedAttempts = savedFails;
@@ -214,6 +220,13 @@ class _AppLockGateState extends State<AppLockGate> with WidgetsBindingObserver {
         _obscuredInBackground = false;
       }
     }
+  }
+
+  @override
+  Future<bool> didPopRoute() async {
+    // Intercept hardware Back / Android TV Back button above MaterialApp's Navigator while locked.
+    if (_locked || _obscuredInBackground) return true;
+    return false;
   }
 
   @override

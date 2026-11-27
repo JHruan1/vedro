@@ -232,8 +232,8 @@ impl PlaybackEngine {
         if !volume.is_finite() {
             return Err(PlaybackError::CommandFailed("non-finite volume".into()));
         }
-        let clamped = volume.clamp(0.0, 300.0);
-        let _ = self.set_property("volume-max", "300");
+        let clamped = volume.clamp(0.0, 150.0);
+        let _ = self.set_property("volume-max", "150");
         self.set_property("volume", &format!("{clamped:.1}"))
     }
 

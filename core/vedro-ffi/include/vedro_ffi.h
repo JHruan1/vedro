@@ -19,6 +19,13 @@ typedef struct VedroRuntime VedroRuntime;
 VedroRuntime* vedro_init(const char* db_path_utf8);
 
 /**
+ * Return the human-readable error message from the most recent failed `vedro_init` call,
+ * or NULL if the last `vedro_init` succeeded.
+ * Caller MUST free any non-NULL string with `vedro_free_string`.
+ */
+char* vedro_last_init_error(void);
+
+/**
  * Invoke any Vedro core API method synchronously (bridged onto the internal Tokio runtime).
  *
  * @param rt Non-null runtime handle.

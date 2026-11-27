@@ -224,19 +224,44 @@ fn build_proxy_http_client(
     proxy_url: Option<&str>,
     accept_invalid_certs: bool,
 ) -> std::io::Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
-        .pool_max_idle_per_host(12)
-        .connect_timeout(Duration::from_secs(12))
-        .timeout(Duration::from_secs(30))
-        .tcp_nodelay(true)
-        // Manual redirect loop strips X-Emby-Token / X-Emby-Authorization across origins!
-        .redirect(reqwest::redirect::Policy::none())
-        .danger_accept_invalid_certs(accept_invalid_certs);
-    if let Some(p) = proxy_url.map(str::trim).filter(|s| !s.is_empty()) {
-        let proxy = reqwest::Proxy::all(p).map_err(std::io::Error::other)?;
-        builder = builder.proxy(proxy);
+    let custom_proxy = proxy_url.map(str::trim).filter(|s| !s.is_empty());
+    let build_once = |disable_native_certs: bool, disable_sys_proxy: bool| {
+        let mut builder = reqwest::Client::builder()
+            .pool_max_idle_per_host(12)
+            .connect_timeout(Duration::from_secs(12))
+            .timeout(Duration::from_secs(30))
+            .tcp_nodelay(true)
+            // Manual redirect loop strips X-Emby-Token / X-Emby-Authorization across origins!
+            .redirect(reqwest::redirect::Policy::none())
+            .danger_accept_invalid_certs(accept_invalid_certs);
+        if disable_native_certs {
+            builder = builder.tls_built_in_native_certs(false);
+        }
+        if disable_sys_proxy {
+            builder = builder.no_proxy();
+        } else if let Some(p) = custom_proxy {
+            let proxy = reqwest::Proxy::all(p).map_err(std::io::Error::other)?;
+            builder = builder.proxy(proxy);
+        }
+        builder.build().map_err(std::io::Error::other)
+    };
+    match build_once(false, false) {
+        Ok(client) => Ok(client),
+        Err(first_err) => {
+            if custom_proxy.is_some() {
+                // Retry with bundled WebPKI roots only in case the OS cert store failed
+                build_once(true, false).map_err(|_| first_err)
+            } else {
+                warn!(
+                    error = %first_err,
+                    "proxy http client build failed with OS certs/proxy; falling back to bundled WebPKI roots + direct"
+                );
+                build_once(true, false)
+                    .or_else(|_| build_once(true, true))
+                    .map_err(|_| first_err)
+            }
+        }
     }
-    builder.build().map_err(std::io::Error::other)
 }
 
 fn strip_auth_headers(headers: &mut HeaderMap) {
@@ -537,17 +562,33 @@ impl StreamProxy {
     pub fn set_image_cache_dir(&self, dir: PathBuf) {
         let _ = std::fs::create_dir_all(&dir);
         *self.image_cache_dir.write() = Some(dir.clone());
-        // Clean up any stale `.tmp` files left from prior crashes in background
-        tokio::spawn(async move {
-            if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
-                while let Ok(Some(entry)) = rd.next_entry().await {
-                    let p = entry.path();
-                    if p.extension().and_then(|e| e.to_str()) == Some("tmp") {
-                        let _ = tokio::fs::remove_file(&p).await;
+        // Clean up any stale `.tmp` files left from prior crashes in background without
+        // ever panicking if called outside an entered Tokio runtime context!
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
+                    while let Ok(Some(entry)) = rd.next_entry().await {
+                        let p = entry.path();
+                        if p.extension().and_then(|e| e.to_str()) == Some("tmp") {
+                            let _ = tokio::fs::remove_file(&p).await;
+                        }
                     }
                 }
-            }
-        });
+            });
+        } else {
+            let _ = std::thread::Builder::new()
+                .name("vedro-img-gc".to_string())
+                .spawn(move || {
+                    if let Ok(rd) = std::fs::read_dir(&dir) {
+                        for entry in rd.flatten() {
+                            let p = entry.path();
+                            if p.extension().and_then(|e| e.to_str()) == Some("tmp") {
+                                let _ = std::fs::remove_file(&p);
+                            }
+                        }
+                    }
+                });
+        }
     }
 
     pub fn configure_transport(
@@ -622,28 +663,30 @@ impl StreamProxy {
 
         // Pre-warm chunk 0 (MKV/MP4 header) and tail chunk (MKV Cues / MP4 moov) IN PARALLEL
         // when `known_size` is known!
-        let this = Arc::clone(self);
-        tokio::spawn(async move {
-            let total = entry.total_size.load(Ordering::Acquire);
-            if total > this.cache.chunk_size() {
-                let last_chunk = (total - 1) / this.cache.chunk_size();
-                if last_chunk > 0 {
-                    let _ = tokio::join!(
-                        this.fetch_chunk(&entry, 0),
-                        this.fetch_chunk(&entry, last_chunk),
-                    );
-                    return;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let this = Arc::clone(self);
+            handle.spawn(async move {
+                let total = entry.total_size.load(Ordering::Acquire);
+                if total > this.cache.chunk_size() {
+                    let last_chunk = (total - 1) / this.cache.chunk_size();
+                    if last_chunk > 0 {
+                        let _ = tokio::join!(
+                            this.fetch_chunk(&entry, 0),
+                            this.fetch_chunk(&entry, last_chunk),
+                        );
+                        return;
+                    }
                 }
-            }
-            let _ = this.fetch_chunk(&entry, 0).await;
-            let discovered = entry.total_size.load(Ordering::Acquire);
-            if discovered > this.cache.chunk_size() {
-                let last_chunk = (discovered - 1) / this.cache.chunk_size();
-                if last_chunk > 0 {
-                    let _ = this.fetch_chunk(&entry, last_chunk).await;
+                let _ = this.fetch_chunk(&entry, 0).await;
+                let discovered = entry.total_size.load(Ordering::Acquire);
+                if discovered > this.cache.chunk_size() {
+                    let last_chunk = (discovered - 1) / this.cache.chunk_size();
+                    if last_chunk > 0 {
+                        let _ = this.fetch_chunk(&entry, last_chunk).await;
+                    }
                 }
-            }
-        });
+            });
+        }
 
         let local_url = format!("http://{}/stream/{id}", self.listen_addr);
         (id, local_url)

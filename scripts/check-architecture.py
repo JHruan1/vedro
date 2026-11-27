@@ -86,6 +86,15 @@ FILE_LINE_LIMITS: dict[str, int] = {
     "app/lib/screens/settings/settings_playback_sections.dart": 950,
     "app/lib/screens/settings/settings_ai_privacy_sections.dart": 1250,
     "app/lib/screens/settings/settings_primitives.dart": 500,
+    # Flutter admin console, home & shell subsystems (decomposed in Round 6)
+    "app/lib/widgets/admin_console_pane.dart": 1600,
+    "app/lib/widgets/admin_console/admin_ui_components.dart": 580,
+    "app/lib/widgets/admin_console/admin_quota_dialog.dart": 550,
+    "app/lib/screens/home_screen.dart": 850,
+    "app/lib/screens/home/home_welcome_hub.dart": 320,
+    "app/lib/screens/home/home_hero_banner.dart": 1200,
+    "app/lib/screens/shell_screen.dart": 1000,
+    "app/lib/screens/shell/shell_nav_chrome.dart": 950,
     # Flutter core & widgets
     "app/lib/widgets/beauty_filter.dart": 600,
     "app/lib/widgets/danmaku_engine.dart": 350,
@@ -238,6 +247,20 @@ def check_product_invariants() -> None:
     # Ensure local_asr_engine stays in core/services/, never back in widgets/
     if (APP_LIB / "widgets" / "local_asr_engine.dart").exists():
         fail("[SSOT] widgets/local_asr_engine.dart must stay in core/services/local_asr_engine.dart")
+
+    # Enforce PlatformPerfProfile SSOT for compound OS checks
+    compound_platform_re = re.compile(
+        r"!kIsWeb\s*&&\s*\(Platform\.is(?:MacOS|Windows|Linux|Android|IOS)[^)]+\)"
+    )
+    for f in sorted(APP_LIB.rglob("*.dart")):
+        rel = str(f.relative_to(ROOT)).replace("\\", "/")
+        if rel == "app/lib/core/platform/platform_perf.dart":
+            continue
+        if compound_platform_re.search(f.read_text(encoding="utf-8")):
+            fail(
+                f"[SSOT] Compound Platform check in {rel}; use PlatformPerfProfile "
+                f"(isDesktop / isMobile / isMobileOs / isApple) instead"
+            )
 
 
 def check_file_size_ratchets() -> None:

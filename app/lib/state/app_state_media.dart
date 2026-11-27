@@ -267,7 +267,7 @@ extension VedroAppStateMedia on VedroAppState {
     String? playerOverride,
   }) async {
     final targetPlayer = (playerOverride ?? prefs.externalPlayer).toLowerCase();
-    final isDesktop = !kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux);
+    final isDesktop = PlatformPerfProfile.isDesktop;
     final res = await core.invoke('external_play_url', {
       'item_id': item.id,
       if (mediaSourceId != null) 'media_source_id': mediaSourceId,
@@ -280,7 +280,7 @@ extension VedroAppStateMedia on VedroAppState {
       throw Exception('无法获取有效的外部播放直链');
     }
 
-    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+    if (PlatformPerfProfile.isMobileOs) {
       final ok = await NativePlaybackChannel.launchExternalPlayer(
         streamUrl,
         player: targetPlayer,

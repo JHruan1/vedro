@@ -650,7 +650,7 @@ extension _SettingsServerDownloadSectionsExt on _SettingsDetailPaneState {
               items: const {1: '1 个任务', 2: '2 个任务', 3: '3 个任务'},
               onChanged: (v) => _updatePrefs(p.copyWith(downloadMaxConcurrent: v)),
             ),
-            if (!kIsWeb && (Platform.isAndroid || Platform.isIOS))
+            if (PlatformPerfProfile.isMobileOs)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
                 child: Row(
@@ -1183,11 +1183,11 @@ extension _SettingsServerDownloadSectionsExt on _SettingsDetailPaneState {
   // 3. 字体管理（内置实时字幕与界面排版预览窗 + 按系统匹配内置字体！）
   Widget _buildFonts(VedroAppState app, VedroPreferences p) {
     final skin = VedroSkin.of(context);
-    final isMobileOs = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+    final isMobileOs = PlatformPerfProfile.isMobileOs;
     final previewFamily = p.subtitleFontFamily.isEmpty ? null : p.subtitleFontFamily;
     final builtIn = <(String, String)>[
       ('', '系统默认字体'),
-      if (!kIsWeb && (Platform.isMacOS || Platform.isIOS)) ...[
+      if (PlatformPerfProfile.isApple) ...[
         ('PingFang SC', '苹方简体 (PingFang SC)'),
         ('Hiragino Sans GB', '冬青黑体 (Hiragino Sans GB)'),
         ('SF Pro Display', 'SF Pro Display'),

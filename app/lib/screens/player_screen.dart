@@ -991,7 +991,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   bool get _isDesktop =>
-      !kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux);
+      PlatformPerfProfile.isDesktop;
 
   bool get _isTv => PlatformPerfProfile.isTv;
 

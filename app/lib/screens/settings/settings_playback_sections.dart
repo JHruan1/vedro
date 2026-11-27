@@ -4,7 +4,7 @@ part of '../settings_screen.dart';
 extension _SettingsPlaybackSectionsExt on _SettingsDetailPaneState {
   // 8. 播放设置
   Widget _buildPlayback(VedroPreferences p) {
-    final isMobileOs = !kIsWeb && (Platform.isAndroid || Platform.isIOS) && !PlatformPerfProfile.isTv;
+    final isMobileOs = PlatformPerfProfile.isMobile;
     final supportsPip = NativePlaybackChannel.supportsNativePip;
     final playerChoices = <String, String>{
       'builtin': !kIsWeb && Platform.isIOS ? '内置播放核心（推荐）' : '内置 Rust + MPV（推荐）',

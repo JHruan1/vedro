@@ -23,6 +23,8 @@ class PlatformPerfProfile {
   static bool get isWindows => !kIsWeb && Platform.isWindows;
   static bool get isLinux => !kIsWeb && Platform.isLinux;
   static bool get isTv => NativePlaybackChannel.detectedAndroidTv || tvModeManualOverride;
+  static bool get isMobileOs => isAndroid || isIOS;
+  static bool get isApple => isMacOS || isIOS;
   static bool get isMobile => (isAndroid && !isTv) || isIOS;
   static bool get isDesktop => isMacOS || isWindows || isLinux;
 

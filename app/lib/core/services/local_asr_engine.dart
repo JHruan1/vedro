@@ -4,6 +4,8 @@ import 'dart:isolate';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+
+import '../platform/platform_perf.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
@@ -404,7 +406,7 @@ class LocalAsrManager extends ChangeNotifier {
       final normLang = (language.trim().isEmpty || language.trim().toLowerCase() == 'auto')
           ? 'auto'
           : language.trim().toLowerCase();
-      final numThreads = (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? 2 : 4;
+      final numThreads = PlatformPerfProfile.isMobileOs ? 2 : 4;
       final sig = '$modelPath::$tokensPath::$vadPath::$normLang::$numThreads';
 
       await _ensureWorker(

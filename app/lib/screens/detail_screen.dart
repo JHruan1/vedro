@@ -453,7 +453,7 @@ class _DetailScreenState extends State<DetailScreen> {
       return;
     }
     if (!mounted) return;
-    final isDesktop = !kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux);
+    final isDesktop = PlatformPerfProfile.isDesktop;
     if (!isDesktop) {
       final p = await showDialog<String>(
         context: context,

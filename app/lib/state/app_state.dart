@@ -798,7 +798,7 @@ class VedroAppState extends ChangeNotifier {
   void _startEventPolling() {
     _wsPollTimer?.cancel();
     if (_disposed || !_appResumed) return;
-    final pollSecs = (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? 4 : 3;
+    final pollSecs = PlatformPerfProfile.isMobileOs ? 4 : 3;
     _wsPollTimer = Timer.periodic(Duration(seconds: pollSecs), (_) => _consumeCoreEvents());
   }
 

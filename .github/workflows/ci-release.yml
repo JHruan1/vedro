@@ -100,7 +100,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: vedro-windows-x64
-          path: dist/vedro-v*-windows-x64.zip
+          path: dist/vedro-v*-windows-x64-setup.exe
 
   build-macos:
     name: macOS Universal DMG (Apple Silicon + Intel)

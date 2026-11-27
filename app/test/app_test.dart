@@ -1015,10 +1015,10 @@ void main() {
     await tester.pumpWidget(VedroApp(core: mock));
     await tester.pumpAndSettle();
 
-    expect(find.text('添加媒体服务器'), findsOneWidget);
-    expect(find.text('播放器设置'), findsOneWidget);
+    expect(find.text('添加服务器'), findsOneWidget);
+    expect(find.byIcon(Icons.tune_rounded), findsWidgets);
 
-    await tester.tap(find.text('添加媒体服务器'));
+    await tester.tap(find.text('添加服务器'));
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField).at(1), 'viewer');
@@ -1130,10 +1130,14 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    expect(find.text('在线 · 28 ms'), findsOneWidget);
-    expect(find.text('电影 420'), findsOneWidget);
-    expect(find.text('剧集 85'), findsOneWidget);
-    expect(find.text('离线'), findsOneWidget);
+    // Visual-first server cards: latency as signal+ms, inventory as compact icon+number,
+    // offline as cloud_off icon (no verbose "在线 · 电影 · 剧集" sentences).
+    expect(find.text('28ms'), findsOneWidget);
+    expect(find.text('420'), findsOneWidget);
+    expect(find.text('85'), findsOneWidget);
+    expect(find.byIcon(Icons.movie_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.tv_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.cloud_off_rounded), findsOneWidget);
   });
 
   testWidgets('Mobile Movie DetailScreen renders Poster Cover & solid Version/Audio/Subtitle Selector without overflow',
@@ -1809,7 +1813,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();
-    expect(find.text('添加媒体服务器'), findsOneWidget);
+    expect(find.text('添加服务器'), findsOneWidget);
 
     // Press system Back on 首页 once -> shows concise '再按一次退出' toast!
     await tester.binding.handlePopRoute();
@@ -1948,9 +1952,10 @@ void main() {
     await tester.tap(find.text('列表视图'));
     await tester.pumpAndSettle();
 
-    // Episode 1 headline is clearly visible ("1. 倒计时") alongside "2 版本" badge without collision!
+    // Episode 1 headline is clearly visible ("1. 倒计时") alongside visual icon+count version pill!
     expect(find.text('1. 倒计时'), findsOneWidget);
-    expect(find.text('2 版本'), findsOneWidget);
+    expect(find.byIcon(Icons.layers_outlined), findsWidgets);
+    expect(find.text('2'), findsWidgets);
     expect(find.text('1-50'), findsOneWidget);
     expect(find.text('51-100'), findsOneWidget);
     expect(find.text('101-120'), findsOneWidget);
@@ -2176,10 +2181,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('8.6'), findsNothing);
 
-    // Explicitly toggling showMultiVersionBadge ON displays '2×', and OFF hides it again
+    // Design Language v2: version badges stay off poster art (version switching lives in Peek menu & Detail).
     await app.updatePrefs(app.prefs.copyWith(showMultiVersionBadge: true));
     await tester.pumpAndSettle();
-    expect(find.text('2×'), findsOneWidget);
+    expect(find.text('2×'), findsNothing);
     await app.updatePrefs(app.prefs.copyWith(showMultiVersionBadge: false));
     await tester.pumpAndSettle();
     expect(find.text('2×'), findsNothing);
@@ -3798,7 +3803,7 @@ void main() {
     await tester.longPress(find.byType(MediaCard));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('vedro-peek-context-menu')), findsOneWidget);
-    expect(find.text('切换播放版本'), findsOneWidget);
+    expect(find.text('切换版本'), findsOneWidget);
     expect(find.text('查看详情'), findsOneWidget);
 
     await tester.tap(find.text('查看详情'));

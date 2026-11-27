@@ -290,32 +290,20 @@ extension _DetailBodyExt on _DetailScreenState {
                     if (playProgress > 0.02)
                       Padding(
                         padding: const EdgeInsets.only(left: 6),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            SizedBox(
-                              width: 64,
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(2),
-                                child: LinearProgressIndicator(
-                                  value: playProgress.clamp(0.04, 1.0),
-                                  minHeight: 3,
-                                  backgroundColor: skin.fg.withValues(alpha: 0.16),
-                                  color: skin.ctaStyle == 'contrast' ? skin.fg : accent,
-                                ),
+                        child: Tooltip(
+                          message: '${(playProgress * 100).round()}%',
+                          child: SizedBox(
+                            width: 72,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(2),
+                              child: LinearProgressIndicator(
+                                value: playProgress.clamp(0.04, 1.0),
+                                minHeight: 3.5,
+                                backgroundColor: skin.fg.withValues(alpha: 0.16),
+                                color: skin.ctaStyle == 'contrast' ? skin.fg : accent,
                               ),
                             ),
-                            const SizedBox(width: 8),
-                            Text(
-                              '已看 ${(playProgress * 100).round()}%',
-                              style: TextStyle(
-                                color: skin.fg2,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
-                                fontFeatures: const [FontFeature.tabularFigures()],
-                              ),
-                            ),
-                          ],
+                          ),
                         ),
                       ),
                   ],
@@ -603,9 +591,8 @@ extension _DetailBodyExt on _DetailScreenState {
         ),
       ),
     );
-    if (widget.heroTag != null) {
-      coverCard = Hero(tag: widget.heroTag!, child: coverCard);
-    }
+    // No Hero flight: flying art loses rounded clip/border (causing border flash)
+    // and warps aspect ratio across routes. Page transition carries the motion.
 
     final c = skin.canvas;
     // Always dissolve smoothly into solid `skin.canvas` so the Hero image is NEVER stacked a second time!

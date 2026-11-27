@@ -206,7 +206,7 @@ class _AddServerFormState extends State<_AddServerForm> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                '添加媒体服务器',
+                '添加服务器',
                 style: TextStyle(
                   color: skin.fg,
                   fontSize: 18,
@@ -216,8 +216,8 @@ class _AddServerFormState extends State<_AddServerForm> {
               ),
               const SizedBox(height: 4),
               Text(
-                '支持 embygo / Emby / Jellyfin，添加后可在服务器面板配置多条线路。',
-                style: TextStyle(color: skin.fg3, fontSize: 12.5),
+                'EmbyGo · Emby · Jellyfin',
+                style: TextStyle(color: skin.fg3, fontSize: 12),
               ),
               if (widget.appState.discoveredServers.isNotEmpty) ...[
                 const SizedBox(height: 12),
@@ -513,49 +513,38 @@ class _ServerHubSheetBody extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Wrap(
-                spacing: 10,
-                runSpacing: 8,
-                alignment: WrapAlignment.spaceBetween,
-                crossAxisAlignment: WrapCrossAlignment.center,
+              Row(
                 children: [
-                  Text(
-                    '媒体服务器与线路',
-                    style: TextStyle(
-                      color: skin.fg,
-                      fontSize: 17.5,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: -0.3,
+                  Expanded(
+                    child: Text(
+                      '服务器',
+                      style: TextStyle(
+                        color: skin.fg,
+                        fontSize: 17.5,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: -0.3,
+                      ),
                     ),
                   ),
-                  PressableScale(
-                    onTap: () async {
-                      Navigator.pop(context);
-                      if (parentContext.mounted) {
-                        await showAddServerSheet(context: parentContext, appState: appState);
-                      }
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: skin.primaryCtaBg,
-                        gradient: skin.primaryCtaGradient,
-                        borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.add_rounded, size: 15, color: skin.primaryCtaFg),
-                          const SizedBox(width: 4),
-                          Text(
-                            '添加服务器',
-                            style: TextStyle(
-                              color: skin.primaryCtaFg,
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
+                  Tooltip(
+                    message: '添加服务器',
+                    child: PressableScale(
+                      onTap: () async {
+                        Navigator.pop(context);
+                        if (parentContext.mounted) {
+                          await showAddServerSheet(context: parentContext, appState: appState);
+                        }
+                      },
+                      pressScale: 0.92,
+                      child: Container(
+                        width: 32,
+                        height: 32,
+                        decoration: BoxDecoration(
+                          color: skin.primaryCtaBg,
+                          gradient: skin.primaryCtaGradient,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(Icons.add_rounded, size: 17, color: skin.primaryCtaFg),
                       ),
                     ),
                   ),

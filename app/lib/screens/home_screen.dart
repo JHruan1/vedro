@@ -325,13 +325,7 @@ class _HomeScreenState extends State<HomeScreen> {
       switchOutCurve: Curves.easeInCubic,
       transitionBuilder: (child, anim) {
         if (reduceMotion) return child;
-        return FadeTransition(
-          opacity: anim,
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 0.985, end: 1.0).animate(anim),
-            child: child,
-          ),
-        );
+        return FadeTransition(opacity: anim, child: child);
       },
       child: KeyedSubtree(
         key: ValueKey(stageKey),

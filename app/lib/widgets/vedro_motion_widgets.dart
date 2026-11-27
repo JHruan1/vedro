@@ -231,17 +231,25 @@ class _VedroEntranceState extends State<VedroEntrance> with SingleTickerProvider
       builder: (context, child) {
         // Keep a stable Opacity → Transform tree (identity when settled) so the
         // child's State is never remounted when the entrance completes.
+        // Snap vertical glide to whole pixels and skip matrix scale when 1.0 so
+        // 0.5–1px hairlines never shimmer during section entrances.
         final m = _ctrl.isCompleted ? 1.0 : _motion.value;
+        final dy = ((1 - m) * widget.offsetY).roundToDouble();
         final scale = widget.fromScale + (1 - widget.fromScale) * m;
         return Opacity(
           opacity: _fade.value.clamp(0.0, 1.0),
-          child: Transform(
-            alignment: Alignment.topCenter,
-            transform: Matrix4.identity()
-              ..translateByDouble(0.0, (1 - m) * widget.offsetY, 0.0, 1.0)
-              ..scaleByDouble(scale, scale, 1.0, 1.0),
-            child: child,
-          ),
+          child: (widget.fromScale - 1.0).abs() < 1e-4
+              ? Transform.translate(
+                  offset: Offset(0.0, dy),
+                  child: child,
+                )
+              : Transform(
+                  alignment: Alignment.topCenter,
+                  transform: Matrix4.identity()
+                    ..translateByDouble(0.0, dy, 0.0, 1.0)
+                    ..scaleByDouble(scale, scale, 1.0, 1.0),
+                  child: child,
+                ),
         );
       },
     );

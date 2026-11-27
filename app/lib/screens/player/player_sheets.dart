@@ -93,16 +93,18 @@ extension _PlayerSheetsExt on _PlayerScreenState {
                 await _applyVideoFilterChain();
               },
             ),
-            SwitchListTile(
-              dense: true,
-              title: const Text('去隔行扫描 (Deinterlace)', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
-              subtitle: const Text('老片源 / 1080i 电视录播出现锯齿拉丝时开启', style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5)),
-              value: _deinterlace,
-              onChanged: (v) async {
-                setModal(() => _deinterlace = v);
-                _setPlayerState(() => _deinterlace = v);
-                await _applyVideoFilterChain();
-              },
+            Tooltip(
+              message: '老片源 / 1080i 电视录播出现锯齿拉丝时开启',
+              child: SwitchListTile(
+                dense: true,
+                title: const Text('去隔行 (Deinterlace)', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+                value: _deinterlace,
+                onChanged: (v) async {
+                  setModal(() => _deinterlace = v);
+                  _setPlayerState(() => _deinterlace = v);
+                  await _applyVideoFilterChain();
+                },
+              ),
             ),
           ],
         ),
@@ -178,12 +180,12 @@ extension _PlayerSheetsExt on _PlayerScreenState {
               padding: const EdgeInsets.fromLTRB(8, 2, 8, 10),
               child: Text(
                 _danmakuLoading || _danmakuSearching
-                    ? '正在从弹弹Play / B站弹幕库检索匹配…'
+                    ? '检索中…'
                     : (_danmakuError != null
-                        ? '提示：$_danmakuError'
+                        ? '$_danmakuError'
                         : (_danmakuComments.isNotEmpty
-                            ? '当前弹幕：${_danmakuMatchTitle ?? ''}（共 ${_danmakuComments.length} 条）'
-                            : '自动联合检索 弹弹Play + B站番剧/影视弹幕库')),
+                            ? '${_danmakuMatchTitle ?? ''} · ${_danmakuComments.length}'
+                            : '弹弹Play · B站')),
                 style: TextStyle(
                   color: _danmakuError != null
                       ? VedroTheme.danger

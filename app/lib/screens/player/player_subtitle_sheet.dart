@@ -31,22 +31,16 @@ extension _PlayerSubtitleSheetExt on _PlayerScreenState {
                 final asrActive = _aiSubCtrl.enabled && _aiSubCtrl.asrMode;
                 final accent = Theme.of(context).colorScheme.secondary;
                 final statusText = !_aiSubCtrl.enabled
-                    ? (aiReady
-                        ? '像 YouTube 一样一键自动翻译当前字幕为双语，提前预读后续台词'
-                        : '请先在「设置 → AI 翻译」开启并配置模型')
+                    ? (aiReady ? '双语预读翻译' : '未配置 AI 模型')
                     : _aiSubCtrl.isLoadingCues
-                        ? '正在读取完整字幕并提前预读翻译…'
+                        ? '预读字幕中…'
                         : _aiSubCtrl.asrMode
                             ? (_aiSubCtrl.totalCues == 0
-                                ? (_aiSubCtrl.isTranscribing
-                                    ? 'AI 语音识别已开启，正在等待人声对白…'
-                                    : 'AI 听音字幕已就绪，正在等待人声对白…')
-                                : (_aiSubCtrl.isTranscribing
-                                    ? 'AI 语音识别中（已识别 ${_aiSubCtrl.totalCues} 句${aiReady ? ' · 已译 ${_aiSubCtrl.translatedCount} 句' : ''}）…'
-                                    : 'AI 听音字幕已就绪 · 已识别 ${_aiSubCtrl.totalCues} 句${aiReady ? ' · 已译 ${_aiSubCtrl.translatedCount} 句' : ''}'))
+                                ? (_aiSubCtrl.isTranscribing ? '识别中…' : '等待人声…')
+                                : '${_aiSubCtrl.isTranscribing ? '识别中' : '就绪'} · ${_aiSubCtrl.totalCues}${aiReady ? ' / 译 ${_aiSubCtrl.translatedCount}' : ''}')
                             : _aiSubCtrl.isLiveFallbackMode
-                                ? '实时逐句翻译模式 → ${_aiSubCtrl.targetLang}'
-                                : '已预读翻译 ${_aiSubCtrl.translatedCount} / ${_aiSubCtrl.totalCues} 句 → ${_aiSubCtrl.targetLang}';
+                                ? '实时翻译 → ${_aiSubCtrl.targetLang}'
+                                : '${_aiSubCtrl.translatedCount} / ${_aiSubCtrl.totalCues} → ${_aiSubCtrl.targetLang}';
 
                 return Container(
                   key: const ValueKey('player-ai-sub-card'),
@@ -348,7 +342,7 @@ extension _PlayerSubtitleSheetExt on _PlayerScreenState {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 const Text(
-                                  'AI 语音识别生成字幕（无字幕视频适用）',
+                                  'AI 听音字幕 (ASR)',
                                   style: TextStyle(
                                     color: VedroTheme.fg,
                                     fontSize: 13,
@@ -357,12 +351,8 @@ extension _PlayerSubtitleSheetExt on _PlayerScreenState {
                                 ),
                                 Text(
                                   asrReady
-                                      ? (isLocalAsr
-                                          ? '本地离线 SenseVoice 识别${aiReady ? ' + 自动双语翻译' : ''}（免 Key · 无录屏弹窗）'
-                                          : '云端自动切片识别音频${aiReady ? '并翻译为双语' : ''}（${prefs.asrModel}）')
-                                      : (isLocalAsr
-                                          ? '请先在「设置 → AI 翻译」一键下载本地离线模型 (~229 MB，免 Key)'
-                                          : '请先在「设置 → AI 翻译」配置 Groq / 硅基流动 / 本地 Whisper'),
+                                      ? (isLocalAsr ? '离线 SenseVoice' : prefs.asrModel)
+                                      : (isLocalAsr ? '需在设置中下载离线模型' : '需在设置中配置 ASR'),
                                   style: const TextStyle(color: VedroTheme.fg3, fontSize: 11),
                                 ),
                               ],

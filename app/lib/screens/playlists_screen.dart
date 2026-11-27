@@ -160,7 +160,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                                 Icon(Icons.bookmarks_outlined, size: 36, color: skin.fg3),
                                 const SizedBox(height: 10),
                                 Text(
-                                  widget.appState.isSignedIn ? '暂无片单，点击右上角新建' : '连接服务器后管理片单',
+                                  widget.appState.isSignedIn ? '暂无片单' : '请先连接服务器',
                                   style: TextStyle(color: skin.fg3, fontSize: 13.5),
                                 ),
                               ],
@@ -207,26 +207,32 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                                               ),
                                               const SizedBox(width: 14),
                                               Expanded(
-                                                child: Column(
-                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                child: Row(
                                                   children: [
-                                                    Text(
-                                                      list[i].name,
-                                                      style: TextStyle(
-                                                        color: skin.fg,
-                                                        fontSize: 15,
-                                                        fontWeight: FontWeight.w500,
+                                                    Expanded(
+                                                      child: Text(
+                                                        list[i].name,
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow.ellipsis,
+                                                        style: TextStyle(
+                                                          color: skin.fg,
+                                                          fontSize: 15,
+                                                          fontWeight: FontWeight.w500,
+                                                        ),
                                                       ),
                                                     ),
                                                     if (list[i].childCount != null ||
-                                                        list[i].recursiveItemCount != null)
+                                                        list[i].recursiveItemCount != null) ...[
+                                                      const SizedBox(width: 8),
                                                       Text(
-                                                        '${list[i].recursiveItemCount ?? list[i].childCount ?? 0} 部影片',
+                                                        '${list[i].recursiveItemCount ?? list[i].childCount ?? 0}',
                                                         style: TextStyle(
                                                           color: skin.fg3,
-                                                          fontSize: 12,
+                                                          fontSize: 12.5,
+                                                          fontFeatures: const [FontFeature.tabularFigures()],
                                                         ),
                                                       ),
+                                                    ],
                                                   ],
                                                 ),
                                               ),
@@ -435,28 +441,35 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
                     ),
                     const SizedBox(width: 14),
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      child: Row(
                         children: [
-                          Text(
-                            widget.playlist.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: skin.fg,
-                              fontSize: 20,
-                              fontWeight: FontWeight.w600,
+                          Flexible(
+                            child: Text(
+                              widget.playlist.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: skin.fg,
+                                fontSize: 20,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
-                          Text(
-                            _editMode
-                                ? '编辑模式 · 点击卡片即可移出片单'
-                                : '共 ${_items.length} 项 · 长按/右键或点击管理可移出',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: _editMode ? VedroTheme.danger : skin.fg3,
-                              fontSize: 12,
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: skin.subtleChipBg,
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              '${_items.length}',
+                              style: TextStyle(
+                                color: skin.fg3,
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                fontFeatures: const [FontFeature.tabularFigures()],
+                              ),
                             ),
                           ),
                         ],
@@ -464,30 +477,32 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
                     ),
                     if (_items.isNotEmpty)
                       Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: PressableScale(
-                          onTap: () => setState(() => _editMode = !_editMode),
-                          borderRadius: BorderRadius.circular(18),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: _editMode
-                                  ? VedroTheme.danger.withValues(alpha: 0.16)
-                                  : skin.surface2,
-                              borderRadius: BorderRadius.circular(18),
-                              border: Border.all(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: Tooltip(
+                          message: _editMode ? '完成' : '管理',
+                          child: PressableScale(
+                            onTap: () => setState(() => _editMode = !_editMode),
+                            pressScale: 0.92,
+                            borderRadius: BorderRadius.circular(18),
+                            child: Container(
+                              width: 34,
+                              height: 34,
+                              decoration: BoxDecoration(
                                 color: _editMode
-                                    ? VedroTheme.danger.withValues(alpha: 0.5)
-                                    : skin.border,
-                                width: 0.8,
+                                    ? VedroTheme.danger.withValues(alpha: 0.16)
+                                    : skin.surface2,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: _editMode
+                                      ? VedroTheme.danger.withValues(alpha: 0.5)
+                                      : skin.border,
+                                  width: 0.8,
+                                ),
                               ),
-                            ),
-                            child: Text(
-                              _editMode ? '完成' : '管理',
-                              style: TextStyle(
-                                color: _editMode ? VedroTheme.danger : skin.fg,
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w600,
+                              child: Icon(
+                                _editMode ? Icons.check_rounded : Icons.edit_outlined,
+                                size: 16.5,
+                                color: _editMode ? VedroTheme.danger : skin.fg2,
                               ),
                             ),
                           ),
@@ -520,7 +535,7 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
                           )
                         : _items.isEmpty
                             ? Center(
-                                child: Text('此片单还没有影片，可在任意详情页点击「片单」添加',
+                                child: Text('片单为空',
                                     style: TextStyle(color: skin.fg3, fontSize: 13.5)),
                               )
                       : LayoutBuilder(

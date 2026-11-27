@@ -509,15 +509,12 @@ extension _DetailEpisodesSectionExt on _DetailScreenState {
                               else if (widget.appState.prefs.showMultiVersionBadge &&
                                   ep.versionCount > 1)
                                 Positioned(
-                                  top: 3,
-                                  right: 5,
-                                  child: Text(
-                                    '${ep.versionCount}×',
-                                    style: TextStyle(
-                                      color: isNext ? skin.activePillFg : skin.fg3,
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.w700,
-                                    ),
+                                  top: 4,
+                                  right: 4,
+                                  child: Icon(
+                                    Icons.layers_outlined,
+                                    size: 10.5,
+                                    color: isNext ? skin.activePillFg : skin.fg3,
                                   ),
                                 ),
                               if (hasProg)

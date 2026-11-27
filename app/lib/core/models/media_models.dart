@@ -759,20 +759,15 @@ class MediaItemModel {
 
   String get cardSubtitle => cardSubtitleFor();
 
-  String cardSubtitleFor({bool showYear = true, bool showRatingInText = true}) {
+  /// One calm, short meta line for cards (design language: visuals over words).
+  /// Movies / Series: year only. Episodes: compact `S1 · E3`. Seasons: series name.
+  /// Counts (seasons / episodes / versions) and ratings never appear as card text.
+  String cardSubtitleFor({bool showYear = true, bool showRatingInText = false}) {
     switch (type) {
       case 'Episode':
-        return [if (episodeCode != null) episodeCode!, displayName].join(' · ');
+        return compactEpisodeCode ?? '';
       case 'Season':
         return seriesName ?? '';
-      case 'Series':
-        return [
-          if (showYear && productionYear != null) '$productionYear',
-          if (childCount != null && childCount! > 0) '$childCount 季',
-          if (recursiveItemCount != null && recursiveItemCount! > 0) '$recursiveItemCount 集',
-          if (showRatingInText && communityRating != null && communityRating! > 0)
-            '★ ${communityRating!.toStringAsFixed(1)}',
-        ].join(' · ');
       default:
         return [
           if (showYear && productionYear != null) '$productionYear',
@@ -780,6 +775,19 @@ class MediaItemModel {
             '★ ${communityRating!.toStringAsFixed(1)}',
         ].join(' · ');
     }
+  }
+
+  /// Short episode marker for captions, e.g. `S1 · E3` (or `E3` without a season).
+  String? get compactEpisodeCode {
+    if (type != 'Episode') return null;
+    final parts = <String>[
+      if (parentIndexNumber != null) 'S$parentIndexNumber',
+      if (indexNumber != null)
+        (indexNumberEnd != null && indexNumberEnd! > indexNumber!)
+            ? 'E$indexNumber-$indexNumberEnd'
+            : 'E$indexNumber',
+    ];
+    return parts.isEmpty ? null : parts.join(' · ');
   }
 
   String? get episodeCode {

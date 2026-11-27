@@ -649,10 +649,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
                             item: item,
                             appState: widget.appState,
                             onTap: () => _handleItemTap(item),
-                            onLongPress: () => showMediaItemContextSheet(
+                            onLongPressWithRect: (rect, thumbRadius) => showMediaItemContextSheet(
                               context: context,
                               item: item,
                               appState: widget.appState,
+                              anchorRect: rect,
+                              previewCornerRadius: thumbRadius,
                               onOpenDetail: () => _handleItemTap(item),
                               onQuickPlay: widget.onQuickPlay == null
                                   ? null
@@ -770,46 +772,62 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ];
 }
 
-class _LibraryListTile extends StatelessWidget {
+class _LibraryListTile extends StatefulWidget {
   const _LibraryListTile({
     required this.item,
     required this.appState,
     required this.onTap,
-    this.onLongPress,
+    this.onLongPressWithRect,
   });
 
   final MediaItemModel item;
   final VedroAppState appState;
   final VoidCallback onTap;
-  final VoidCallback? onLongPress;
+  final void Function(Rect artRect, double thumbRadius)? onLongPressWithRect;
+
+  @override
+  State<_LibraryListTile> createState() => _LibraryListTileState();
+}
+
+class _LibraryListTileState extends State<_LibraryListTile> {
+  final GlobalKey _artKey = GlobalKey(debugLabel: 'library-list-thumb');
 
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
+    final item = widget.item;
+    final thumbR = skin.cardRadius.clamp(6.0, 10.0);
+    final peek = widget.onLongPressWithRect == null
+        ? null
+        : (Rect fallback) => widget.onLongPressWithRect!(
+              vedroGlobalRectOfKey(context, _artKey) ?? fallback,
+              thumbR,
+            );
     return RepaintBoundary(
       child: PressableScale(
-        onTap: onTap,
-        onLongPress: onLongPress,
-        onSecondaryTap: onLongPress,
+        onTap: widget.onTap,
+        onLongPressWithRect: peek,
+        onSecondaryTapWithRect: peek,
         hoverScale: 1.006,
         pressScale: 0.985,
         child: Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
             color: skin.unifiedTileColor(),
-            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 14.0)),
+            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 16.0)),
             border: skin.cardBorder(),
           ),
           child: Row(
             children: [
               SizedBox(
+                key: _artKey,
                 width: 52,
-                height: 76,
+                height: 78,
                 child: ClipRRect(
-                  borderRadius: BorderRadius.circular(skin.cardRadius.clamp(4.0, 9.0)),
+                  borderRadius: BorderRadius.circular(thumbR),
                   child: VedroArtwork(
                     item: item,
-                    appState: appState,
+                    appState: widget.appState,
                     width: 160,
                     displayWidth: 52,
                   ),

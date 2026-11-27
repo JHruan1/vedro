@@ -299,17 +299,23 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
                   child: Row(
                     children: [
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        child: Row(
                           children: [
-                            Text(
-                              '莫奈动态取色',
-                              style: TextStyle(color: uiSkin.fg, fontSize: 14),
+                            Flexible(
+                              child: Text(
+                                '莫奈动态取色',
+                                style: TextStyle(color: uiSkin.fg, fontSize: 14),
+                              ),
                             ),
-                            const SizedBox(height: 2),
-                            Text(
-                              '随当前页面海报自动沉浸变色',
-                              style: TextStyle(color: uiSkin.fg3, fontSize: 12),
+                            const SizedBox(width: 6),
+                            Tooltip(
+                              message: '随当前页面海报自动沉浸变色',
+                              triggerMode: TooltipTriggerMode.tap,
+                              child: Icon(
+                                Icons.info_outline_rounded,
+                                size: 14.5,
+                                color: uiSkin.fg3.withValues(alpha: 0.72),
+                              ),
                             ),
                           ],
                         ),

@@ -159,9 +159,7 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                               enabledBorder: InputBorder.none,
                               focusedBorder: InputBorder.none,
                               contentPadding: EdgeInsets.zero,
-                              hintText: widget.appState.savedServers.length > 1
-                                  ? '跨 ${widget.appState.savedServers.length} 个服务器聚合搜索…'
-                                  : '搜索电影、剧集、演职员…',
+                              hintText: '搜索…',
                               hintStyle: TextStyle(color: skin.fg3, fontSize: 16),
                             ),
                           ),
@@ -240,8 +238,8 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                             final sub = [
                               if (h.productionYear != null) '${h.productionYear}',
                               if (h.series != null) h.series!,
-                              _typeLabel(h.type),
                             ].join(' · ');
+                            final typeIcon = _typeIcon(h.type);
 
                             return PressableScale(
                               hoverScale: 1.0,
@@ -286,18 +284,27 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                                               fontWeight: FontWeight.w500,
                                             ),
                                           ),
-                                          if (sub.isNotEmpty) ...[
-                                            const SizedBox(height: 3),
-                                            Text(
-                                              sub,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: TextStyle(
-                                                color: skin.fg3,
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                          ],
+                                          const SizedBox(height: 3),
+                                          Row(
+                                            children: [
+                                              Icon(typeIcon, size: 12.5, color: skin.fg3),
+                                              if (sub.isNotEmpty) ...[
+                                                const SizedBox(width: 5),
+                                                Expanded(
+                                                  child: Text(
+                                                    sub,
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
+                                                    style: TextStyle(
+                                                      color: skin.fg3,
+                                                      fontSize: 12,
+                                                      fontFeatures: const [FontFeature.tabularFigures()],
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
                                         ],
                                       ),
                                     ),
@@ -340,9 +347,9 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                       child: Text(
                         _ctrl.text.trim().isEmpty
                             ? (widget.appState.savedServers.isEmpty
-                                ? '添加媒体服务器后即可跨服聚合搜索'
-                                : '输入片名、原名或演员名即时聚合检索')
-                            : '没有找到匹配内容',
+                                ? '请先添加服务器'
+                                : '搜索片名或演员')
+                            : '无匹配结果',
                         style: TextStyle(color: skin.fg3, fontSize: 13),
                       ),
                     ),
@@ -353,18 +360,18 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
     );
   }
 
-  static String _typeLabel(String t) {
+  static IconData _typeIcon(String t) {
     switch (t) {
       case 'Movie':
-        return '电影';
+        return Icons.movie_outlined;
       case 'Series':
-        return '剧集';
+        return Icons.tv_rounded;
       case 'Episode':
-        return '单集';
+        return Icons.play_circle_outline_rounded;
       case 'Person':
-        return '演职员';
+        return Icons.person_outline_rounded;
       default:
-        return t;
+        return Icons.video_library_outlined;
     }
   }
 }

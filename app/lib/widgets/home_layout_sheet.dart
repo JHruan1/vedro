@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
@@ -54,47 +55,38 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
           Row(
             children: [
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '自定义首页布局',
-                      style: TextStyle(
-                        color: skin.fg,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: -0.2,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '拖动右侧手柄调整上下顺序，开关控制模块显示',
-                      style: TextStyle(color: skin.fg3, fontSize: 12),
-                    ),
-                  ],
+                child: Text(
+                  '首页布局',
+                  style: TextStyle(
+                    color: skin.fg,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: -0.2,
+                  ),
                 ),
               ),
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    _sections = List<HomeSectionConfig>.from(HomeSectionConfig.defaults);
-                    _showHero = true;
-                  });
-                  widget.appState.resetHomeLayout();
-                },
-                child: Text(
-                  '恢复默认',
-                  style: TextStyle(color: skin.fg2, fontSize: 12.5),
+              Tooltip(
+                message: '恢复默认',
+                child: IconButton(
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(Icons.restore_rounded, size: 19, color: skin.fg2),
+                  onPressed: () {
+                    setState(() {
+                      _sections = List<HomeSectionConfig>.from(HomeSectionConfig.defaults);
+                      _showHero = true;
+                    });
+                    widget.appState.resetHomeLayout();
+                  },
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
               color: skin.surface2,
-              borderRadius: BorderRadius.circular(13),
+              borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 16.0)),
               border: Border.all(color: skin.border, width: 0.8),
             ),
             child: Row(
@@ -102,35 +94,30 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
                 Icon(Icons.panorama_wide_angle_outlined, size: 18, color: skin.fg2),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '顶部横幅轮播',
-                        style: TextStyle(
-                          color: skin.fg,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      Text(
-                        '仅选取带横版背景图的影片展示',
-                        style: TextStyle(color: skin.fg3, fontSize: 11.5),
-                      ),
-                    ],
+                  child: Text(
+                    '顶部横幅',
+                    style: TextStyle(
+                      color: skin.fg,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                 ),
-                Switch(
-                  value: _showHero,
-                  onChanged: (v) {
-                    setState(() => _showHero = v);
-                    _commit();
-                  },
+                Transform.scale(
+                  scale: 0.82,
+                  child: CupertinoSwitch(
+                    value: _showHero,
+                    activeTrackColor: skin.accent,
+                    onChanged: (v) {
+                      setState(() => _showHero = v);
+                      _commit();
+                    },
+                  ),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Flexible(
             child: ReorderableListView.builder(
               shrinkWrap: true,
@@ -139,7 +126,7 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
                 color: Colors.transparent,
                 elevation: 8,
                 shadowColor: const Color(0x88000000),
-                borderRadius: BorderRadius.circular(13),
+                borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 16.0)),
                 child: child,
               ),
               itemCount: _sections.length,
@@ -160,7 +147,7 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
                     padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
                     decoration: BoxDecoration(
                       color: sec.visible ? skin.surface2 : skin.surface2.withValues(alpha: 0.5),
-                      borderRadius: BorderRadius.circular(13),
+                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 16.0)),
                       border: Border.all(color: skin.border, width: 0.8),
                     ),
                     child: Row(
@@ -178,35 +165,27 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                sec.title,
-                                style: TextStyle(
-                                  color: sec.visible ? skin.fg : skin.fg3,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                              if (sec.subtitle.isNotEmpty)
-                                Text(
-                                  sec.subtitle,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(color: skin.fg3, fontSize: 11.5),
-                                ),
-                            ],
+                          child: Text(
+                            sec.title,
+                            style: TextStyle(
+                              color: sec.visible ? skin.fg : skin.fg3,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ),
-                        Switch(
-                          value: sec.visible,
-                          onChanged: (v) {
-                            setState(() {
-                              _sections[idx] = sec.copyWith(visible: v);
-                            });
-                            _commit();
-                          },
+                        Transform.scale(
+                          scale: 0.82,
+                          child: CupertinoSwitch(
+                            value: sec.visible,
+                            activeTrackColor: skin.accent,
+                            onChanged: (v) {
+                              setState(() {
+                                _sections[idx] = sec.copyWith(visible: v);
+                              });
+                              _commit();
+                            },
+                          ),
                         ),
                         if (PlatformPerfProfile.isTv) ...[
                           IconButton(

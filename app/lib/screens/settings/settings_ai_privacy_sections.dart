@@ -52,10 +52,7 @@ extension _SettingsAiPrivacySectionsExt on _SettingsDetailPaneState {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _heading(
-          'AI 翻译',
-          '支持影片简介翻译、播放器 YouTube 式双语字幕预读翻译，以及无字幕视频 AI 语音识别转译',
-        ),
+        _heading('AI 翻译'),
         const _GroupHeader('文本与双语字幕翻译'),
         _GroupedCard(
           children: [
@@ -133,11 +130,11 @@ extension _SettingsAiPrivacySectionsExt on _SettingsDetailPaneState {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Bilibili 公共免费接口已自动启用礼貌限流保护：单线程请求、≥2.4 秒间隔、预读上限 55 秒且本地持久化缓存译文，不重复轰炸公共服务；如需更快并发可切换 DeepSeek / OpenAI / Ollama。',
+                          '公共接口已启用礼貌限流与本地缓存',
                           style: TextStyle(
                             color: VedroSkin.of(context).fg2,
                             fontSize: 11.5,
-                            height: 1.45,
+                            height: 1.4,
                           ),
                         ),
                       ),
@@ -573,10 +570,10 @@ extension _SettingsAiPrivacySectionsExt on _SettingsDetailPaneState {
                                 ),
                             ],
                           ),
-                          const SizedBox(height: 10),
+                          const SizedBox(height: 8),
                           Text(
-                            '内置 sherpa-onnx + Silero VAD 直接从视频流提取音轨，无需录屏/麦克风权限弹窗；完全本地离线免费识别，中高端手机可流畅运行（长时间识别会有轻微功耗与温热，建议搭配上方 AI 翻译生成双语字幕）。',
-                            style: TextStyle(color: skin.fg3, fontSize: 11.5, height: 1.45),
+                            '内置 sherpa-onnx 离线提取音轨，无需录屏/麦克风权限',
+                            style: TextStyle(color: skin.fg3, fontSize: 11.5, height: 1.4),
                           ),
                         ],
                       ),

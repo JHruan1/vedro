@@ -99,104 +99,76 @@ class _ServerHubScreenState extends State<ServerHubScreen> {
                   wide ? 48 : 112,
                 ),
                 children: [
-                  LayoutBuilder(
-                    builder: (context, constraints) {
-                      final headerTitle = Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '媒体库',
-                            style: skin.applyHeadlineMood(
-                              TextStyle(
-                                color: skin.fg,
-                                fontSize: wide ? 28 : 24,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: -0.6,
-                              ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '媒体库',
+                          style: skin.applyHeadlineMood(
+                            TextStyle(
+                              color: skin.fg,
+                              fontSize: wide ? 28 : 24,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -0.6,
                             ),
                           ),
-                          if (app.savedServers.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 2),
-                              child: Text(
-                                app.isSignedIn
-                                    ? '当前连接：${app.activeServerDisplayName}'
-                                    : '选择要进入的媒体服务器',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(color: skin.fg3, fontSize: 12.5),
-                              ),
-                            ),
-                        ],
-                      );
-                      final actionButtons = <Widget>[
-                        if (widget.onOpenNetworkUrl != null)
-                          PressableScale(
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      if (widget.onOpenNetworkUrl != null) ...[
+                        Tooltip(
+                          message: '网络链接',
+                          child: PressableScale(
                             key: const ValueKey('server-hub-network-url-btn'),
                             onTap: widget.onOpenNetworkUrl,
+                            pressScale: 0.92,
                             borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
                             child: Container(
+                              width: 36,
                               height: 36,
-                              padding: const EdgeInsets.symmetric(horizontal: 12),
                               decoration: BoxDecoration(
                                 color: skin.subtleChipBg,
-                                borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
+                                shape: BoxShape.circle,
                                 border: skin.cardBorder(),
                               ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.link_rounded, size: 15.5, color: skin.fg2),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    '网络链接',
-                                    style: TextStyle(
-                                      color: skin.fg,
-                                      fontSize: 12.5,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
+                              child: Icon(Icons.link_rounded, size: 17, color: skin.fg2),
                             ),
                           ),
-                        if (widget.onOpenLocalMedia != null)
-                          PressableScale(
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      if (widget.onOpenLocalMedia != null) ...[
+                        Tooltip(
+                          message: '本地视频',
+                          child: PressableScale(
                             key: const ValueKey('server-hub-local-video-btn'),
                             onTap: widget.onOpenLocalMedia,
+                            pressScale: 0.92,
                             borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
                             child: Container(
+                              width: 36,
                               height: 36,
-                              padding: const EdgeInsets.symmetric(horizontal: 12),
                               decoration: BoxDecoration(
                                 color: skin.subtleChipBg,
-                                borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
+                                shape: BoxShape.circle,
                                 border: skin.cardBorder(),
                               ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.folder_open_rounded, size: 15.5, color: skin.fg2),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    '本地视频',
-                                    style: TextStyle(
-                                      color: skin.fg,
-                                      fontSize: 12.5,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
+                              child: Icon(Icons.folder_open_rounded, size: 17, color: skin.fg2),
                             ),
                           ),
-                        PressableScale(
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      Tooltip(
+                        message: '添加服务器',
+                        child: PressableScale(
                           key: const ValueKey('server-hub-add-btn'),
                           onTap: () => widget.onOpenAddServer(),
+                          pressScale: 0.94,
                           borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
                           child: Container(
                             height: 36,
-                            padding: const EdgeInsets.symmetric(horizontal: 14),
+                            padding: EdgeInsets.symmetric(horizontal: wide ? 14 : 11),
                             decoration: BoxDecoration(
                               color: skin.primaryCtaBg,
                               gradient: skin.primaryCtaGradient,
@@ -206,40 +178,24 @@ class _ServerHubScreenState extends State<ServerHubScreen> {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.add_rounded, size: 17, color: skin.primaryCtaFg),
-                                const SizedBox(width: 4),
-                                Text(
-                                  '添加服务器',
-                                  style: TextStyle(
-                                    color: skin.primaryCtaFg,
-                                    fontSize: 12.5,
-                                    fontWeight: FontWeight.w600,
+                                Icon(Icons.add_rounded, size: 18, color: skin.primaryCtaFg),
+                                if (wide) ...[
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '添加',
+                                    style: TextStyle(
+                                      color: skin.primaryCtaFg,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
-                                ),
+                                ],
                               ],
                             ),
                           ),
                         ),
-                      ];
-
-                      if (constraints.maxWidth < 560) {
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            headerTitle,
-                            const SizedBox(height: 12),
-                            Wrap(spacing: 8, runSpacing: 8, children: actionButtons),
-                          ],
-                        );
-                      }
-                      return Row(
-                        children: [
-                          Expanded(child: headerTitle),
-                          const SizedBox(width: 12),
-                          Wrap(spacing: 8, runSpacing: 8, children: actionButtons),
-                        ],
-                      );
-                    },
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 18),
                   if (app.savedServers.isEmpty)
@@ -249,26 +205,11 @@ class _ServerHubScreenState extends State<ServerHubScreen> {
                       child: Column(
                         children: [
                           Icon(Icons.dns_rounded, size: 38, color: skin.fg3),
-                          const SizedBox(height: 12),
-                          Text(
-                            '尚未添加媒体服务器',
-                            style: TextStyle(
-                              color: skin.fg,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            '支持 EmbyGo / Emby / Jellyfin 多服共存与多线路切换',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: skin.fg3, fontSize: 13),
-                          ),
-                          const SizedBox(height: 18),
+                          const SizedBox(height: 16),
                           FilledButton.icon(
                             onPressed: () => widget.onOpenAddServer(),
                             icon: const Icon(Icons.add_rounded, size: 18),
-                            label: const Text('添加媒体服务器'),
+                            label: const Text('添加服务器'),
                           ),
                         ],
                       ),
@@ -284,7 +225,7 @@ class _ServerHubScreenState extends State<ServerHubScreen> {
                     Row(
                       children: [
                         Text(
-                          '最近本地与链接播放',
+                          '最近播放',
                           style: TextStyle(
                             color: skin.fg3,
                             fontSize: 12.5,
@@ -292,9 +233,11 @@ class _ServerHubScreenState extends State<ServerHubScreen> {
                           ),
                         ),
                         const Spacer(),
-                        TextButton(
+                        IconButton(
+                          tooltip: '清空',
+                          visualDensity: VisualDensity.compact,
+                          icon: Icon(Icons.delete_sweep_outlined, size: 17, color: skin.fg3),
                           onPressed: app.clearLocalHistory,
-                          child: Text('清空', style: TextStyle(color: skin.fg3, fontSize: 12)),
                         ),
                       ],
                     ),

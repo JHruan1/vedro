@@ -16,6 +16,7 @@ void showMediaItemContextSheet({
   Rect? anchorRect,
   bool landscapePreview = false,
   MediaItemModel? previewFallbackItem,
+  double? previewCornerRadius,
 }) {
   final skin = VedroSkin.of(context);
   final messenger = ScaffoldMessenger.of(context);
@@ -114,8 +115,8 @@ void showMediaItemContextSheet({
       ),
     if (onPickVersion != null && versionCount > 1)
       VedroPeekAction(
-        label: '切换播放版本',
-        subtitle: '$versionCount 个可用片源',
+        label: '切换版本',
+        subtitle: '$versionCount',
         icon: Icons.layers_outlined,
         onTap: onPickVersion,
       ),
@@ -184,11 +185,15 @@ void showMediaItemContextSheet({
       ),
   ];
 
-  final cardRadius = appState.prefs.effectiveCardRadius(skin);
-  final isWide = landscapePreview || item.type == 'Episode' || skin.posterAspect == 'landscape_16_9';
+  final cardRadius = previewCornerRadius ?? appState.prefs.effectiveCardRadius(skin);
+  // Match preview artwork aspect directly to the measured anchor rect so the
+  // preview never stretches or crops across orientations.
+  final isWide = anchorRect != null
+      ? anchorRect.width > anchorRect.height * 1.15
+      : (landscapePreview || item.type == 'Episode' || skin.posterAspect == 'landscape_16_9');
   final previewSubtitle = item.type == 'Episode'
       ? [
-          if (item.indexNumber != null) '第 ${item.indexNumber} 集',
+          if (item.compactEpisodeCode != null) item.compactEpisodeCode!,
           if (fmtDurationTicks(item.runTimeTicks).isNotEmpty) fmtDurationTicks(item.runTimeTicks),
         ].join(' · ')
       : item.cardSubtitle;
@@ -211,53 +216,6 @@ void showMediaItemContextSheet({
                   landscape: isWide,
                   width: isWide ? 640 : 420,
                   displayWidth: anchorRect.width,
-                ),
-                const Positioned.fill(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        stops: [0.48, 1.0],
-                        colors: [Colors.transparent, Color(0xD805060A)],
-                      ),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  left: 11,
-                  right: 11,
-                  bottom: item.resumeProgress > 0.01 ? 15 : 10,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        item.cardTitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: -0.15,
-                        ),
-                      ),
-                      if (previewSubtitle.isNotEmpty) ...[
-                        const SizedBox(height: 1.5),
-                        Text(
-                          previewSubtitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Color(0xC7FFFFFF),
-                            fontSize: 11,
-                            fontFeatures: [FontFeature.tabularFigures()],
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
                 ),
                 if (item.resumeProgress > 0.01)
                   Positioned(

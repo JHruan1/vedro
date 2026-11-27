@@ -364,13 +364,22 @@ class _SwitchRow extends StatelessWidget {
         child: Row(
           children: [
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Row(
                 children: [
-                  Text(title, style: TextStyle(color: skin.fg, fontSize: 14)),
-                  if (subtitle != null) ...[
-                    const SizedBox(height: 2),
-                    Text(subtitle!, style: TextStyle(color: skin.fg3, fontSize: 12)),
+                  Flexible(
+                    child: Text(title, style: TextStyle(color: skin.fg, fontSize: 14)),
+                  ),
+                  if (subtitle != null && subtitle!.isNotEmpty) ...[
+                    const SizedBox(width: 6),
+                    Tooltip(
+                      message: subtitle!,
+                      triggerMode: TooltipTriggerMode.tap,
+                      child: Icon(
+                        Icons.info_outline_rounded,
+                        size: 14.5,
+                        color: skin.fg3.withValues(alpha: 0.72),
+                      ),
+                    ),
                   ],
                 ],
               ),

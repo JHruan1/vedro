@@ -325,11 +325,9 @@ Widget vedroDesktopTransition(Animation<double> animation, Widget child) {
       child: child,
       builder: (context, child) {
         final t = motion.value;
-        return Transform(
-          alignment: Alignment.topCenter,
-          transform: Matrix4.identity()
-            ..translateByDouble(0.0, (1 - t) * 10.0, 0.0, 1.0)
-            ..scaleByDouble(0.975 + 0.025 * t, 0.975 + 0.025 * t, 1.0, 1.0),
+        // Fade + 10px rise only — never scale a whole page (hairlines would shimmer).
+        return Transform.translate(
+          offset: Offset(0.0, ((1 - t) * 10.0).roundToDouble()),
           child: child,
         );
       },

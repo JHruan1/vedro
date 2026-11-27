@@ -75,19 +75,13 @@ extension _SettingsAppearanceSectionsExt on _SettingsDetailPaneState {
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            sec.title,
-                            style: TextStyle(
-                              color: sec.visible ? skin.fg : skin.fg3,
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                          Text(sec.subtitle, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
-                        ],
+                      child: Text(
+                        sec.title,
+                        style: TextStyle(
+                          color: sec.visible ? skin.fg : skin.fg3,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
                     ),
                     Transform.scale(

@@ -26,7 +26,6 @@ class _HomeMobileTopBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
     final serverName = appState.activeServerDisplayName;
-    final routeName = appState.activeRouteDisplayName;
 
     return ValueListenableBuilder<double>(
       valueListenable: scrollOffset,
@@ -92,7 +91,7 @@ class _HomeMobileTopBar extends StatelessWidget {
                               const SizedBox(width: 8),
                               Flexible(
                                 child: Text(
-                                  routeName != null ? '$serverName · $routeName' : serverName,
+                                  serverName,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(

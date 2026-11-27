@@ -154,7 +154,9 @@ class _VedroPeekMenuStage extends StatelessWidget {
 
     // Resolve card preview geometry (either anchored to the real tapped card or centered fallback)
     final bool hasPreview = previewBuilder != null && anchorRect != null;
-    final double targetScale = reduceMotion ? 1.0 : 1.055;
+    // The anchor is the card ART rect as currently rendered (already peek-swelled),
+    // so the preview starts pixel-identical and only lifts a little further.
+    final double targetScale = reduceMotion ? 1.0 : 1.035;
 
     late final Rect startRect;
     late final Rect liftedRect;
@@ -179,7 +181,10 @@ class _VedroPeekMenuStage extends StatelessWidget {
         w *= f;
         h *= f;
       }
-      startRect = Rect.fromCenter(center: raw.center, width: w, height: h);
+      // Start exactly on top of the real card (same size, aspect & radius); any
+      // capping only applies to the lifted resting size, so nothing jumps at t = 0.
+      startRect = raw;
+      final capped = Rect.fromCenter(center: raw.center, width: w, height: h);
 
       // Compute scaled footprint to ensure lifted card + menu never clip off-screen
       final scaledW = w * targetScale;
@@ -187,11 +192,11 @@ class _VedroPeekMenuStage extends StatelessWidget {
       final extraX = (scaledW - w) / 2;
       final extraY = (scaledH - h) / 2;
 
-      var cx = startRect.center.dx.clamp(
+      var cx = capped.center.dx.clamp(
         safeLeft + w / 2 + extraX,
         math.max(safeLeft + w / 2 + extraX, safeRight - w / 2 - extraX),
       );
-      var cy = startRect.center.dy;
+      var cy = capped.center.dy;
 
       // Decide whether menu pops below or above the selected card
       final spaceBelow = safeBottom - (cy + h / 2 + extraY + gap);
@@ -237,13 +242,18 @@ class _VedroPeekMenuStage extends StatelessWidget {
     final Alignment menuOrigin = Alignment(menuAlignX, menuAbove ? 1.0 : -1.0);
 
     final maxBlur = reduceMotion ? 0.0 : PlatformPerfProfile.clampLiveBlur(18.0);
-    final dimAlpha = skin.isLight ? 0.24 : 0.48;
-    final menuRadius = skin.cardRadius.clamp(14.0, 20.0);
+    final dimAlpha = skin.isLight ? 0.26 : 0.48;
+    // Menu corners match the preview's corners (one shape family, clamped 12–22).
+    final clampedPreviewR = previewCornerRadius.clamp(10.0, 22.0);
+    final menuRadius = (hasPreview ? clampedPreviewR : skin.cardRadius).clamp(12.0, 22.0);
     final isLiquid = skin.isLiquidGlass;
+    // The full-screen scrim behind the menu already applies live blur (sigma 18).
+    // Avoiding a second nested BackdropFilter inside Opacity+Scale eliminates the
+    // Android/iOS rectangular blur bleed outside rounded corners.
     final menuBg = skin.isLight
-        ? Colors.white.withValues(alpha: isLiquid ? 0.78 : 0.90)
-        : Color.lerp(skin.surface2, Colors.black, 0.14)!
-            .withValues(alpha: isLiquid ? 0.74 : 0.88);
+        ? Colors.white.withValues(alpha: isLiquid ? 0.86 : 0.94)
+        : Color.lerp(skin.surface2, skin.surface, 0.35)!
+            .withValues(alpha: isLiquid ? 0.84 : 0.94);
 
     final bgAnim = CurvedAnimation(
       parent: animation,
@@ -258,7 +268,7 @@ class _VedroPeekMenuStage extends StatelessWidget {
     final menuSpring = CurvedAnimation(
       parent: animation,
       curve: Interval(
-        reduceMotion ? 0.0 : 0.08,
+        reduceMotion ? 0.0 : 0.06,
         1.0,
         curve: reduceMotion ? Curves.easeOut : VedroTheme.snappySpring,
       ),
@@ -266,7 +276,7 @@ class _VedroPeekMenuStage extends StatelessWidget {
     );
     final menuFade = CurvedAnimation(
       parent: animation,
-      curve: const Interval(0.05, 0.68, curve: Curves.easeOut),
+      curve: const Interval(0.04, 0.62, curve: Curves.easeOut),
       reverseCurve: Curves.easeIn,
     );
 
@@ -278,24 +288,13 @@ class _VedroPeekMenuStage extends StatelessWidget {
         borderRadius: BorderRadius.circular(menuRadius),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: skin.isLight ? 0.18 : 0.58),
-            blurRadius: 36,
-            spreadRadius: 1,
+            color: Colors.black.withValues(alpha: skin.isLight ? 0.16 : 0.54),
+            blurRadius: 34,
+            spreadRadius: 0,
             offset: const Offset(0, 14),
           ),
         ],
       ),
-      foregroundDecoration: isLiquid
-          ? null
-          : BoxDecoration(
-              borderRadius: BorderRadius.circular(menuRadius),
-              border: Border.all(
-                color: skin.isLight
-                    ? Colors.white.withValues(alpha: 0.86)
-                    : Colors.white.withValues(alpha: 0.18),
-                width: 0.85,
-              ),
-            ),
       child: CustomPaint(
         foregroundPainter: isLiquid
             ? LiquidGlassRimPainter(
@@ -306,11 +305,19 @@ class _VedroPeekMenuStage extends StatelessWidget {
             : null,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(menuRadius),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(
-              sigmaX: PlatformPerfProfile.clampLiveBlur(30),
-              sigmaY: PlatformPerfProfile.clampLiveBlur(30),
-            ),
+          child: DecoratedBox(
+            position: DecorationPosition.foreground,
+            decoration: isLiquid
+                ? const BoxDecoration()
+                : BoxDecoration(
+                    borderRadius: BorderRadius.circular(menuRadius),
+                    border: Border.all(
+                      color: skin.isLight
+                          ? Colors.black.withValues(alpha: 0.08)
+                          : Colors.white.withValues(alpha: 0.15),
+                      width: 0.85,
+                    ),
+                  ),
             child: DecoratedBox(
               decoration: BoxDecoration(
                 color: menuBg,
@@ -318,7 +325,7 @@ class _VedroPeekMenuStage extends StatelessWidget {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: [
-                    Colors.white.withValues(alpha: skin.isLight ? 0.45 : 0.10),
+                    Colors.white.withValues(alpha: skin.isLight ? 0.35 : (isLiquid ? 0.12 : 0.06)),
                     Colors.transparent,
                   ],
                 ),
@@ -409,7 +416,7 @@ class _VedroPeekMenuStage extends StatelessWidget {
         final blurSigma = maxBlur * tBg;
 
         final curRect = hasPreview
-            ? Rect.lerp(startRect, liftedRect, tBg)!
+            ? Rect.lerp(startRect, liftedRect, tCard.clamp(0.0, 1.0))!
             : Rect.zero;
         final curCardScale = 1.0 + (targetScale - 1.0) * tCard;
         final menuScale = (0.76 + 0.24 * tMenu).clamp(0.5, 1.08);
@@ -434,7 +441,7 @@ class _VedroPeekMenuStage extends StatelessWidget {
                     ),
             ),
 
-            // 2. Floating spring-lifted card preview
+            // 2. Floating spring-lifted card preview (exact shape & corner conservation)
             if (hasPreview)
               Positioned(
                 left: curRect.left,
@@ -445,25 +452,43 @@ class _VedroPeekMenuStage extends StatelessWidget {
                   child: Transform.scale(
                     scale: curCardScale,
                     alignment: Alignment.center,
-                    child: DecoratedBox(
+                    child: Container(
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(previewCornerRadius),
                         boxShadow: [
                           BoxShadow(
                             color: Colors.black.withValues(
-                              alpha: (skin.isLight ? 0.24 : 0.66) * tBg,
+                              alpha: (skin.isLight ? 0.22 : 0.62) * tBg,
                             ),
-                            blurRadius: 34 * tBg + 4,
-                            spreadRadius: 1 * tBg,
+                            blurRadius: 32 * tBg + 4,
+                            spreadRadius: 0,
                             offset: Offset(0, 14 * tBg),
                           ),
                         ],
                       ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(previewCornerRadius),
-                        child: Material(
-                          type: MaterialType.transparency,
-                          child: previewBuilder!(ctx),
+                      child: CustomPaint(
+                        foregroundPainter: isLiquid
+                            ? LiquidGlassRimPainter(
+                                radius: previewCornerRadius,
+                                isLight: skin.isLight,
+                                accent: skin.accent,
+                              )
+                            : null,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(previewCornerRadius),
+                          child: DecoratedBox(
+                            position: DecorationPosition.foreground,
+                            decoration: isLiquid
+                                ? const BoxDecoration()
+                                : BoxDecoration(
+                                    borderRadius: BorderRadius.circular(previewCornerRadius),
+                                    border: skin.cardBorder(),
+                                  ),
+                            child: Material(
+                              type: MaterialType.transparency,
+                              child: previewBuilder!(ctx),
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -474,11 +499,15 @@ class _VedroPeekMenuStage extends StatelessWidget {
             // 3. Anchored iOS glass menu springing out from the card edge
             Positioned(
               left: menuLeft,
-              top: menuTop,
+              top: (hasPreview && menuAbove) ? null : menuTop,
+              bottom: (hasPreview && menuAbove)
+                  ? (screen.height - (liftedRect.top - (liftedRect.height * (targetScale - 1.0) / 2) - gap))
+                      .clamp(screen.height - safeBottom, screen.height - safeTop - 60.0)
+                  : null,
               child: Opacity(
                 opacity: tMenuOpacity,
                 child: Transform.translate(
-                  offset: Offset(0, menuSlideY),
+                  offset: Offset(0, menuSlideY.roundToDouble()),
                   child: Transform.scale(
                     scale: menuScale,
                     alignment: menuOrigin,

@@ -46,6 +46,7 @@ class _MediaCardState extends State<MediaCard> {
   bool _hovered = false;
   bool _focused = false;
   bool get _highlighted => _hovered || _focused;
+  final GlobalKey _artKey = GlobalKey(debugLabel: 'media-card-art');
 
   @override
   Widget build(BuildContext context) {
@@ -67,9 +68,8 @@ class _MediaCardState extends State<MediaCard> {
       displayWidth: widget.width,
     );
 
-    if (widget.heroPrefix != null) {
-      artBox = Hero(tag: '${widget.heroPrefix}-${item.id}', child: artBox);
-    }
+    // No Hero flight: flying art loses the card's clip/border (border flash) and
+    // morphs aspect into the detail poster. Page transitions carry the motion.
     if (!touchPrimary && skin.cardHoverEffect == 'zoom_art') {
       artBox = AnimatedScale(
         scale: _highlighted ? 1.06 : 1.0,
@@ -88,8 +88,8 @@ class _MediaCardState extends State<MediaCard> {
     final hideBadges = skin.badgeStyle == 'hidden';
     final showRatingBadge =
         !hideBadges && prefs.showRatings && skin.showCardRating && (item.communityRating ?? 0) > 0;
-    final showVersionBadge =
-        !hideBadges && prefs.showMultiVersionBadge && item.versionCount > 1;
+    // Visual-first: version counts live in the long-press menu, not on the art.
+    const showVersionBadge = false;
     final subtitleText = item.cardSubtitleFor(
       showYear: prefs.showYear,
       showRatingInText: prefs.showRatings && !showRatingBadge,
@@ -123,107 +123,113 @@ class _MediaCardState extends State<MediaCard> {
               borderRadius: BorderRadius.circular(radius),
               border: skin.cardBorder(hovered: !touchPrimary && _highlighted),
             );
+            final peek = widget.onLongPressWithRect == null
+                ? null
+                : (Rect cardRect) => widget.onLongPressWithRect!(
+                      _globalRectOfKey(context, _artKey) ?? cardRect,
+                    );
             return PressableScale(
               onTap: widget.onTap,
               onLongPress: widget.onLongPress,
-              onLongPressWithRect: widget.onLongPressWithRect,
+              onLongPressWithRect: peek,
               onSecondaryTap: widget.onLongPress,
-              onSecondaryTapWithRect: widget.onLongPressWithRect,
+              onSecondaryTapWithRect: peek,
               onHoverChanged: touchPrimary ? null : (v) => setState(() => _hovered = v),
               onFocusChanged: (v) => setState(() => _focused = v),
               borderRadius: BorderRadius.circular(radius),
               hoverScale: touchPrimary || skin.cardHoverEffect == 'zoom_art' ? 1.0 : 1.02,
               pressScale: pressScale,
               child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                AspectRatio(
-                  aspectRatio: aspect,
-                  child: touchPrimary
-                      ? Container(
-                          decoration: cardDecoration,
-                          foregroundDecoration: cardForeground,
-                          clipBehavior: Clip.antiAlias,
-                          child: _buildPosterStack(
-                            skin: skin,
-                            item: item,
-                            prefs: prefs,
-                            artBox: artBox,
-                            isOverlayCard: isOverlayCard,
-                            isHoverReveal: isHoverReveal,
-                            showPlayFab: false,
-                            hideBadges: hideBadges,
-                            showRatingBadge: showRatingBadge,
-                            showVersionBadge: showVersionBadge,
-                            subtitleText: subtitleText,
-                            metrics: metrics,
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  AspectRatio(
+                    key: _artKey,
+                    aspectRatio: aspect,
+                    child: touchPrimary
+                        ? Container(
+                            decoration: cardDecoration,
+                            foregroundDecoration: cardForeground,
+                            clipBehavior: Clip.antiAlias,
+                            child: _buildPosterStack(
+                              skin: skin,
+                              item: item,
+                              prefs: prefs,
+                              artBox: artBox,
+                              isOverlayCard: isOverlayCard,
+                              isHoverReveal: isHoverReveal,
+                              showPlayFab: false,
+                              hideBadges: hideBadges,
+                              showRatingBadge: showRatingBadge,
+                              showVersionBadge: showVersionBadge,
+                              subtitleText: subtitleText,
+                              metrics: metrics,
+                            ),
+                          )
+                        : AnimatedContainer(
+                            duration: const Duration(milliseconds: 180),
+                            curve: VedroTheme.easeOut,
+                            decoration: cardDecoration,
+                            foregroundDecoration: cardForeground,
+                            clipBehavior: Clip.antiAlias,
+                            child: _buildPosterStack(
+                              skin: skin,
+                              item: item,
+                              prefs: prefs,
+                              artBox: artBox,
+                              isOverlayCard: isOverlayCard,
+                              isHoverReveal: isHoverReveal,
+                              showPlayFab: showPlayFab,
+                              hideBadges: hideBadges,
+                              showRatingBadge: showRatingBadge,
+                              showVersionBadge: showVersionBadge,
+                              subtitleText: subtitleText,
+                              metrics: metrics,
+                            ),
                           ),
-                        )
-                      : AnimatedContainer(
-                          duration: const Duration(milliseconds: 180),
-                          curve: VedroTheme.easeOut,
-                          decoration: cardDecoration,
-                          foregroundDecoration: cardForeground,
-                          clipBehavior: Clip.antiAlias,
-                          child: _buildPosterStack(
-                            skin: skin,
-                            item: item,
-                            prefs: prefs,
-                            artBox: artBox,
-                            isOverlayCard: isOverlayCard,
-                            isHoverReveal: isHoverReveal,
-                            showPlayFab: showPlayFab,
-                            hideBadges: hideBadges,
-                            showRatingBadge: showRatingBadge,
-                            showVersionBadge: showVersionBadge,
-                            subtitleText: subtitleText,
-                            metrics: metrics,
-                          ),
-                        ),
-                ),
-                if (showBelowCaption) ...[
-                  SizedBox(height: metrics.captionTopGap),
-                  Text(
-                    item.cardTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    strutStyle: StrutStyle(
-                      fontSize: metrics.titleFontSize,
-                      height: PosterCardLayout.kStrutHeight,
-                      forceStrutHeight: true,
-                    ),
-                    style: TextStyle(
-                      color: skin.fg,
-                      fontWeight: FontWeight.w500,
-                      fontSize: metrics.titleFontSize,
-                      height: PosterCardLayout.kStrutHeight,
-                      letterSpacing: -0.1,
-                    ),
                   ),
-                  SizedBox(height: metrics.captionMidGap),
-                  Text(
-                    subtitleText.isNotEmpty ? subtitleText : ' ',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    strutStyle: StrutStyle(
-                      fontSize: metrics.metaFontSize,
-                      height: PosterCardLayout.kStrutHeight,
-                      forceStrutHeight: true,
+                  if (showBelowCaption) ...[
+                    SizedBox(height: metrics.captionTopGap),
+                    Text(
+                      item.cardTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      strutStyle: StrutStyle(
+                        fontSize: metrics.titleFontSize,
+                        height: PosterCardLayout.kStrutHeight,
+                        forceStrutHeight: true,
+                      ),
+                      style: TextStyle(
+                        color: skin.fg,
+                        fontWeight: FontWeight.w500,
+                        fontSize: metrics.titleFontSize,
+                        height: PosterCardLayout.kStrutHeight,
+                        letterSpacing: -0.1,
+                      ),
                     ),
-                    style: TextStyle(
-                      color: skin.fg3,
-                      fontSize: metrics.metaFontSize,
-                      height: PosterCardLayout.kStrutHeight,
-                      fontFeatures: const [FontFeature.tabularFigures()],
+                    SizedBox(height: metrics.captionMidGap),
+                    Text(
+                      subtitleText.isNotEmpty ? subtitleText : ' ',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      strutStyle: StrutStyle(
+                        fontSize: metrics.metaFontSize,
+                        height: PosterCardLayout.kStrutHeight,
+                        forceStrutHeight: true,
+                      ),
+                      style: TextStyle(
+                        color: skin.fg3,
+                        fontSize: metrics.metaFontSize,
+                        height: PosterCardLayout.kStrutHeight,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
                     ),
-                  ),
+                  ],
                 ],
-              ],
-            ),
-          );
-        },
-      ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -342,39 +348,23 @@ class _MediaCardState extends State<MediaCard> {
             item.unplayedItemCount != null &&
             item.unplayedItemCount! > 0)
           Positioned(
-            top: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
-            right: skin.badgeStyle == 'accent_ribbon' ? 0 : 6,
-            child: skin.badgeStyle == 'minimal_dot'
-                ? Container(
-                    width: 9,
-                    height: 9,
-                    decoration: BoxDecoration(
-                      color: skin.accent,
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: skin.accent.withValues(alpha: 0.6),
-                          blurRadius: 6,
-                        ),
-                      ],
+              top: 7,
+              right: 7,
+              child: Container(
+                width: 9,
+                height: 9,
+                decoration: BoxDecoration(
+                  color: skin.accent,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.9), width: 1.2),
+                  boxShadow: [
+                    BoxShadow(
+                      color: skin.accent.withValues(alpha: 0.6),
+                      blurRadius: 6,
                     ),
-                  )
-                : _CornerBadge(
-                    accentRibbon: skin.badgeStyle == 'accent_ribbon',
-                    accentColor: skin.accent,
-                    child: Text(
-                      '${item.unplayedItemCount}',
-                      style: TextStyle(
-                        color: skin.badgeStyle == 'accent_ribbon'
-                            ? highContrastOn(skin.accent)
-                            : Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w700,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ),
-          ),
+                  ],
+                ),
+              )),
         if (!hideBadges && (showVersionBadge || showRatingBadge))
           Positioned(
             top: 6,
@@ -462,8 +452,7 @@ class _MediaCardState extends State<MediaCard> {
                   value: item.resumeProgress,
                   minHeight: skin.progressStyle == 'edge_flush' ? 3.5 : 3,
                   backgroundColor: const Color(0x45FFFFFF),
-                  color: (skin.ctaStyle == 'contrast' &&
-                          skin.progressStyle != 'glow_accent')
+                  color: (skin.ctaStyle == 'contrast' && skin.progressStyle != 'glow_accent')
                       ? Colors.white
                       : skin.accent,
                 ),
@@ -547,6 +536,7 @@ class _ResumeCardState extends State<ResumeCard> {
   bool _hovered = false;
   bool _focused = false;
   bool get _highlighted => _hovered || _focused;
+  final GlobalKey _artKey = GlobalKey(debugLabel: 'resume-card-art');
 
   @override
   Widget build(BuildContext context) {
@@ -560,8 +550,7 @@ class _ResumeCardState extends State<ResumeCard> {
         ? item.cardSubtitle
         : [
             if (item.productionYear != null) '${item.productionYear}',
-            if (fmtDurationTicks(item.runTimeTicks).isNotEmpty)
-              fmtDurationTicks(item.runTimeTicks),
+            if (fmtDurationTicks(item.runTimeTicks).isNotEmpty) fmtDurationTicks(item.runTimeTicks),
           ].join(' · ');
 
     final cardDecoration = BoxDecoration(
@@ -600,40 +589,27 @@ class _ResumeCardState extends State<ResumeCard> {
             ),
           ),
         ),
+        // Whole card resumes on tap; the play glyph only appears as a hover/focus hint.
         Center(
-          child: PressableScale(
-            onTap: widget.onResumePlay,
-            canRequestFocus: false,
-            hoverScale: 1.1,
-            pressScale: 0.9,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: hasLightNoBackdrop
-                    ? Colors.white.withValues(alpha: _highlighted ? 0.96 : 0.86)
-                    : (_highlighted
-                        ? const Color(0x66000000)
-                        : const Color(0x42000000)),
-                border: Border.all(
-                  color: hasLightNoBackdrop
-                      ? skin.accent.withValues(alpha: 0.35)
-                      : (_highlighted ? Colors.white : const Color(0xD9FFFFFF)),
-                  width: 2.0,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: skin.isLight ? 0.12 : 0.34),
-                    blurRadius: 12,
+          child: IgnorePointer(
+            child: AnimatedOpacity(
+              opacity: _highlighted ? 1.0 : 0.0,
+              duration: const Duration(milliseconds: 220),
+              curve: VedroTheme.easeOut,
+              child: AnimatedScale(
+                scale: _highlighted ? 1.0 : 0.7,
+                duration: const Duration(milliseconds: 460),
+                curve: VedroSpringCurve.playful,
+                child: Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.black.withValues(alpha: 0.42),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.9), width: 1.6),
                   ),
-                ],
-              ),
-              child: Icon(
-                Icons.play_arrow_rounded,
-                size: 26,
-                color: hasLightNoBackdrop ? skin.accent : Colors.white,
+                  child: const Icon(Icons.play_arrow_rounded, size: 26, color: Colors.white),
+                ),
               ),
             ),
           ),
@@ -659,24 +635,34 @@ class _ResumeCardState extends State<ResumeCard> {
       ],
     );
 
+    final peek = widget.onLongPressWithRect == null
+        ? null
+        : (Rect cardRect) => widget.onLongPressWithRect!(
+              _globalRectOfKey(context, _artKey) ?? cardRect,
+            );
     return RepaintBoundary(
       child: SizedBox(
         width: widget.width,
         child: PressableScale(
-          onTap: widget.onTap,
-          onLongPress: widget.onLongPress,
-          onLongPressWithRect: widget.onLongPressWithRect,
-          onSecondaryTap: widget.onLongPress,
-          onSecondaryTapWithRect: widget.onLongPressWithRect,
+          // "继续播放": a tap resumes immediately (Apple TV / Infuse); details live in
+          // the long-press / right-click menu.
+          onTap: widget.onResumePlay,
+          onLongPress:
+              widget.onLongPress ?? (widget.onLongPressWithRect == null ? widget.onTap : null),
+          onLongPressWithRect: peek,
+          onSecondaryTap:
+              widget.onLongPress ?? (widget.onLongPressWithRect == null ? widget.onTap : null),
+          onSecondaryTapWithRect: peek,
           onHoverChanged: touchPrimary ? null : (v) => setState(() => _hovered = v),
           onFocusChanged: (v) => setState(() => _focused = v),
           borderRadius: BorderRadius.circular(radius),
-          hoverScale: touchPrimary ? 1.0 : 1.014,
-          pressScale: 0.98,
+          hoverScale: touchPrimary ? 1.0 : 1.02,
+          pressScale: 0.965,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               AspectRatio(
+                key: _artKey,
                 aspectRatio: 16 / 9,
                 child: touchPrimary
                     ? Container(
@@ -715,8 +701,8 @@ class _ResumeCardState extends State<ResumeCard> {
               const SizedBox(height: 2),
               Text(
                 left.isNotEmpty
-                    ? (item.type == 'Episode' && item.episodeCode != null
-                        ? '${item.episodeCode} · $left'
+                    ? (item.compactEpisodeCode != null
+                        ? '${item.compactEpisodeCode} · $left'
                         : left)
                     : (sub.isNotEmpty ? sub : ' '),
                 maxLines: 1,
@@ -820,57 +806,54 @@ class _LibraryCardState extends State<LibraryCard> {
                         )
                       else
                         GeneratedArt(seed: widget.library.id, label: null),
-                    if (hasServerCover)
-                      FadeNetworkImage(
-                        url: serverCover,
-                        fit: BoxFit.cover,
-                        cacheWidth: PlatformPerfProfile.imageCacheWidthFor(
-                          widget.width,
-                          MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0,
+                      if (hasServerCover)
+                        FadeNetworkImage(
+                          url: serverCover,
+                          fit: BoxFit.cover,
+                          cacheWidth: PlatformPerfProfile.imageCacheWidthFor(
+                            widget.width,
+                            MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0,
+                          ),
                         ),
-                      ),
-                    // The library name lives once, in the caption below — no duplicated
-                    // in-art title + scrim stacked on top of the same label.
-                  ],
+                      // The library name lives once, in the caption below — no duplicated
+                      // in-art title + scrim stacked on top of the same label.
+                    ],
+                  ),
                 ),
               ),
-            ),
-            SizedBox(height: widget.width < 195 ? 5 : 8),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    widget.library.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    strutStyle: StrutStyle(
-                      fontSize: widget.width < 195 ? 12.5 : 13.5,
-                      height: PosterCardLayout.kStrutHeight,
-                      forceStrutHeight: true,
-                    ),
-                    style: TextStyle(
-                      color: skin.fg,
-                      fontSize: widget.width < 195 ? 12.5 : 13.5,
-                      height: PosterCardLayout.kStrutHeight,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: -0.1,
+              SizedBox(height: widget.width < 195 ? 5 : 8),
+              Row(
+                children: [
+                  Icon(
+                    _libraryIcon(widget.library.collectionType),
+                    size: widget.width < 195 ? 14 : 15,
+                    color: _highlighted ? skin.accent : skin.fg3,
+                  ),
+                  SizedBox(width: widget.width < 195 ? 5 : 6),
+                  Expanded(
+                    child: Text(
+                      widget.library.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      strutStyle: StrutStyle(
+                        fontSize: widget.width < 195 ? 12.5 : 13.5,
+                        height: PosterCardLayout.kStrutHeight,
+                        forceStrutHeight: true,
+                      ),
+                      style: TextStyle(
+                        color: skin.fg,
+                        fontSize: widget.width < 195 ? 12.5 : 13.5,
+                        height: PosterCardLayout.kStrutHeight,
+                        fontWeight: FontWeight.w500,
+                        letterSpacing: -0.1,
+                      ),
                     ),
                   ),
-                ),
-                AnimatedOpacity(
-                  opacity: _highlighted ? 1.0 : 0.45,
-                  duration: const Duration(milliseconds: 160),
-                  child: Icon(
-                    Icons.chevron_right_rounded,
-                    size: 16,
-                    color: skin.fg2,
-                  ),
-                ),
-              ],
-            ),
-          ],
+                ],
+              ),
+            ],
+          ),
         ),
-      ),
       ),
     );
   }
@@ -923,5 +906,34 @@ class _CornerBadge extends StatelessWidget {
       ),
       child: child,
     );
+  }
+}
+
+/// Global rect of a keyed box relative to the root Overlay (peek-menu anchor).
+Rect? _globalRectOfKey(BuildContext context, GlobalKey key) =>
+    vedroGlobalRectOfKey(context, key);
+
+/// Library type glyph (visual-first: the icon says "movies / shows / music").
+IconData _libraryIcon(String? collectionType) {
+  switch ((collectionType ?? '').toLowerCase()) {
+    case 'movies':
+      return Icons.movie_outlined;
+    case 'tvshows':
+      return Icons.tv_rounded;
+    case 'music':
+      return Icons.music_note_rounded;
+    case 'musicvideos':
+      return Icons.music_video_outlined;
+    case 'homevideos':
+    case 'photos':
+      return Icons.photo_library_outlined;
+    case 'boxsets':
+      return Icons.collections_bookmark_outlined;
+    case 'livetv':
+      return Icons.live_tv_rounded;
+    case 'books':
+      return Icons.menu_book_rounded;
+    default:
+      return Icons.video_library_outlined;
   }
 }

@@ -154,9 +154,7 @@ class _SearchScreenState extends State<SearchScreen> {
                   decoration: InputDecoration(
                     filled: true,
                     fillColor: skin.surface2,
-                    hintText: widget.appState.savedServers.length > 1
-                        ? '跨 ${widget.appState.savedServers.length} 个服务器搜索片名、演员…'
-                        : '片名、原名或演职员',
+                    hintText: '搜索…',
                     prefixIcon: Icon(Icons.search_rounded, size: 19, color: skin.fg3),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
@@ -430,8 +428,8 @@ class _SearchScreenState extends State<SearchScreen> {
       return Center(
         child: Text(
           widget.appState.savedServers.isEmpty && !widget.appState.isSignedIn
-              ? '请先在首页添加媒体服务器'
-              : '支持跨多个已保存服务器并行聚合检索',
+              ? '请先添加服务器'
+              : '搜索片名或演员',
           style: TextStyle(color: skin.fg3, fontSize: 13.5),
         ),
       );

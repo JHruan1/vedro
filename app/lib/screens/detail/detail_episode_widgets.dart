@@ -27,6 +27,7 @@ class _EpisodeHorizontalCard extends StatefulWidget {
 
 class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
   bool _hovered = false;
+  final GlobalKey _artKey = GlobalKey(debugLabel: 'ep-card-art');
 
   @override
   Widget build(BuildContext context) {
@@ -47,9 +48,10 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
           context: context,
           item: ep,
           appState: widget.appState,
-          anchorRect: rect,
+          anchorRect: vedroGlobalRectOfKey(context, _artKey) ?? rect,
           landscapePreview: true,
           previewFallbackItem: widget.seriesFallback,
+          previewCornerRadius: cardR,
           onQuickPlay: widget.onTap,
           onOpenDetail: widget.onOpenDetail,
           onPickVersion: widget.onPickVersion,
@@ -62,6 +64,7 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             AspectRatio(
+              key: _artKey,
               aspectRatio: 16 / 9,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
@@ -138,13 +141,21 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
                                     color: const Color(0xB809090B),
                                     borderRadius: BorderRadius.circular(10),
                                   ),
-                                  child: Text(
-                                    '${ep.versionCount} 版本',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 10.5,
-                                      fontWeight: FontWeight.w600,
-                                    ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.layers_outlined, size: 11, color: Colors.white),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        '${ep.versionCount}',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w600,
+                                          fontFeatures: [FontFeature.tabularFigures()],
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ),
@@ -193,7 +204,7 @@ class _EpisodeHorizontalCardState extends State<_EpisodeHorizontalCard> {
               children: [
                 if (ep.indexNumber != null)
                   Text(
-                    '第 ${ep.indexNumber} 集',
+                    'E${ep.indexNumber}',
                     style: TextStyle(
                       color: skin.fg3,
                       fontSize: 11.5,
@@ -276,6 +287,7 @@ class _EpisodeRow extends StatefulWidget {
 
 class _EpisodeRowState extends State<_EpisodeRow> {
   bool _hovered = false;
+  final GlobalKey _artKey = GlobalKey(debugLabel: 'ep-row-art');
 
   @override
   Widget build(BuildContext context) {
@@ -287,6 +299,7 @@ class _EpisodeRowState extends State<_EpisodeRow> {
     final screenW = MediaQuery.sizeOf(context).width;
     final isMobile = screenW < 580;
     final thumbW = isMobile ? 116.0 : 162.0;
+    final thumbR = skin.cardRadius.clamp(6.0, 11.0);
 
     final rawTitle = ep.displayName.trim();
     final alreadyHasNum = ep.indexNumber != null &&
@@ -316,9 +329,10 @@ class _EpisodeRowState extends State<_EpisodeRow> {
           context: context,
           item: ep,
           appState: widget.appState,
-          anchorRect: rect,
+          anchorRect: vedroGlobalRectOfKey(context, _artKey) ?? rect,
           landscapePreview: true,
           previewFallbackItem: widget.seriesFallback,
+          previewCornerRadius: thumbR,
           onQuickPlay: widget.onTap,
           onOpenDetail: widget.onOpenDetail,
           onPickVersion: widget.onPickVersion,
@@ -341,10 +355,11 @@ class _EpisodeRowState extends State<_EpisodeRow> {
               SizedBox(
                 width: thumbW,
                 child: AspectRatio(
+                  key: _artKey,
                   aspectRatio: 16 / 9,
                   child: Container(
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 11.0)),
+                      borderRadius: BorderRadius.circular(thumbR),
                     ),
                     clipBehavior: Clip.antiAlias,
                     child: Stack(
@@ -478,15 +493,22 @@ class _EpisodeRowState extends State<_EpisodeRow> {
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
+                                  Icon(
+                                    Icons.layers_outlined,
+                                    size: 11,
+                                    color: skin.isLight ? skin.accent : Colors.white,
+                                  ),
+                                  const SizedBox(width: 3),
                                   Text(
-                                    '${ep.versionCount} 版本',
+                                    '${ep.versionCount}',
                                     style: TextStyle(
                                       color: skin.isLight ? skin.accent : Colors.white,
                                       fontSize: 10.5,
                                       fontWeight: FontWeight.w600,
+                                      fontFeatures: const [FontFeature.tabularFigures()],
                                     ),
                                   ),
-                                  const SizedBox(width: 2),
+                                  const SizedBox(width: 1),
                                   Icon(
                                     Icons.keyboard_arrow_down_rounded,
                                     size: 12,

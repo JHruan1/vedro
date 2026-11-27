@@ -586,7 +586,6 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
       parent: _tabAnimCtrl,
       curve: const Interval(0.0, 0.55, curve: Curves.easeOut),
     );
-    final tabDepth = CurvedAnimation(parent: _tabAnimCtrl, curve: VedroSpringCurve.smooth);
     const settled = AlwaysStoppedAnimation<double>(1.0);
     final pageSwitcher = IndexedStack(
       index: _index,
@@ -596,12 +595,7 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
             opacity: (i == _index && !reduceMotion)
                 ? Tween<double>(begin: 0.6, end: 1.0).animate(tabFade)
                 : settled,
-            child: ScaleTransition(
-              scale: (i == _index && !reduceMotion)
-                  ? Tween<double>(begin: 0.982, end: 1.0).animate(tabDepth)
-                  : settled,
-              child: buildTab(i),
-            ),
+            child: buildTab(i),
           ),
       ],
     );

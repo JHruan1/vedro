@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:vedro/core/models/media_models.dart';
 import 'package:vedro/core/theme/vedro_motion.dart';
 import 'package:vedro/core/theme/vedro_theme.dart';
 import 'package:vedro/widgets/vedro_ui.dart';
@@ -122,5 +123,65 @@ void main() {
     expect(midX, lessThan(endX), reason: 'pill is mid-glide, not teleported');
     expect(endX, lessThan(target));
     expect(target - endX, lessThan(20));
+  });
+
+  test('Design Language v2: MediaItemModel card subtitles stay minimal (year or S1 · E3)', () {
+    final series = MediaItemModel(
+      id: 's1',
+      name: '三体',
+      type: 'Series',
+      productionYear: 2024,
+      childCount: 3,
+      recursiveItemCount: 30,
+      communityRating: 8.8,
+    );
+    expect(series.cardSubtitle, '2024');
+    expect(series.cardSubtitle.contains('季'), isFalse);
+    expect(series.cardSubtitle.contains('集'), isFalse);
+    expect(series.cardSubtitle.contains('★'), isFalse);
+
+    final ep = MediaItemModel(
+      id: 'e1',
+      name: '倒计时',
+      type: 'Episode',
+      seriesName: '三体',
+      parentIndexNumber: 1,
+      indexNumber: 3,
+    );
+    expect(ep.cardSubtitle, 'S1 · E3');
+  });
+
+  testWidgets('vedroGlobalRectOfKey preserves exact transformed bounds & aspect ratio under scale',
+      (tester) async {
+    final artKey = GlobalKey();
+    Rect? captured;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: Transform.scale(
+              scale: 1.05,
+              child: Builder(
+                builder: (ctx) => GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => captured = vedroGlobalRectOfKey(ctx, artKey),
+                  child: SizedBox(
+                    key: artKey,
+                    width: 160,
+                    height: 240, // exact 2:3
+                    child: const ColoredBox(color: Colors.black),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(artKey));
+    expect(captured, isNotNull);
+    expect(captured!.width, closeTo(160 * 1.05, 0.5));
+    expect(captured!.height, closeTo(240 * 1.05, 0.5));
+    expect(captured!.width / captured!.height, closeTo(2 / 3, 0.005));
   });
 }

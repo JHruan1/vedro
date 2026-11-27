@@ -475,8 +475,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
       builder: (context, isFullscreen, _) {
         final macTrafficClearance = (!kIsWeb && Platform.isMacOS && !isFullscreen) ? 82.0 : 28.0;
         final winCaptionClearance = (!kIsWeb && Platform.isWindows && !isFullscreen) ? 148.0 : 28.0;
-        final routeName = appState.activeRouteDisplayName;
-        final serverLabel = appState.isSignedIn ? appState.activeServerDisplayName : '选择服务器';
+        final serverLabel = appState.isSignedIn ? appState.activeServerDisplayName : '服务器';
         final activeSrv = appState.activeServer;
         final cardStyle = activeSrv != null ? appState.serverCardStyleFor(activeSrv.id) : null;
         final cardTheme = activeSrv != null ? cardStyle?.resolveTheme(activeSrv.id) : null;
@@ -583,27 +582,6 @@ class _FloatingDesktopHeader extends StatelessWidget {
                                 ),
                               ),
                             ),
-                            if (!compactHeader &&
-                                appState.isSignedIn &&
-                                routeName != null &&
-                                routeName.isNotEmpty) ...[
-                              const SizedBox(width: 6),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: clear ? const Color(0x1CFFFFFF) : skin.subtleChipBg,
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: Text(
-                                  routeName,
-                                  style: TextStyle(
-                                    color: clear ? const Color(0xCCFFFFFF) : skin.fg2,
-                                    fontSize: 10.5,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ),
-                            ],
                             const SizedBox(width: 4),
                             Icon(
                               Icons.keyboard_arrow_down_rounded,
@@ -740,35 +718,35 @@ class _FloatingDesktopHeader extends StatelessWidget {
           ),
         );
 
-        if (clear) {
-          return DecoratedBox(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0x94000000), Colors.transparent],
-              ),
-            ),
-            child: content,
-          );
-        }
-
-        // Feather-seamless frosted header when scrolled — NO harsh 1px line!
-        final headerBlur = PlatformPerfProfile.clampLiveBlur(26);
+        // Keep one unified header shell across tab switches so toggling `clear`
+        // smoothly cross-fades fill without remounting or flashing a hairline border.
+        final headerBlur = clear ? 0.0 : PlatformPerfProfile.clampLiveBlur(26);
+        final headerFill = clear
+            ? Colors.transparent
+            : PlatformPerfProfile.adaptGlassFill(skin.glass);
+        final innerHeader = AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          curve: VedroTheme.easeOut,
+          decoration: BoxDecoration(
+            color: headerFill,
+            gradient: clear
+                ? const LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Color(0x94000000), Colors.transparent],
+                  )
+                : null,
+          ),
+          child: content,
+        );
         return RepaintBoundary(
           child: ClipRect(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: headerBlur, sigmaY: headerBlur),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: PlatformPerfProfile.adaptGlassFill(skin.glass),
-                  border: skin.frameStyle == 'neon'
-                      ? Border(bottom: BorderSide(color: skin.border, width: 0.7))
-                      : null,
-                ),
-                child: content,
-              ),
-            ),
+            child: headerBlur > 0.1
+                ? BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: headerBlur, sigmaY: headerBlur),
+                    child: innerHeader,
+                  )
+                : innerHeader,
           ),
         );
       },

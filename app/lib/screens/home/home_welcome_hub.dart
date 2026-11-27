@@ -50,23 +50,17 @@ class _ServerWelcomeHub extends StatelessWidget {
                     ),
                   ),
                 ),
-                const SizedBox(height: 6),
-                Text(
-                  '连接媒体服务器或打开本地视频',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: skin.fg3, fontSize: 13.5),
-                ),
-                const SizedBox(height: 28),
+                const SizedBox(height: 24),
                 Wrap(
                   alignment: WrapAlignment.center,
-                  spacing: 12,
-                  runSpacing: 12,
+                  spacing: 10,
+                  runSpacing: 10,
                   children: [
                     PressableScale(
                       onTap: () => onOpenAddServer(),
                       child: Container(
                         height: 44,
-                        padding: const EdgeInsets.symmetric(horizontal: 22),
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
                         decoration: BoxDecoration(
                           color: skin.primaryCtaBg,
                           gradient: skin.primaryCtaGradient,
@@ -80,7 +74,7 @@ class _ServerWelcomeHub extends StatelessWidget {
                             Icon(Icons.add_rounded, size: 19, color: skin.primaryCtaFg),
                             const SizedBox(width: 6),
                             Text(
-                              '添加媒体服务器',
+                              '添加服务器',
                               style: TextStyle(
                                 color: skin.primaryCtaFg,
                                 fontSize: 14.5,
@@ -92,86 +86,56 @@ class _ServerWelcomeHub extends StatelessWidget {
                       ),
                     ),
                     if (onOpenLocalMedia != null)
-                      PressableScale(
-                        onTap: onOpenLocalMedia,
-                        child: Container(
-                          height: 44,
-                          padding: const EdgeInsets.symmetric(horizontal: 18),
-                          decoration: BoxDecoration(
-                            color: skin.surface2,
-                            borderRadius: BorderRadius.circular(btnR),
-                            border: Border.all(color: skin.border, width: 0.8),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.folder_open_rounded, size: 17, color: skin.fg2),
-                              const SizedBox(width: 7),
-                              Text(
-                                '本地播放',
-                                style: TextStyle(
-                                  color: skin.fg,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ],
+                      Tooltip(
+                        message: '本地播放',
+                        child: PressableScale(
+                          onTap: onOpenLocalMedia,
+                          pressScale: 0.92,
+                          child: Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              color: skin.surface2,
+                              borderRadius: BorderRadius.circular(btnR),
+                              border: Border.all(color: skin.border, width: 0.8),
+                            ),
+                            child: Icon(Icons.folder_open_rounded, size: 19, color: skin.fg2),
                           ),
                         ),
                       ),
                     if (onOpenNetworkUrl != null)
-                      PressableScale(
-                        onTap: onOpenNetworkUrl,
-                        borderRadius: BorderRadius.circular(btnR),
+                      Tooltip(
+                        message: '网络链接',
+                        child: PressableScale(
+                          onTap: onOpenNetworkUrl,
+                          pressScale: 0.92,
+                          borderRadius: BorderRadius.circular(btnR),
+                          child: Container(
+                            width: 44,
+                            height: 44,
+                            decoration: BoxDecoration(
+                              color: skin.surface2,
+                              borderRadius: BorderRadius.circular(btnR),
+                              border: Border.all(color: skin.border, width: 0.8),
+                            ),
+                            child: Icon(Icons.link_rounded, size: 19, color: skin.fg2),
+                          ),
+                        ),
+                      ),
+                    Tooltip(
+                      message: '设置',
+                      child: PressableScale(
+                        onTap: onOpenSettings,
+                        pressScale: 0.92,
                         child: Container(
+                          width: 44,
                           height: 44,
-                          padding: const EdgeInsets.symmetric(horizontal: 18),
                           decoration: BoxDecoration(
                             color: skin.surface2,
                             borderRadius: BorderRadius.circular(btnR),
                             border: Border.all(color: skin.border, width: 0.8),
                           ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.link_rounded, size: 17, color: skin.fg2),
-                              const SizedBox(width: 7),
-                              Text(
-                                '网络链接',
-                                style: TextStyle(
-                                  color: skin.fg,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    PressableScale(
-                      onTap: onOpenSettings,
-                      child: Container(
-                        height: 44,
-                        padding: const EdgeInsets.symmetric(horizontal: 18),
-                        decoration: BoxDecoration(
-                          color: skin.surface2,
-                          borderRadius: BorderRadius.circular(btnR),
-                          border: Border.all(color: skin.border, width: 0.8),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.tune_rounded, size: 17, color: skin.fg2),
-                            const SizedBox(width: 7),
-                            Text(
-                              '播放器设置',
-                              style: TextStyle(
-                                color: skin.fg,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ],
+                          child: Icon(Icons.tune_rounded, size: 19, color: skin.fg2),
                         ),
                       ),
                     ),

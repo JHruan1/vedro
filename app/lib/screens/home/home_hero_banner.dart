@@ -442,47 +442,43 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 ),
               ),
               const SizedBox(width: 12),
-              PressableScale(
-                onTap: () => widget.onDetail(item),
-                hoverScale: 1.03,
-                pressScale: 0.96,
-                child: onPhoto
-                    ? GlassSurface(
-                        borderRadius: pillR,
-                        blur: 24,
-                        color: const Color(0x40FFFFFF),
-                        borderColor: Colors.transparent,
-                        padding: EdgeInsets.symmetric(
-                          horizontal: wide ? 22 : 18,
-                          vertical: wide ? 11 : 8.5,
-                        ),
-                        child: Text(
-                          '详情',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: wide ? 14.5 : 13.5,
-                            fontWeight: FontWeight.w600,
+              Tooltip(
+                message: '详情',
+                child: PressableScale(
+                  onTap: () => widget.onDetail(item),
+                  hoverScale: 1.06,
+                  pressScale: 0.9,
+                  child: onPhoto
+                      ? GlassSurface(
+                          borderRadius: 999,
+                          blur: 24,
+                          color: const Color(0x40FFFFFF),
+                          borderColor: Colors.transparent,
+                          child: SizedBox(
+                            width: wide ? 44 : 38,
+                            height: wide ? 44 : 38,
+                            child: Icon(
+                              Icons.info_outline_rounded,
+                              size: wide ? 21 : 19,
+                              color: Colors.white,
+                            ),
                           ),
-                        ),
-                      )
-                    : Container(
-                        height: wide ? 44 : 38,
-                        padding: EdgeInsets.symmetric(horizontal: wide ? 22 : 18),
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: skin.surface2,
-                          borderRadius: BorderRadius.circular(pillR),
-                          border: Border.all(color: skin.borderStrong, width: 0.8),
-                        ),
-                        child: Text(
-                          '详情',
-                          style: TextStyle(
+                        )
+                      : Container(
+                          width: wide ? 44 : 38,
+                          height: wide ? 44 : 38,
+                          decoration: BoxDecoration(
+                            color: skin.surface2,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: skin.borderStrong, width: 0.8),
+                          ),
+                          child: Icon(
+                            Icons.info_outline_rounded,
+                            size: wide ? 21 : 19,
                             color: skin.fg,
-                            fontSize: wide ? 14.5 : 13.5,
-                            fontWeight: FontWeight.w600,
                           ),
                         ),
-                      ),
+                ),
               ),
             ],
           ),

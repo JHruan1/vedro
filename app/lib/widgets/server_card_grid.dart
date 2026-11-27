@@ -102,55 +102,74 @@ class _ServerCardGridState extends State<ServerCardGrid> {
         if (widget.showHeaderControls && servers.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              alignment: WrapAlignment.spaceBetween,
-              crossAxisAlignment: WrapCrossAlignment.center,
+            child: Row(
               children: [
+                Icon(Icons.dns_outlined, size: 15, color: skin.fg3),
+                const SizedBox(width: 6),
                 Text(
-                  '已保存服务器 (${servers.length})',
+                  '${servers.length}',
                   style: TextStyle(
                     color: skin.fg2,
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
+                    fontFeatures: const [FontFeature.tabularFigures()],
                   ),
                 ),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _SmallGhostButton(
-                      icon: Icons.refresh_rounded,
-                      label: (_pinging.isNotEmpty || app.isProbingServers) ? '检测中…' : '刷新状态',
-                      onTap: (_pinging.isNotEmpty || app.isProbingServers) ? null : _pingAll,
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.all(2.5),
+                const Spacer(),
+                Tooltip(
+                  message: (_pinging.isNotEmpty || app.isProbingServers) ? '检测中' : '刷新状态',
+                  child: PressableScale(
+                    onTap: (_pinging.isNotEmpty || app.isProbingServers) ? null : _pingAll,
+                    pressScale: 0.92,
+                    borderRadius: BorderRadius.circular(9),
+                    child: Container(
+                      width: 32,
+                      height: 30,
                       decoration: BoxDecoration(
                         color: skin.surface,
                         borderRadius: BorderRadius.circular(9),
                         border: Border.all(color: skin.border, width: 0.7),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _LayoutToggleBtn(
-                            icon: Icons.grid_view_rounded,
-                            active: !isList,
-                            tooltip: '卡片网格',
-                            onTap: () => app.updatePrefs(app.prefs.copyWith(serverCardLayout: 'grid')),
-                          ),
-                          _LayoutToggleBtn(
-                            icon: Icons.view_agenda_outlined,
-                            active: isList,
-                            tooltip: '紧凑列表',
-                            onTap: () => app.updatePrefs(app.prefs.copyWith(serverCardLayout: 'list')),
-                          ),
-                        ],
-                      ),
+                      alignment: Alignment.center,
+                      child: (_pinging.isNotEmpty || app.isProbingServers)
+                          ? SizedBox(
+                              width: 13,
+                              height: 13,
+                              child: CircularProgressIndicator(strokeWidth: 1.7, color: skin.fg2),
+                            )
+                          : Icon(Icons.refresh_rounded, size: 15.5, color: skin.fg2),
                     ),
-                  ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.all(2.5),
+                  decoration: BoxDecoration(
+                    color: skin.surface,
+                    borderRadius: BorderRadius.circular(9),
+                    border: Border.all(color: skin.border, width: 0.7),
+                  ),
+                  child: VedroSlidingPillRow(
+                    selectedIndex: isList ? 1 : 0,
+                    pillDecoration: BoxDecoration(
+                      color: skin.activePillBg,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    children: [
+                      _LayoutToggleBtn(
+                        icon: Icons.grid_view_rounded,
+                        active: !isList,
+                        tooltip: '网格',
+                        onTap: () => app.updatePrefs(app.prefs.copyWith(serverCardLayout: 'grid')),
+                      ),
+                      _LayoutToggleBtn(
+                        icon: Icons.view_agenda_outlined,
+                        active: isList,
+                        tooltip: '列表',
+                        onTap: () => app.updatePrefs(app.prefs.copyWith(serverCardLayout: 'list')),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -265,8 +284,11 @@ class _ServerRichCardState extends State<_ServerRichCard> {
     final liveStatus = widget.appState.serverStatuses[srv.id];
     final isProbing = widget.pinging || (widget.appState.isProbingServers && liveStatus == null);
     final hostDisplay = style.hideAddress
-        ? '地址已隐藏'
+        ? ''
         : (Uri.tryParse(activeRoute?.url ?? srv.url)?.host ?? srv.url);
+    final subtitleText = style.subtitle.trim().isNotEmpty
+        ? style.subtitle.trim()
+        : hostDisplay;
 
     return PressableScale(
       onTap: widget.onTap,
@@ -278,14 +300,14 @@ class _ServerRichCardState extends State<_ServerRichCard> {
       pressScale: 0.98,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [theme.cardBgTop(skin), theme.cardBgBottom(skin)],
           ),
-          borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 20.0)),
+          borderRadius: BorderRadius.circular(skin.cardRadius.clamp(12.0, 22.0)),
           border: Border.all(
             color: widget.isActive
                 ? cardAccent.withValues(alpha: 0.78)
@@ -305,21 +327,37 @@ class _ServerRichCardState extends State<_ServerRichCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Top row: Icon badge + Title + Settings button
+            // Top row: Icon badge + Name + Active Checkmark + Settings icon
             Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: cardAccent.withValues(alpha: skin.isLight ? 0.13 : 0.18),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: cardAccent.withValues(alpha: 0.32), width: 0.8),
-                  ),
-                  child: Icon(style.iconData, size: 20, color: cardAccent),
+                Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: cardAccent.withValues(alpha: skin.isLight ? 0.13 : 0.18),
+                        borderRadius: BorderRadius.circular(11),
+                        border: Border.all(color: cardAccent.withValues(alpha: 0.32), width: 0.8),
+                      ),
+                      child: Icon(style.iconData, size: 19, color: cardAccent),
+                    ),
+                    Positioned(
+                      right: -2,
+                      bottom: -2,
+                      child: _OnlineStatusDot(
+                        status: liveStatus,
+                        pingOverride: activePing,
+                        probing: isProbing,
+                        isActiveConnected: widget.isActive,
+                        ringColor: theme.cardBgTop(skin),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 11),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -333,7 +371,7 @@ class _ServerRichCardState extends State<_ServerRichCard> {
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
                                 color: skin.fg,
-                                fontSize: 15.5,
+                                fontSize: 15,
                                 fontWeight: FontWeight.w600,
                                 letterSpacing: -0.2,
                               ),
@@ -341,70 +379,86 @@ class _ServerRichCardState extends State<_ServerRichCard> {
                           ),
                           if (widget.isActive) ...[
                             const SizedBox(width: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                              decoration: BoxDecoration(
-                                color: const Color(0x2834D399),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(color: const Color(0x5534D399), width: 0.6),
-                              ),
-                              child: Text(
-                                '已连接',
-                                style: TextStyle(
-                                  color: skin.isLight
-                                      ? const Color(0xFF059669)
-                                      : const Color(0xFF34D399),
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                            Tooltip(
+                              message: '已连接',
+                              child: Icon(
+                                Icons.check_circle_rounded,
+                                size: 16,
+                                color: skin.isLight
+                                    ? const Color(0xFF059669)
+                                    : const Color(0xFF30D158),
                               ),
                             ),
                           ],
                         ],
                       ),
-                      const SizedBox(height: 3),
-                      Text(
-                        style.subtitle.trim().isNotEmpty
-                            ? style.subtitle.trim()
-                            : [
-                                if (srv.username != null && srv.username!.isNotEmpty) srv.username!,
-                                hostDisplay,
-                              ].join(' · '),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: skin.fg2, fontSize: 12),
-                      ),
+                      if (subtitleText.isNotEmpty || style.hideAddress) ...[
+                        const SizedBox(height: 2),
+                        Row(
+                          children: [
+                            if (style.hideAddress && style.subtitle.trim().isEmpty)
+                              Icon(Icons.lock_outline_rounded, size: 11.5, color: skin.fg3)
+                            else
+                              Expanded(
+                                child: Text(
+                                  subtitleText,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(color: skin.fg3, fontSize: 11.5),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),
                 const SizedBox(width: 4),
                 Tooltip(
-                  message: '服务器卡片与线路设置',
+                  message: '测速',
                   child: InkWell(
-                    borderRadius: BorderRadius.circular(9),
-                    onTap: widget.onOpenSettings,
-                    child: Container(
-                      width: 30,
-                      height: 30,
-                      decoration: BoxDecoration(
-                        color: skin.subtleChipBg,
-                        borderRadius: BorderRadius.circular(9),
-                        border: Border.all(color: skin.border, width: 0.6),
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: isProbing ? null : widget.onPing,
+                    child: SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: Center(
+                        child: isProbing
+                            ? SizedBox(
+                                width: 13,
+                                height: 13,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.6,
+                                  color: skin.fg2,
+                                ),
+                              )
+                            : Icon(Icons.speed_rounded, size: 15.5, color: skin.fg3),
                       ),
-                      child: Icon(Icons.tune_rounded, size: 15, color: skin.fg2),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 2),
+                Tooltip(
+                  message: '设置',
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: widget.onOpenSettings,
+                    child: SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: Center(
+                        child: Icon(Icons.tune_rounded, size: 15.5, color: skin.fg3),
+                      ),
                     ),
                   ),
                 ),
               ],
             ),
 
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
 
-            // Live Online/Offline Status & Movie/Series Inventory Strip
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              crossAxisAlignment: WrapCrossAlignment.center,
+            // Visual-first status strip: signal latency + compact icon+number inventory + route icon
+            Row(
               children: [
                 _OnlineStatusChip(
                   status: liveStatus,
@@ -412,68 +466,29 @@ class _ServerRichCardState extends State<_ServerRichCard> {
                   probing: isProbing,
                   isActiveConnected: widget.isActive,
                 ),
-                if (liveStatus != null && liveStatus.online && liveStatus.movieCount != null)
+                if (liveStatus != null && liveStatus.online && liveStatus.movieCount != null) ...[
+                  const SizedBox(width: 6),
                   _InventoryChip(
                     icon: Icons.movie_outlined,
-                    label: '电影 ${fmtCompactCount(liveStatus.movieCount!)}',
+                    tooltip: '电影',
+                    label: fmtCompactCount(liveStatus.movieCount!),
                   ),
-                if (liveStatus != null && liveStatus.online && liveStatus.seriesCount != null)
+                ],
+                if (liveStatus != null && liveStatus.online && liveStatus.seriesCount != null) ...[
+                  const SizedBox(width: 6),
                   _InventoryChip(
-                    icon: Icons.live_tv_rounded,
-                    label: '剧集 ${fmtCompactCount(liveStatus.seriesCount!)}',
+                    icon: Icons.tv_rounded,
+                    tooltip: '剧集',
+                    label: fmtCompactCount(liveStatus.seriesCount!),
                   ),
-                if (liveStatus != null &&
-                    liveStatus.online &&
-                    (liveStatus.episodeCount ?? 0) > 0)
-                  _InventoryChip(
-                    icon: Icons.video_library_outlined,
-                    label: '${fmtCompactCount(liveStatus.episodeCount!)} 集',
-                  ),
-              ],
-            ),
-
-            const SizedBox(height: 10),
-
-            // Bottom metadata chips: Dialect + Active Route + Quick Ping
-            Row(
-              children: [
-                _MiniCardChip(
-                  label: srv.dialect.isEmpty ? 'Emby' : srv.dialect.toUpperCase(),
-                  color: cardAccent,
-                ),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: _MiniCardChip(
-                    label:
-                        '${activeRoute?.name ?? '默认线路'}${srv.routes.length > 1 ? ' (${srv.routes.length})' : ''}',
-                    color: skin.fg2,
-                  ),
-                ),
+                ],
                 const Spacer(),
-                InkWell(
-                  borderRadius: BorderRadius.circular(7),
-                  onTap: isProbing ? null : widget.onPing,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                    child: isProbing
-                        ? SizedBox(
-                            width: 12,
-                            height: 12,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 1.6,
-                              color: skin.fg2,
-                            ),
-                          )
-                        : Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.speed_rounded, size: 13, color: skin.fg2),
-                              const SizedBox(width: 3),
-                              Text('测速', style: TextStyle(color: skin.fg2, fontSize: 11)),
-                            ],
-                          ),
+                if (srv.routes.length > 1)
+                  _InventoryChip(
+                    icon: Icons.alt_route_rounded,
+                    tooltip: activeRoute?.name ?? '线路',
+                    label: '${srv.routes.length}',
                   ),
-                ),
               ],
             ),
           ],
@@ -524,14 +539,14 @@ class _ServerCompactRowCard extends StatelessWidget {
       hoverScale: 1.006,
       pressScale: 0.99,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
         decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.centerLeft,
             end: Alignment.centerRight,
             colors: [theme.cardBgTop(skin), theme.cardBgBottom(skin)],
           ),
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(skin.cardRadius.clamp(12.0, 22.0)),
           border: Border.all(
             color: isActive ? cardAccent.withValues(alpha: 0.72) : skin.border,
             width: isActive ? 1.2 : 0.8,
@@ -539,65 +554,71 @@ class _ServerCompactRowCard extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: cardAccent.withValues(alpha: skin.isLight ? 0.14 : 0.18),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(style.iconData, size: 18, color: cardAccent),
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: cardAccent.withValues(alpha: skin.isLight ? 0.14 : 0.18),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(style.iconData, size: 18, color: cardAccent),
+                ),
+                Positioned(
+                  right: -2,
+                  bottom: -2,
+                  child: _OnlineStatusDot(
+                    status: liveStatus,
+                    pingOverride: activePing,
+                    probing: isProbing,
+                    isActiveConnected: isActive,
+                    ringColor: theme.cardBgTop(skin),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Row(
                 children: [
-                  Row(
-                    children: [
-                      Flexible(
-                        child: Text(
-                          displayName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: skin.fg,
-                            fontSize: 14.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
+                  Flexible(
+                    child: Text(
+                      displayName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: skin.fg,
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w600,
                       ),
-                      const SizedBox(width: 7),
-                      _OnlineStatusChip(
-                        status: liveStatus,
-                        pingOverride: activePing,
-                        probing: isProbing,
-                        isActiveConnected: isActive,
-                      ),
-                    ],
+                    ),
                   ),
-                  const SizedBox(height: 3),
-                  Text(
-                    [
-                      if (liveStatus != null && liveStatus.online && liveStatus.movieCount != null)
-                        '电影 ${fmtCompactCount(liveStatus.movieCount!)}',
-                      if (liveStatus != null && liveStatus.online && liveStatus.seriesCount != null)
-                        '剧集 ${fmtCompactCount(liveStatus.seriesCount!)}',
-                      if (style.subtitle.trim().isNotEmpty) style.subtitle.trim(),
-                      if (server.username != null && server.username!.isNotEmpty) server.username!,
-                      activeRoute?.name ?? '默认线路',
-                      if (server.routes.length > 1) '${server.routes.length} 条线路',
-                    ].join(' · '),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: skin.fg2, fontSize: 12),
+                  const SizedBox(width: 8),
+                  _OnlineStatusChip(
+                    status: liveStatus,
+                    pingOverride: activePing,
+                    probing: isProbing,
+                    isActiveConnected: isActive,
                   ),
                 ],
               ),
             ),
+            if (isActive) ...[
+              const SizedBox(width: 6),
+              Tooltip(
+                message: '已连接',
+                child: Icon(
+                  Icons.check_circle_rounded,
+                  size: 16.5,
+                  color: skin.isLight ? const Color(0xFF059669) : const Color(0xFF30D158),
+                ),
+              ),
+            ],
             const SizedBox(width: 4),
             IconButton(
-              tooltip: '测速与刷新状态',
+              tooltip: '测速',
               visualDensity: VisualDensity.compact,
               icon: isProbing
                   ? SizedBox(
@@ -605,13 +626,13 @@ class _ServerCompactRowCard extends StatelessWidget {
                       height: 14,
                       child: CircularProgressIndicator(strokeWidth: 1.7, color: skin.fg2),
                     )
-                  : Icon(Icons.speed_rounded, size: 17, color: skin.fg2),
+                  : Icon(Icons.speed_rounded, size: 17, color: skin.fg3),
               onPressed: isProbing ? null : onPing,
             ),
             IconButton(
-              tooltip: '卡片与线路设置',
+              tooltip: '设置',
               visualDensity: VisualDensity.compact,
-              icon: Icon(Icons.tune_rounded, size: 17, color: skin.fg2),
+              icon: Icon(Icons.tune_rounded, size: 17, color: skin.fg3),
               onPressed: onOpenSettings,
             ),
           ],
@@ -634,10 +655,10 @@ class _AddServerDashedTile extends StatelessWidget {
       hoverScale: 1.01,
       pressScale: 0.98,
       child: Container(
-        height: compact ? 54 : 118,
+        height: compact ? 52 : 96,
         decoration: BoxDecoration(
           color: skin.unifiedTileColor(),
-          borderRadius: BorderRadius.circular(compact ? 14 : 18),
+          borderRadius: BorderRadius.circular(skin.cardRadius.clamp(12.0, 22.0)),
           border: Border.all(color: skin.borderStrong, width: 1),
         ),
         child: Center(
@@ -653,9 +674,9 @@ class _AddServerDashedTile extends StatelessWidget {
                 ),
                 child: Icon(Icons.add_rounded, size: 18, color: skin.fg),
               ),
-              const SizedBox(width: 9),
+              const SizedBox(width: 8),
               Text(
-                '添加媒体服务器',
+                '添加服务器',
                 style: TextStyle(
                   color: skin.fg2,
                   fontSize: 13.5,
@@ -665,6 +686,64 @@ class _AddServerDashedTile extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _OnlineStatusDot extends StatelessWidget {
+  const _OnlineStatusDot({
+    required this.status,
+    required this.pingOverride,
+    required this.probing,
+    required this.isActiveConnected,
+    required this.ringColor,
+  });
+
+  final ServerLiveStatus? status;
+  final Map<String, dynamic>? pingOverride;
+  final bool probing;
+  final bool isActiveConnected;
+  final Color ringColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool? online;
+    final int? latencyMs;
+    if (pingOverride != null) {
+      online = pingOverride!['ok'] == true;
+      latencyMs = (pingOverride!['latency_ms'] as num?)?.toInt();
+    } else if (status != null) {
+      online = status!.online;
+      latencyMs = status!.latencyMs;
+    } else if (isActiveConnected) {
+      online = true;
+      latencyMs = null;
+    } else {
+      online = null;
+      latencyMs = null;
+    }
+
+    final Color dotColor;
+    if (probing && online == null) {
+      dotColor = const Color(0xFF9EA3B5);
+    } else if (online == true) {
+      dotColor = latencyMs != null && latencyMs >= 350
+          ? const Color(0xFFFFD60A)
+          : const Color(0xFF30D158);
+    } else if (online == false) {
+      dotColor = VedroTheme.danger;
+    } else {
+      dotColor = const Color(0xFF7D8294);
+    }
+
+    return Container(
+      width: 11,
+      height: 11,
+      decoration: BoxDecoration(
+        color: dotColor,
+        shape: BoxShape.circle,
+        border: Border.all(color: ringColor, width: 2),
       ),
     );
   }
@@ -701,44 +780,89 @@ class _OnlineStatusChip extends StatelessWidget {
       latencyMs = null;
     }
 
-    final Color dotColor;
-    final String label;
+    final Color color;
+    final IconData icon;
+    final String? msText;
+    final String semantic;
     if (probing && online == null) {
-      dotColor = const Color(0xFF9EA3B5);
-      label = '检测中';
+      color = const Color(0xFF9EA3B5);
+      icon = Icons.sync_rounded;
+      msText = null;
+      semantic = '检测中';
     } else if (online == true) {
-      dotColor = latencyMs != null && latencyMs >= 350
-          ? const Color(0xFFFBBF24)
-          : const Color(0xFF34D399);
-      label = latencyMs != null ? '在线 · $latencyMs ms' : '在线';
+      color = latencyMs != null && latencyMs >= 350
+          ? const Color(0xFFFFD60A)
+          : const Color(0xFF30D158);
+      icon = Icons.signal_cellular_alt_rounded;
+      msText = latencyMs != null ? '${latencyMs}ms' : null;
+      semantic = latencyMs != null ? '在线 ${latencyMs}ms' : '在线';
     } else if (online == false) {
-      dotColor = VedroTheme.danger;
-      label = '离线';
+      color = VedroTheme.danger;
+      icon = Icons.cloud_off_rounded;
+      msText = null;
+      semantic = '离线';
     } else {
-      dotColor = const Color(0xFF7D8294);
-      label = '未检测';
+      color = const Color(0xFF7D8294);
+      icon = Icons.signal_cellular_alt_1_bar_rounded;
+      msText = null;
+      semantic = '未检测';
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+    return Tooltip(
+      message: semantic,
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: msText != null ? 7 : 6, vertical: 2.5),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 12, color: color),
+            if (msText != null) ...[
+              const SizedBox(width: 3),
+              Text(
+                msText,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InventoryChip extends StatelessWidget {
+  const _InventoryChip({required this.icon, required this.label, this.tooltip});
+  final IconData icon;
+  final String label;
+  final String? tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final chip = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6.5, vertical: 2.5),
       decoration: BoxDecoration(
-        color: dotColor.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: dotColor.withValues(alpha: 0.42), width: 0.6),
+        color: skin.subtleChipBg,
+        borderRadius: BorderRadius.circular(999),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 6,
-            height: 6,
-            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 5),
+          Icon(icon, size: 11.5, color: skin.fg3),
+          const SizedBox(width: 3.5),
           Text(
             label,
             style: TextStyle(
-              color: dotColor,
+              color: skin.fg2,
               fontSize: 10.5,
               fontWeight: FontWeight.w600,
               fontFeatures: const [FontFeature.tabularFigures()],
@@ -747,68 +871,7 @@ class _OnlineStatusChip extends StatelessWidget {
         ],
       ),
     );
-  }
-}
-
-class _InventoryChip extends StatelessWidget {
-  const _InventoryChip({required this.icon, required this.label});
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final skin = VedroSkin.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
-      decoration: BoxDecoration(
-        color: skin.subtleChipBg,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 11.5, color: skin.fg2),
-          const SizedBox(width: 4),
-          Text(
-            label,
-            style: TextStyle(
-              color: skin.fg,
-              fontSize: 11,
-              fontWeight: FontWeight.w500,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MiniCardChip extends StatelessWidget {
-  const _MiniCardChip({required this.label, required this.color});
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    final skin = VedroSkin.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
-      decoration: BoxDecoration(
-        color: skin.subtleChipBg,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        label,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-    );
+    return tooltip != null ? Tooltip(message: '$tooltip $label', child: chip) : chip;
   }
 }
 
@@ -821,66 +884,47 @@ class _LatencyBadge extends StatelessWidget {
     final ok = ping['ok'] == true;
     final ms = (ping['latency_ms'] as num?)?.toInt();
     final Color color;
-    final String text;
+    final String? text;
     if (!ok || ms == null) {
       color = VedroTheme.danger;
-      text = '不可达';
+      text = null;
     } else if (ms < 120) {
-      color = const Color(0xFF34D399);
-      text = '$ms ms';
+      color = const Color(0xFF30D158);
+      text = '${ms}ms';
     } else if (ms < 350) {
-      color = const Color(0xFFFBBF24);
-      text = '$ms ms';
+      color = const Color(0xFFFFD60A);
+      text = '${ms}ms';
     } else {
       color = VedroTheme.danger;
-      text = '$ms ms';
+      text = '${ms}ms';
     }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(6),
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(999),
       ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-          fontFeatures: const [FontFeature.tabularFigures()],
-        ),
-      ),
-    );
-  }
-}
-
-class _SmallGhostButton extends StatelessWidget {
-  const _SmallGhostButton({required this.icon, required this.label, this.onTap});
-  final IconData icon;
-  final String label;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final skin = VedroSkin.of(context);
-    return PressableScale(
-      onTap: onTap,
-      child: Container(
-        height: 30,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: BoxDecoration(
-          color: skin.surface,
-          borderRadius: BorderRadius.circular(9),
-          border: Border.all(color: skin.border, width: 0.7),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 14, color: skin.fg2),
-            const SizedBox(width: 5),
-            Text(label, style: TextStyle(color: skin.fg2, fontSize: 12)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            text == null ? Icons.cloud_off_rounded : Icons.signal_cellular_alt_rounded,
+            size: 12,
+            color: color,
+          ),
+          if (text != null) ...[
+            const SizedBox(width: 3),
+            Text(
+              text,
+              style: TextStyle(
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
           ],
-        ),
+        ],
       ),
     );
   }
@@ -906,13 +950,9 @@ class _LayoutToggleBtn extends StatelessWidget {
       child: PressableScale(
         onTap: onTap,
         borderRadius: BorderRadius.circular(6),
-        child: Container(
+        child: SizedBox(
           width: 26,
           height: 24,
-          decoration: BoxDecoration(
-            color: active ? skin.activePillBg : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
-          ),
           child: Icon(icon, size: 15, color: active ? skin.activePillFg : skin.fg3),
         ),
       ),
@@ -1236,9 +1276,20 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                         ],
                       ),
                     ),
-                    _MiniCardChip(
-                      label: srv.dialect.toUpperCase(),
-                      color: cardAccent,
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                      decoration: BoxDecoration(
+                        color: skin.subtleChipBg,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        srv.dialect.toUpperCase(),
+                        style: TextStyle(
+                          color: cardAccent,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -1253,7 +1304,7 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                       controller: _nameCtrl,
                       onChanged: (_) => setState(() {}),
                       decoration: InputDecoration(
-                        labelText: '卡片显示名称',
+                        labelText: '名称',
                         hintText: srv.name,
                       ),
                     ),
@@ -1264,8 +1315,8 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                       controller: _subCtrl,
                       onChanged: (_) => setState(() {}),
                       decoration: const InputDecoration(
-                        labelText: '备注 / 副标题（可选）',
-                        hintText: '如：4K 原盘主力服',
+                        labelText: '备注',
+                        hintText: '可选',
                       ),
                     ),
                   ),
@@ -1273,45 +1324,35 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
               ),
               const SizedBox(height: 14),
 
-              // Card Color Theme Picker
-              Text('卡片配色', style: TextStyle(color: skin.fg2, fontSize: 12.5, fontWeight: FontWeight.w600)),
+              // Card Color Theme Picker (visual swatches)
+              Text('配色', style: TextStyle(color: skin.fg2, fontSize: 12.5, fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
               Wrap(
-                spacing: 8,
-                runSpacing: 8,
+                spacing: 10,
+                runSpacing: 10,
                 children: ServerCardTheme.all.map((t) {
                   final on = previewTheme.id == t.id;
-                  return PressableScale(
-                    onTap: () => setState(() => _themeId = t.id),
-                    borderRadius: BorderRadius.circular(9),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: on ? t.cardAccent(skin).withValues(alpha: 0.16) : skin.surface2,
-                        borderRadius: BorderRadius.circular(9),
-                        border: Border.all(
-                          color: on ? t.cardAccent(skin) : skin.border,
-                          width: on ? 1.1 : 0.7,
+                  final swatch = t.cardAccent(skin);
+                  return Tooltip(
+                    message: t.label,
+                    child: PressableScale(
+                      onTap: () => setState(() => _themeId = t.id),
+                      pressScale: 0.9,
+                      borderRadius: BorderRadius.circular(999),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 180),
+                        width: 28,
+                        height: 28,
+                        decoration: BoxDecoration(
+                          color: swatch,
+                          shape: BoxShape.circle,
+                          border: on
+                              ? Border.all(color: skin.fg, width: 2.2)
+                              : Border.all(color: Colors.white.withValues(alpha: 0.2), width: 0.8),
                         ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 11,
-                            height: 11,
-                            decoration: BoxDecoration(color: t.cardAccent(skin), shape: BoxShape.circle),
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            t.label,
-                            style: TextStyle(
-                              color: on ? skin.fg : skin.fg2,
-                              fontSize: 12,
-                              fontWeight: on ? FontWeight.w600 : FontWeight.w400,
-                            ),
-                          ),
-                        ],
+                        child: on
+                            ? Icon(Icons.check_rounded, size: 15, color: highContrastOn(swatch))
+                            : null,
                       ),
                     ),
                   );
@@ -1319,40 +1360,33 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
               ),
               const SizedBox(height: 14),
 
-              // Card Icon Picker
-              Text('卡片图标', style: TextStyle(color: skin.fg2, fontSize: 12.5, fontWeight: FontWeight.w600)),
+              // Card Icon Picker (visual icon tiles)
+              Text('图标', style: TextStyle(color: skin.fg2, fontSize: 12.5, fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
                 children: ServerCardStyle.icons.entries.map((entry) {
                   final on = _iconId == entry.key;
-                  return PressableScale(
-                    onTap: () => setState(() => _iconId = entry.key),
-                    borderRadius: BorderRadius.circular(9),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: on ? cardAccent.withValues(alpha: 0.16) : skin.surface2,
-                        borderRadius: BorderRadius.circular(9),
-                        border: Border.all(
-                          color: on ? cardAccent : skin.border,
-                          width: on ? 1.1 : 0.7,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(entry.value.$2, size: 15, color: on ? cardAccent : skin.fg2),
-                          const SizedBox(width: 5),
-                          Text(
-                            entry.value.$1,
-                            style: TextStyle(
-                              color: on ? skin.fg : skin.fg2,
-                              fontSize: 12,
-                            ),
+                  return Tooltip(
+                    message: entry.value.$1,
+                    child: PressableScale(
+                      onTap: () => setState(() => _iconId = entry.key),
+                      pressScale: 0.9,
+                      borderRadius: BorderRadius.circular(10),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 160),
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: on ? cardAccent.withValues(alpha: 0.18) : skin.surface2,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: on ? cardAccent : skin.border,
+                            width: on ? 1.2 : 0.7,
                           ),
-                        ],
+                        ),
+                        child: Icon(entry.value.$2, size: 17, color: on ? cardAccent : skin.fg2),
                       ),
                     ),
                   );
@@ -1371,19 +1405,14 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                   child: Row(
                     children: [
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('卡片隐藏服务器域名', style: TextStyle(color: skin.fg, fontSize: 13.5)),
-                            Text('截屏或分享时隐藏真实域名地址', style: TextStyle(color: skin.fg3, fontSize: 11.5)),
-                          ],
-                        ),
+                        child: Text('隐藏域名', style: TextStyle(color: skin.fg, fontSize: 13.5)),
                       ),
                       ExcludeFocus(
                         child: Transform.scale(
                           scale: 0.8,
                           child: CupertinoSwitch(
                             value: _hideAddress,
+                            activeTrackColor: skin.accent,
                             onChanged: (v) => setState(() => _hideAddress = v),
                           ),
                         ),
@@ -1393,34 +1422,67 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                 ),
               ),
 
-              const Divider(height: 24),
+              const Divider(height: 22),
 
               // Routes section
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                alignment: WrapAlignment.spaceBetween,
-                crossAxisAlignment: WrapCrossAlignment.center,
+              Row(
                 children: [
+                  Icon(Icons.alt_route_rounded, size: 15, color: skin.fg3),
+                  const SizedBox(width: 6),
                   Text(
-                    '多线路管理 (${srv.routes.length})',
-                    style: TextStyle(color: skin.fg2, fontSize: 13, fontWeight: FontWeight.w600),
+                    '线路 (${srv.routes.length})',
+                    style: TextStyle(
+                      color: skin.fg2,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
                   ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _SmallGhostButton(
-                        icon: Icons.speed_rounded,
-                        label: _pinging ? '测速中…' : '测速',
-                        onTap: _pinging ? null : _runPing,
+                  const Spacer(),
+                  Tooltip(
+                    message: _pinging ? '测速中' : '测速',
+                    child: PressableScale(
+                      onTap: _pinging ? null : _runPing,
+                      pressScale: 0.92,
+                      borderRadius: BorderRadius.circular(9),
+                      child: Container(
+                        width: 32,
+                        height: 30,
+                        decoration: BoxDecoration(
+                          color: skin.surface2,
+                          borderRadius: BorderRadius.circular(9),
+                          border: Border.all(color: skin.border, width: 0.7),
+                        ),
+                        alignment: Alignment.center,
+                        child: _pinging
+                            ? SizedBox(
+                                width: 13,
+                                height: 13,
+                                child: CircularProgressIndicator(strokeWidth: 1.6, color: skin.fg2),
+                              )
+                            : Icon(Icons.speed_rounded, size: 15.5, color: skin.fg2),
                       ),
-                      const SizedBox(width: 8),
-                      _SmallGhostButton(
-                        icon: Icons.add_rounded,
-                        label: '加线路',
-                        onTap: () => _addRouteDialog(srv),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Tooltip(
+                    message: '添加线路',
+                    child: PressableScale(
+                      onTap: () => _addRouteDialog(srv),
+                      pressScale: 0.92,
+                      borderRadius: BorderRadius.circular(9),
+                      child: Container(
+                        width: 32,
+                        height: 30,
+                        decoration: BoxDecoration(
+                          color: skin.surface2,
+                          borderRadius: BorderRadius.circular(9),
+                          border: Border.all(color: skin.border, width: 0.7),
+                        ),
+                        alignment: Alignment.center,
+                        child: Icon(Icons.add_rounded, size: 17, color: skin.fg2),
                       ),
-                    ],
+                    ),
                   ),
                 ],
               ),

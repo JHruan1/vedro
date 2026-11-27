@@ -284,6 +284,17 @@ class GlassSurface extends StatelessWidget {
   }
 }
 
+/// Exact on-screen bounding rect of a keyed box relative to the root Overlay,
+/// accounting for any active ancestor `Transform.scale` / translation so Peek & Pop
+/// previews start pixel-identical with zero jump or aspect-ratio distortion.
+Rect? vedroGlobalRectOfKey(BuildContext context, GlobalKey key) {
+  final box = key.currentContext?.findRenderObject() as RenderBox?;
+  if (box == null || !box.hasSize || !box.attached) return null;
+  final overlay =
+      Overlay.maybeOf(context, rootOverlay: true)?.context.findRenderObject() as RenderBox?;
+  return MatrixUtils.transformRect(box.getTransformTo(overlay), Offset.zero & box.size);
+}
+
 /// Tactile Apple-style damped press + progressive long-press peek lift + desktop hover lift + 10-foot TV D-Pad focus ring.
 class PressableScale extends StatefulWidget {
   const PressableScale({
@@ -424,9 +435,10 @@ class _PressableScaleState extends State<PressableScale> with SingleTickerProvid
 
   Rect? _currentGlobalRect() {
     final box = context.findRenderObject() as RenderBox?;
-    if (box == null || !box.hasSize) return null;
-    final overlay = Overlay.maybeOf(context)?.context.findRenderObject() as RenderBox?;
-    return box.localToGlobal(Offset.zero, ancestor: overlay) & box.size;
+    if (box == null || !box.hasSize || !box.attached) return null;
+    final overlay =
+        Overlay.maybeOf(context, rootOverlay: true)?.context.findRenderObject() as RenderBox?;
+    return MatrixUtils.transformRect(box.getTransformTo(overlay), Offset.zero & box.size);
   }
 
   void _startPress() {
@@ -1602,6 +1614,23 @@ class _VedroPullDownButtonState<T> extends State<VedroPullDownButton<T>> {
 
     Widget pill;
     if (isLiquid) {
+      final pillBlur = PlatformPerfProfile.clampLiveBlur(22);
+      final pillInner = Container(
+        height: widget.height,
+        padding: const EdgeInsets.symmetric(horizontal: 13),
+        decoration: BoxDecoration(
+          color: bg,
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Colors.white.withValues(alpha: skin.isLight ? 0.42 : 0.12),
+              Colors.transparent,
+            ],
+          ),
+        ),
+        child: rowContent,
+      );
       pill = CustomPaint(
         foregroundPainter: LiquidGlassRimPainter(
           radius: r,
@@ -1611,28 +1640,12 @@ class _VedroPullDownButtonState<T> extends State<VedroPullDownButton<T>> {
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(r),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(
-              sigmaX: PlatformPerfProfile.clampLiveBlur(22),
-              sigmaY: PlatformPerfProfile.clampLiveBlur(22),
-            ),
-            child: Container(
-              height: widget.height,
-              padding: const EdgeInsets.symmetric(horizontal: 13),
-              decoration: BoxDecoration(
-                color: bg,
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: skin.isLight ? 0.42 : 0.12),
-                    Colors.transparent,
-                  ],
-                ),
-              ),
-              child: rowContent,
-            ),
-          ),
+          child: pillBlur > 0.1
+              ? BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: pillBlur, sigmaY: pillBlur),
+                  child: pillInner,
+                )
+              : pillInner,
         ),
       );
     } else {
@@ -1734,11 +1747,12 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
       reverseCurve: Curves.easeInCubic,
     );
 
-    final r = skin.cardRadius.clamp(14.0, 22.0);
+    final r = skin.cardRadius.clamp(12.0, 22.0);
     final isLiquid = skin.isLiquidGlass;
     final menuBg = skin.isLight
-        ? Colors.white.withValues(alpha: isLiquid ? 0.76 : 0.88)
-        : Color.lerp(skin.surface2, Colors.black, 0.15)!.withValues(alpha: isLiquid ? 0.72 : 0.86);
+        ? Colors.white.withValues(alpha: isLiquid ? 0.88 : 0.96)
+        : Color.lerp(skin.surface2, skin.surface, 0.35)!
+            .withValues(alpha: isLiquid ? 0.86 : 0.96);
 
     final menuList = ConstrainedBox(
       constraints: BoxConstraints(
@@ -1858,24 +1872,13 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
         borderRadius: BorderRadius.circular(r),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: skin.isLight ? 0.18 : 0.56),
-            blurRadius: 34,
-            spreadRadius: 1,
+            color: Colors.black.withValues(alpha: skin.isLight ? 0.16 : 0.54),
+            blurRadius: 32,
+            spreadRadius: 0,
             offset: const Offset(0, 14),
           ),
         ],
       ),
-      foregroundDecoration: isLiquid
-          ? null
-          : BoxDecoration(
-              borderRadius: BorderRadius.circular(r),
-              border: Border.all(
-                color: skin.isLight
-                    ? Colors.white.withValues(alpha: 0.85)
-                    : Colors.white.withValues(alpha: 0.20),
-                width: 0.9,
-              ),
-            ),
       child: CustomPaint(
         foregroundPainter: isLiquid
             ? LiquidGlassRimPainter(
@@ -1886,11 +1889,19 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
             : null,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(r),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(
-              sigmaX: PlatformPerfProfile.clampLiveBlur(34),
-              sigmaY: PlatformPerfProfile.clampLiveBlur(34),
-            ),
+          child: DecoratedBox(
+            position: DecorationPosition.foreground,
+            decoration: isLiquid
+                ? const BoxDecoration()
+                : BoxDecoration(
+                    borderRadius: BorderRadius.circular(r),
+                    border: Border.all(
+                      color: skin.isLight
+                          ? Colors.black.withValues(alpha: 0.08)
+                          : Colors.white.withValues(alpha: 0.16),
+                      width: 0.85,
+                    ),
+                  ),
             child: DecoratedBox(
               decoration: BoxDecoration(
                 color: menuBg,
@@ -1898,7 +1909,7 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: [
-                    Colors.white.withValues(alpha: skin.isLight ? 0.45 : 0.10),
+                    Colors.white.withValues(alpha: skin.isLight ? 0.38 : (isLiquid ? 0.12 : 0.06)),
                     Colors.transparent,
                   ],
                 ),

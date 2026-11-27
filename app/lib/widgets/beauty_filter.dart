@@ -223,24 +223,6 @@ class BeautyFilterEngine {
     return BeautyFilterPreset.byId(presetId).scaledParams(strength.clamp(0.15, 1.0));
   }
 
-  /// Legacy compatibility helper (kept for existing unit tests; `PlayerScreen` no longer
-  /// applies a whole-screen `ColorFilter.matrix` veil so backgrounds stay 100% original).
-  static List<double>? buildColorMatrix(String presetId, double strength) {
-    final p = BeautyFilterPreset.byId(presetId);
-    if (p.id == 'off') return null;
-    final s = strength.clamp(0.15, 1.0);
-    final lift = 1.0 + p.whiten * s * 0.08;
-    final rGain = lift + p.rosy * s * 0.04;
-    final gGain = lift;
-    final bGain = lift + p.whiten * s * 0.02;
-    return <double>[
-      rGain, 0.0, 0.0, 0.0, 0.0,
-      0.0, gGain, 0.0, 0.0, 0.0,
-      0.0, 0.0, bGain, 0.0, 0.0,
-      0.0, 0.0, 0.0, 1.0, 0.0,
-    ];
-  }
-
   /// Generate a preset-scaled 2-Pass Portrait Beauty Camera GLSL shader.
   /// Returns `null` when `presetId == 'off'`.
   static String? buildGlslSource(

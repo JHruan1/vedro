@@ -19,7 +19,7 @@ import '../state/app_state.dart';
 import '../widgets/ai_bilingual_subtitle.dart';
 import '../widgets/beauty_filter.dart';
 import '../widgets/danmaku_engine.dart';
-import '../widgets/local_asr_engine.dart';
+import '../core/services/local_asr_engine.dart';
 import '../widgets/nerd_stats_hud.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
@@ -1532,13 +1532,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
             .catchError((_) => null),
       );
     }
-  }
-
-  String _fmtNetSpeed(int bps) {
-    if (bps <= 0) return '0 KB/s';
-    if (bps < 1024) return '$bps B/s';
-    if (bps < 1024 * 1024) return '${(bps / 1024).toStringAsFixed(bps < 10 * 1024 ? 1 : 0)} KB/s';
-    return '${(bps / (1024 * 1024)).toStringAsFixed(1)} MB/s';
   }
 
   @override
@@ -3582,7 +3575,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                   const SizedBox(width: 10),
                                   Text(
                                     showNet && bps > 0
-                                        ? '$label · ${_fmtNetSpeed(bps)}'
+                                        ? '$label · ${fmtTransferSpeed(bps)}'
                                         : '$label…',
                                     style: const TextStyle(
                                       color: VedroTheme.fg,
@@ -3637,7 +3630,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                     ),
                                     const SizedBox(width: 3.5),
                                     Text(
-                                      _fmtNetSpeed(bps),
+                                      fmtTransferSpeed(bps),
                                       style: const TextStyle(
                                         color: Colors.white,
                                         fontSize: 11.5,

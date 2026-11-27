@@ -547,14 +547,6 @@ class VedroUpdateChecker extends ChangeNotifier {
   }
 }
 
-String _fmtSpeed(int bps) {
-  if (bps <= 0) return '';
-  if (bps >= 1024 * 1024) {
-    return '${(bps / (1024 * 1024)).toStringAsFixed(1)} MB/s';
-  }
-  return '${(bps / 1024).toStringAsFixed(0)} KB/s';
-}
-
 Future<void> showVedroUpdateDialog(
   BuildContext context, {
   required String currentVersion,
@@ -737,7 +729,7 @@ Future<void> showVedroUpdateDialog(
                                     ),
                                     if (checker.speedBps > 0)
                                       Text(
-                                        _fmtSpeed(checker.speedBps),
+                                        fmtTransferSpeed(checker.speedBps, zeroLabel: ''),
                                         style: TextStyle(color: accent, fontSize: 11),
                                       ),
                                   ],

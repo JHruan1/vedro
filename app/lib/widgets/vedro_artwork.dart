@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../core/models/models.dart';
 import '../core/platform/platform_perf.dart';
 import '../core/theme/vedro_skin.dart';
+import '../core/utils/artwork_signal.dart';
 import '../state/app_state.dart';
 
 /// Deterministic, low-chroma two-tone field with clean display initials
@@ -105,13 +106,6 @@ class FadeNetworkImage extends StatefulWidget {
     this.placeholder,
   });
 
-  /// Bumped whenever server session / proxy transport becomes ready so any posters
-  /// that failed during cold start or VPN/proxy warm-up reload automatically in-place.
-  static final ValueNotifier<int> globalRefreshEpoch = ValueNotifier<int>(0);
-  static void notifyGlobalRefresh() {
-    globalRefreshEpoch.value = globalRefreshEpoch.value + 1;
-  }
-
   final String url;
   final BoxFit fit;
   final Alignment alignment;
@@ -132,7 +126,7 @@ class _FadeNetworkImageState extends State<FadeNetworkImage> {
   @override
   void initState() {
     super.initState();
-    FadeNetworkImage.globalRefreshEpoch.addListener(_onGlobalRefresh);
+    VedroArtworkSignal.refreshEpoch.addListener(_onGlobalRefresh);
   }
 
   @override
@@ -148,7 +142,7 @@ class _FadeNetworkImageState extends State<FadeNetworkImage> {
 
   @override
   void dispose() {
-    FadeNetworkImage.globalRefreshEpoch.removeListener(_onGlobalRefresh);
+    VedroArtworkSignal.refreshEpoch.removeListener(_onGlobalRefresh);
     _retryTimer?.cancel();
     super.dispose();
   }

@@ -15,6 +15,9 @@ if [ "$CARGO_VER" != "$PUBSPEC_VER" ] || [ "$CARGO_VER" != "$ISS_VER" ]; then
 fi
 echo "Versions aligned: $CARGO_VER"
 
+echo "=== [0.5/4] Enforceable architecture & contract check ==="
+python3 "$ROOT_DIR/scripts/check-architecture.py"
+
 echo "=== [1/4] Rust format, clippy & unit tests ==="
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings

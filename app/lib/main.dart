@@ -15,7 +15,7 @@ import 'core/theme/vedro_theme.dart';
 import 'screens/shell_screen.dart';
 import 'state/app_state.dart';
 import 'widgets/app_lock_gate.dart';
-import 'widgets/local_asr_engine.dart';
+import 'core/services/local_asr_engine.dart';
 import 'widgets/vedro_ui.dart';
 import 'widgets/windows_immersive_frame.dart';
 

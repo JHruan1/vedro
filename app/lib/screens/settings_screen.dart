@@ -16,7 +16,7 @@ import '../state/app_state.dart';
 import '../widgets/admin_console_pane.dart';
 import '../widgets/app_lock_gate.dart' show PinLockoutController;
 import '../widgets/beauty_filter.dart';
-import '../widgets/local_asr_engine.dart';
+import '../core/services/local_asr_engine.dart';
 import '../widgets/server_card_grid.dart';
 import '../widgets/skin_studio_pane.dart';
 import '../widgets/update_checker.dart';

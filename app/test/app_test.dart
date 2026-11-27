@@ -27,7 +27,7 @@ import 'package:vedro/widgets/ai_bilingual_subtitle.dart';
 import 'package:vedro/widgets/app_lock_gate.dart';
 import 'package:vedro/widgets/beauty_filter.dart';
 import 'package:vedro/widgets/danmaku_engine.dart';
-import 'package:vedro/widgets/local_asr_engine.dart';
+import 'package:vedro/core/services/local_asr_engine.dart';
 import 'package:vedro/widgets/media_card.dart';
 import 'package:vedro/widgets/server_card_grid.dart';
 import 'package:vedro/widgets/skin_studio_pane.dart';
@@ -2935,7 +2935,6 @@ void main() {
     expect(BeautyFilterPreset.all.length, equals(6));
     expect(BeautyFilterEngine.buildGlslSource('off', 0.55), isNull);
     expect(BeautyFilterEngine.buildGlslSourceFromParams(BeautyFilterParams.off), isNull);
-    expect(BeautyFilterEngine.buildColorMatrix('off', 0.55), isNull);
     for (final preset in BeautyFilterPreset.all.where((p) => p.id != 'off')) {
       for (final strength in const [0.15, 0.55, 1.0]) {
         final glsl = BeautyFilterEngine.buildGlslSource(preset.id, strength)!;
@@ -2947,9 +2946,6 @@ void main() {
         expect(glsl, isNot(contains('--')), reason: '${preset.id} must never emit -- operator');
         expect(glsl, contains('vedro_skin_mask'));
         expect(glsl, contains('skinMask'));
-        final matrix = BeautyFilterEngine.buildColorMatrix(preset.id, strength)!;
-        expect(matrix.length, equals(20));
-        expect(matrix.every((v) => v.isFinite), isTrue);
       }
     }
     // Stackable custom portrait combination + mobile lean 7-tap shader

@@ -213,6 +213,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
 
   // ASR audio slicing state (fixed 20s slice windows keyed by slice index)
   static const double asrSliceSecs = 20.0;
+  int _translateGeneration = 0;
   static const int _maxAsrAttemptsPerSlice = 2;
   static const int _maxAsrConsecutiveErrors = 3;
   static const List<int> _asrBackoffSecs = [4, 10, 25];
@@ -340,7 +341,9 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     String? displayMode,
     String? targetLang,
   }) async {
+    if (_disposed) return;
     final gen = ++_generation;
+    ++_translateGeneration;
     _cancelTimers();
     _enabled = true;
     _asrMode = false;
@@ -456,7 +459,9 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     String? targetLang,
     String? displayMode,
   }) async {
+    if (_disposed) return;
     ++_generation;
+    ++_translateGeneration;
     _cancelTimers();
     _enabled = true;
     _asrMode = true;
@@ -534,6 +539,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   void disable() {
     if (_disposed) return;
     ++_generation;
+    ++_translateGeneration;
     _cancelTimers();
     _enabled = false;
     _asrMode = false;
@@ -558,10 +564,11 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
   }
 
   /// YouTube-style instant target language switch inside the player.
+  /// Increments only `_translateGeneration` so active ASR slices continue uninterrupted!
   Future<void> setTargetLang(String lang) async {
     final trimmed = lang.trim();
     if (trimmed.isEmpty || _targetLang == trimmed || _disposed) return;
-    final gen = ++_generation;
+    final tGen = ++_translateGeneration;
     _flushPendingCachePersist();
     _translateDelayTimer?.cancel();
     _translateDelayTimer = null;
@@ -583,7 +590,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
       _activeCacheKey = cacheKey;
       if (cacheKey != null && _curLangMap.isEmpty) {
         final cached = await appState.loadAiTranslationCache(cacheKey);
-        if (gen != _generation || _disposed) return;
+        if (tGen != _translateGeneration || _disposed) return;
         if (cached.isNotEmpty) {
           final map = _curLangMap;
           cached.forEach((idx, txt) {
@@ -604,6 +611,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     if (_disposed) return;
     this.mediaTitle = mediaTitle;
     ++_generation;
+    ++_translateGeneration;
     _cancelTimers();
     _enabled = false;
     _asrMode = false;
@@ -707,7 +715,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     if (!_inFlightLiveKeys.add(key)) return;
 
     _lastTranslateRequestAt = DateTime.now();
-    final gen = _generation;
+    final tGen = _translateGeneration;
     final langAtStart = _targetLang;
     unawaited(() async {
       try {
@@ -718,7 +726,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
           mediaTitle: mediaTitle,
           targetLang: langAtStart,
         );
-        if (gen != _generation || _disposed) return;
+        if (tGen != _translateGeneration || _disposed) return;
         _translateConsecutiveErrors = 0;
         _translateCooldownUntil = null;
         final translated = res[0];
@@ -737,7 +745,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
           }
         }
       } catch (e) {
-        if (gen == _generation && !_disposed) {
+        if (tGen == _translateGeneration && !_disposed) {
           _recordTranslateError(e, policy);
           _safeNotify();
         }
@@ -747,7 +755,9 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
         if (policy.isPublicSharedApi) {
           _globalBiliLastCompletedAt = completedAt;
         }
-        _inFlightLiveKeys.remove(key);
+        if (tGen == _translateGeneration) {
+          _inFlightLiveKeys.remove(key);
+        }
       }
     }());
   }
@@ -997,7 +1007,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     _lastTranslateRequestAt = DateTime.now();
     _safeNotify();
 
-    final gen = _generation;
+    final tGen = _translateGeneration;
     final langAtStart = _targetLang;
     final cacheKeyAtStart = _activeCacheKey;
     // Map local sequential batch index (0..N-1) back to stableKey so ASR re-sorting can NEVER misalign results!
@@ -1014,7 +1024,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
           mediaTitle: mediaTitle,
           targetLang: langAtStart,
         );
-        if (gen != _generation || _disposed) return;
+        if (tGen != _translateGeneration || _disposed) return;
         _translateConsecutiveErrors = 0;
         _translateCooldownUntil = null;
         for (final c in batchCues) {
@@ -1034,7 +1044,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
           }
         }
       } catch (e) {
-        if (gen == _generation && !_disposed) {
+        if (tGen == _translateGeneration && !_disposed) {
           _recordTranslateError(e, policy);
         }
       } finally {
@@ -1043,9 +1053,11 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
         if (policy.isPublicSharedApi) {
           _globalBiliLastCompletedAt = completedAt;
         }
-        _inFlightBatchKeys.remove(batchKey);
-        _inFlightCueKeys.removeAll(cueKeysInBatch);
-        if (gen == _generation && !_disposed) {
+        if (tGen == _translateGeneration) {
+          _inFlightBatchKeys.remove(batchKey);
+          _inFlightCueKeys.removeAll(cueKeysInBatch);
+        }
+        if (tGen == _translateGeneration && !_disposed) {
           _refreshActiveCue();
           _safeNotify();
           if (!_translateCircuitOpen && _lastError == null) {
@@ -1167,7 +1179,9 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
           }
         }
       } finally {
-        _asrInFlightSlices.remove(sliceIdx);
+        if (gen == _generation) {
+          _asrInFlightSlices.remove(sliceIdx);
+        }
         if (gen == _generation && !_disposed) {
           _refreshActiveCue();
           _safeNotify();
@@ -1192,6 +1206,7 @@ class AiSubtitleTranslatorController extends ChangeNotifier {
     _flushPendingCachePersist();
     _disposed = true;
     ++_generation;
+    ++_translateGeneration;
     _cancelTimers(flushCache: false);
     activeCueNotifier.dispose();
     super.dispose();
@@ -1236,9 +1251,12 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // IMPORTANT: `Positioned.fill` MUST be the outermost widget so `Stack` receives
+    // `StackParentData` directly; `RepaintBoundary` sits INSIDE it to isolate subtitle repaints!
     return Positioned.fill(
-      child: IgnorePointer(
-        child: ValueListenableBuilder<BilingualCueSnapshot?>(
+      child: RepaintBoundary(
+        child: IgnorePointer(
+          child: ValueListenableBuilder<BilingualCueSnapshot?>(
           valueListenable: controller.activeCueNotifier,
           builder: (context, snap, _) {
             if (snap == null) return const SizedBox.shrink();
@@ -1398,6 +1416,7 @@ class AiBilingualSubtitleOverlay extends StatelessWidget {
               ),
             );
           },
+        ),
         ),
       ),
     );

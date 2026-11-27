@@ -869,6 +869,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _autoRetryCount += 1;
       _retryAnchorSecs = _positionSecs;
       final attempt = _autoRetryCount;
+      final retryGen = _playbackGen;
       _flashGestureHud('seek_feedback', text: '网络波动，正在自动重连（第 $attempt/2 次）…');
       unawaited(() async {
         try {
@@ -877,7 +878,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           }
         } catch (_) {}
         await Future<void>.delayed(Duration(milliseconds: 800 * attempt));
-        if (!mounted || _disposed) return;
+        if (!mounted || _disposed || retryGen != _playbackGen) return;
         await _startPlayback(_prepared?.mediaSourceId, resumeFromSecs: _positionSecs);
       }());
       return;
@@ -1018,14 +1019,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   void _onTracksChanged(Tracks tracks) {
-    if (!mounted || (_activeLocalPath != null && _activeLocalPath!.isNotEmpty)) return;
+    if (!mounted || _disposed || !_isServerStream) return;
     final realAudios = tracks.audio.where((t) => t.id != 'auto' && t.id != 'no').toList();
     final realSubs = tracks.subtitle.where((t) => t.id != 'auto' && t.id != 'no').toList();
     if (realAudios.isEmpty && realSubs.isEmpty) return;
 
-    final srcId = (widget.mediaSourceId != null && widget.mediaSourceId!.isNotEmpty)
-        ? widget.mediaSourceId!
-        : (_prepared?.allSources.isNotEmpty == true ? _prepared!.allSources.first.id : 'default');
+    final srcId = (_prepared?.mediaSourceId.isNotEmpty == true)
+        ? _prepared!.mediaSourceId
+        : ((widget.mediaSourceId != null && widget.mediaSourceId!.isNotEmpty)
+            ? widget.mediaSourceId!
+            : (_prepared?.allSources.isNotEmpty == true ? _prepared!.allSources.first.id : 'default'));
     final cacheKey = '${_currentItem.id}::$srcId::${realAudios.length}::${realSubs.length}';
     if (!_savedLearnedTrackKeys.add(cacheKey)) return;
 
@@ -1195,26 +1198,30 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (!mounted) return;
     // Fallback manual path input when native dialog isn't available or cancelled on mobile
     if (!_isDesktop) {
-      final ctrl = TextEditingController();
-      final ok = await showDialog<bool>(
+      final pickedPath = await showDialog<String>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('加载本地外挂字幕'),
-          content: TextField(
-            controller: ctrl,
-            autofocus: true,
-            decoration: const InputDecoration(hintText: '/path/to/subtitle.ass'),
+        builder: (ctx) => VedroControllerScope<TextEditingController>(
+          create: () => TextEditingController(),
+          dispose: (c) => c.dispose(),
+          builder: (ctx, ctrl) => AlertDialog(
+            title: const Text('加载本地外挂字幕'),
+            content: TextField(
+              controller: ctrl,
+              autofocus: true,
+              decoration: const InputDecoration(hintText: '/path/to/subtitle.ass'),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+                child: const Text('加载'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('加载')),
-          ],
         ),
       );
-      final p = ctrl.text.trim();
-      ctrl.dispose();
-      if (ok == true && p.isNotEmpty) {
-        await _loadExternalSubtitleFile(p);
+      if (mounted && pickedPath != null && pickedPath.isNotEmpty) {
+        await _loadExternalSubtitleFile(pickedPath);
       }
     }
   }
@@ -1708,6 +1715,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   Future<void> _applyMpvProperty(String key, String value) async {
+    if (_disposed) return;
     final platform = _player.platform;
     if (platform is NativePlayer) {
       try {
@@ -1717,6 +1725,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   Future<String?> _readMpvProperty(String key) async {
+    if (_disposed) return null;
     final platform = _player.platform;
     if (platform is NativePlayer) {
       try {
@@ -1822,7 +1831,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> _applyInitialPreferencesToMpv({
     Map<String, String> prepOptions = const {},
+    bool applyInitialOverrides = false,
   }) async {
+    if (_disposed) return;
     final p = widget.appState.prefs;
     const skipKeys = {'vo', 'ao', 'gpu-api', 'gpu-context'};
     final props = <String, String>{};
@@ -1856,11 +1867,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       props['dither-depth'] = 'no';
     }
 
-    // Apply preferred audio & subtitle language priorities (honoring per-version override on initial ep!)
+    // Apply preferred audio & subtitle language priorities:
+    // Priority: Explicit initial override > per-series saved pref (`prepOptions`) > global preference.
+    final hasExplicitAudioOverride =
+        applyInitialOverrides && (widget.preferredAudioLangOverride?.isNotEmpty == true);
+    final hasExplicitSubOverride = applyInitialOverrides &&
+        (widget.initialSubtitleStreamIndex == -1 ||
+            (widget.preferredSubLangOverride?.isNotEmpty == true));
     final effAudioPref =
-        (_isInitialEpisode ? widget.preferredAudioLangOverride : null) ?? p.preferredAudioLang;
+        hasExplicitAudioOverride ? widget.preferredAudioLangOverride! : p.preferredAudioLang;
     final effSubPref =
-        (_isInitialEpisode ? widget.preferredSubLangOverride : null) ?? p.preferredSubLang;
+        hasExplicitSubOverride ? (widget.preferredSubLangOverride ?? p.preferredSubLang) : p.preferredSubLang;
     final alang = switch (effAudioPref) {
       'zh' => 'cmn,zh,chi,zho,chs,cn,mandarin',
       'yue' => 'yue,cantonese,zh-hk,zho,chi',
@@ -1870,11 +1887,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _ => '',
     };
     if (alang.isNotEmpty) {
-      props['alang'] = alang;
+      if (hasExplicitAudioOverride || !props.containsKey('alang')) {
+        props['alang'] = alang;
+      }
     }
-    if ((_isInitialEpisode && widget.initialSubtitleStreamIndex == -1) || effSubPref == 'off') {
+    if ((applyInitialOverrides && widget.initialSubtitleStreamIndex == -1) ||
+        (effSubPref == 'off' && !props.containsKey('slang'))) {
       props['sid'] = 'no';
-    } else {
+    } else if (props['sid'] != 'no') {
       final slang = switch (effSubPref) {
         'zh' => 'chs,sc,zh-cn,zh-hans,zh,chi,zho,cn',
         'zh-Hant' => 'cht,tc,zh-tw,zh-hk,zh-hant,zho,chi,zh',
@@ -1882,7 +1902,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         'ja' => 'ja,jpn,jp',
         _ => '',
       };
-      if (slang.isNotEmpty) {
+      if (slang.isNotEmpty && (hasExplicitSubOverride || !props.containsKey('slang'))) {
         props['slang'] = slang;
       }
     }
@@ -1920,17 +1940,25 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     await Future.wait(
       props.entries.map((e) => _applyMpvProperty(e.key, e.value)),
     );
+    if (_disposed) return;
     await _applyAspectMode(_aspectMode);
+    if (_disposed) return;
     await _applyAudioMode();
+    if (_disposed) return;
     await _applyVideoFilterChain();
+    if (_disposed) return;
     if (_anime4kActive) {
       await _applyAnime4k(true);
     }
+    if (_disposed) return;
     if (_beautyPreset != 'off') {
       await _applyBeautyFilter(_beautyPreset, _beautyStrength, persist: false, showHud: false);
     }
+    if (_disposed) return;
     await _applyCustomMpvConf(p.customMpvConf);
+    if (_disposed) return;
     await _applyVolumeToEngine(_muted ? 0.0 : _volume);
+    if (_disposed) return;
     if ((_speed - 1.0).abs() > 0.01) {
       await _player.setRate(_speed);
     }
@@ -2083,6 +2111,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
     final src = _resolveBestSubtitleSourceForAi();
     await _applyMpvProperty('sub-visibility', 'no');
+    if (!mounted || _disposed) return;
     await _aiSubCtrl.enable(
       subtitleUrl: src.url,
       localPath: src.localPath,
@@ -2092,7 +2121,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       displayMode: widget.appState.prefs.aiSubtitleMode,
       targetLang: targetLangOverride ?? _aiSubCtrl.targetLang,
     );
-    if (mounted) {
+    if (mounted && !_disposed) {
       _flashGestureHud(
         'seek_feedback',
         text: 'AI 双语字幕已开启 → ${_aiSubCtrl.targetLang}',
@@ -2104,6 +2133,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (widget.appState.prefs.asrEngine == 'local') {
       await LocalAsrManager.instance.refreshStatus();
     }
+    if (!mounted || _disposed) return;
     if (!widget.appState.isAsrReadyForPlayback) {
       _flashGestureHud(
         'seek_feedback',
@@ -2114,6 +2144,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       return;
     }
     await _applyMpvProperty('sub-visibility', 'no');
+    if (!mounted || _disposed) return;
     await _aiSubCtrl.enableAsr(
       sourceUrl: _prepared?.proxyUrl ?? _activeNetworkUrl,
       localPath: _activeLocalPath,
@@ -2123,7 +2154,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       targetLang: _aiSubCtrl.targetLang,
       displayMode: widget.appState.prefs.aiSubtitleMode,
     );
-    if (mounted) {
+    if (mounted && !_disposed) {
       _flashGestureHud(
         'seek_feedback',
         text: widget.appState.prefs.asrEngine == 'local'
@@ -2378,7 +2409,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       // 1. Direct network stream URL (http/https/rtsp/rtmp/mms/udp/rtp)
       if (_isDirectNetwork) {
         final netUrl = _activeNetworkUrl!;
-        await _applyInitialPreferencesToMpv();
+        await _applyInitialPreferencesToMpv(applyInitialOverrides: applyInitialOverrides);
         if (!mounted || _disposed || gen != _playbackGen) return;
         final startSecs = resumeFromSecs ?? 0.0;
         await _player.open(
@@ -2422,7 +2453,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       // 2. Local offline downloaded / user-picked video file
       if (_isLocalFile) {
         final localPath = _activeLocalPath!;
-        await _applyInitialPreferencesToMpv();
+        await _applyInitialPreferencesToMpv(applyInitialOverrides: applyInitialOverrides);
         if (!mounted || _disposed || gen != _playbackGen) return;
         double startSecs = resumeFromSecs ?? 0.0;
         if (resumeFromSecs == null && p.rememberPosition) {
@@ -2520,7 +2551,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           prepOptions['slang'] = prefSlang;
         }
       }
-      await _applyInitialPreferencesToMpv(prepOptions: prepOptions);
+      await _applyInitialPreferencesToMpv(
+        prepOptions: prepOptions,
+        applyInitialOverrides: applyInitialOverrides,
+      );
       if (!mounted || _disposed || gen != _playbackGen) return;
 
       final Duration? startDur;
@@ -3471,18 +3505,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         ),
                       ),
 
-                    // AI Bilingual / ASR Lookahead Subtitle Overlay (isolated RepaintBoundary + ValueNotifier)
-                    RepaintBoundary(
-                      child: AiBilingualSubtitleOverlay(
-                        controller: _aiSubCtrl,
-                        subScale: _subScale,
-                        translationFontScale: _aiSubFontScale,
-                        subPos: _subPos,
-                        colorHex: widget.appState.prefs.subtitleColorHex,
-                        outlineWidth: widget.appState.prefs.subtitleOutlineWidth,
-                        bgOpacity: widget.appState.prefs.subtitleBgOpacity,
-                        fontFamily: _subFontFamily,
-                      ),
+                    // AI Bilingual / ASR Lookahead Subtitle Overlay (`Positioned.fill` sits directly
+                    // in `Stack`, with internal `RepaintBoundary` + `ValueNotifier` isolating repaints)
+                    AiBilingualSubtitleOverlay(
+                      controller: _aiSubCtrl,
+                      subScale: _subScale,
+                      translationFontScale: _aiSubFontScale,
+                      subPos: _subPos,
+                      colorHex: widget.appState.prefs.subtitleColorHex,
+                      outlineWidth: widget.appState.prefs.subtitleOutlineWidth,
+                      bgOpacity: widget.appState.prefs.subtitleBgOpacity,
+                      fontFamily: _subFontFamily,
                     ),
 
                     // GPU-cached Canvas Danmaku overlay driven solely by _positionNotifier
@@ -4066,9 +4099,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                     },
                                     child: Container(
                                       padding: EdgeInsets.fromLTRB(
-                                        (isMac && !_isFullscreen) ? 82 : 20,
+                                        (isMac && !_isFullscreen)
+                                            ? (MediaQuery.sizeOf(context).width < 560 ? 20 : 82)
+                                            : 20,
                                         topPad + 12,
-                                        (!kIsWeb && Platform.isWindows && !_isFullscreen) ? 148 : 20,
+                                        (!kIsWeb && Platform.isWindows && !_isFullscreen)
+                                            ? (MediaQuery.sizeOf(context).width < 560 ? 20 : 148)
+                                            : 20,
                                         28,
                                       ),
                                       decoration: const BoxDecoration(
@@ -5184,12 +5221,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   void _openDanmakuSheet() {
-    final queryCtrl = TextEditingController(
-      text: _currentItem.seriesName ?? _currentItem.displayName,
-    );
     _openPlayerSheet<void>(
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModal) {
+      builder: (ctx) => VedroControllerScope<TextEditingController>(
+        create: () => TextEditingController(
+          text: _currentItem.seriesName ?? _currentItem.displayName,
+        ),
+        dispose: (c) => c.dispose(),
+        builder: (ctx, queryCtrl) => StatefulBuilder(
+          builder: (ctx, setModal) {
           Future<void> runSearch() async {
             final kw = queryCtrl.text.trim();
             if (kw.isEmpty || _danmakuLoading || _danmakuSearching) return;
@@ -5497,7 +5536,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         );
         },
       ),
-    ).whenComplete(queryCtrl.dispose);
+      ),
+    );
   }
 
   void _openSpeedSheet() {
@@ -5563,14 +5603,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   void _openHdrSheet() {
+    // Keys match Rust `ToneMappingAlgorithm` snake_case values AND `SettingsScreen`
     const algos = {
-      'bt.2446a': 'BT.2446a（自然高光保留）',
+      'bt2446a': 'BT.2446a（自然高光保留）',
       'spline': 'Spline（曲线动态映射）',
-      'st2094-40': 'ST.2094-40（动态元数据）',
+      'st2094_40': 'ST.2094-40（动态元数据）',
       'reinhard': 'Reinhard（高亮温和压缩）',
       'hable': 'Hable（电影感曲线）',
       'clip': 'Clip（直通无压缩）',
     };
+    final currentNormalized = _normalizeToneMapping(_toneMapping);
     _openPlayerSheet<void>(
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
@@ -5606,11 +5648,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
             const Divider(height: 16),
             ...algos.entries.map((e) => _SheetOptionRow(
                   label: e.value,
-                  selected: e.key == _toneMapping,
+                  selected: _normalizeToneMapping(e.key) == currentNormalized,
                   onTap: () async {
                     Navigator.pop(ctx);
-                    setState(() => _toneMapping = e.key);
-                    await _applyMpvProperty('tone-mapping', _normalizeToneMapping(e.key));
+                    final mpvVal = _normalizeToneMapping(e.key);
+                    setState(() => _toneMapping = mpvVal);
+                    await _applyMpvProperty('tone-mapping', mpvVal);
                     unawaited(widget.appState.saveSettings({
                       ...widget.appState.settings,
                       'tone_mapping': e.key,
@@ -5929,7 +5972,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                               ),
                               onSelected: (langId) async {
                                 unawaited(widget.appState.updatePrefs(
-                                  prefs.copyWith(aiTargetLang: langId),
+                                  widget.appState.prefs.copyWith(aiTargetLang: langId),
                                 ));
                                 if (!_aiSubCtrl.enabled) {
                                   await _enableAiSubtitleTranslation(targetLangOverride: langId);
@@ -6013,7 +6056,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                               onSelected: (modeId) {
                                 _aiSubCtrl.setDisplayMode(modeId);
                                 unawaited(widget.appState.updatePrefs(
-                                  prefs.copyWith(aiSubtitleMode: modeId),
+                                  widget.appState.prefs.copyWith(aiSubtitleMode: modeId),
                                 ));
                                 if (ctx.mounted) setModal(() {});
                               },
@@ -6104,7 +6147,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                           setModal(() => _aiSubFontScale = v);
                           setState(() => _aiSubFontScale = v);
                           unawaited(widget.appState.updatePrefs(
-                            prefs.copyWith(aiSubtitleFontScale: v),
+                            widget.appState.prefs.copyWith(aiSubtitleFontScale: v),
                           ));
                         },
                       ),

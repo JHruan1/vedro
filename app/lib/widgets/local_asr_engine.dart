@@ -497,6 +497,9 @@ class LocalAsrManager extends ChangeNotifier {
           _workerExitPort = null;
           _workerErrorPort?.close();
           _workerErrorPort = null;
+          try {
+            isolate.kill(priority: Isolate.immediate);
+          } catch (_) {}
           _failPendingReplies(reason);
         }
       }

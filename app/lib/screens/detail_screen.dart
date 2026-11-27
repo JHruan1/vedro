@@ -169,6 +169,7 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Future<void> _loadDetails() async {
+    if (!mounted) return;
     setState(() {
       _loading = true;
       _loadError = null;
@@ -446,25 +447,29 @@ class _DetailScreenState extends State<DetailScreen> {
     if (!mounted) return;
     final isDesktop = !kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux);
     if (!isDesktop) {
-      final ctrl = TextEditingController();
-      final ok = await showDialog<bool>(
+      final p = await showDialog<String>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('挂载本地外挂字幕'),
-          content: TextField(
-            controller: ctrl,
-            autofocus: true,
-            decoration: const InputDecoration(hintText: '/path/to/subtitle.ass'),
+        builder: (ctx) => VedroControllerScope<TextEditingController>(
+          create: () => TextEditingController(),
+          dispose: (c) => c.dispose(),
+          builder: (ctx, ctrl) => AlertDialog(
+            title: const Text('挂载本地外挂字幕'),
+            content: TextField(
+              controller: ctrl,
+              autofocus: true,
+              decoration: const InputDecoration(hintText: '/path/to/subtitle.ass'),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+                child: const Text('确定'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('确定')),
-          ],
         ),
       );
-      final p = ctrl.text.trim();
-      ctrl.dispose();
-      if (ok == true && p.isNotEmpty && mounted) {
+      if (p != null && p.isNotEmpty && mounted) {
         setState(() {
           _localExternalSubPath = p;
           if (_selectedSubtitleIndex == -1) _selectedSubtitleIndex = null;
@@ -1375,8 +1380,16 @@ class _DetailScreenState extends State<DetailScreen> {
                 active: _item.played,
                 color: _item.played ? accent : skin.fg,
                 onTap: () async {
-                  await widget.appState.togglePlayed(_item);
-                  await _loadDetails();
+                  try {
+                    await widget.appState.togglePlayed(_item);
+                    if (mounted) await _loadDetails();
+                  } catch (e) {
+                    if (mounted && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('更新播放状态失败：${VedroErrorFormatter.friendly(e)}')),
+                      );
+                    }
+                  }
                 },
               ),
             (
@@ -1387,8 +1400,16 @@ class _DetailScreenState extends State<DetailScreen> {
               active: _item.isFavorite,
               color: _item.isFavorite ? VedroTheme.danger : skin.fg,
               onTap: () async {
-                await widget.appState.toggleFavorite(_item);
-                await _loadDetails();
+                try {
+                  await widget.appState.toggleFavorite(_item);
+                  if (mounted) await _loadDetails();
+                } catch (e) {
+                  if (mounted && context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('更新收藏状态失败：${VedroErrorFormatter.friendly(e)}')),
+                    );
+                  }
+                }
               },
             ),
             if (liveLocalReady || canDownload)
@@ -4734,8 +4755,14 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
           _ensureDefaultVersion();
         });
       }
+    } catch (e) {
+      if (mounted && _seasonId == seasonId) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('加载分集失败：${VedroErrorFormatter.friendly(e)}')),
+        );
+      }
     } finally {
-      if (mounted) setState(() => _loadingSeason = false);
+      if (mounted && _seasonId == seasonId) setState(() => _loadingSeason = false);
     }
   }
 

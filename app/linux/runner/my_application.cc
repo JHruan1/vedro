@@ -261,6 +261,28 @@ static void hw_method_call_cb(FlMethodChannel* channel,
   } else if (strcmp(method, "enterPiP") == 0) {
     g_autoptr(FlValue) val = fl_value_new_bool(FALSE);
     response = FL_METHOD_RESPONSE(fl_method_success_response_new(val));
+  } else if (strcmp(method, "installUpdatePackage") == 0) {
+    gboolean ok = FALSE;
+    const gchar* err_msg = "无法打开更新包";
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
+      FlValue* pv = fl_value_lookup_string(args, "path");
+      if (pv && fl_value_get_type(pv) == FL_VALUE_TYPE_STRING) {
+        const gchar* path = fl_value_get_string(pv);
+        if (path && *path && g_file_test(path, G_FILE_TEST_IS_REGULAR)) {
+          g_autofree gchar* parent = g_path_get_dirname(path);
+          g_autofree gchar* uri = g_filename_to_uri(parent, nullptr, nullptr);
+          if (uri) {
+            ok = gtk_show_uri_on_window(self->main_window, uri, GDK_CURRENT_TIME, nullptr);
+          }
+        }
+      }
+    }
+    g_autoptr(FlValue) map = fl_value_new_map();
+    fl_value_set_string_take(map, "ok", fl_value_new_bool(ok));
+    if (!ok) {
+      fl_value_set_string_take(map, "message", fl_value_new_string(err_msg));
+    }
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(map));
   } else {
     response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
   }

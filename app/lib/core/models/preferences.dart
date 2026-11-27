@@ -430,6 +430,7 @@ class VedroPreferences {
     this.confirmExitApp = true,
     this.incognitoMode = false,
     this.tvModeOverride = false,
+    this.autoCheckUpdates = true,
     this.ignoredUpdateVersion = '',
     // 播放设置
     this.bufferSizeMb = 128,
@@ -559,6 +560,7 @@ class VedroPreferences {
   final bool confirmExitApp;
   final bool incognitoMode;
   final bool tvModeOverride;
+  final bool autoCheckUpdates;
   final String ignoredUpdateVersion;
 
   final int bufferSizeMb;
@@ -839,6 +841,7 @@ class VedroPreferences {
     bool? confirmExitApp,
     bool? incognitoMode,
     bool? tvModeOverride,
+    bool? autoCheckUpdates,
     String? ignoredUpdateVersion,
     int? bufferSizeMb,
     bool? autoPlayNext,
@@ -955,6 +958,7 @@ class VedroPreferences {
         confirmExitApp: confirmExitApp ?? this.confirmExitApp,
         incognitoMode: incognitoMode ?? this.incognitoMode,
         tvModeOverride: tvModeOverride ?? this.tvModeOverride,
+        autoCheckUpdates: autoCheckUpdates ?? this.autoCheckUpdates,
         ignoredUpdateVersion: ignoredUpdateVersion ?? this.ignoredUpdateVersion,
         bufferSizeMb: bufferSizeMb ?? this.bufferSizeMb,
         autoPlayNext: autoPlayNext ?? this.autoPlayNext,
@@ -1072,6 +1076,7 @@ class VedroPreferences {
         'confirm_exit_app': confirmExitApp,
         'incognito_mode': incognitoMode,
         'tv_mode_override': tvModeOverride,
+        'auto_check_updates': autoCheckUpdates,
         'ignored_update_version': ignoredUpdateVersion,
         'buffer_size_mb': bufferSizeMb,
         'auto_play_next': autoPlayNext,
@@ -1199,6 +1204,7 @@ class VedroPreferences {
         confirmExitApp: j['confirm_exit_app'] != false,
         incognitoMode: j['incognito_mode'] == true,
         tvModeOverride: j['tv_mode_override'] == true,
+        autoCheckUpdates: j['auto_check_updates'] != false,
         ignoredUpdateVersion: (j['ignored_update_version'] ?? '').toString(),
         bufferSizeMb: _clampedInt(j['buffer_size_mb'], 128, 16, 1024),
         autoPlayNext: j['auto_play_next'] != false,

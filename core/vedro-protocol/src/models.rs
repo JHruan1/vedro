@@ -930,6 +930,7 @@ pub struct ItemsQuery {
     pub genre_ids: Option<String>,
     pub genres: Option<String>,
     pub studio_ids: Option<String>,
+    pub studios: Option<String>,
     pub tag_ids: Option<String>,
     pub tags: Option<String>,
     pub years: Option<String>,

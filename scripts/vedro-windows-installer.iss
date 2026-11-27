@@ -2,7 +2,7 @@
 ; Compiled automatically by scripts/build-windows.ps1 -> dist/vedro-v<Version>-windows-x64-setup.exe
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.1"
+  #define MyAppVersion "1.0.2"
 #endif
 #ifndef MyReleaseDir
   #define MyReleaseDir "..\app\build\windows\x64\runner\Release"
@@ -41,7 +41,7 @@ SolidCompression=yes
 LZMAUseSeparateProcess=yes
 WizardStyle=modern
 CloseApplications=yes
-RestartApplications=no
+RestartApplications=yes
 
 [Languages]
 #ifdef HasChineseSimplified
@@ -73,4 +73,4 @@ Root: HKA; Subkey: "Software\Classes\Applications\Vedro.exe\SupportedTypes"; Val
 Root: HKA; Subkey: "Software\Classes\Applications\Vedro.exe\SupportedTypes"; ValueType: string; ValueName: ".flv"; ValueData: ""
 
 [Run]
-Filename: "{app}\Vedro.exe"; Description: "{cm:LaunchProgram,Vedro}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Vedro.exe"; Description: "{cm:LaunchProgram,Vedro}"; Flags: nowait postinstall

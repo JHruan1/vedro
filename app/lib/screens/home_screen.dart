@@ -528,7 +528,16 @@ void showMediaItemContextSheet({
   final navigator = Navigator.of(context);
 
   Future<void> openAddToPlaylistSheet() async {
-    await appState.refreshPlaylists();
+    try {
+      await appState.refreshPlaylists();
+    } catch (e) {
+      if (context.mounted) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('加载片单失败：${VedroErrorFormatter.friendly(e)}')),
+        );
+      }
+      return;
+    }
     if (!context.mounted) return;
     showGlassSheet<void>(
       context: context,
@@ -720,8 +729,15 @@ void showMediaItemContextSheet({
             ),
             onTap: () {
               Navigator.pop(ctx);
-              appState.hideFromResume(item.id);
-              onMutated?.call();
+              unawaited(appState.hideFromResume(item.id).then((_) {
+                onMutated?.call();
+              }).catchError((Object e) {
+                if (context.mounted) {
+                  messenger.showSnackBar(
+                    SnackBar(content: Text('移除失败：${VedroErrorFormatter.friendly(e)}')),
+                  );
+                }
+              }));
             },
           ),
       ],

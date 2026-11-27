@@ -496,10 +496,13 @@ pub fn parse_subtitle_batch_response(
             }
         }
         if let Some(prev) = last_idx {
-            if let Some(entry) = map.get_mut(&prev) {
-                entry.push('\n');
-                entry.push_str(trimmed);
-            }
+            let cont = trimmed.replace(" / ", "\n");
+            map.entry(prev)
+                .and_modify(|entry| {
+                    entry.push('\n');
+                    entry.push_str(&cont);
+                })
+                .or_insert(cont);
         }
     }
 

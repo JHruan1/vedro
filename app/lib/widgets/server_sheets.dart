@@ -69,6 +69,8 @@ class _AddServerFormState extends State<_AddServerForm> {
   String? _qcCode;
   String? _qcSecret;
   bool _qcStarting = false;
+  bool _qcPolling = false;
+  bool _qcDone = false;
   Timer? _qcPollTimer;
 
   @override
@@ -145,14 +147,19 @@ class _AddServerFormState extends State<_AddServerForm> {
         _qcSecret = secret;
         _qcStarting = false;
       });
+      _qcPolling = false;
+      _qcDone = false;
       _qcPollTimer = Timer.periodic(const Duration(seconds: 3), (t) async {
-        if (!mounted || _qcSecret == null) {
+        if (!mounted || _qcSecret == null || _qcDone) {
           t.cancel();
           return;
         }
+        if (_qcPolling) return;
+        _qcPolling = true;
         try {
           final done = await widget.appState.pollQuickConnect(_qcSecret!);
-          if (done) {
+          if (done && !_qcDone) {
+            _qcDone = true;
             t.cancel();
             if (mounted) Navigator.of(context).pop(true);
           }
@@ -165,6 +172,8 @@ class _AddServerFormState extends State<_AddServerForm> {
               _localError = VedroErrorFormatter.format(e);
             });
           }
+        } finally {
+          _qcPolling = false;
         }
       });
     } catch (e) {

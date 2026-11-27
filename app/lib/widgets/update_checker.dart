@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -5,10 +6,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/ffi/vedro_bridge.dart';
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
 import '../core/theme/vedro_skin.dart';
 import 'app_lock_gate.dart';
+import 'vedro_ui.dart';
 
 bool isTrustedReleaseUrl(String raw) {
   final trimmed = raw.trim();
@@ -24,7 +27,8 @@ bool isTrustedReleaseUrl(String raw) {
     return uri.path.startsWith('/${VedroUpdateChecker.repoSlug}/releases');
   }
   return host == 'objects.githubusercontent.com' ||
-      host == 'release-assets.githubusercontent.com';
+      host == 'release-assets.githubusercontent.com' ||
+      host == 'github-releases.githubusercontent.com';
 }
 
 class VedroReleaseAsset {
@@ -32,16 +36,21 @@ class VedroReleaseAsset {
     required this.name,
     required this.downloadUrl,
     required this.sizeBytes,
+    this.sha256,
   });
 
   final String name;
   final String downloadUrl;
   final int sizeBytes;
+  final String? sha256;
 
   factory VedroReleaseAsset.fromJson(Map<String, dynamic> j) => VedroReleaseAsset(
         name: (j['name'] ?? '').toString(),
-        downloadUrl: (j['browser_download_url'] ?? '').toString(),
+        downloadUrl: (j['browser_download_url'] ?? j['url'] ?? '').toString(),
         sizeBytes: (j['size'] as num?)?.toInt() ?? 0,
+        sha256: j['sha256']?.toString().trim().isNotEmpty == true
+            ? j['sha256'].toString().trim().toLowerCase()
+            : null,
       );
 }
 
@@ -66,7 +75,7 @@ class VedroReleaseInfo {
 
   factory VedroReleaseInfo.fromGitHubJson(Map<String, dynamic> j) {
     final tag = (j['tag_name'] ?? '').toString().trim();
-    final normVersion = normalizeSemver(tag);
+    final normVersion = normalizeSemver(tag.isNotEmpty ? tag : (j['version'] ?? '').toString());
     final rawAssets = ((j['assets'] as List<dynamic>?) ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(VedroReleaseAsset.fromJson)
@@ -77,11 +86,11 @@ class VedroReleaseInfo {
         ? rawHtmlUrl
         : 'https://github.com/JHruan1/vedro/releases';
     return VedroReleaseInfo(
-      tagName: tag,
+      tagName: tag.isNotEmpty ? tag : 'v$normVersion',
       version: normVersion,
       title: (j['name']?.toString().trim().isNotEmpty == true)
           ? j['name'].toString().trim()
-          : tag,
+          : (tag.isNotEmpty ? tag : 'v$normVersion'),
       releaseNotes: (j['body'] ?? '').toString().trim(),
       htmlUrl: safeHtmlUrl,
       publishedAt: j['published_at']?.toString(),
@@ -89,8 +98,8 @@ class VedroReleaseInfo {
     );
   }
 
-  /// Match the best installer package for the current OS.
-  VedroReleaseAsset? bestAssetForPlatform({String? osOverride}) {
+  /// Match the best installer package for the current OS & CPU ABI.
+  VedroReleaseAsset? bestAssetForPlatform({String? osOverride, String? abiOverride}) {
     final os = (osOverride ?? (kIsWeb ? 'web' : Platform.operatingSystem)).toLowerCase();
     VedroReleaseAsset? findMatching(bool Function(String lower) test) {
       for (final a in assets) {
@@ -108,6 +117,11 @@ class VedroReleaseInfo {
         return findMatching((n) => n.endsWith('.dmg')) ??
             findMatching((n) => n.contains('macos'));
       case 'android':
+        final rawAbi = (abiOverride ?? NativePlaybackChannel.detectedPrimaryAbi).trim().toLowerCase();
+        if (rawAbi.isNotEmpty) {
+          final exact = findMatching((n) => n.contains(rawAbi) && n.endsWith('.apk'));
+          if (exact != null) return exact;
+        }
         return findMatching((n) => n.contains('arm64-v8a') && n.endsWith('.apk')) ??
             findMatching((n) => n.contains('universal') && n.endsWith('.apk')) ??
             findMatching((n) => n.endsWith('.apk'));
@@ -179,14 +193,17 @@ int compareSemver(String a, String b) {
 
 typedef ReleaseJsonFetcher = Future<Map<String, dynamic>> Function(String currentVersion);
 
-/// Cross-platform GitHub Releases in-app update checker.
+/// Cross-platform GitHub Releases in-app auto-updater powered by Rust core proxy + SHA-256 verification.
 class VedroUpdateChecker extends ChangeNotifier {
-  VedroUpdateChecker({ReleaseJsonFetcher? fetcher}) : _fetcher = fetcher;
+  VedroUpdateChecker({ReleaseJsonFetcher? fetcher, VedroCoreClient? core})
+      : _fetcher = fetcher,
+        _core = core;
 
   static const String repoSlug = 'JHruan1/vedro';
   static final VedroUpdateChecker instance = VedroUpdateChecker();
 
   final ReleaseJsonFetcher? _fetcher;
+  VedroCoreClient? _core;
 
   bool isChecking = false;
   VedroReleaseInfo? latestRelease;
@@ -195,8 +212,49 @@ class VedroUpdateChecker extends ChangeNotifier {
   String? currentVersion;
   String? ignoredVersion;
   bool _startupChecked = false;
+  VoidCallback? _unlockListener;
+
+  // In-app update download state
+  String downloadStatus = 'idle'; // idle | downloading | verifying | ready | error | cancelled
+  int downloadedBytes = 0;
+  int? totalBytes;
+  int speedBps = 0;
+  String? downloadedFilePath;
+  String? downloadedFileName;
+  String? downloadedSha256;
+  bool sha256Verified = false;
+  String? downloadError;
+  Timer? _pollTimer;
+
+  bool get canInAppDownload {
+    if (_core == null || kIsWeb) return false;
+    return Platform.isAndroid || Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+  }
+
+  bool get isDownloading => downloadStatus == 'downloading' || downloadStatus == 'verifying';
+
+  double? get downloadProgress {
+    final total = totalBytes;
+    if (total == null || total <= 0) return null;
+    return (downloadedBytes / total).clamp(0.0, 1.0);
+  }
+
+  void attachCore(VedroCoreClient core) {
+    _core = core;
+  }
 
   Future<Map<String, dynamic>> _defaultFetch(String curVer) async {
+    final core = _core;
+    if (core != null) {
+      try {
+        final raw = await core.invoke('check_app_update');
+        if (raw is Map<String, dynamic>) {
+          return raw;
+        }
+      } catch (_) {
+        // Fall through to direct HttpClient if core mock/environment doesn't implement `check_app_update`
+      }
+    }
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 12);
     try {
@@ -246,12 +304,108 @@ class VedroUpdateChecker extends ChangeNotifier {
       hasUpdate = info.version.isNotEmpty && compareSemver(info.version, this.currentVersion!) > 0;
       return info;
     } catch (e) {
-      lastError = e.toString().replaceFirst('Exception: ', '');
+      lastError = e
+          .toString()
+          .replaceFirst('VedroCoreException: ', '')
+          .replaceFirst('Exception: ', '');
       return null;
     } finally {
       isChecking = false;
       notifyListeners();
     }
+  }
+
+  void _applyDownloadState(Map<String, dynamic> st) {
+    downloadStatus = (st['status'] ?? 'idle').toString();
+    downloadedBytes = (st['downloaded_bytes'] as num?)?.toInt() ?? 0;
+    totalBytes = (st['total_bytes'] as num?)?.toInt();
+    speedBps = (st['speed_bps'] as num?)?.toInt() ?? 0;
+    downloadedFilePath = st['file_path']?.toString();
+    downloadedFileName = st['file_name']?.toString();
+    downloadedSha256 = st['sha256']?.toString();
+    sha256Verified = st['sha256_verified'] == true;
+    downloadError = st['error']?.toString();
+    notifyListeners();
+  }
+
+  Future<void> startInAppDownload(VedroReleaseInfo release, VedroReleaseAsset asset) async {
+    final core = _core;
+    if (core == null) {
+      await NativePlaybackChannel.openUrl(asset.downloadUrl);
+      return;
+    }
+    _pollTimer?.cancel();
+    downloadStatus = 'downloading';
+    downloadedBytes = 0;
+    totalBytes = asset.sizeBytes > 0 ? asset.sizeBytes : null;
+    speedBps = 0;
+    downloadedFilePath = null;
+    downloadedFileName = asset.name;
+    downloadedSha256 = null;
+    sha256Verified = false;
+    downloadError = null;
+    notifyListeners();
+
+    try {
+      final res = await core.invoke('start_update_download', {
+        'url': asset.downloadUrl,
+        'file_name': asset.name,
+        'version': release.version,
+        if (asset.sha256 != null && asset.sha256!.isNotEmpty) 'expected_sha256': asset.sha256,
+      });
+      if (res is Map<String, dynamic>) {
+        _applyDownloadState(res);
+      }
+      if (downloadStatus == 'ready' || downloadStatus == 'error' || downloadStatus == 'cancelled') {
+        return;
+      }
+      _pollTimer = Timer.periodic(const Duration(milliseconds: 350), (t) async {
+        try {
+          final cur = await core.invoke('get_update_download_status');
+          if (cur is Map<String, dynamic>) {
+            _applyDownloadState(cur);
+            if (!isDownloading) {
+              t.cancel();
+            }
+          }
+        } catch (e) {
+          t.cancel();
+          downloadStatus = 'error';
+          downloadError = e.toString().replaceFirst('VedroCoreException: ', '');
+          notifyListeners();
+        }
+      });
+    } catch (e) {
+      downloadStatus = 'error';
+      downloadError = e.toString().replaceFirst('VedroCoreException: ', '');
+      notifyListeners();
+    }
+  }
+
+  Future<void> cancelInAppDownload() async {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    final core = _core;
+    if (core != null) {
+      try {
+        final res = await core.invoke('cancel_update_download');
+        if (res is Map<String, dynamic>) {
+          _applyDownloadState(res);
+          return;
+        }
+      } catch (_) {}
+    }
+    downloadStatus = 'cancelled';
+    speedBps = 0;
+    notifyListeners();
+  }
+
+  Future<({bool ok, String? message})> installDownloadedUpdate() async {
+    final path = downloadedFilePath;
+    if (path == null || path.isEmpty) {
+      return (ok: false, message: '尚未下载安装包');
+    }
+    return NativePlaybackChannel.installUpdatePackage(path, silent: true);
   }
 
   /// Run at most once per app session quietly after startup.
@@ -261,15 +415,19 @@ class VedroUpdateChecker extends ChangeNotifier {
   }) async {
     if (_startupChecked) return;
     if (AppLockGate.isLockedNotifier.value) {
-      // Wait until the user unlocks the app before prompting so dialog never collides with AppLockGate.
+      if (_unlockListener != null) {
+        AppLockGate.isLockedNotifier.removeListener(_unlockListener!);
+      }
       void onUnlock() {
         if (!AppLockGate.isLockedNotifier.value) {
           AppLockGate.isLockedNotifier.removeListener(onUnlock);
+          if (identical(_unlockListener, onUnlock)) _unlockListener = null;
           if (context.mounted) {
             checkOnceOnStartup(context, currentVersion: currentVersion);
           }
         }
       }
+      _unlockListener = onUnlock;
       AppLockGate.isLockedNotifier.addListener(onUnlock);
       return;
     }
@@ -323,6 +481,14 @@ class VedroUpdateChecker extends ChangeNotifier {
   }
 }
 
+String _fmtSpeed(int bps) {
+  if (bps <= 0) return '';
+  if (bps >= 1024 * 1024) {
+    return '${(bps / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+  }
+  return '${(bps / 1024).toStringAsFixed(0)} KB/s';
+}
+
 Future<void> showVedroUpdateDialog(
   BuildContext context, {
   required String currentVersion,
@@ -336,157 +502,279 @@ Future<void> showVedroUpdateDialog(
   final sizeLabel = matchedAsset != null && matchedAsset.sizeBytes > 0
       ? fmtFileSize(matchedAsset.sizeBytes)
       : '';
+  final checker = VedroUpdateChecker.instance;
 
-  final notesScrollCtrl = ScrollController();
-  try {
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        key: const ValueKey('vedro-update-dialog'),
-        backgroundColor: skin.surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-          side: BorderSide(color: skin.border, width: 0.8),
-        ),
-        title: Row(
-          children: [
-            Container(
-              width: 34,
-              height: 34,
-              decoration: BoxDecoration(
-                color: accent.withValues(alpha: 0.16),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(Icons.system_update_alt_rounded, size: 19, color: accent),
-            ),
-            const SizedBox(width: 11),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '发现新版本 ${release.tagName}',
-                    style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w700),
-                  ),
-                  Text(
-                    '当前 v$currentVersion → 最新 v${release.version}',
-                    style: TextStyle(color: skin.fg3, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        content: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 460, maxHeight: 320),
-          child: Focus(
-            onKeyEvent: (_, ev) {
-              if ((ev is KeyDownEvent || ev is KeyRepeatEvent) && notesScrollCtrl.hasClients) {
-                if (ev.logicalKey == LogicalKeyboardKey.arrowDown) {
-                  notesScrollCtrl.animateTo(
-                    (notesScrollCtrl.offset + 64)
-                        .clamp(0.0, notesScrollCtrl.position.maxScrollExtent),
-                    duration: const Duration(milliseconds: 120),
-                    curve: Curves.easeOut,
-                  );
-                  return KeyEventResult.handled;
-                }
-                if (ev.logicalKey == LogicalKeyboardKey.arrowUp) {
-                  notesScrollCtrl.animateTo(
-                    (notesScrollCtrl.offset - 64)
-                        .clamp(0.0, notesScrollCtrl.position.maxScrollExtent),
-                    duration: const Duration(milliseconds: 120),
-                    curve: Curves.easeOut,
-                  );
-                  return KeyEventResult.handled;
-                }
-              }
-              return KeyEventResult.ignored;
-            },
-            child: SingleChildScrollView(
-              controller: notesScrollCtrl,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (matchedAsset != null)
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: skin.surface2,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: skin.border, width: 0.7),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(Icons.download_for_offline_outlined, size: 16, color: accent),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              matchedAsset.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                color: skin.fg,
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                          if (sizeLabel.isNotEmpty) ...[
-                            const SizedBox(width: 8),
-                            Text(sizeLabel, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
-                          ],
-                        ],
-                      ),
-                    ),
-                  Text(
-                    release.releaseNotes.isNotEmpty ? release.releaseNotes : '包含多项功能更新与体验优化。',
-                    style: TextStyle(color: skin.fg2, fontSize: 13, height: 1.5),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        actions: [
-          if (onIgnoreVersion != null)
-            TextButton(
-              onPressed: () {
-                onIgnoreVersion();
-                Navigator.pop(ctx);
-              },
-              child: Text('忽略此版本', style: TextStyle(color: skin.fg3, fontSize: 12.5)),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('稍后再说'),
-          ),
-          if (matchedAsset != null)
-            OutlinedButton(
-              onPressed: () {
-                Navigator.pop(ctx);
-                NativePlaybackChannel.openUrl(release.htmlUrl);
-              },
-              child: const Text('全部版本'),
-            ),
-          FilledButton.icon(
-            key: const ValueKey('vedro-update-download-btn'),
-            autofocus: true,
-            onPressed: () {
-              Navigator.pop(ctx);
-              NativePlaybackChannel.openUrl(downloadTarget);
-            },
-            icon: const Icon(Icons.download_rounded, size: 16),
-            label: Text(matchedAsset != null ? '立即下载' : '前往更新'),
-          ),
-        ],
-      ),
-    );
-  } finally {
-    notesScrollCtrl.dispose();
+  String installButtonLabel() {
+    if (!kIsWeb && Platform.isWindows) return '立即安装并重启';
+    if (!kIsWeb && Platform.isAndroid) return '立即安装 APK';
+    if (!kIsWeb && Platform.isMacOS) return '打开安装包 (DMG)';
+    return '打开安装包';
   }
+
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => VedroControllerScope<ScrollController>(
+      create: () => ScrollController(),
+      dispose: (c) => c.dispose(),
+      builder: (ctx, notesScrollCtrl) => ListenableBuilder(
+        listenable: checker,
+        builder: (ctx, _) {
+          final supportsInApp = checker.canInAppDownload && matchedAsset != null;
+          final downloading = checker.isDownloading;
+          final ready = checker.downloadStatus == 'ready' &&
+              checker.downloadedFileName == matchedAsset?.name &&
+              (checker.downloadedFilePath?.isNotEmpty == true);
+          final dlErr = checker.downloadStatus == 'error' ? checker.downloadError : null;
+          final prog = checker.downloadProgress;
+
+          return AlertDialog(
+            key: const ValueKey('vedro-update-dialog'),
+            backgroundColor: skin.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(color: skin.border, width: 0.8),
+            ),
+            title: Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(Icons.system_update_alt_rounded, size: 19, color: accent),
+                ),
+                const SizedBox(width: 11),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '发现新版本 ${release.tagName}',
+                        style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w700),
+                      ),
+                      Text(
+                        '当前 v$currentVersion → 最新 v${release.version}',
+                        style: TextStyle(color: skin.fg3, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460, maxHeight: 340),
+              child: Focus(
+                onKeyEvent: (_, ev) {
+                  if ((ev is KeyDownEvent || ev is KeyRepeatEvent) && notesScrollCtrl.hasClients) {
+                    if (ev.logicalKey == LogicalKeyboardKey.arrowDown) {
+                      notesScrollCtrl.animateTo(
+                        (notesScrollCtrl.offset + 64)
+                            .clamp(0.0, notesScrollCtrl.position.maxScrollExtent),
+                        duration: const Duration(milliseconds: 120),
+                        curve: Curves.easeOut,
+                      );
+                      return KeyEventResult.handled;
+                    }
+                    if (ev.logicalKey == LogicalKeyboardKey.arrowUp) {
+                      notesScrollCtrl.animateTo(
+                        (notesScrollCtrl.offset - 64)
+                            .clamp(0.0, notesScrollCtrl.position.maxScrollExtent),
+                        duration: const Duration(milliseconds: 120),
+                        curve: Curves.easeOut,
+                      );
+                      return KeyEventResult.handled;
+                    }
+                  }
+                  return KeyEventResult.ignored;
+                },
+                child: SingleChildScrollView(
+                  controller: notesScrollCtrl,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (matchedAsset != null)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+                          decoration: BoxDecoration(
+                            color: skin.surface2,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: skin.border, width: 0.7),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    ready
+                                        ? Icons.verified_rounded
+                                        : Icons.download_for_offline_outlined,
+                                    size: 16,
+                                    color: ready ? const Color(0xFF34D399) : accent,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      matchedAsset.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: skin.fg,
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
+                                  if (sizeLabel.isNotEmpty) ...[
+                                    const SizedBox(width: 8),
+                                    Text(sizeLabel,
+                                        style: TextStyle(color: skin.fg3, fontSize: 11.5)),
+                                  ],
+                                ],
+                              ),
+                              if (downloading) ...[
+                                const SizedBox(height: 8),
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: LinearProgressIndicator(
+                                    value: prog,
+                                    minHeight: 5,
+                                    color: accent,
+                                    backgroundColor: skin.border,
+                                  ),
+                                ),
+                                const SizedBox(height: 5),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        checker.downloadStatus == 'verifying'
+                                            ? '正在校验 SHA-256 签名完整性…'
+                                            : '${fmtFileSize(checker.downloadedBytes)}${checker.totalBytes != null ? ' / ${fmtFileSize(checker.totalBytes!)}' : ''}',
+                                        style: TextStyle(color: skin.fg3, fontSize: 11),
+                                      ),
+                                    ),
+                                    if (checker.speedBps > 0)
+                                      Text(
+                                        _fmtSpeed(checker.speedBps),
+                                        style: TextStyle(color: accent, fontSize: 11),
+                                      ),
+                                  ],
+                                ),
+                              ] else if (ready) ...[
+                                const SizedBox(height: 6),
+                                Text(
+                                  checker.sha256Verified
+                                      ? '下载完成 · SHA-256 完整性校验已通过'
+                                      : '安装包已下载就绪，可立即安装',
+                                  style: const TextStyle(
+                                    color: Color(0xFF34D399),
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ] else if (dlErr != null && dlErr.isNotEmpty) ...[
+                                const SizedBox(height: 6),
+                                Text(
+                                  dlErr,
+                                  style: const TextStyle(
+                                    color: Color(0xFFFCA5A5),
+                                    fontSize: 11.5,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      Text(
+                        release.releaseNotes.isNotEmpty
+                            ? release.releaseNotes
+                            : '包含多项功能更新与体验优化。',
+                        style: TextStyle(color: skin.fg2, fontSize: 13, height: 1.5),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            actions: [
+              if (onIgnoreVersion != null && !downloading)
+                TextButton(
+                  onPressed: () {
+                    onIgnoreVersion();
+                    Navigator.pop(ctx);
+                  },
+                  child: Text('忽略此版本', style: TextStyle(color: skin.fg3, fontSize: 12.5)),
+                ),
+              if (downloading)
+                TextButton(
+                  onPressed: () => checker.cancelInAppDownload(),
+                  child: const Text('取消下载'),
+                )
+              else
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('稍后再说'),
+                ),
+              if (matchedAsset != null && !downloading)
+                OutlinedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    NativePlaybackChannel.openUrl(release.htmlUrl);
+                  },
+                  child: const Text('浏览器下载'),
+                ),
+              if (ready)
+                FilledButton.icon(
+                  key: const ValueKey('vedro-update-install-btn'),
+                  autofocus: true,
+                  onPressed: () async {
+                    final res = await checker.installDownloadedUpdate();
+                    if (!res.ok && ctx.mounted) {
+                      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+                        SnackBar(content: Text(res.message ?? '调起系统安装器失败，请尝试浏览器下载')),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.install_desktop_rounded, size: 16),
+                  label: Text(installButtonLabel()),
+                )
+              else
+                FilledButton.icon(
+                  key: const ValueKey('vedro-update-download-btn'),
+                  autofocus: true,
+                  onPressed: downloading
+                      ? null
+                      : () async {
+                          if (supportsInApp) {
+                            await checker.startInAppDownload(release, matchedAsset);
+                          } else {
+                            Navigator.pop(ctx);
+                            await NativePlaybackChannel.openUrl(downloadTarget);
+                          }
+                        },
+                  icon: Icon(
+                    downloading ? Icons.downloading_rounded : Icons.download_rounded,
+                    size: 16,
+                  ),
+                  label: Text(
+                    downloading
+                        ? '下载中…'
+                        : (supportsInApp
+                            ? '立即下载更新'
+                            : (matchedAsset != null ? '立即下载' : '前往更新')),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    ),
+  );
 }
 
 /// Compact clickable update chip for Settings sidebar/footer.

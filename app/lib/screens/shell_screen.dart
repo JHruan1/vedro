@@ -74,6 +74,7 @@ class _ShellScreenState extends State<ShellScreen> {
         if (mounted) _onGlobalFilesDropped();
       });
     }
+    VedroUpdateChecker.instance.attachCore(widget.appState.core);
     if (widget.appState.prefs.ignoredUpdateVersion.isNotEmpty) {
       VedroUpdateChecker.instance.ignoredVersion = widget.appState.prefs.ignoredUpdateVersion;
     }
@@ -81,7 +82,7 @@ class _ShellScreenState extends State<ShellScreen> {
     if (!kIsWeb && !Platform.environment.containsKey('FLUTTER_TEST')) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         Future<void>.delayed(const Duration(seconds: 3), () {
-          if (!mounted) return;
+          if (!mounted || !widget.appState.prefs.autoCheckUpdates) return;
           VedroUpdateChecker.instance.checkOnceOnStartup(
             context,
             currentVersion: widget.appState.core.coreVersion,
@@ -222,64 +223,66 @@ class _ShellScreenState extends State<ShellScreen> {
 
   Future<void> _openNetworkUrlDialog() async {
     final skin = VedroSkin.of(context);
-    final urlCtrl = TextEditingController();
     String? err;
     final submitted = await showDialog<String>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModal) => AlertDialog(
-          backgroundColor: skin.surface,
-          title: Text('打开网络串流链接', style: TextStyle(color: skin.fg, fontSize: 16)),
-          content: SizedBox(
-            width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                TextField(
-                  controller: urlCtrl,
-                  autofocus: true,
-                  keyboardType: TextInputType.url,
-                  textInputAction: TextInputAction.go,
-                  style: TextStyle(color: skin.fg, fontSize: 13.5),
-                  decoration: const InputDecoration(
-                    labelText: '视频直链 / M3U8 / RTSP / RTMP 地址',
-                    hintText: 'https://example.com/video.m3u8',
+      builder: (ctx) => VedroControllerScope<TextEditingController>(
+        create: () => TextEditingController(),
+        dispose: (c) => c.dispose(),
+        builder: (ctx, urlCtrl) => StatefulBuilder(
+          builder: (ctx, setModal) => AlertDialog(
+            backgroundColor: skin.surface,
+            title: Text('打开网络串流链接', style: TextStyle(color: skin.fg, fontSize: 16)),
+            content: SizedBox(
+              width: 420,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: urlCtrl,
+                    autofocus: true,
+                    keyboardType: TextInputType.url,
+                    textInputAction: TextInputAction.go,
+                    style: TextStyle(color: skin.fg, fontSize: 13.5),
+                    decoration: const InputDecoration(
+                      labelText: '视频直链 / M3U8 / RTSP / RTMP 地址',
+                      hintText: 'https://example.com/video.m3u8',
+                    ),
+                    onSubmitted: (_) {
+                      final u = urlCtrl.text.trim();
+                      if (!NativePlaybackChannel.isAllowedMediaUrl(u)) {
+                        setModal(() => err = '请输入有效的 http(s) / rtsp / rtmp / rtp 串流链接');
+                        return;
+                      }
+                      Navigator.pop(ctx, u);
+                    },
                   ),
-                  onSubmitted: (_) {
-                    final u = urlCtrl.text.trim();
-                    if (!NativePlaybackChannel.isAllowedMediaUrl(u)) {
-                      setModal(() => err = '请输入有效的 http(s) / rtsp / rtmp / rtp 串流链接');
-                      return;
-                    }
-                    Navigator.pop(ctx, u);
-                  },
-                ),
-                if (err != null) ...[
-                  const SizedBox(height: 8),
-                  Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12)),
+                  if (err != null) ...[
+                    const SizedBox(height: 8),
+                    Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12)),
+                  ],
                 ],
-              ],
+              ),
             ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+              FilledButton(
+                onPressed: () {
+                  final u = urlCtrl.text.trim();
+                  if (!NativePlaybackChannel.isAllowedMediaUrl(u)) {
+                    setModal(() => err = '请输入有效的 http(s) / rtsp / rtmp / rtp 串流链接');
+                    return;
+                  }
+                  Navigator.pop(ctx, u);
+                },
+                child: const Text('立即播放'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-            FilledButton(
-              onPressed: () {
-                final u = urlCtrl.text.trim();
-                if (!NativePlaybackChannel.isAllowedMediaUrl(u)) {
-                  setModal(() => err = '请输入有效的 http(s) / rtsp / rtmp / rtp 串流链接');
-                  return;
-                }
-                Navigator.pop(ctx, u);
-              },
-              child: const Text('立即播放'),
-            ),
-          ],
         ),
       ),
     );
-    urlCtrl.dispose();
     if (submitted == null || submitted.isEmpty || !mounted) return;
     final uri = Uri.tryParse(submitted);
     final seg = (uri != null && uri.pathSegments.isNotEmpty)
@@ -387,7 +390,16 @@ class _ShellScreenState extends State<ShellScreen> {
 
   Future<void> _openAggregatedHit(AggregatedSearchHit hit) async {
     if (hit.serverId.isNotEmpty && hit.serverId != widget.appState.activeServerId) {
-      await widget.appState.switchToServerById(hit.serverId);
+      try {
+        await widget.appState.switchToServerById(hit.serverId);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('切换服务器失败：${VedroErrorFormatter.friendly(e)}')),
+          );
+        }
+        return;
+      }
     }
     if (!mounted) return;
     _openItem(MediaItemModel(

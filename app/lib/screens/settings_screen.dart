@@ -1604,42 +1604,44 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                           ),
                         ),
                         const SizedBox(width: 12),
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 360),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Wrap(
-                                spacing: 8,
-                                crossAxisAlignment: WrapCrossAlignment.center,
-                                children: [
-                                  Text(
-                                    '海报与剧照本地缓存',
-                                    style: TextStyle(
-                                      color: skin.fg,
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
+                        Flexible(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 360),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Wrap(
+                                  spacing: 8,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                  children: [
+                                    Text(
+                                      '海报与剧照本地缓存',
+                                      style: TextStyle(
+                                        color: skin.fg,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                      ),
                                     ),
-                                  ),
-                                  Text(
-                                    imgSizeLabel,
-                                    style: TextStyle(
-                                      color: Theme.of(context).colorScheme.secondary,
-                                      fontSize: 13.5,
-                                      fontWeight: FontWeight.w700,
-                                      fontFeatures: const [FontFeature.tabularFigures()],
+                                    Text(
+                                      imgSizeLabel,
+                                      style: TextStyle(
+                                        color: Theme.of(context).colorScheme.secondary,
+                                        fontSize: 13.5,
+                                        fontWeight: FontWeight.w700,
+                                        fontFeatures: const [FontFeature.tabularFigures()],
+                                      ),
                                     ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                app.isLoadingImageCacheStats
-                                    ? '正在统计缓存占用…'
-                                    : '已缓存 $imgFiles 张本地图片 · 内存热缓存 $imgMemEntries 张（避免重复网络加载）',
-                                style: TextStyle(color: skin.fg3, fontSize: 12),
-                              ),
-                            ],
+                                  ],
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  app.isLoadingImageCacheStats
+                                      ? '正在统计缓存占用…'
+                                      : '已缓存 $imgFiles 张本地图片 · 内存热缓存 $imgMemEntries 张（避免重复网络加载）',
+                                  style: TextStyle(color: skin.fg3, fontSize: 12),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ],
@@ -2479,8 +2481,8 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                                 try {
                                   final name =
                                       await app.importSubtitleFont(_fontPathCtrl.text.trim());
-                                  _fontPathCtrl.clear();
                                   if (mounted) {
+                                    _fontPathCtrl.clear();
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(content: Text('已导入并选用字体：$name')),
                                     );
@@ -3095,6 +3097,7 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 'spline': 'Spline（动态曲线）',
                 'st2094_40': 'ST.2094-40',
                 'reinhard': 'Reinhard',
+                'hable': 'Hable（电影感曲线）',
                 'clip': 'Clip（直通）',
               },
               onChanged: (v) => _updateRustSetting('tone_mapping', v),
@@ -3837,12 +3840,11 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                                     apiKey: _aiKeyCtrl.text.trim(),
                                     directIp: p.aiDirectClientIp,
                                   );
+                                  if (!mounted) return;
                                   if (models.isNotEmpty) {
                                     _aiModelCtrl.text = app.prefs.aiModel;
                                   }
-                                  if (mounted) {
-                                    setState(() => _aiTestResult = '已获取 ${models.length} 个模型');
-                                  }
+                                  setState(() => _aiTestResult = '已获取 ${models.length} 个模型');
                                 } catch (e) {
                                   if (mounted) {
                                     setState(() => _aiTestResult = e
@@ -4401,67 +4403,69 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
     }
 
     Future<void> importBackup() async {
-      final ctrl = TextEditingController();
       String? err;
       final ok = await showDialog<bool>(
         context: context,
-        builder: (ctx) => StatefulBuilder(
-          builder: (ctx, setModal) => AlertDialog(
-            backgroundColor: skin.surface,
-            title: Text('导入配置备份', style: TextStyle(color: skin.fg, fontSize: 16)),
-            content: SizedBox(
-              width: 460,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    '粘贴由 Vedro 导出的 JSON 配置，将恢复外观、播放、字幕、弹幕及首页布局（不影响已登录服务器与安全密码）。',
-                    style: TextStyle(color: skin.fg2, fontSize: 12.5, height: 1.4),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: ctrl,
-                    minLines: 4,
-                    maxLines: 8,
-                    style: TextStyle(color: skin.fg, fontFamily: 'monospace', fontSize: 12),
-                    decoration: const InputDecoration(hintText: '{"format":"vedro-backup-v1", ...}'),
-                  ),
-                  if (err != null) ...[
-                    const SizedBox(height: 8),
-                    Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12)),
+        builder: (ctx) => VedroControllerScope<TextEditingController>(
+          create: () => TextEditingController(),
+          dispose: (c) => c.dispose(),
+          builder: (ctx, ctrl) => StatefulBuilder(
+            builder: (ctx, setModal) => AlertDialog(
+              backgroundColor: skin.surface,
+              title: Text('导入配置备份', style: TextStyle(color: skin.fg, fontSize: 16)),
+              content: SizedBox(
+                width: 460,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      '粘贴由 Vedro 导出的 JSON 配置，将恢复外观、播放、字幕、弹幕及首页布局（不影响已登录服务器与安全密码）。',
+                      style: TextStyle(color: skin.fg2, fontSize: 12.5, height: 1.4),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: ctrl,
+                      minLines: 4,
+                      maxLines: 8,
+                      style: TextStyle(color: skin.fg, fontFamily: 'monospace', fontSize: 12),
+                      decoration: const InputDecoration(hintText: '{"format":"vedro-backup-v1", ...}'),
+                    ),
+                    if (err != null) ...[
+                      const SizedBox(height: 8),
+                      Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12)),
+                    ],
                   ],
-                ],
+                ),
               ),
+              actions: [
+                TextButton(
+                  onPressed: () async {
+                    final data = await Clipboard.getData('text/plain');
+                    if (ctx.mounted && data?.text != null) {
+                      ctrl.text = data!.text!;
+                      setModal(() => err = null);
+                    }
+                  },
+                  child: const Text('从剪贴板粘贴'),
+                ),
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+                FilledButton(
+                  onPressed: () async {
+                    try {
+                      await app.importConfigJson(ctrl.text);
+                      if (ctx.mounted) Navigator.pop(ctx, true);
+                    } catch (e) {
+                      if (ctx.mounted) setModal(() => err = VedroErrorFormatter.friendly(e));
+                    }
+                  },
+                  child: const Text('导入'),
+                ),
+              ],
             ),
-            actions: [
-              TextButton(
-                onPressed: () async {
-                  final data = await Clipboard.getData('text/plain');
-                  if (data?.text != null) {
-                    ctrl.text = data!.text!;
-                    setModal(() => err = null);
-                  }
-                },
-                child: const Text('从剪贴板粘贴'),
-              ),
-              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-              FilledButton(
-                onPressed: () async {
-                  try {
-                    await app.importConfigJson(ctrl.text);
-                    if (ctx.mounted) Navigator.pop(ctx, true);
-                  } catch (e) {
-                    setModal(() => err = VedroErrorFormatter.friendly(e));
-                  }
-                },
-                child: const Text('导入'),
-              ),
-            ],
           ),
         ),
       );
-      ctrl.dispose();
       if (ok == true && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('已成功导入配置备份')),
@@ -4553,6 +4557,12 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
           children: [
             _InfoKVRow('当前版本', 'v$version', mono: true, highlight: true),
             _InfoKVRow('运行平台', kIsWeb ? 'Web' : Platform.operatingSystem),
+            _SwitchRow(
+              title: '启动时自动检查更新',
+              subtitle: '检测到新版本时自动弹窗，支持应用内 SHA-256 校验与一键安装',
+              value: app.prefs.autoCheckUpdates,
+              onChanged: (v) => _updatePrefs(app.prefs.copyWith(autoCheckUpdates: v)),
+            ),
             UpdateCheckBadgeTile(currentVersion: version),
             _ActionRow(
               title: '复制脱敏诊断信息',
@@ -4582,124 +4592,134 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
   Future<bool> _verifyCurrentPin(VedroPreferences p, {required String title}) async {
     if (p.passcodeHash.isEmpty) return true;
     final lockout = PinLockoutController.forState(widget.appState);
-    final ctrl = TextEditingController();
     final initRem = lockout.remainingLockoutSecs;
     String? err = initRem > 0 ? '尝试次数过多，请 $initRem 秒后重试' : null;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModal) {
-          void submit() {
-            final res = lockout.verify(ctrl.text.trim(), p.passcodeHash);
-            if (!res.ok) {
-              setModal(() => err = res.error ?? '密码不正确');
-              return;
+      builder: (ctx) => VedroControllerScope<TextEditingController>(
+        create: () => TextEditingController(),
+        dispose: (c) => c.dispose(),
+        builder: (ctx, ctrl) => StatefulBuilder(
+          builder: (ctx, setModal) {
+            void submit() {
+              final res = lockout.verify(ctrl.text.trim(), p.passcodeHash);
+              if (!res.ok) {
+                setModal(() => err = res.error ?? '密码不正确');
+                return;
+              }
+              Navigator.pop(ctx, true);
             }
-            Navigator.pop(ctx, true);
-          }
 
-          return AlertDialog(
-            title: Text(title),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: ctrl,
-                  autofocus: true,
-                  obscureText: true,
-                  maxLength: 4,
-                  keyboardType: TextInputType.number,
-                  textInputAction: TextInputAction.done,
-                  onSubmitted: (_) => submit(),
-                  decoration: const InputDecoration(labelText: '请输入当前 4 位数字密码', counterText: ''),
-                ),
-                if (err != null) ...[
-                  const SizedBox(height: 8),
-                  Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12.5)),
+            return AlertDialog(
+              title: Text(title),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: ctrl,
+                    autofocus: true,
+                    obscureText: true,
+                    maxLength: 4,
+                    keyboardType: TextInputType.number,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => submit(),
+                    decoration: const InputDecoration(labelText: '请输入当前 4 位数字密码', counterText: ''),
+                  ),
+                  if (err != null) ...[
+                    const SizedBox(height: 8),
+                    Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12.5)),
+                  ],
                 ],
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+                FilledButton(onPressed: submit, child: const Text('验证')),
               ],
-            ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-              FilledButton(onPressed: submit, child: const Text('验证')),
-            ],
-          );
-        },
+            );
+          },
+        ),
       ),
     );
-    ctrl.dispose();
     return ok == true;
   }
 
   Future<void> _openSetPinDialog(VedroPreferences p) async {
-    final pin1 = TextEditingController();
-    final pin2 = TextEditingController();
     String? err;
-    final saved = await showDialog<bool>(
+    final chosenPin = await showDialog<String>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModal) {
-          void submit() {
-            final a = pin1.text.trim();
-            final b = pin2.text.trim();
-            if (!RegExp(r'^\d{4}$').hasMatch(a)) {
-              setModal(() => err = '请输入 4 位纯数字');
-              return;
-            }
-            if (a != b) {
-              setModal(() => err = '两次输入的密码不一致');
-              return;
-            }
-            Navigator.pop(ctx, true);
+      builder: (ctx) => VedroControllerScope<List<TextEditingController>>(
+        create: () => [TextEditingController(), TextEditingController()],
+        dispose: (ctrls) {
+          for (final c in ctrls) {
+            c.dispose();
           }
+        },
+        builder: (ctx, ctrls) {
+          final pin1 = ctrls[0];
+          final pin2 = ctrls[1];
+          return StatefulBuilder(
+            builder: (ctx, setModal) {
+              void submit() {
+                final a = pin1.text.trim();
+                final b = pin2.text.trim();
+                if (!RegExp(r'^\d{4}$').hasMatch(a)) {
+                  setModal(() => err = '请输入 4 位纯数字');
+                  return;
+                }
+                if (a != b) {
+                  setModal(() => err = '两次输入的密码不一致');
+                  return;
+                }
+                Navigator.pop(ctx, a);
+              }
 
-          return AlertDialog(
-            title: const Text('设置 4 位应用密码'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: pin1,
-                  autofocus: true,
-                  obscureText: true,
-                  maxLength: 4,
-                  keyboardType: TextInputType.number,
-                  textInputAction: TextInputAction.next,
-                  decoration: const InputDecoration(labelText: '输入 4 位数字密码', counterText: ''),
+              return AlertDialog(
+                title: const Text('设置 4 位应用密码'),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: pin1,
+                      autofocus: true,
+                      obscureText: true,
+                      maxLength: 4,
+                      keyboardType: TextInputType.number,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(labelText: '输入 4 位数字密码', counterText: ''),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: pin2,
+                      obscureText: true,
+                      maxLength: 4,
+                      keyboardType: TextInputType.number,
+                      textInputAction: TextInputAction.done,
+                      onSubmitted: (_) => submit(),
+                      decoration: const InputDecoration(labelText: '再次确认密码', counterText: ''),
+                    ),
+                    if (err != null) ...[
+                      const SizedBox(height: 10),
+                      Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12.5)),
+                    ],
+                  ],
                 ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: pin2,
-                  obscureText: true,
-                  maxLength: 4,
-                  keyboardType: TextInputType.number,
-                  textInputAction: TextInputAction.done,
-                  onSubmitted: (_) => submit(),
-                  decoration: const InputDecoration(labelText: '再次确认密码', counterText: ''),
-                ),
-                if (err != null) ...[
-                  const SizedBox(height: 10),
-                  Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12.5)),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+                  FilledButton(onPressed: submit, child: const Text('保存密码')),
                 ],
-              ],
-            ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-              FilledButton(onPressed: submit, child: const Text('保存密码')),
-            ],
+              );
+            },
           );
         },
       ),
     );
-    if (saved == true && mounted) {
+    if (chosenPin != null && chosenPin.isNotEmpty && mounted) {
       PinLockoutController.forState(widget.appState).reset();
       await _updatePrefs(p.copyWith(
         passcodeEnabled: true,
-        passcodeHash: createSaltedPasscodeHash(pin1.text.trim()),
+        passcodeHash: createSaltedPasscodeHash(chosenPin),
       ));
     }
-    pin1.dispose();
-    pin2.dispose();
   }
 }
 

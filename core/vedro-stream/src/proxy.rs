@@ -15,7 +15,7 @@ use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use lru::LruCache;
 use parking_lot::{Mutex, RwLock};
 use reqwest::header::HeaderMap;
@@ -28,7 +28,7 @@ use crate::cache::{CacheStats, ChunkCache, DEFAULT_CHUNK_SIZE};
 
 type ProxyBody = BoxBody<Bytes, std::io::Error>;
 
-const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_IMAGE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_RAM_IMAGE_CACHE_BYTES: usize = if cfg!(any(target_os = "android", target_os = "ios")) {
     24 * 1024 * 1024
 } else {
@@ -297,6 +297,9 @@ fn is_loopback_or_link_local(u: &url::Url) -> bool {
                 v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
             }
             std::net::IpAddr::V6(v6) => {
+                if let Some(v4) = v6.to_ipv4_mapped().or_else(|| v6.to_ipv4()) {
+                    return v4.is_loopback() || v4.is_link_local() || v4.is_unspecified();
+                }
                 v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xffc0) == 0xfe80
             }
         };
@@ -334,7 +337,16 @@ async fn send_with_safe_redirects(
                             if !initial_is_local && is_loopback_or_link_local(&next) {
                                 return Ok(resp);
                             }
-                            if !same_origin(&base, &next) {
+                            let same_host = base
+                                .host_str()
+                                .map(|h| h.to_ascii_lowercase())
+                                .eq(&next.host_str().map(|h| h.to_ascii_lowercase()));
+                            let is_downgrade = base.scheme().eq_ignore_ascii_case("https")
+                                && next.scheme().eq_ignore_ascii_case("http");
+                            let is_https_upgrade = same_host
+                                && base.scheme().eq_ignore_ascii_case("http")
+                                && next.scheme().eq_ignore_ascii_case("https");
+                            if is_downgrade || (!same_origin(&base, &next) && !is_https_upgrade) {
                                 strip_auth_headers(&mut current_headers);
                             }
                             current_url = next.to_string();
@@ -405,14 +417,65 @@ fn is_safe_raster_image_mime(ct_lower: &str) -> bool {
         media,
         "image/jpeg"
             | "image/jpg"
+            | "image/pjpeg"
             | "image/png"
             | "image/webp"
             | "image/gif"
             | "image/avif"
+            | "image/heic"
+            | "image/heif"
             | "image/bmp"
+            | "image/x-ms-bmp"
             | "image/x-icon"
             | "image/vnd.microsoft.icon"
     )
+}
+
+/// Sniff raster image format from binary magic headers so valid images served with
+/// `application/octet-stream` (common on CDN/OSS/EmbyGo caches) still render cleanly,
+/// while HTML/JSON/SVG/JS payloads remain strictly blocked.
+fn sniff_raster_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        return Some("image/jpeg");
+    }
+    if bytes.len() >= 8 && &bytes[..8] == b"\x89PNG\r\n\x1A\n" {
+        return Some("image/png");
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    if bytes.len() >= 6 && (&bytes[..6] == b"GIF87a" || &bytes[..6] == b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 2 && &bytes[..2] == b"BM" {
+        return Some("image/bmp");
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        let brand = &bytes[8..12];
+        if brand == b"avif" || brand == b"avis" {
+            return Some("image/avif");
+        }
+        if brand == b"heic" || brand == b"heix" || brand == b"heif" || brand == b"mif1" {
+            return Some("image/heif");
+        }
+    }
+    if bytes.len() >= 4
+        && bytes[0] == 0x00
+        && bytes[1] == 0x00
+        && bytes[2] == 0x01
+        && bytes[3] == 0x00
+    {
+        return Some("image/x-icon");
+    }
+    None
+}
+
+fn prepare_image_headers(mut headers: HeaderMap) -> HeaderMap {
+    headers.insert(
+        reqwest::header::ACCEPT,
+        HeaderValue::from_static("image/avif,image/webp,image/apng,image/*,*/*;q=0.8"),
+    );
+    headers
 }
 
 /// Deterministic 128-bit FNV-1a hex key for persistent on-disk artwork cache files.
@@ -533,6 +596,7 @@ impl StreamProxy {
                                 async move { p.handle_request(req).await }
                             });
                             if let Err(err) = hyper::server::conn::http1::Builder::new()
+                                .timer(TokioTimer::new())
                                 .keep_alive(true)
                                 .header_read_timeout(Duration::from_secs(10))
                                 .serve_connection(io, svc)
@@ -610,10 +674,12 @@ impl StreamProxy {
     }
 
     /// Configure upstream server base URL for artwork proxying (`/img/...`).
-    /// Deliberately strips auth tokens from image headers (Emby/Jellyfin/EmbyGo serve artwork unauthenticated)
-    /// so local proxy image endpoints can NEVER exfiltrate authenticated API data.
-    pub fn set_image_upstream(&self, base_url: String, mut headers: HeaderMap) {
-        strip_auth_headers(&mut headers);
+    /// Keeps auth headers for same-origin Emby/Jellyfin/EmbyGo image endpoints (many private
+    /// servers & reverse proxies require `X-Emby-Token` on `/Items/*/Images/*`), while
+    /// `is_allowed_image_rel_path`, raster MIME/magic-byte verification, and cross-origin
+    /// redirect header stripping protect against API exfiltration and token leakage.
+    pub fn set_image_upstream(&self, base_url: String, headers: HeaderMap) {
+        let headers = prepare_image_headers(headers);
         let normalized = base_url.trim_end_matches('/').to_string();
         let changed = self.image_upstream_base.read().as_deref() != Some(normalized.as_str());
         *self.image_upstream_base.write() = Some(normalized);
@@ -627,12 +693,32 @@ impl StreamProxy {
         &self,
         server_id: String,
         base_url: String,
-        mut headers: HeaderMap,
+        headers: HeaderMap,
     ) {
-        strip_auth_headers(&mut headers);
+        let headers = prepare_image_headers(headers);
         let normalized = base_url.trim_end_matches('/').to_string();
         self.server_image_upstreams
             .insert(server_id, (normalized, headers));
+    }
+
+    pub fn unregister_server_image_upstream(&self, server_id: &str) {
+        self.server_image_upstreams.remove(server_id);
+    }
+
+    /// Clear active streams, image upstreams, and in-memory image cache (called on logout).
+    pub fn clear_all_streams_and_upstreams(&self) {
+        let keys: Vec<(String, u64)> = self
+            .streams
+            .iter()
+            .map(|e| (e.key().clone(), e.value().cache_key))
+            .collect();
+        self.streams.clear();
+        for (_, cache_key) in keys {
+            self.cache.evict_session(cache_key);
+        }
+        *self.image_upstream_base.write() = None;
+        self.image_upstream_headers.write().clear();
+        self.image_cache.lock().clear();
     }
 
     /// Register an upstream media stream and return `(stream_id, local_url)`.
@@ -643,6 +729,18 @@ impl StreamProxy {
         known_size: Option<u64>,
         content_type: Option<String>,
     ) -> (String, String) {
+        // Bound registered streams so external_play_url or abandoned sessions never leak unboundedly.
+        if self.streams.len() >= 16 {
+            if let Some((oldest_id, oldest_key)) = self
+                .streams
+                .iter()
+                .min_by_key(|e| e.value().cache_key)
+                .map(|e| (e.key().clone(), e.value().cache_key))
+            {
+                self.streams.remove(&oldest_id);
+                self.cache.evict_session(oldest_key);
+            }
+        }
         let id = uuid::Uuid::new_v4().simple().to_string();
         let cache_key = self.next_session_key.fetch_add(1, Ordering::Relaxed);
         let entry = Arc::new(RegisteredStream {
@@ -860,19 +958,23 @@ impl StreamProxy {
     }
 
     fn is_valid_loopback_host(&self, req: &Request<Incoming>) -> bool {
-        let Some(host_val) = req
+        let host_val = req
             .headers()
             .get(header::HOST)
             .and_then(|v| v.to_str().ok())
-        else {
+            .or_else(|| req.uri().authority().map(|a| a.as_str()));
+        let Some(host_val) = host_val else {
             return false;
         };
         let port = self.listen_addr.port();
         let expected_ip = format!("127.0.0.1:{port}");
         let expected_lh = format!("localhost:{port}");
+        let expected_v6 = format!("[::1]:{port}");
         host_val.eq_ignore_ascii_case(&expected_ip)
             || host_val.eq_ignore_ascii_case(&expected_lh)
+            || host_val.eq_ignore_ascii_case(&expected_v6)
             || host_val == "127.0.0.1"
+            || host_val == "[::1]"
             || host_val.eq_ignore_ascii_case("localhost")
     }
 
@@ -966,18 +1068,25 @@ impl StreamProxy {
         };
 
         let first_chunk_start = first_chunk.saturating_mul(cs);
+        let first_capped_len = (first_data.len() as u64).min(cs);
         let first_local_start = start
             .saturating_sub(first_chunk_start)
-            .min(first_data.len() as u64) as usize;
+            .min(first_capped_len) as usize;
         let first_local_end = end
             .saturating_sub(first_chunk_start)
             .saturating_add(1)
-            .min(first_data.len() as u64) as usize;
+            .min(first_capped_len) as usize;
         let first_slice = if first_local_start < first_local_end {
             first_data.slice(first_local_start..first_local_end)
         } else {
             Bytes::new()
         };
+        if first_slice.is_empty() {
+            return Ok(simple_response(
+                StatusCode::BAD_GATEWAY,
+                "upstream returned empty range slice",
+            ));
+        }
 
         if first_chunk == last_chunk {
             self.total_served_bytes
@@ -1004,6 +1113,9 @@ impl StreamProxy {
             }));
         }
 
+        // Guard against byte-shift corruption when upstream truncates chunk `first_chunk`
+        // (e.g. CDN caps 206 responses below `cs`): never silently skip missing bytes before `first_chunk + 1`!
+        let first_is_short = (first_data.len() as u64) < cs;
         // Multi-chunk streaming body (works for both open-ended Range AND non-Range full GETs with O(1) RAM!)
         let content_len = end.saturating_sub(start).saturating_add(1);
         let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(3);
@@ -1017,6 +1129,17 @@ impl StreamProxy {
                     return;
                 }
             }
+            if first_is_short {
+                // Abort stream cleanly so mpv re-requests from the exact short-read offset instead of
+                // receiving byte-shifted data from chunk `first_chunk + 1`.
+                let _ = tx
+                    .send(Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "upstream returned short initial chunk",
+                    )))
+                    .await;
+                return;
+            }
             for chunk_idx in (first_chunk + 1)..=last_chunk {
                 // Keep 1-2 chunks pipelined ahead while streaming!
                 this.spawn_prefetch(Arc::clone(&entry_clone), chunk_idx + 1, total_size);
@@ -1026,12 +1149,13 @@ impl StreamProxy {
                             break;
                         }
                         let chunk_start = chunk_idx.saturating_mul(cs);
+                        let capped_len = (chunk.len() as u64).min(cs);
                         let local_start =
-                            start.saturating_sub(chunk_start).min(chunk.len() as u64) as usize;
-                        let local_end =
-                            end.saturating_sub(chunk_start)
-                                .saturating_add(1)
-                                .min(chunk.len() as u64) as usize;
+                            start.saturating_sub(chunk_start).min(capped_len) as usize;
+                        let local_end = end
+                            .saturating_sub(chunk_start)
+                            .saturating_add(1)
+                            .min(capped_len) as usize;
                         if local_start >= local_end {
                             break;
                         }
@@ -1044,7 +1168,13 @@ impl StreamProxy {
                         // If upstream returned a short chunk before the final chunk, abort stream cleanly
                         // so mpv sees EOF instead of silent byte-shift corruption!
                         if chunk_idx < last_chunk && (chunk.len() as u64) < cs {
-                            break;
+                            let _ = tx
+                                .send(Err(std::io::Error::new(
+                                    std::io::ErrorKind::UnexpectedEof,
+                                    "upstream returned short chunk",
+                                )))
+                                .await;
+                            return;
                         }
                     }
                     Err(_) => {
@@ -1179,14 +1309,20 @@ impl StreamProxy {
             }
         };
 
-        let fetched = self.fetch_image_upstream_bounded(&url, &hdrs).await;
+        let (status, raw_ct, bytes) = self.fetch_image_upstream_bounded(&url, &hdrs).await;
+        let resolved_ct = if status == StatusCode::OK {
+            let ct_lower = raw_ct.to_ascii_lowercase();
+            if is_safe_raster_image_mime(&ct_lower) {
+                Some(raw_ct.clone())
+            } else {
+                sniff_raster_image_mime(&bytes).map(ToString::to_string)
+            }
+        } else {
+            None
+        };
 
-        if let (StatusCode::OK, ref ct, ref bytes) = fetched {
-            let ct_lower = ct.to_ascii_lowercase();
-            if !bytes.is_empty()
-                && bytes.len() <= MAX_IMAGE_BYTES
-                && is_safe_raster_image_mime(&ct_lower)
-            {
+        if let Some(ref ct) = resolved_ct {
+            if !bytes.is_empty() && bytes.len() <= MAX_IMAGE_BYTES {
                 self.image_cache
                     .lock()
                     .put(cache_key.clone(), ct.clone(), bytes.clone());
@@ -1224,21 +1360,18 @@ impl StreamProxy {
 
         drop(guard);
 
-        let (status, ct, bytes) = fetched;
         // Security gate: NEVER return non-image or SVG payloads from `/img/`!
-        let ct_lower = ct.to_ascii_lowercase();
-        if status == StatusCode::OK && !is_safe_raster_image_mime(&ct_lower) {
-            return simple_response(
-                StatusCode::BAD_GATEWAY,
-                "upstream did not return a raster image",
-            );
+        if status == StatusCode::OK {
+            let Some(ct) = resolved_ct else {
+                warn!(path = %rel_path, "image proxy rejected non-raster upstream payload");
+                return simple_response(
+                    StatusCode::BAD_GATEWAY,
+                    "upstream did not return a raster image",
+                );
+            };
+            return build_image_response(StatusCode::OK, &ct, bytes, "public, max-age=86400");
         }
-        let cache_hdr = if status == StatusCode::OK {
-            "public, max-age=86400"
-        } else {
-            "no-store"
-        };
-        build_image_response(status, &ct, bytes, cache_hdr)
+        build_image_response(status, &raw_ct, bytes, "no-store")
     }
 
     async fn fetch_image_upstream_bounded(
@@ -1451,6 +1584,9 @@ impl StreamProxy {
         let cs = self.cache.chunk_size();
         let start = chunk_idx.saturating_mul(cs);
         let known_total = entry.total_size.load(Ordering::Acquire);
+        if known_total > 0 && start >= known_total {
+            return Err(StatusCode::RANGE_NOT_SATISFIABLE);
+        }
         let end = if known_total > 0 {
             start.saturating_add(cs - 1).min(known_total - 1)
         } else {
@@ -1458,7 +1594,9 @@ impl StreamProxy {
         };
 
         let range_val = format!("bytes={start}-{end}");
-        let max_chunk_bytes = (cs as usize).saturating_add(64 * 1024);
+        // Cap strictly to `cs` so a chunk-0 HTTP 200 fallback never caches > `cs` bytes
+        // and corrupts subsequent chunk boundaries or overflows Content-Length!
+        let max_chunk_bytes = cs as usize;
 
         for attempt in 0..3 {
             let url = entry.upstream_url.read().clone();

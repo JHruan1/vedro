@@ -1196,6 +1196,44 @@ Future<T?> showGlassSheet<T>({
 }
 
 
+/// Safely owns dialog/sheet controllers (e.g. [TextEditingController]) and disposes them
+/// in [State.dispose] AFTER the route exit animation finishes, avoiding "used after disposed"
+/// crashes during modal dismissal.
+class VedroControllerScope<T> extends StatefulWidget {
+  const VedroControllerScope({
+    super.key,
+    required this.create,
+    required this.dispose,
+    required this.builder,
+  });
+
+  final T Function() create;
+  final void Function(T value) dispose;
+  final Widget Function(BuildContext context, T value) builder;
+
+  @override
+  State<VedroControllerScope<T>> createState() => _VedroControllerScopeState<T>();
+}
+
+class _VedroControllerScopeState<T> extends State<VedroControllerScope<T>> {
+  late final T _value;
+
+  @override
+  void initState() {
+    super.initState();
+    _value = widget.create();
+  }
+
+  @override
+  void dispose() {
+    widget.dispose(_value);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(context, _value);
+}
+
 /// Option descriptor for `VedroPullDownButton<T>` (iOS-style Floating Glass Pull-Down Menu).
 class VedroDropdownItem<T> {
   const VedroDropdownItem({

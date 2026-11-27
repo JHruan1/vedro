@@ -3446,4 +3446,128 @@ void main() {
     await tester.pump();
     expect(leftBtnFocus.hasFocus, isTrue);
   });
+
+  testWidgets(
+      'v1.0.2 Regression: URL Sanitizer, Image Path Segments, ABI Auto-Updater, Mobile Cache Card & Zero-Crash Subtitle Stack',
+      (tester) async {
+    // 1. sanitizeUrlForHistory strips user:pass@ AND single-param ?api_key=SECRET cleanly
+    expect(
+      VedroAppState.sanitizeUrlForHistory('https://alice:topsecret@emby.example.com/v/1.mkv'),
+      equals('https://emby.example.com/v/1.mkv'),
+    );
+    expect(
+      VedroAppState.sanitizeUrlForHistory('https://emby.example.com/v/1.mkv?api_key=SECRET123'),
+      equals('https://emby.example.com/v/1.mkv'),
+    );
+    expect(
+      VedroAppState.sanitizeUrlForHistory(
+          'https://user:pw@emby.example.com/v/1.mkv?Static=true&StreamTicket=tk999&token=abc'),
+      equals('https://emby.example.com/v/1.mkv?Static=true'),
+    );
+
+    // 2. buildImageUrl keeps multi-segment image type (Backdrop/0) intact without %2F mangling
+    final mock = _MockVedroCore();
+    final app = VedroAppState(mock);
+    addTearDown(app.dispose);
+    app.connectedUrl = 'https://emby.example.com';
+    app.proxyAddr = '127.0.0.1:45678';
+    final bdUrl = app.buildImageUrl('item-42', type: 'Backdrop/0', tag: 't1', maxWidth: 1280);
+    expect(bdUrl, contains('/img/Items/item-42/Images/Backdrop/0?'));
+    expect(bdUrl, isNot(contains('%2F')));
+
+    // 3. Auto-updater parses Rust check_app_update JSON with SHA-256 & matches exact Android ABI
+    final rel = VedroReleaseInfo.fromGitHubJson({
+      'tag_name': 'v1.0.2',
+      'version': '1.0.2',
+      'html_url': 'https://github.com/JHruan1/vedro/releases/tag/v1.0.2',
+      'body': 'v1.0.2 fixes',
+      'assets': [
+        {
+          'name': 'vedro-v1.0.2-android-arm64-v8a.apk',
+          'url': 'https://github.com/JHruan1/vedro/releases/download/v1.0.2/vedro-v1.0.2-android-arm64-v8a.apk',
+          'size': 28000000,
+          'sha256': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        },
+        {
+          'name': 'vedro-v1.0.2-android-armeabi-v7a.apk',
+          'url': 'https://github.com/JHruan1/vedro/releases/download/v1.0.2/vedro-v1.0.2-android-armeabi-v7a.apk',
+          'size': 26000000,
+          'sha256': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        },
+        {
+          'name': 'vedro-v1.0.2-windows-x64-setup.exe',
+          'url': 'https://github.com/JHruan1/vedro/releases/download/v1.0.2/vedro-v1.0.2-windows-x64-setup.exe',
+          'size': 32000000,
+          'sha256': 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        },
+      ],
+    });
+    final v7Asset = rel.bestAssetForPlatform(osOverride: 'android', abiOverride: 'armeabi-v7a');
+    expect(v7Asset?.name, equals('vedro-v1.0.2-android-armeabi-v7a.apk'));
+    expect(v7Asset?.sha256, equals('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'));
+    final winAsset = rel.bestAssetForPlatform(osOverride: 'windows');
+    expect(winAsset?.name, equals('vedro-v1.0.2-windows-x64-setup.exe'));
+
+    // 4. autoCheckUpdates preference defaults to true and roundtrips false cleanly
+    const defPrefs = VedroPreferences();
+    expect(defPrefs.autoCheckUpdates, isTrue);
+    final toggled = VedroPreferences.fromJson(defPrefs.copyWith(autoCheckUpdates: false).toJson());
+    expect(toggled.autoCheckUpdates, isFalse);
+
+    // 5. AiBilingualSubtitleOverlay mounts inside Stack cleanly (RepaintBoundary is INSIDE Positioned.fill)
+    final subCtrl = AiSubtitleTranslatorController(appState: app, mediaTitle: 'StackSafe');
+    addTearDown(subCtrl.dispose);
+    subCtrl.activeCueNotifier.value = const BilingualCueSnapshot(
+      original: 'Hello',
+      translated: '你好',
+      displayMode: 'bilingual_trans_top',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              const SizedBox.expand(),
+              AiBilingualSubtitleOverlay(
+                controller: subCtrl,
+                subScale: 1.0,
+                subPos: 96,
+                colorHex: '#FFFFFF',
+                outlineWidth: 2.0,
+                bgOpacity: 0.4,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    expect(tester.takeException(), isNull);
+    expect(find.text('你好'), findsOneWidget);
+
+    // 6. SettingsScreen -> 下载与缓存 renders on 360px portrait phone with ZERO RenderFlex overflow!
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(app.prefs.activeSkinFor(isMobile: true)),
+        home: SettingsScreen(
+          appState: app,
+          onOpenAddServer: ([_]) {},
+          onOpenServerHub: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('下载与缓存'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('下载与缓存').first);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('settings-image-cache-card')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

@@ -69,28 +69,35 @@ impl EmbyClient {
         options: ClientTransportOptions,
     ) -> Result<Self> {
         let normalized = normalize_base_url(server_url)?;
-        let mut builder = Client::builder()
-            .pool_max_idle_per_host(8)
-            .pool_idle_timeout(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(8))
-            .timeout(Duration::from_secs(30))
-            .tcp_nodelay(true)
-            // Follow redirects manually in send_raw so X-Emby-Token / X-Emby-Authorization
-            // are stripped on any cross-origin redirect.
-            .redirect(reqwest::redirect::Policy::none())
-            .danger_accept_invalid_certs(options.accept_invalid_certs);
-
-        if let Some(proxy_str) = options
-            .proxy_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            let proxy = reqwest::Proxy::all(proxy_str)?;
-            builder = builder.proxy(proxy);
-        }
-
-        let http = builder.build()?;
+        let build_client = |disable_native_certs: bool| {
+            let mut builder = Client::builder()
+                .pool_max_idle_per_host(8)
+                .pool_idle_timeout(Duration::from_secs(60))
+                .connect_timeout(Duration::from_secs(8))
+                .timeout(Duration::from_secs(30))
+                .tcp_nodelay(true)
+                // Follow redirects manually in send_raw so X-Emby-Token / X-Emby-Authorization
+                // are stripped on cross-origin redirects while preserving same-host http->https upgrades.
+                .redirect(reqwest::redirect::Policy::none())
+                .danger_accept_invalid_certs(options.accept_invalid_certs);
+            if disable_native_certs {
+                builder = builder.tls_built_in_native_certs(false);
+            }
+            if let Some(proxy_str) = options
+                .proxy_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let proxy = reqwest::Proxy::all(proxy_str)?;
+                builder = builder.proxy(proxy);
+            }
+            builder.build()
+        };
+        let http = match build_client(false) {
+            Ok(c) => c,
+            Err(_) => build_client(true)?,
+        };
 
         Ok(Self {
             http,
@@ -103,6 +110,49 @@ impl EmbyClient {
 
     pub fn base_url(&self) -> &Url {
         &self.base_url
+    }
+
+    /// Effective base URL including any auto-detected reverse-proxy prefix (e.g. `/emby`),
+    /// without a trailing slash. Used for image proxy upstream registration so artwork paths
+    /// resolve identically to REST API calls.
+    pub fn effective_base_url(&self) -> String {
+        let base_str = self.base_url.as_str().trim_end_matches('/');
+        let base_path = self.base_url.path().trim_matches('/');
+        let prefix = self.state.read().capabilities.api_prefix.clone();
+        let norm_prefix = prefix.trim_matches('/');
+        if norm_prefix.is_empty()
+            || base_path.eq_ignore_ascii_case(norm_prefix)
+            || base_path
+                .to_ascii_lowercase()
+                .ends_with(&format!("/{}", norm_prefix.to_ascii_lowercase()))
+        {
+            base_str.to_string()
+        } else {
+            format!("{base_str}/{norm_prefix}")
+        }
+    }
+
+    /// Seed known server dialect optimistically from persisted profile before live probe completes.
+    pub fn seed_dialect_hint(
+        &self,
+        dialect: &str,
+        server_id: Option<&str>,
+        server_name: Option<&str>,
+    ) {
+        let mut st = self.state.write();
+        if let Some(sid) = server_id.filter(|s| !s.is_empty()) {
+            if st.capabilities.server_id.is_empty() {
+                st.capabilities.server_id = sid.to_string();
+            }
+        }
+        if let Some(name) = server_name.filter(|s| !s.is_empty()) {
+            if st.capabilities.server_name.is_empty() {
+                st.capabilities.server_name = name.to_string();
+            }
+        }
+        if dialect.eq_ignore_ascii_case("embygo") {
+            st.capabilities.mark_embygo(None);
+        }
     }
 
     pub fn identity(&self) -> &ClientIdentity {
@@ -290,14 +340,20 @@ impl EmbyClient {
                 {
                     if let Ok(next) = current_url.join(loc) {
                         if matches!(next.scheme(), "http" | "https") {
-                            let same = current_url.scheme().eq_ignore_ascii_case(next.scheme())
-                                && current_url
-                                    .host_str()
-                                    .map(|h| h.to_ascii_lowercase())
-                                    .eq(&next.host_str().map(|h| h.to_ascii_lowercase()))
+                            let same_host = current_url
+                                .host_str()
+                                .map(|h| h.to_ascii_lowercase())
+                                .eq(&next.host_str().map(|h| h.to_ascii_lowercase()));
+                            let is_downgrade = current_url.scheme().eq_ignore_ascii_case("https")
+                                && next.scheme().eq_ignore_ascii_case("http");
+                            let is_same_host_https_upgrade = same_host
+                                && current_url.scheme().eq_ignore_ascii_case("http")
+                                && next.scheme().eq_ignore_ascii_case("https");
+                            let same_origin = same_host
+                                && current_url.scheme().eq_ignore_ascii_case(next.scheme())
                                 && current_url.port_or_known_default()
                                     == next.port_or_known_default();
-                            if !same {
+                            if is_downgrade || (!same_origin && !is_same_host_https_upgrade) {
                                 headers.remove(reqwest::header::AUTHORIZATION);
                                 headers.remove(reqwest::header::COOKIE);
                                 headers.remove("x-emby-authorization");
@@ -761,6 +817,9 @@ impl EmbyClient {
         }
         if let Some(v) = &query.studio_ids {
             q.push(("StudioIds", v.clone()));
+        }
+        if let Some(v) = &query.studios {
+            q.push(("Studios", v.clone()));
         }
         if let Some(v) = &query.tag_ids {
             q.push(("TagIds", v.clone()));

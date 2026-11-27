@@ -13,6 +13,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     CreateAndAttachConsole();
   }
 
+  // Create named mutex matching Inno Setup's `AppMutex=VedroSingleInstanceMutex`
+  // so silent in-app updates cleanly detect & close running instances before replacing Vedro.exe.
+  HANDLE single_instance_mutex = ::CreateMutexW(nullptr, FALSE, L"VedroSingleInstanceMutex");
+
   // Initialize COM, so that it is available for use in the library and/or
   // plugins.
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -39,5 +43,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
 
   ::CoUninitialize();
+  if (single_instance_mutex != nullptr) {
+    ::CloseHandle(single_instance_mutex);
+  }
   return EXIT_SUCCESS;
 }

@@ -84,6 +84,94 @@ struct ActivePlaybackSession {
 const MAX_SUBTITLE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DANMAKU_BYTES: usize = 16 * 1024 * 1024;
 const MAX_AI_JSON_BYTES: usize = 4 * 1024 * 1024;
+const MAX_UPDATE_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct UpdateDownloadState {
+    status: String, // "idle" | "downloading" | "verifying" | "ready" | "error" | "cancelled"
+    version: String,
+    file_name: String,
+    file_path: Option<String>,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    speed_bps: u64,
+    sha256: Option<String>,
+    sha256_verified: bool,
+    error: Option<String>,
+}
+
+fn is_trusted_update_host(u: &url::Url) -> bool {
+    if !u.scheme().eq_ignore_ascii_case("https") {
+        return false;
+    }
+    let Some(host) = u.host_str() else {
+        return false;
+    };
+    let h = host.to_ascii_lowercase();
+    h == "github.com"
+        || h == "api.github.com"
+        || h == "objects.githubusercontent.com"
+        || h == "release-assets.githubusercontent.com"
+        || h == "github-releases.githubusercontent.com"
+        || h.ends_with(".githubusercontent.com")
+}
+
+fn sanitize_update_filename(raw: &str) -> String {
+    let base = std::path::Path::new(raw)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("vedro-update.bin");
+    let cleaned: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() || cleaned.starts_with('.') {
+        "vedro-update.bin".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn parse_sha256sums_map(raw: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut parts = trimmed.split_whitespace();
+        let Some(hash) = parts.next() else { continue };
+        let Some(name_raw) = parts.next() else {
+            continue;
+        };
+        let hash_l = hash.to_ascii_lowercase();
+        if hash_l.len() == 64 && hash_l.bytes().all(|b| b.is_ascii_hexdigit()) {
+            let clean_name = name_raw.trim_start_matches('*');
+            let file_only = std::path::Path::new(clean_name)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(clean_name);
+            map.insert(file_only.to_string(), hash_l);
+        }
+    }
+    map
+}
+
+fn bytes_to_lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
 
 /// Process-wide respectful rate limiter for shared public Bilibili APIs (`*.bilibili.com`).
 /// Guarantees strictly 1 concurrent request, >= 2400ms inter-completion pacing, and shared
@@ -183,9 +271,14 @@ pub struct VedroRuntime {
     events: Arc<Mutex<VecDeque<Value>>>,
     identity: Mutex<ClientIdentity>,
     speedtest_cancel: Arc<std::sync::atomic::AtomicBool>,
+    explicitly_logged_out: std::sync::atomic::AtomicBool,
     http_default: reqwest::Client,
     http_direct: reqwest::Client,
     asr_temp_dir: PathBuf,
+    updates_dir: PathBuf,
+    update_download: Arc<Mutex<UpdateDownloadState>>,
+    update_cancel: Arc<std::sync::atomic::AtomicBool>,
+    update_epoch: std::sync::atomic::AtomicU64,
     rt: Option<Runtime>,
 }
 
@@ -194,12 +287,13 @@ impl Drop for VedroRuntime {
         let in_tokio = tokio::runtime::Handle::try_current().is_ok();
         // 1. Terminate libmpv first so it stops reading from StreamProxy
         self.engine.lock().take();
-        // 2. Stop active WebSocket session
+        // 2. Stop active WebSocket session (construct timeout INSIDE `rt.block_on` so reactor is active!)
         if let Some(mut ws) = self.ws.lock().take() {
             if !in_tokio {
                 if let Some(ref rt) = self.rt {
-                    let _ =
-                        rt.block_on(tokio::time::timeout(Duration::from_millis(500), ws.stop()));
+                    rt.block_on(async move {
+                        let _ = tokio::time::timeout(Duration::from_millis(500), ws.stop()).await;
+                    });
                 }
             }
         }
@@ -326,7 +420,14 @@ impl VedroRuntime {
             .unwrap_or_else(|| {
                 std::env::temp_dir().join(format!("vedro_asr_{}", std::process::id()))
             });
+        let updates_dir = db_dir
+            .as_ref()
+            .map(|d| d.join("updates"))
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("vedro_updates_{}", std::process::id()))
+            });
         let _ = std::fs::create_dir_all(&asr_temp_dir);
+        let _ = std::fs::create_dir_all(&updates_dir);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -409,14 +510,26 @@ impl VedroRuntime {
             proxy.set_image_cache_dir(d.join("img_cache"));
         }
 
-        // Pre-register saved server image upstreams + remembered active upstream IMMEDIATELY on cold start
-        // so `http://127.0.0.1:<port>/img/...` serves cached/live artwork at millisecond 0 without waiting
-        // for `restore_session` network round-trips!
+        // Pre-register saved server image upstreams + optimistically attach the last active
+        // authenticated client IMMEDIATELY on cold start so BOTH:
+        //  1) `http://127.0.0.1:<port>/img/...` loads artwork at millisecond 0 (with proxy/TLS config!), AND
+        //  2) `get_home`/`get_item`/`get_items` NEVER fail with "no server connected" while SWR hydrates!
+        let mut initial_client: Option<EmbyClient> = None;
+        let mut initial_server_id: Option<String> = None;
+        let mut initial_logged_out = false;
         if let Ok(saved_list) = store.list_servers() {
-            let remembered_id = store
+            let raw_remembered = store
                 .get_setting::<String>("last_active_server_id")
                 .ok()
-                .flatten()
+                .flatten();
+            if raw_remembered
+                .as_deref()
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(false)
+            {
+                initial_logged_out = true;
+            }
+            let remembered_id = raw_remembered
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
             for srv in &saved_list {
@@ -428,27 +541,51 @@ impl VedroRuntime {
                 let hdrs = identity.build_headers(srv.access_token.as_deref());
                 proxy.register_server_image_upstream(srv.id.clone(), route_url, hdrs);
             }
-            let target_srv = remembered_id
-                .as_deref()
-                .and_then(|rid| {
-                    saved_list
-                        .iter()
-                        .find(|s| s.id == rid && s.access_token.is_some())
-                })
-                .or_else(|| {
-                    saved_list
-                        .iter()
-                        .filter(|s| s.access_token.is_some())
-                        .max_by_key(|s| s.last_connected_at)
-                });
-            if let Some(srv) = target_srv {
-                let route_url = srv
-                    .active_route()
-                    .map(|r| r.url.clone())
-                    .filter(|u| !u.is_empty())
-                    .unwrap_or_else(|| srv.url.clone());
-                let hdrs = identity.build_headers(srv.access_token.as_deref());
-                proxy.set_image_upstream(route_url, hdrs);
+            if !initial_logged_out {
+                let target_srv = remembered_id
+                    .as_deref()
+                    .and_then(|rid| {
+                        saved_list.iter().find(|s| {
+                            s.id == rid && s.access_token.is_some() && s.user_id.is_some()
+                        })
+                    })
+                    .or_else(|| {
+                        saved_list
+                            .iter()
+                            .filter(|s| s.access_token.is_some() && s.user_id.is_some())
+                            .max_by_key(|s| s.last_connected_at)
+                    });
+                if let Some(srv) = target_srv {
+                    let route = srv.active_route();
+                    let route_url = route
+                        .map(|r| r.url.clone())
+                        .filter(|u| !u.is_empty())
+                        .unwrap_or_else(|| srv.url.clone());
+                    let route_proxy = route
+                        .and_then(|r| r.proxy_url.as_deref())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(ToString::to_string);
+                    let accept_invalid = route.map(|r| r.accept_invalid_certs).unwrap_or(false);
+                    let _ = proxy.configure_transport(route_proxy.as_deref(), accept_invalid);
+                    let hdrs = identity.build_headers(srv.access_token.as_deref());
+                    proxy.set_image_upstream(route_url.clone(), hdrs);
+                    if let (Some(tok), Some(uid)) = (&srv.access_token, &srv.user_id) {
+                        if let Ok(c) = EmbyClient::with_options(
+                            &route_url,
+                            identity.clone(),
+                            ClientTransportOptions {
+                                proxy_url: route_proxy,
+                                accept_invalid_certs: accept_invalid,
+                            },
+                        ) {
+                            c.seed_dialect_hint(&srv.dialect, Some(&srv.id), Some(&srv.name));
+                            c.set_credentials(tok.clone(), uid.clone());
+                            initial_client = Some(c);
+                            initial_server_id = Some(srv.id.clone());
+                        }
+                    }
+                }
             }
         }
 
@@ -456,8 +593,8 @@ impl VedroRuntime {
             engine: Mutex::new(None),
             ws: Mutex::new(None),
             active_session: Mutex::new(None),
-            client: Mutex::new(None),
-            active_server_id: Mutex::new(None),
+            client: Mutex::new(initial_client),
+            active_server_id: Mutex::new(initial_server_id),
             session_epoch: std::sync::atomic::AtomicU64::new(0),
             playback_epoch: std::sync::atomic::AtomicU64::new(0),
             speedtest_epoch: std::sync::atomic::AtomicU64::new(0),
@@ -467,9 +604,17 @@ impl VedroRuntime {
             events: Arc::new(Mutex::new(VecDeque::with_capacity(256))),
             identity: Mutex::new(identity),
             speedtest_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            explicitly_logged_out: std::sync::atomic::AtomicBool::new(initial_logged_out),
             http_default,
             http_direct,
             asr_temp_dir,
+            updates_dir,
+            update_download: Arc::new(Mutex::new(UpdateDownloadState {
+                status: "idle".to_string(),
+                ..Default::default()
+            })),
+            update_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            update_epoch: std::sync::atomic::AtomicU64::new(0),
             rt: Some(rt),
         })
     }
@@ -490,11 +635,104 @@ impl VedroRuntime {
         rt.block_on(self.invoke_async(method, params))
     }
 
+    /// Lazily attach the last active saved server (with proxy/TLS config & credentials)
+    /// when `self.client` is empty and the user has NOT explicitly logged out.
+    fn attach_saved_server_optimistically(&self) -> Option<EmbyClient> {
+        if let Some(existing) = self.client.lock().clone() {
+            return Some(existing);
+        }
+        if self
+            .explicitly_logged_out
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return None;
+        }
+        let saved_list = self.store.list_servers().ok()?;
+        let raw_remembered = self
+            .store
+            .get_setting::<String>("last_active_server_id")
+            .ok()
+            .flatten();
+        if raw_remembered
+            .as_deref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let remembered_id = raw_remembered
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let target_srv = remembered_id
+            .as_deref()
+            .and_then(|rid| {
+                saved_list
+                    .iter()
+                    .find(|s| s.id == rid && s.access_token.is_some() && s.user_id.is_some())
+            })
+            .or_else(|| {
+                saved_list
+                    .iter()
+                    .filter(|s| s.access_token.is_some() && s.user_id.is_some())
+                    .max_by_key(|s| s.last_connected_at)
+            })?;
+        let route = target_srv.active_route();
+        let route_url = route
+            .map(|r| r.url.clone())
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| target_srv.url.clone());
+        let route_proxy = route
+            .and_then(|r| r.proxy_url.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string);
+        let accept_invalid = route.map(|r| r.accept_invalid_certs).unwrap_or(false);
+        let _ = self
+            .proxy
+            .configure_transport(route_proxy.as_deref(), accept_invalid);
+        let identity = self.identity.lock().clone();
+        let client = EmbyClient::with_options(
+            &route_url,
+            identity,
+            ClientTransportOptions {
+                proxy_url: route_proxy,
+                accept_invalid_certs: accept_invalid,
+            },
+        )
+        .ok()?;
+        client.seed_dialect_hint(
+            &target_srv.dialect,
+            Some(&target_srv.id),
+            Some(&target_srv.name),
+        );
+        if let (Some(tok), Some(uid)) = (&target_srv.access_token, &target_srv.user_id) {
+            client.set_credentials(tok.clone(), uid.clone());
+        }
+        let hdrs = client.auth_headers();
+        self.proxy
+            .set_image_upstream(client.effective_base_url(), hdrs.clone());
+        self.proxy.register_server_image_upstream(
+            target_srv.id.clone(),
+            client.effective_base_url(),
+            hdrs,
+        );
+        let mut guard = self.client.lock();
+        if let Some(existing) = guard.clone() {
+            return Some(existing);
+        }
+        *guard = Some(client.clone());
+        *self.active_server_id.lock() = Some(target_srv.id.clone());
+        Some(client)
+    }
+
     fn require_client(&self) -> Result<EmbyClient, String> {
-        self.client
-            .lock()
-            .clone()
-            .ok_or_else(|| "no server connected; call connect_server first".to_string())
+        if let Some(c) = self.client.lock().clone() {
+            return Ok(c);
+        }
+        if let Some(c) = self.attach_saved_server_optimistically() {
+            return Ok(c);
+        }
+        Err("no server connected; call connect_server first".to_string())
     }
 
     fn ensure_engine(
@@ -667,19 +905,37 @@ impl VedroRuntime {
                             .max_by_key(|s| s.last_connected_at)
                     });
                 let mut cached_home: Option<Value> = None;
-                if let Some(srv) = target_srv {
-                    let route_url = srv
-                        .active_route()
-                        .map(|r| r.url.clone())
-                        .filter(|u| !u.is_empty())
-                        .unwrap_or_else(|| srv.url.clone());
-                    let hdrs = id_snap.build_headers(srv.access_token.as_deref());
-                    self.proxy.set_image_upstream(route_url, hdrs);
-                    cached_home = self
-                        .store
-                        .get_setting::<Value>(&format!("home_cache_v1:{}", srv.id))
-                        .ok()
-                        .flatten();
+                let raw_remembered = self
+                    .store
+                    .get_setting::<String>("last_active_server_id")
+                    .ok()
+                    .flatten();
+                let logged_out_marker = raw_remembered
+                    .as_deref()
+                    .map(|s| s.trim().is_empty())
+                    .unwrap_or(false);
+                if !logged_out_marker {
+                    if let Some(srv) = target_srv {
+                        let route = srv.active_route();
+                        let route_url = route
+                            .map(|r| r.url.clone())
+                            .filter(|u| !u.is_empty())
+                            .unwrap_or_else(|| srv.url.clone());
+                        let route_proxy = route
+                            .and_then(|r| r.proxy_url.as_deref())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty());
+                        let accept_invalid = route.map(|r| r.accept_invalid_certs).unwrap_or(false);
+                        let _ = self.proxy.configure_transport(route_proxy, accept_invalid);
+                        let hdrs = id_snap.build_headers(srv.access_token.as_deref());
+                        self.proxy.set_image_upstream(route_url, hdrs);
+                        let _ = self.attach_saved_server_optimistically();
+                        cached_home = self
+                            .store
+                            .get_setting::<Value>(&format!("home_cache_v1:{}", srv.id))
+                            .ok()
+                            .flatten();
+                    }
                 }
                 let cfg = self.playback_config.lock().clone();
                 let home_layout = self
@@ -742,6 +998,7 @@ impl VedroRuntime {
             "delete_server" => {
                 let id = str_param(&params, "id")?;
                 self.store.delete_server(&id).map_err(|e| e.to_string())?;
+                self.proxy.unregister_server_image_upstream(&id);
                 if let Ok(Some(last_id)) = self.store.get_setting::<String>("last_active_server_id")
                 {
                     if last_id == id {
@@ -1027,13 +1284,12 @@ impl VedroRuntime {
                 let _ = self.store.set_setting("last_active_server_id", &server_id);
 
                 let hdrs = client.auth_headers();
+                let eff_url = client.effective_base_url();
+                self.proxy.set_image_upstream(eff_url.clone(), hdrs.clone());
                 self.proxy
-                    .set_image_upstream(client.base_url().to_string(), hdrs.clone());
-                self.proxy.register_server_image_upstream(
-                    profile.id.clone(),
-                    client.base_url().to_string(),
-                    hdrs,
-                );
+                    .register_server_image_upstream(profile.id.clone(), eff_url, hdrs);
+                self.explicitly_logged_out
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 *self.active_server_id.lock() = Some(profile.id.clone());
                 *self.client.lock() = Some(client.clone());
                 self.start_websocket(client, epoch);
@@ -1084,7 +1340,9 @@ impl VedroRuntime {
                     return Err("连接操作已被新的会话操作取代".to_string());
                 }
                 self.proxy
-                    .set_image_upstream(client.base_url().to_string(), client.auth_headers());
+                    .set_image_upstream(client.effective_base_url(), client.auth_headers());
+                self.explicitly_logged_out
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 *self.active_server_id.lock() =
                     (!caps.server_id.is_empty()).then(|| caps.server_id.clone());
                 *self.client.lock() = Some(client);
@@ -1168,10 +1426,12 @@ impl VedroRuntime {
                     active_route_id,
                 });
                 let hdrs = client.auth_headers();
+                let eff_url = client.effective_base_url();
+                self.proxy.set_image_upstream(eff_url.clone(), hdrs.clone());
                 self.proxy
-                    .set_image_upstream(current_url.clone(), hdrs.clone());
-                self.proxy
-                    .register_server_image_upstream(server_id.clone(), current_url, hdrs);
+                    .register_server_image_upstream(server_id.clone(), eff_url, hdrs);
+                self.explicitly_logged_out
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 let _ = self.store.set_setting("last_active_server_id", &server_id);
                 *self.active_server_id.lock() = Some(server_id);
                 let cur_epoch = self.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
@@ -1275,10 +1535,12 @@ impl VedroRuntime {
                     active_route_id,
                 });
                 let hdrs = client.auth_headers();
+                let eff_url = client.effective_base_url();
+                self.proxy.set_image_upstream(eff_url.clone(), hdrs.clone());
                 self.proxy
-                    .set_image_upstream(current_url.clone(), hdrs.clone());
-                self.proxy
-                    .register_server_image_upstream(server_id.clone(), current_url, hdrs);
+                    .register_server_image_upstream(server_id.clone(), eff_url, hdrs);
+                self.explicitly_logged_out
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 let _ = self.store.set_setting("last_active_server_id", &server_id);
                 *self.active_server_id.lock() = Some(server_id);
                 let cur_epoch = self.session_epoch.load(std::sync::atomic::Ordering::SeqCst);
@@ -1329,12 +1591,44 @@ impl VedroRuntime {
                     },
                 )
                 .map_err(|e| e.to_string())?;
+                if let Some(ref sid) = explicit_server_id {
+                    if let Ok(Some(saved)) = self.store.get_server(sid) {
+                        client.seed_dialect_hint(
+                            &saved.dialect,
+                            Some(&saved.id),
+                            Some(&saved.name),
+                        );
+                    }
+                }
                 client.set_credentials(token.clone(), user_id.clone());
-                // Probe server capabilities AND validate current user in ONE single network RTT!
+
+                // Optimistically attach client & image upstream IMMEDIATELY before waiting on network
+                // round-trips so concurrent Home/Detail/Image requests never hit "no server connected"!
+                self.explicitly_logged_out
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                let pre_hdrs = client.auth_headers();
+                let pre_eff_url = client.effective_base_url();
+                self.proxy
+                    .set_image_upstream(pre_eff_url.clone(), pre_hdrs.clone());
+                if let Some(ref sid) = explicit_server_id {
+                    self.proxy
+                        .register_server_image_upstream(sid.clone(), pre_eff_url, pre_hdrs);
+                }
+                *self.active_server_id.lock() = explicit_server_id.clone();
+                *self.client.lock() = Some(client.clone());
+
+                // Probe server capabilities AND validate current user in ONE RTT, retrying `current_user`
+                // once if `probe_server` just discovered a reverse-proxy `/emby` subpath prefix!
                 let (probe_res, user_res) =
                     tokio::join!(client.probe_server(), client.current_user());
                 let (info, caps) = probe_res.map_err(|e| e.to_string())?;
-                let user = user_res.map_err(|e| e.to_string())?;
+                let user = match user_res {
+                    Ok(u) => u,
+                    Err(_) if !caps.api_prefix.is_empty() => {
+                        client.current_user().await.map_err(|e| e.to_string())?
+                    }
+                    Err(e) => return Err(e.to_string()),
+                };
 
                 if self.session_epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
                     return Err("会话恢复已被新的切换/退出操作取代".to_string());
@@ -1359,14 +1653,11 @@ impl VedroRuntime {
                 }
 
                 let hdrs = client.auth_headers();
-                self.proxy
-                    .set_image_upstream(client.base_url().to_string(), hdrs.clone());
+                let eff_url = client.effective_base_url();
+                self.proxy.set_image_upstream(eff_url.clone(), hdrs.clone());
                 if let Some(ref sid) = resolved_sid {
-                    self.proxy.register_server_image_upstream(
-                        sid.clone(),
-                        client.base_url().to_string(),
-                        hdrs,
-                    );
+                    self.proxy
+                        .register_server_image_upstream(sid.clone(), eff_url, hdrs);
                 }
                 *self.active_server_id.lock() = resolved_sid;
                 *self.client.lock() = Some(client.clone());
@@ -1382,7 +1673,11 @@ impl VedroRuntime {
             "logout" => {
                 self.session_epoch
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.explicitly_logged_out
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 *self.active_server_id.lock() = None;
+                let _ = self.active_session.lock().take();
+                self.proxy.clear_all_streams_and_upstreams();
                 let ws_opt = self.ws.lock().take();
                 if let Some(mut ws) = ws_opt {
                     ws.stop().await;
@@ -1515,7 +1810,13 @@ impl VedroRuntime {
             }
 
             "get_track_preference" => {
-                let scope_id = str_param(&params, "scope_id")?;
+                let scope_id = params
+                    .get("scope_id")
+                    .or_else(|| params.get("series_or_item_id"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(ToString::to_string)
+                    .ok_or_else(|| "missing required string parameter `scope_id`".to_string())?;
                 let server_id = params
                     .get("server_id")
                     .and_then(Value::as_str)
@@ -1531,7 +1832,13 @@ impl VedroRuntime {
             }
 
             "set_track_preference" => {
-                let scope_id = str_param(&params, "scope_id")?;
+                let scope_id = params
+                    .get("scope_id")
+                    .or_else(|| params.get("series_or_item_id"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(ToString::to_string)
+                    .ok_or_else(|| "missing required string parameter `scope_id`".to_string())?;
                 let server_id = params
                     .get("server_id")
                     .and_then(Value::as_str)
@@ -2396,12 +2703,21 @@ impl VedroRuntime {
                 let resolved = client
                     .resolve_media_url(new_url)
                     .map_err(|e| e.to_string())?;
-                let swapped = self
-                    .proxy
-                    .update_upstream_url(&active.2, resolved.to_string(), None);
+                let new_hdrs = if same_origin_as_client(&client, resolved.as_str())
+                    && !vedro_protocol::auth::url_has_stream_ticket(resolved.as_str())
+                {
+                    client.auth_headers()
+                } else {
+                    reqwest::header::HeaderMap::new()
+                };
+                let swapped =
+                    self.proxy
+                        .update_upstream_url(&active.2, resolved.to_string(), Some(new_hdrs));
                 if swapped && !pb.play_session_id.is_empty() {
                     if let Some(ref mut sess) = *self.active_session.lock() {
-                        sess.play_session_id = pb.play_session_id.clone();
+                        if sess.stream_id == active.2 {
+                            sess.play_session_id = pb.play_session_id.clone();
+                        }
                     }
                 }
                 Ok(json!({
@@ -3386,8 +3702,6 @@ impl VedroRuntime {
                         return Err(e);
                     }
                 };
-                let body: Value = serde_json::from_slice(&raw_bytes)
-                    .map_err(|e| format!("invalid AI response ({status}): {e}"))?;
                 if !status.is_success() {
                     if is_bilibili_index {
                         bilibili_limiter().record_failure(
@@ -3395,12 +3709,18 @@ impl VedroRuntime {
                                 || status.is_server_error(),
                         );
                     }
-                    let msg = body
-                        .pointer("/error/message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("AI request failed");
+                    let msg = serde_json::from_slice::<Value>(&raw_bytes)
+                        .ok()
+                        .and_then(|v| {
+                            v.pointer("/error/message")
+                                .and_then(Value::as_str)
+                                .map(ToString::to_string)
+                        })
+                        .unwrap_or_else(|| "AI request failed".to_string());
                     return Err(format!("HTTP {}: {msg}", status.as_u16()));
                 }
+                let body: Value = serde_json::from_slice(&raw_bytes)
+                    .map_err(|e| format!("invalid AI response ({status}): {e}"))?;
                 if is_bilibili_index {
                     bilibili_limiter().record_success();
                 }
@@ -3661,8 +3981,6 @@ impl VedroRuntime {
                         return Err(e);
                     }
                 };
-                let body: Value = serde_json::from_slice(&raw_bytes)
-                    .map_err(|e| format!("invalid AI response ({status}): {e}"))?;
                 if !status.is_success() {
                     if is_bilibili_index {
                         bilibili_limiter().record_failure(
@@ -3670,12 +3988,18 @@ impl VedroRuntime {
                                 || status.is_server_error(),
                         );
                     }
-                    let msg = body
-                        .pointer("/error/message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("AI request failed");
+                    let msg = serde_json::from_slice::<Value>(&raw_bytes)
+                        .ok()
+                        .and_then(|v| {
+                            v.pointer("/error/message")
+                                .and_then(Value::as_str)
+                                .map(ToString::to_string)
+                        })
+                        .unwrap_or_else(|| "AI request failed".to_string());
                     return Err(format!("HTTP {}: {msg}", status.as_u16()));
                 }
+                let body: Value = serde_json::from_slice(&raw_bytes)
+                    .map_err(|e| format!("invalid AI response ({status}): {e}"))?;
                 if is_bilibili_index {
                     bilibili_limiter().record_success();
                 }
@@ -3973,6 +4297,11 @@ impl VedroRuntime {
                 } else {
                     &self.http_default
                 };
+                let _bili_permit = if is_bilibili_index {
+                    Some(bilibili_limiter().acquire_slot().await?)
+                } else {
+                    None
+                };
                 let mut req = http.get(&endpoint).header(
                     reqwest::header::USER_AGENT,
                     if is_bilibili_index {
@@ -3989,6 +4318,9 @@ impl VedroRuntime {
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 match req.send().await {
                     Ok(resp) if resp.status().is_success() => {
+                        if is_bilibili_index {
+                            bilibili_limiter().record_success();
+                        }
                         if let Ok(raw_bytes) =
                             read_reqwest_body_capped(resp, MAX_AI_JSON_BYTES).await
                         {
@@ -4023,8 +4355,13 @@ impl VedroRuntime {
                         }
                     }
                     Ok(resp) => {
-                        if !is_bilibili_index {
-                            let status = resp.status();
+                        let status = resp.status();
+                        if is_bilibili_index {
+                            bilibili_limiter().record_failure(
+                                status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                                    || status.is_server_error(),
+                            );
+                        } else {
                             let raw_err = read_reqwest_body_capped(resp, 64 * 1024)
                                 .await
                                 .unwrap_or_default();
@@ -4041,7 +4378,9 @@ impl VedroRuntime {
                         }
                     }
                     Err(e) => {
-                        if !is_bilibili_index {
+                        if is_bilibili_index {
+                            bilibili_limiter().record_failure(true);
+                        } else {
                             return Err(format!(
                                 "获取模型失败: {}",
                                 vedro_protocol::error::format_transport_error(&e)
@@ -4196,6 +4535,9 @@ impl VedroRuntime {
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|s| !s.is_empty() && !s.contains("api.dandanplay.net"));
+                if let Some(cb) = custom_base {
+                    let _ = validate_http_url(cb)?;
+                }
                 let http = self.build_danmaku_http_client()?;
                 let cleaned = clean_danmaku_title(&keyword);
                 let search_kw = if cleaned.is_empty() {
@@ -4260,6 +4602,12 @@ impl VedroRuntime {
                             .send()
                             .await
                             .map_err(|e| vedro_protocol::error::format_transport_error(&e))?;
+                        if !raw_resp.status().is_success() {
+                            return Err(format!(
+                                "B 站接口返回 HTTP {}",
+                                raw_resp.status().as_u16()
+                            ));
+                        }
                         let raw_bytes = read_reqwest_body_capped(raw_resp, 2 * 1024 * 1024).await?;
                         let resp: Value = serde_json::from_slice(&raw_bytes)
                             .map_err(|e| format!("B 站弹幕响应解析失败: {e}"))?;
@@ -4285,6 +4633,12 @@ impl VedroRuntime {
                             .send()
                             .await
                             .map_err(|e| vedro_protocol::error::format_transport_error(&e))?;
+                        if !raw_resp.status().is_success() {
+                            return Err(format!(
+                                "弹弹play 返回 HTTP {}",
+                                raw_resp.status().as_u16()
+                            ));
+                        }
                         let raw_bytes =
                             read_reqwest_body_capped(raw_resp, MAX_DANMAKU_BYTES).await?;
                         let c_json: Value = serde_json::from_slice(&raw_bytes)
@@ -4363,8 +4717,308 @@ impl VedroRuntime {
                 Ok(json!({"url": url.to_string()}))
             }
 
+            "check_app_update" => {
+                let api_url = params
+                    .get("api_url")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("https://api.github.com/repos/JHruan1/vedro/releases/latest");
+                let parsed = validate_http_url(api_url)?;
+                if !is_trusted_update_host(&parsed) {
+                    return Err("仅允许从受信任的 GitHub 官方发布源检查更新".to_string());
+                }
+                let http = self.build_update_http_client(true)?;
+                let resp = http
+                    .get(parsed)
+                    .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+                    .header(
+                        reqwest::header::USER_AGENT,
+                        concat!("Vedro/", env!("CARGO_PKG_VERSION")),
+                    )
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        format!(
+                            "检查更新失败: {}",
+                            vedro_protocol::error::format_transport_error(&e)
+                        )
+                    })?;
+                if !resp.status().is_success() {
+                    return Err(format!("检查更新失败: HTTP {}", resp.status().as_u16()));
+                }
+                let raw_bytes = read_reqwest_body_capped(resp, 2 * 1024 * 1024).await?;
+                let release: Value = serde_json::from_slice(&raw_bytes)
+                    .map_err(|e| format!("解析更新信息失败: {e}"))?;
+                let tag_name = release
+                    .get("tag_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let html_url = release
+                    .get("html_url")
+                    .and_then(Value::as_str)
+                    .unwrap_or("https://github.com/JHruan1/vedro/releases/latest")
+                    .to_string();
+                let body = release
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let published_at = release
+                    .get("published_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+
+                let mut sha_map = std::collections::HashMap::<String, String>::new();
+                let raw_assets = release
+                    .get("assets")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+
+                // Fetch SHA256SUMS.txt if present in release assets for mandatory checksum verification
+                if let Some(sums_url) = raw_assets.iter().find_map(|a| {
+                    let name = a.get("name").and_then(Value::as_str)?;
+                    if name.eq_ignore_ascii_case("SHA256SUMS.txt") {
+                        a.get("browser_download_url").and_then(Value::as_str)
+                    } else {
+                        None
+                    }
+                }) {
+                    if let Ok(sums_parsed) = validate_http_url(sums_url) {
+                        if is_trusted_update_host(&sums_parsed) {
+                            if let Ok(s_resp) = http
+                                .get(sums_parsed)
+                                .header(
+                                    reqwest::header::USER_AGENT,
+                                    concat!("Vedro/", env!("CARGO_PKG_VERSION")),
+                                )
+                                .send()
+                                .await
+                            {
+                                if s_resp.status().is_success() {
+                                    if let Ok(s_bytes) =
+                                        read_reqwest_body_capped(s_resp, 256 * 1024).await
+                                    {
+                                        sha_map = parse_sha256sums_map(&String::from_utf8_lossy(
+                                            &s_bytes,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let assets: Vec<Value> = raw_assets
+                    .into_iter()
+                    .filter_map(|a| {
+                        let name = a.get("name").and_then(Value::as_str)?.to_string();
+                        let url = a
+                            .get("browser_download_url")
+                            .and_then(Value::as_str)?
+                            .to_string();
+                        let size = a.get("size").and_then(Value::as_u64).unwrap_or(0);
+                        let sha256 = sha_map.get(&name).cloned();
+                        Some(json!({
+                            "name": name,
+                            "url": url,
+                            "size": size,
+                            "sha256": sha256,
+                        }))
+                    })
+                    .collect();
+
+                Ok(json!({
+                    "current_version": env!("CARGO_PKG_VERSION"),
+                    "tag_name": tag_name,
+                    "version": tag_name.trim_start_matches(['v', 'V']),
+                    "html_url": html_url,
+                    "body": body,
+                    "published_at": published_at,
+                    "assets": assets,
+                }))
+            }
+
+            "start_update_download" => {
+                let url_str = str_param(&params, "url")?;
+                let parsed = validate_http_url(&url_str)?;
+                if !is_trusted_update_host(&parsed) {
+                    return Err("仅允许从受信任的 GitHub 官方地址下载安装包".to_string());
+                }
+                let raw_name = params
+                    .get("file_name")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        parsed
+                            .path_segments()
+                            .and_then(|mut s| s.next_back())
+                            .unwrap_or("vedro-update.bin")
+                    });
+                let safe_name = sanitize_update_filename(raw_name);
+                let version = params
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let expected_sha256 = params
+                    .get("expected_sha256")
+                    .and_then(Value::as_str)
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()));
+
+                let epoch = self
+                    .update_epoch
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                self.update_cancel
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+
+                let _ = std::fs::create_dir_all(&self.updates_dir);
+                let final_path = self.updates_dir.join(&safe_name);
+                let part_path = self.updates_dir.join(format!("{safe_name}.part"));
+
+                // Reuse already verified cached file on disk if exact SHA-256 matches!
+                if let Some(ref exp) = expected_sha256 {
+                    if final_path.is_file() {
+                        if let Ok(existing_hash) = compute_file_sha256(&final_path) {
+                            if existing_hash == *exp {
+                                let fsize =
+                                    std::fs::metadata(&final_path).map(|m| m.len()).unwrap_or(0);
+                                let ready_state = UpdateDownloadState {
+                                    status: "ready".to_string(),
+                                    version: version.clone(),
+                                    file_name: safe_name.clone(),
+                                    file_path: Some(final_path.to_string_lossy().into_owned()),
+                                    downloaded_bytes: fsize,
+                                    total_bytes: Some(fsize),
+                                    speed_bps: 0,
+                                    sha256: Some(existing_hash),
+                                    sha256_verified: true,
+                                    error: None,
+                                };
+                                *self.update_download.lock() = ready_state.clone();
+                                return Ok(serde_json::to_value(ready_state).unwrap());
+                            }
+                        }
+                    }
+                }
+
+                let init_state = UpdateDownloadState {
+                    status: "downloading".to_string(),
+                    version: version.clone(),
+                    file_name: safe_name.clone(),
+                    file_path: None,
+                    downloaded_bytes: 0,
+                    total_bytes: None,
+                    speed_bps: 0,
+                    sha256: None,
+                    sha256_verified: false,
+                    error: None,
+                };
+                *self.update_download.lock() = init_state.clone();
+
+                let http = self.build_update_http_client(false)?;
+                let state_arc = Arc::clone(&self.update_download);
+                let cancel_arc = Arc::clone(&self.update_cancel);
+                let rt_handle = tokio::runtime::Handle::current();
+
+                // Clean up older update installers in updates_dir (keep only current download)
+                let sweep_dir = self.updates_dir.clone();
+                let keep_name = safe_name.clone();
+                let keep_part = format!("{safe_name}.part");
+                rt_handle.spawn(async move {
+                    if let Ok(mut rd) = tokio::fs::read_dir(&sweep_dir).await {
+                        while let Ok(Some(ent)) = rd.next_entry().await {
+                            let n = ent.file_name().to_string_lossy().to_string();
+                            if n != keep_name && n != keep_part {
+                                let _ = tokio::fs::remove_file(ent.path()).await;
+                            }
+                        }
+                    }
+                    let res = download_and_verify_update_file(
+                        http,
+                        url_str,
+                        part_path.clone(),
+                        final_path.clone(),
+                        expected_sha256,
+                        true,
+                        Arc::clone(&state_arc),
+                        Arc::clone(&cancel_arc),
+                    )
+                    .await;
+                    if let Err(err) = res {
+                        let _ = tokio::fs::remove_file(&part_path).await;
+                        let mut st = state_arc.lock();
+                        if st.status != "cancelled" {
+                            st.status = "error".to_string();
+                            st.speed_bps = 0;
+                            st.error = Some(err);
+                        }
+                    }
+                });
+
+                let _ = epoch;
+                Ok(serde_json::to_value(init_state).unwrap())
+            }
+
+            "get_update_download_status" => {
+                let st = self.update_download.lock().clone();
+                Ok(serde_json::to_value(st).unwrap())
+            }
+
+            "cancel_update_download" => {
+                self.update_cancel
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let mut st = self.update_download.lock();
+                if st.status == "downloading" || st.status == "verifying" {
+                    st.status = "cancelled".to_string();
+                    st.speed_bps = 0;
+                    st.error = None;
+                }
+                Ok(serde_json::to_value(st.clone()).unwrap())
+            }
+
             other => Err(format!("unknown vedro_invoke method: {other}")),
         }
+    }
+
+    fn build_update_http_client(&self, follow_redirects: bool) -> Result<reqwest::Client, String> {
+        let proxy_opt = self.client.lock().as_ref().and_then(|client| {
+            client
+                .transport_options()
+                .proxy_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+        });
+        let attempt = |disable_native_certs: bool| {
+            let mut b = reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(15))
+                .timeout(Duration::from_secs(if follow_redirects { 20 } else { 600 }))
+                .tcp_nodelay(true);
+            if !follow_redirects {
+                b = b.redirect(reqwest::redirect::Policy::none());
+            }
+            if disable_native_certs {
+                b = b.tls_built_in_native_certs(false);
+            }
+            if let Some(ref p) = proxy_opt {
+                if let Ok(proxy) = reqwest::Proxy::all(p) {
+                    b = b.proxy(proxy);
+                }
+            }
+            b.build()
+        };
+        attempt(false)
+            .or_else(|_| attempt(true))
+            .map_err(|e| e.to_string())
     }
 
     fn build_danmaku_http_client(&self) -> Result<reqwest::Client, String> {
@@ -4553,6 +5207,193 @@ fn extract_episode_number_from_text(text: &str) -> Option<u64> {
     None
 }
 
+fn compute_file_sha256(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        ctx.update(&buf[..n]);
+    }
+    Ok(bytes_to_lower_hex(ctx.finish().as_ref()))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn download_and_verify_update_file(
+    http: reqwest::Client,
+    initial_url: String,
+    part_path: PathBuf,
+    final_path: PathBuf,
+    expected_sha256: Option<String>,
+    enforce_trusted_hosts: bool,
+    state_arc: Arc<Mutex<UpdateDownloadState>>,
+    cancel_arc: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<UpdateDownloadState, String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let mut current_url = initial_url;
+    let mut resp_opt: Option<reqwest::Response> = None;
+    for _ in 0..8 {
+        if cancel_arc.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("下载已取消".to_string());
+        }
+        let parsed = validate_http_url(&current_url)?;
+        if enforce_trusted_hosts && !is_trusted_update_host(&parsed) {
+            return Err("重定向目标不在受信任的 GitHub 官方域名白名单内".to_string());
+        }
+        let resp = http
+            .get(parsed.clone())
+            .header(
+                reqwest::header::USER_AGENT,
+                concat!("Vedro/", env!("CARGO_PKG_VERSION")),
+            )
+            .send()
+            .await
+            .map_err(|e| {
+                format!(
+                    "下载更新失败: {}",
+                    vedro_protocol::error::format_transport_error(&e)
+                )
+            })?;
+        if resp.status().is_redirection() {
+            let Some(loc) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+            else {
+                return Err("下载重定向缺少 Location 头".to_string());
+            };
+            let next = parsed
+                .join(loc)
+                .map_err(|e| format!("无效的重定向地址: {e}"))?;
+            current_url = next.to_string();
+            continue;
+        }
+        resp_opt = Some(resp);
+        break;
+    }
+
+    let resp = resp_opt.ok_or_else(|| "下载重定向次数过多".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("下载更新失败: HTTP {}", resp.status().as_u16()));
+    }
+    if let Some(cl) = resp.content_length() {
+        if cl > MAX_UPDATE_BYTES {
+            return Err("更新安装包体积超出安全限制".to_string());
+        }
+        state_arc.lock().total_bytes = Some(cl);
+    }
+
+    let mut file = tokio::fs::File::create(&part_path)
+        .await
+        .map_err(|e| format!("创建临时安装包失败: {e}"))?;
+    let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut downloaded: u64 = 0;
+    let started = Instant::now();
+    let mut last_tick = Instant::now();
+    let mut bytes_since_tick: u64 = 0;
+
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk_res) = stream.next().await {
+        if cancel_arc.load(std::sync::atomic::Ordering::SeqCst) {
+            drop(file);
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err("下载已取消".to_string());
+        }
+        let chunk = chunk_res.map_err(|e| {
+            format!(
+                "下载中断: {}",
+                vedro_protocol::error::format_transport_error(&e)
+            )
+        })?;
+        downloaded = downloaded.saturating_add(chunk.len() as u64);
+        if downloaded > MAX_UPDATE_BYTES {
+            drop(file);
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err("更新安装包体积超出安全限制".to_string());
+        }
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("写入更新包失败: {e}"))?;
+        ctx.update(&chunk);
+        bytes_since_tick = bytes_since_tick.saturating_add(chunk.len() as u64);
+
+        let dt = last_tick.elapsed();
+        if dt >= Duration::from_millis(250) {
+            let bps = ((bytes_since_tick as f64) / dt.as_secs_f64().max(0.05)) as u64;
+            let mut st = state_arc.lock();
+            st.downloaded_bytes = downloaded;
+            st.speed_bps = bps;
+            last_tick = Instant::now();
+            bytes_since_tick = 0;
+        }
+    }
+    file.flush()
+        .await
+        .map_err(|e| format!("刷写更新包失败: {e}"))?;
+    drop(file);
+
+    if cancel_arc.load(std::sync::atomic::Ordering::SeqCst) {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return Err("下载已取消".to_string());
+    }
+
+    {
+        let mut st = state_arc.lock();
+        st.status = "verifying".to_string();
+        st.downloaded_bytes = downloaded;
+        let avg_bps = ((downloaded as f64) / started.elapsed().as_secs_f64().max(0.1)) as u64;
+        st.speed_bps = avg_bps;
+    }
+
+    let actual_sha256 = bytes_to_lower_hex(ctx.finish().as_ref());
+    let mut verified = false;
+    if let Some(ref exp) = expected_sha256 {
+        if actual_sha256 != *exp {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err(format!(
+                "安装包 SHA-256 校验失败（预期 {}…，实际 {}…），已自动删除防篡改文件",
+                &exp[..12.min(exp.len())],
+                &actual_sha256[..12.min(actual_sha256.len())]
+            ));
+        }
+        verified = true;
+    }
+
+    if final_path.exists() {
+        let _ = tokio::fs::remove_file(&final_path).await;
+    }
+    tokio::fs::rename(&part_path, &final_path)
+        .await
+        .map_err(|e| format!("保存更新包失败: {e}"))?;
+
+    let ready = {
+        let mut st = state_arc.lock();
+        st.status = "ready".to_string();
+        st.file_path = Some(final_path.to_string_lossy().into_owned());
+        st.downloaded_bytes = downloaded;
+        if st.total_bytes.is_none() {
+            st.total_bytes = Some(downloaded);
+        }
+        st.speed_bps = 0;
+        st.sha256 = Some(actual_sha256);
+        st.sha256_verified = verified;
+        st.error = None;
+        st.clone()
+    };
+    Ok(ready)
+}
+
+async fn read_json_capped(resp: reqwest::Response, max_bytes: usize) -> Result<Value, String> {
+    let raw = read_reqwest_body_capped(resp, max_bytes).await?;
+    serde_json::from_slice(&raw).map_err(|e| e.to_string())
+}
+
 async fn fetch_danmaku_xml_text(http: &reqwest::Client, url: &str) -> Result<String, String> {
     let _ = validate_http_url(url)?;
     let resp = http
@@ -4565,9 +5406,18 @@ async fn fetch_danmaku_xml_text(http: &reqwest::Client, url: &str) -> Result<Str
         return Err(format!("HTTP {}", resp.status().as_u16()));
     }
     let bytes = read_reqwest_body_capped(resp, MAX_DANMAKU_BYTES).await?;
-    if bytes.starts_with(b"<?xml")
-        || bytes.starts_with(b"<i>")
-        || bytes.windows(3).any(|w| w == b"<d ")
+    let trimmed = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map(|pos| &bytes[pos..])
+        .unwrap_or(&bytes[..]);
+    // Only skip decompression when payload clearly begins with XML markup (never scan the whole
+    // body for `<d `, which randomly appears inside ~2-6% of raw-deflate compressed Bilibili streams!).
+    if trimmed.starts_with(b"<?xml")
+        || trimmed.starts_with(b"<i")
+        || trimmed.starts_with(b"<d ")
+        || trimmed.starts_with(b"\xef\xbb\xbf<?xml")
+        || trimmed.starts_with(b"\xef\xbb\xbf<i")
     {
         return Ok(String::from_utf8_lossy(&bytes).into_owned());
     }
@@ -4620,7 +5470,7 @@ async fn dandan_auto_match(
     if !resp.status().is_success() {
         return Ok(None);
     }
-    let s_json: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let s_json: Value = read_json_capped(resp, 4 * 1024 * 1024).await?;
     let animes = match s_json.get("animes").and_then(Value::as_array) {
         Some(arr) if !arr.is_empty() => arr,
         _ => return Ok(None),
@@ -4700,7 +5550,7 @@ async fn dandan_auto_match(
     if !c_resp.status().is_success() {
         return Ok(None);
     }
-    let c_json: Value = c_resp.json().await.map_err(|e| e.to_string())?;
+    let c_json: Value = read_json_capped(c_resp, MAX_DANMAKU_BYTES).await?;
     let comments = c_json
         .get("comments")
         .and_then(Value::as_array)
@@ -4732,7 +5582,7 @@ async fn bilibili_cookie_header(http: &reqwest::Client) -> String {
         .send()
         .await
     {
-        if let Ok(v) = resp.json::<Value>().await {
+        if let Ok(v) = read_json_capped(resp, 256 * 1024).await {
             let b3 = v.pointer("/data/b_3").and_then(Value::as_str).unwrap_or("");
             let b4 = v.pointer("/data/b_4").and_then(Value::as_str).unwrap_or("");
             if !b3.is_empty() {
@@ -4771,7 +5621,7 @@ async fn bilibili_auto_match(
             Ok(r) if r.status().is_success() => r,
             _ => continue,
         };
-        let data: Value = match resp.json().await {
+        let data: Value = match read_json_capped(resp, 4 * 1024 * 1024).await {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -4798,7 +5648,7 @@ async fn bilibili_auto_match(
             Ok(r) if r.status().is_success() => r,
             _ => continue,
         };
-        let s_json: Value = match s_resp.json().await {
+        let s_json: Value = match read_json_capped(s_resp, 4 * 1024 * 1024).await {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -4864,7 +5714,7 @@ async fn bilibili_auto_match(
             .send()
             .await
         {
-            if let Ok(data) = resp.json::<Value>().await {
+            if let Ok(data) = read_json_capped(resp, 4 * 1024 * 1024).await {
                 if let Some(results) = data.pointer("/data/result").and_then(Value::as_array) {
                     let q_lower = query.to_lowercase();
                     if let Some(hit) = results.iter().find(|r| {
@@ -4891,7 +5741,7 @@ async fn bilibili_auto_match(
                                 .send()
                                 .await
                             {
-                                if let Ok(vj) = vr.json::<Value>().await {
+                                if let Ok(vj) = read_json_capped(vr, 2 * 1024 * 1024).await {
                                     if let Some(cid) =
                                         vj.pointer("/data/cid").and_then(Value::as_u64)
                                     {
@@ -4934,7 +5784,7 @@ async fn dandan_search_candidates(
     if !resp.status().is_success() {
         return Ok(Vec::new());
     }
-    let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+    let body: Value = read_json_capped(resp, 4 * 1024 * 1024).await?;
     let mut out = Vec::new();
     if let Some(animes) = body.get("animes").and_then(Value::as_array) {
         for a in animes.iter().take(8) {
@@ -4999,7 +5849,7 @@ async fn bilibili_search_candidates(
             Ok(r) if r.status().is_success() => r,
             _ => continue,
         };
-        let data: Value = match resp.json().await {
+        let data: Value = match read_json_capped(resp, 4 * 1024 * 1024).await {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -5020,7 +5870,7 @@ async fn bilibili_search_candidates(
                     .send()
                     .await
                 {
-                    if let Ok(sj) = sr.json::<Value>().await {
+                    if let Ok(sj) = read_json_capped(sr, 4 * 1024 * 1024).await {
                         if let Some(eps_raw) =
                             sj.pointer("/result/episodes").and_then(Value::as_array)
                         {
@@ -5345,6 +6195,442 @@ mod tests {
             "unexpected init error: {err_msg}"
         );
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn e2e_mock_emby_login_images_stream_cold_restart_and_update_sha256() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let uniq = format!(
+            "vedro_e2e_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let root = std::env::temp_dir().join(uniq);
+        let db_path = root.join("vedro.db");
+        let db_str = db_path.to_string_lossy().into_owned();
+
+        // Build deterministic mock media & image payloads
+        let fake_png: Vec<u8> = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG magic
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        ];
+        let fake_jpeg: Vec<u8> = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F'];
+        let fake_video: Vec<u8> = (0..(128 * 1024u32)).map(|i| (i % 251) as u8).collect();
+        let fake_update_bin: Vec<u8> = b"VEDRO_UPDATE_PAYLOAD_V102_BINARY_TEST".to_vec();
+        let expected_update_sha = bytes_to_lower_hex(
+            ring::digest::digest(&ring::digest::SHA256, &fake_update_bin).as_ref(),
+        );
+
+        // Start a real local mock Emby/EmbyGo HTTP server in a dedicated Tokio thread
+        let (addr_tx, addr_rx) = std::sync::mpsc::channel::<std::net::SocketAddr>();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let srv_png = fake_png.clone();
+        let srv_jpg = fake_jpeg.clone();
+        let srv_vid = fake_video.clone();
+        let srv_upd = fake_update_bin.clone();
+
+        let server_thread = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let _ = addr_tx.send(addr);
+                loop {
+                    if stop_rx.try_recv().is_ok() {
+                        break;
+                    }
+                    let accept_res = tokio::time::timeout(
+                        Duration::from_millis(50),
+                        listener.accept(),
+                    )
+                    .await;
+                    let Ok(Ok((mut sock, _))) = accept_res else {
+                        continue;
+                    };
+                    let png = srv_png.clone();
+                    let jpg = srv_jpg.clone();
+                    let vid = srv_vid.clone();
+                    let upd = srv_upd.clone();
+                    tokio::spawn(async move {
+                        let mut buf = vec![0u8; 8192];
+                        let n = sock.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        let req_str = String::from_utf8_lossy(&buf[..n]);
+                        let mut lines = req_str.lines();
+                        let req_line = lines.next().unwrap_or("");
+                        let mut parts = req_line.split_whitespace();
+                        let method = parts.next().unwrap_or("GET");
+                        let target = parts.next().unwrap_or("/");
+                        let path = target.split('?').next().unwrap_or("/");
+
+                        let mut has_token = false;
+                        let mut range_hdr: Option<String> = None;
+                        for line in lines {
+                            if line.is_empty() {
+                                break;
+                            }
+                            let lower = line.to_ascii_lowercase();
+                            if (lower.starts_with("x-emby-token:")
+                                || lower.starts_with("x-emby-authorization:"))
+                                && line.contains("tok-e2e-secret")
+                            {
+                                has_token = true;
+                            }
+                            if let Some(rv) = lower.strip_prefix("range:") {
+                                range_hdr = Some(rv.trim().to_string());
+                            }
+                        }
+
+                        let (status, ctype, extra_hdrs, body): (&str, &str, String, Vec<u8>) =
+                            match path {
+                                "/System/Info/Public" | "/emby/System/Info/Public" => (
+                                    "200 OK",
+                                    "application/json",
+                                    String::new(),
+                                    br#"{"Id":"srv-e2e-1","ServerName":"E2E Mock Emby","Version":"4.8.10"}"#.to_vec(),
+                                ),
+                                "/emby-compat/status" => (
+                                    "404 Not Found",
+                                    "text/plain",
+                                    String::new(),
+                                    b"not embygo".to_vec(),
+                                ),
+                                "/Users/AuthenticateByName" | "/emby/Users/AuthenticateByName" => (
+                                    "200 OK",
+                                    "application/json",
+                                    String::new(),
+                                    br#"{"User":{"Id":"u-e2e-1","Name":"Alice","Policy":{"IsAdministrator":true}},"AccessToken":"tok-e2e-secret","ServerId":"srv-e2e-1"}"#.to_vec(),
+                                ),
+                                "/Users/u-e2e-1" | "/emby/Users/u-e2e-1" => {
+                                    if !has_token {
+                                        ("401 Unauthorized", "text/plain", String::new(), b"no token".to_vec())
+                                    } else {
+                                        (
+                                            "200 OK",
+                                            "application/json",
+                                            String::new(),
+                                            br#"{"Id":"u-e2e-1","Name":"Alice","Policy":{"IsAdministrator":true}}"#.to_vec(),
+                                        )
+                                    }
+                                }
+                                "/Users/u-e2e-1/Views" => (
+                                    "200 OK",
+                                    "application/json",
+                                    String::new(),
+                                    br#"{"Items":[{"Id":"lib-1","Name":"Movies","Type":"CollectionFolder"}],"TotalRecordCount":1}"#.to_vec(),
+                                ),
+                                "/Users/u-e2e-1/Items/Latest" => (
+                                    "200 OK",
+                                    "application/json",
+                                    String::new(),
+                                    br#"[{"Id":"movie-1","Name":"Blade Runner","Type":"Movie","ImageTags":{"Primary":"tag1"}}]"#.to_vec(),
+                                ),
+                                "/Users/u-e2e-1/Items/Resume"
+                                | "/Shows/NextUp"
+                                | "/Users/u-e2e-1/Suggestions"
+                                | "/Users/u-e2e-1/Items" => (
+                                    "200 OK",
+                                    "application/json",
+                                    String::new(),
+                                    br#"{"Items":[],"TotalRecordCount":0}"#.to_vec(),
+                                ),
+                                "/Users/u-e2e-1/Items/movie-1" => {
+                                    if !has_token {
+                                        ("401 Unauthorized", "text/plain", String::new(), b"no token".to_vec())
+                                    } else {
+                                        (
+                                            "200 OK",
+                                            "application/json",
+                                            String::new(),
+                                            br#"{"Id":"movie-1","Name":"Blade Runner","Type":"Movie","RunTimeTicks":6000000000,"MediaSources":[{"Id":"ms-1","Container":"mkv","Size":131072,"DirectStreamUrl":"/Videos/movie-1/stream.mkv"}]}"#.to_vec(),
+                                        )
+                                    }
+                                }
+                                "/Items/movie-1/Similar" | "/Items/movie-1/Segments" => (
+                                    "200 OK",
+                                    "application/json",
+                                    String::new(),
+                                    br#"{"Items":[],"TotalRecordCount":0}"#.to_vec(),
+                                ),
+                                // Auth-gated JPEG poster
+                                "/Items/movie-1/Images/Primary" => {
+                                    if !has_token {
+                                        ("401 Unauthorized", "text/plain", String::new(), b"auth required".to_vec())
+                                    } else {
+                                        ("200 OK", "image/jpeg", String::new(), jpg)
+                                    }
+                                }
+                                // Auth-gated PNG delivered with `application/octet-stream` (EmbyGo/CDN case!)
+                                "/Items/movie-1/Images/Backdrop/0" => {
+                                    if !has_token {
+                                        ("401 Unauthorized", "text/plain", String::new(), b"auth required".to_vec())
+                                    } else {
+                                        ("200 OK", "application/octet-stream", String::new(), png)
+                                    }
+                                }
+                                "/Items/movie-1/PlaybackInfo" => (
+                                    "200 OK",
+                                    "application/json",
+                                    String::new(),
+                                    br#"{"PlaySessionId":"ps-e2e-1","MediaSources":[{"Id":"ms-1","Container":"mkv","Size":131072,"SupportsDirectPlay":true,"DirectStreamUrl":"/Videos/movie-1/stream.mkv"}]}"#.to_vec(),
+                                ),
+                                "/Videos/movie-1/stream.mkv" => {
+                                    let total = vid.len();
+                                    if method == "HEAD" {
+                                        (
+                                            "200 OK",
+                                            "video/x-matroska",
+                                            format!("Accept-Ranges: bytes\r\nContent-Length: {total}\r\n"),
+                                            Vec::new(),
+                                        )
+                                    } else if let Some(rh) = range_hdr {
+                                        let spec = rh.strip_prefix("bytes=").unwrap_or("0-");
+                                        let (s_str, e_str) = spec.split_once('-').unwrap_or(("0", ""));
+                                        let s: usize = s_str.parse().unwrap_or(0);
+                                        let e: usize = if e_str.is_empty() {
+                                            total - 1
+                                        } else {
+                                            e_str.parse().unwrap_or(total - 1).min(total - 1)
+                                        };
+                                        let slice = vid[s..=e].to_vec();
+                                        (
+                                            "206 Partial Content",
+                                            "video/x-matroska",
+                                            format!(
+                                                "Accept-Ranges: bytes\r\nContent-Range: bytes {s}-{e}/{total}\r\n"
+                                            ),
+                                            slice,
+                                        )
+                                    } else {
+                                        ("200 OK", "video/x-matroska", "Accept-Ranges: bytes\r\n".to_string(), vid)
+                                    }
+                                }
+                                "/update/vedro-1.0.2.bin" => (
+                                    "200 OK",
+                                    "application/octet-stream",
+                                    String::new(),
+                                    upd,
+                                ),
+                                _ => ("404 Not Found", "text/plain", String::new(), b"not found".to_vec()),
+                            };
+
+                        let resp_head = if method == "HEAD" {
+                            format!(
+                                "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\n{extra_hdrs}Connection: close\r\n\r\n"
+                            )
+                        } else {
+                            format!(
+                                "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n{extra_hdrs}Connection: close\r\n\r\n",
+                                body.len()
+                            )
+                        };
+                        let _ = sock.write_all(resp_head.as_bytes()).await;
+                        if method != "HEAD" {
+                            let _ = sock.write_all(&body).await;
+                        }
+                    });
+                }
+            });
+        });
+
+        let mock_addr = addr_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mock_base = format!("http://{mock_addr}");
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        // === Session 1: Connect, Login, Home, Auth-Gated Images, Range Stream, Track Prefs ===
+        {
+            let rt1 = VedroRuntime::new(Some(&db_str)).expect("rt1 init");
+            let tok_rt1 = rt1.rt.as_ref().unwrap();
+            let conn = rt1
+                .invoke("connect_server", json!({ "url": mock_base }))
+                .expect("connect_server");
+            let proxy_addr = conn["proxy_addr"].as_str().unwrap().to_string();
+
+            let login = rt1
+                .invoke("login", json!({ "username": "Alice", "password": "pw" }))
+                .expect("login");
+            assert_eq!(login["auth"]["AccessToken"], "tok-e2e-secret");
+
+            let home = rt1.invoke("get_home", json!({})).expect("get_home");
+            assert_eq!(home["views"][0]["Name"], "Movies");
+            assert_eq!(home["latest_by_library"][0]["items"][0]["Id"], "movie-1");
+
+            // 1. Auth-gated JPEG poster through StreamProxy must return 200 OK
+            let (img_status, img_bytes) = tok_rt1.block_on(async {
+                let r = http
+                    .get(format!(
+                        "http://{proxy_addr}/img/Items/movie-1/Images/Primary"
+                    ))
+                    .send()
+                    .await
+                    .expect("poster fetch");
+                let st = r.status().as_u16();
+                let b = r.bytes().await.unwrap();
+                (st, b)
+            });
+            assert_eq!(img_status, 200);
+            assert_eq!(img_bytes.as_ref(), fake_jpeg.as_slice());
+
+            // 2. Auth-gated PNG with `application/octet-stream` must sniff to `image/png` and return 200 OK!
+            let (bd_status, bd_ct, bd_bytes) = tok_rt1.block_on(async {
+                let r = http
+                    .get(format!(
+                        "http://{proxy_addr}/img/Items/movie-1/Images/Backdrop/0"
+                    ))
+                    .send()
+                    .await
+                    .expect("backdrop fetch");
+                let st = r.status().as_u16();
+                let ct = r
+                    .headers()
+                    .get("content-type")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                let b = r.bytes().await.unwrap();
+                (st, ct, b)
+            });
+            assert_eq!(bd_status, 200);
+            assert_eq!(bd_ct, "image/png");
+            assert_eq!(bd_bytes.as_ref(), fake_png.as_slice());
+
+            // 3. Prepare playback + Range 206 streaming through StreamProxy
+            let prep = rt1
+                .invoke("prepare_playback", json!({ "item_id": "movie-1" }))
+                .expect("prepare_playback");
+            let stream_url = prep["proxy_url"].as_str().unwrap().to_string();
+            let (s_status, s_bytes) = tok_rt1.block_on(async {
+                let r = http
+                    .get(&stream_url)
+                    .header("Range", "bytes=1024-4095")
+                    .send()
+                    .await
+                    .expect("stream range fetch");
+                let st = r.status().as_u16();
+                let b = r.bytes().await.unwrap();
+                (st, b)
+            });
+            assert_eq!(s_status, 206);
+            assert_eq!(s_bytes.as_ref(), &fake_video[1024..=4095]);
+
+            // 4. Track preferences with BOTH `series_or_item_id` (Flutter param!) AND `scope_id`
+            rt1.invoke(
+                "set_track_preference",
+                json!({ "series_or_item_id": "movie-1", "audio_lang": "jpn", "subtitle_lang": "chi" }),
+            )
+            .expect("set_track_preference");
+            let tp = rt1
+                .invoke(
+                    "get_track_preference",
+                    json!({ "series_or_item_id": "movie-1" }),
+                )
+                .expect("get_track_preference");
+            assert_eq!(tp["preference"]["audio_lang"], "jpn");
+            assert_eq!(tp["preference"]["subtitle_lang"], "chi");
+        }
+
+        // === Session 2: COLD RESTART — NO `restore_session` called! ===
+        // Verifies zero "no server connected" AND millisecond-0 artwork loading!
+        {
+            let rt2 = VedroRuntime::new(Some(&db_str)).expect("rt2 cold restart init");
+            let tok_rt2 = rt2.rt.as_ref().unwrap();
+            let boot = rt2
+                .invoke("bootstrap_state", json!({}))
+                .expect("bootstrap_state");
+            let proxy_addr = boot["proxy_addr"].as_str().unwrap().to_string();
+
+            // Immediately call `get_item` WITHOUT calling `connect_server` or `restore_session`!
+            let item = rt2
+                .invoke("get_item", json!({ "item_id": "movie-1" }))
+                .expect("cold-start get_item must NOT fail with no server connected");
+            assert_eq!(item["item"]["Name"], "Blade Runner");
+
+            // Immediately fetch auth-gated poster on cold start!
+            let (img_status, img_bytes) = tok_rt2.block_on(async {
+                let r = http
+                    .get(format!(
+                        "http://{proxy_addr}/img/Items/movie-1/Images/Primary"
+                    ))
+                    .send()
+                    .await
+                    .expect("cold-start poster fetch");
+                let st = r.status().as_u16();
+                let b = r.bytes().await.unwrap();
+                (st, b)
+            });
+            assert_eq!(img_status, 200);
+            assert_eq!(img_bytes.as_ref(), fake_jpeg.as_slice());
+
+            // Verify auto-updater SHA-256 download passes on match & rejects on mismatch!
+            let upd_http = reqwest::Client::builder().no_proxy().build().unwrap();
+            let part_ok = root.join("upd_ok.part");
+            let final_ok = root.join("upd_ok.bin");
+            let st_ok = Arc::new(Mutex::new(UpdateDownloadState::default()));
+            let cancel_ok = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let ok_res = rt2
+                .rt
+                .as_ref()
+                .unwrap()
+                .block_on(download_and_verify_update_file(
+                    upd_http.clone(),
+                    format!("{mock_base}/update/vedro-1.0.2.bin"),
+                    part_ok,
+                    final_ok.clone(),
+                    Some(expected_update_sha.clone()),
+                    false,
+                    st_ok,
+                    cancel_ok,
+                ))
+                .expect("valid sha256 update download");
+            assert_eq!(ok_res.status, "ready");
+            assert!(ok_res.sha256_verified);
+            assert_eq!(ok_res.sha256.as_deref(), Some(expected_update_sha.as_str()));
+            assert!(final_ok.is_file());
+
+            // Tampered SHA-256 MUST fail and delete `.part` file!
+            let part_bad = root.join("upd_bad.part");
+            let final_bad = root.join("upd_bad.bin");
+            let st_bad = Arc::new(Mutex::new(UpdateDownloadState::default()));
+            let cancel_bad = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let bad_res = rt2
+                .rt
+                .as_ref()
+                .unwrap()
+                .block_on(download_and_verify_update_file(
+                    upd_http,
+                    format!("{mock_base}/update/vedro-1.0.2.bin"),
+                    part_bad.clone(),
+                    final_bad.clone(),
+                    Some("0".repeat(64)),
+                    false,
+                    st_bad,
+                    cancel_bad,
+                ));
+            assert!(bad_res.is_err());
+            assert!(!part_bad.exists());
+            assert!(!final_bad.exists());
+
+            // Logout must clear client & proxy streams/upstreams cleanly
+            rt2.invoke("logout", json!({})).expect("logout");
+            assert!(rt2
+                .invoke("get_item", json!({ "item_id": "movie-1" }))
+                .is_err());
+        }
+
+        let _ = stop_tx.send(());
+        let _ = server_thread.join();
         let _ = std::fs::remove_dir_all(&root);
     }
 }

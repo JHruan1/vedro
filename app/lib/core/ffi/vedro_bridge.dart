@@ -124,6 +124,9 @@ class _FfiWorker {
     if (!_closed) {
       _closed = true;
     }
+    try {
+      _isolate.kill(priority: Isolate.immediate);
+    } catch (_) {}
     _failAllPending(reason);
     _replyPort.close();
     _exitPort.close();
@@ -263,6 +266,7 @@ class VedroFfiBridge implements VedroCoreClient {
   int _rr = 0;
   List<_FfiWorker>? _workers;
   Future<List<_FfiWorker>>? _poolInitFuture;
+  final Map<int, Future<_FfiWorker>> _slotRespawns = {};
 
   static VedroFfiBridge open({String? dbPath, String? libraryPath}) {
     final bindings = VedroNativeBindings.load(overridePath: libraryPath);
@@ -342,15 +346,30 @@ class VedroFfiBridge implements VedroCoreClient {
     final slot = _rr++ % pool.length;
     var worker = pool[slot];
     if (!worker.isAlive) {
-      final replacement = await _FfiWorker.spawn(_libraryPath);
-      if (_disposed || _handle == nullptr) {
-        replacement.close();
-        throw VedroCoreException('VedroFfiBridge already disposed');
+      final inFlightRespawn = _slotRespawns[slot];
+      if (inFlightRespawn != null) {
+        worker = await inFlightRespawn;
+      } else {
+        final future = () async {
+          try {
+            final replacement = await _FfiWorker.spawn(_libraryPath);
+            if (_disposed || _handle == nullptr) {
+              replacement.close();
+              throw VedroCoreException('VedroFfiBridge already disposed');
+            }
+            if (identical(_workers, pool)) {
+              pool[slot] = replacement;
+            } else {
+              replacement.close();
+            }
+            return replacement;
+          } finally {
+            _slotRespawns.remove(slot);
+          }
+        }();
+        _slotRespawns[slot] = future;
+        worker = await future;
       }
-      if (identical(_workers, pool)) {
-        pool[slot] = replacement;
-      }
-      worker = replacement;
     }
     return worker;
   }

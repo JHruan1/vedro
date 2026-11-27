@@ -442,8 +442,10 @@ fn extract_via_ffmpeg_fallback(
     let (input, whitelist, headers_arg) = match source {
         AudioSliceSource::LocalFile(p) => {
             let canon = std::fs::canonicalize(p).map_err(|e| format!("invalid local file: {e}"))?;
-            let s = canon.to_string_lossy().to_string();
-            (format!("file:{s}"), "file", None)
+            let raw_s = canon.to_string_lossy();
+            // On Windows `canonicalize` returns `\\?\C:\...` which ffmpeg's `file:` protocol rejects.
+            let cleaned = raw_s.strip_prefix(r"\\?\").unwrap_or(&raw_s);
+            (format!("file:{cleaned}"), "file", None)
         }
         AudioSliceSource::HttpUrl { url, headers } => {
             let parsed = url::Url::parse(url).map_err(|e| format!("invalid url: {e}"))?;
@@ -548,6 +550,7 @@ fn extract_via_ffmpeg_fallback(
             }
             Err(e) => {
                 let _ = child.kill();
+                let _ = child.wait();
                 return Err(format!("ffmpeg wait error: {e}"));
             }
         }

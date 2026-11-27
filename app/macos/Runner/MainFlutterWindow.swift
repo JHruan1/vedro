@@ -367,6 +367,23 @@ final class VedroHardwarePlugin: NSObject {
       DispatchQueue.main.async {
         result(NSWorkspace.shared.open(url))
       }
+    case "installUpdatePackage":
+      let args = call.arguments as? [String: Any]
+      let rawPath = (args?["path"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      let lower = rawPath.lowercased()
+      guard !rawPath.isEmpty,
+            (lower.hasSuffix(".dmg") || lower.hasSuffix(".pkg")),
+            FileManager.default.fileExists(atPath: rawPath) else {
+        result(["ok": false, "message": "无效的 macOS 安装包路径"])
+        return
+      }
+      DispatchQueue.main.async {
+        let ok = NSWorkspace.shared.open(URL(fileURLWithPath: rawPath))
+        result([
+          "ok": ok,
+          "message": ok ? nil : "无法打开安装包镜像，请前往访达手动双击安装"
+        ] as [String: Any?])
+      }
     default:
       result(FlutterMethodNotImplemented)
     }

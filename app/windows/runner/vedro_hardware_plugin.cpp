@@ -615,6 +615,47 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
             }
             result->Success(flutter::EncodableValue(ok));
           }
+        } else if (method == "installUpdatePackage") {
+          std::string path;
+          bool silent = true;
+          if (const auto* args = std::get_if<flutter::EncodableMap>(call.arguments())) {
+            auto pit = args->find(flutter::EncodableValue("path"));
+            if (pit != args->end()) {
+              if (const auto* s = std::get_if<std::string>(&pit->second)) path = *s;
+            }
+            auto sit = args->find(flutter::EncodableValue("silent"));
+            if (sit != args->end()) {
+              if (const auto* b = std::get_if<bool>(&sit->second)) silent = *b;
+            }
+          }
+          std::wstring wpath = Utf8ToWide(path);
+          DWORD attrs = wpath.empty() ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(wpath.c_str());
+          bool ends_exe = path.size() >= 4 &&
+                          _stricmp(path.c_str() + path.size() - 4, ".exe") == 0;
+          if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) || !ends_exe) {
+            flutter::EncodableMap err = {
+                {flutter::EncodableValue("ok"), flutter::EncodableValue(false)},
+                {flutter::EncodableValue("message"),
+                 flutter::EncodableValue("无效的 Windows 安装程序 (.exe)")},
+            };
+            result->Success(flutter::EncodableValue(err));
+          } else {
+            const wchar_t* params = silent
+                                        ? L"/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS"
+                                        : L"/CLOSEAPPLICATIONS /RESTARTAPPLICATIONS";
+            HINSTANCE inst = ShellExecuteW(hwnd, L"open", wpath.c_str(), params, nullptr, SW_SHOWNORMAL);
+            bool ok = reinterpret_cast<INT_PTR>(inst) > 32;
+            flutter::EncodableMap resp = {
+                {flutter::EncodableValue("ok"), flutter::EncodableValue(ok)},
+                {flutter::EncodableValue("message"),
+                 ok ? flutter::EncodableValue()
+                    : flutter::EncodableValue("启动安装程序失败，请尝试手动运行")},
+            };
+            result->Success(flutter::EncodableValue(resp));
+            if (ok && hwnd) {
+              PostMessage(hwnd, WM_CLOSE, 0, 0);
+            }
+          }
         } else {
           result->NotImplemented();
         }

@@ -988,128 +988,152 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
           }
         });
       }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('线路测速失败：${VedroErrorFormatter.friendly(e)}')),
+        );
+      }
     } finally {
       if (mounted) setState(() => _pinging = false);
     }
   }
 
   Future<void> _addRouteDialog(SavedServerProfile server) async {
-    final nameCtrl = TextEditingController();
-    final urlCtrl = TextEditingController();
-    final proxyCtrl = TextEditingController();
     var allowSelfSigned = false;
-
-    void submitDialog(BuildContext ctx) {
-      final u = urlCtrl.text.trim();
-      if (u.isEmpty) return;
-      final n = nameCtrl.text.trim().isNotEmpty
-          ? nameCtrl.text.trim()
-          : '线路 ${server.routes.length + 1}';
-      Navigator.pop(
-        ctx,
-        ServerRouteModel(
-          id: 'r_${DateTime.now().millisecondsSinceEpoch}',
-          name: n,
-          url: u,
-          proxyUrl: proxyCtrl.text.trim().isEmpty ? null : proxyCtrl.text.trim(),
-          acceptInvalidCerts: allowSelfSigned,
-        ),
-      );
-    }
-
     final created = await showDialog<ServerRouteModel>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDlg) => AlertDialog(
-          title: Text('为 ${widget.appState.displayNameForServer(server)} 添加线路',
-              style: const TextStyle(fontSize: 16)),
-          content: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 360),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: nameCtrl,
-                    autofocus: true,
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: '线路名称',
-                      hintText: '如：香港直连 / 内网线路 / CF 备用',
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: urlCtrl,
-                    keyboardType: TextInputType.url,
-                    textInputAction: TextInputAction.next,
-                    onSubmitted: (_) => submitDialog(ctx),
-                    decoration: const InputDecoration(
-                      labelText: '线路地址',
-                      hintText: 'https://line2.example.com',
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: proxyCtrl,
-                    textInputAction: TextInputAction.done,
-                    onSubmitted: (_) => submitDialog(ctx),
-                    decoration: const InputDecoration(
-                      labelText: '独立代理（可选，留空跟随系统）',
-                      hintText: 'http://127.0.0.1:7890',
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  PressableScale(
-                    onTap: () => setDlg(() => allowSelfSigned = !allowSelfSigned),
-                    hoverScale: 1.0,
-                    pressScale: 0.99,
-                    borderRadius: BorderRadius.circular(8),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '允许自签名证书',
-                            style: TextStyle(color: VedroSkin.of(ctx).fg2, fontSize: 13),
-                          ),
-                        ),
-                        ExcludeFocus(
-                          child: Transform.scale(
-                            scale: 0.8,
-                            child: CupertinoSwitch(
-                              value: allowSelfSigned,
-                              onChanged: (v) => setDlg(() => allowSelfSigned = v),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+      builder: (ctx) => VedroControllerScope<List<TextEditingController>>(
+        create: () => [
+          TextEditingController(),
+          TextEditingController(),
+          TextEditingController(),
+        ],
+        dispose: (ctrls) {
+          for (final c in ctrls) {
+            c.dispose();
+          }
+        },
+        builder: (ctx, ctrls) {
+          final nameCtrl = ctrls[0];
+          final urlCtrl = ctrls[1];
+          final proxyCtrl = ctrls[2];
+          void submitDialog(BuildContext dlgCtx) {
+            final u = urlCtrl.text.trim();
+            if (u.isEmpty) return;
+            final n = nameCtrl.text.trim().isNotEmpty
+                ? nameCtrl.text.trim()
+                : '线路 ${server.routes.length + 1}';
+            Navigator.pop(
+              dlgCtx,
+              ServerRouteModel(
+                id: 'r_${DateTime.now().millisecondsSinceEpoch}',
+                name: n,
+                url: u,
+                proxyUrl: proxyCtrl.text.trim().isEmpty ? null : proxyCtrl.text.trim(),
+                acceptInvalidCerts: allowSelfSigned,
               ),
+            );
+          }
+
+          return StatefulBuilder(
+            builder: (ctx, setDlg) => AlertDialog(
+              title: Text('为 ${widget.appState.displayNameForServer(server)} 添加线路',
+                  style: const TextStyle(fontSize: 16)),
+              content: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 360),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextField(
+                        controller: nameCtrl,
+                        autofocus: true,
+                        textInputAction: TextInputAction.next,
+                        decoration: const InputDecoration(
+                          labelText: '线路名称',
+                          hintText: '如：香港直连 / 内网线路 / CF 备用',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: urlCtrl,
+                        keyboardType: TextInputType.url,
+                        textInputAction: TextInputAction.next,
+                        onSubmitted: (_) => submitDialog(ctx),
+                        decoration: const InputDecoration(
+                          labelText: '线路地址',
+                          hintText: 'https://line2.example.com',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: proxyCtrl,
+                        textInputAction: TextInputAction.done,
+                        onSubmitted: (_) => submitDialog(ctx),
+                        decoration: const InputDecoration(
+                          labelText: '独立代理（可选，留空跟随系统）',
+                          hintText: 'http://127.0.0.1:7890',
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      PressableScale(
+                        onTap: () => setDlg(() => allowSelfSigned = !allowSelfSigned),
+                        hoverScale: 1.0,
+                        pressScale: 0.99,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '允许自签名证书',
+                                style: TextStyle(color: VedroSkin.of(ctx).fg2, fontSize: 13),
+                              ),
+                            ),
+                            ExcludeFocus(
+                              child: Transform.scale(
+                                scale: 0.8,
+                                child: CupertinoSwitch(
+                                  value: allowSelfSigned,
+                                  onChanged: (v) => setDlg(() => allowSelfSigned = v),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+                FilledButton(
+                  onPressed: () => submitDialog(ctx),
+                  child: const Text('添加'),
+                ),
+              ],
             ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-            FilledButton(
-              onPressed: () => submitDialog(ctx),
-              child: const Text('添加'),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
-    nameCtrl.dispose();
-    urlCtrl.dispose();
-    proxyCtrl.dispose();
 
     if (created != null) {
-      await widget.appState.saveServerRoutes(
-        server.id,
-        [...server.routes, created],
-        activeRouteId: server.activeRouteId,
-      );
-      if (mounted) _runPing();
+      try {
+        await widget.appState.saveServerRoutes(
+          server.id,
+          [...server.routes, created],
+          activeRouteId: server.activeRouteId,
+        );
+        if (mounted) _runPing();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('保存线路失败：${VedroErrorFormatter.friendly(e)}')),
+          );
+        }
+      }
     }
   }
 
@@ -1408,9 +1432,16 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                 return InkWell(
                   borderRadius: BorderRadius.circular(11),
                   onTap: () async {
-                    await _saveStyle();
-                    if (context.mounted) Navigator.pop(context);
-                    await widget.appState.switchServerRoute(srv.id, route.id);
+                    final messenger = ScaffoldMessenger.maybeOf(context);
+                    try {
+                      await _saveStyle();
+                      if (context.mounted) Navigator.pop(context);
+                      await widget.appState.switchServerRoute(srv.id, route.id);
+                    } catch (e) {
+                      messenger?.showSnackBar(
+                        SnackBar(content: Text('切换线路失败：${VedroErrorFormatter.friendly(e)}')),
+                      );
+                    }
                   },
                   child: Container(
                     margin: const EdgeInsets.only(bottom: 7),
@@ -1453,8 +1484,18 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                             visualDensity: VisualDensity.compact,
                             icon: Icon(Icons.close_rounded, size: 15, color: skin.fg3),
                             onPressed: () async {
-                              final next = srv.routes.where((r) => r.id != route.id).toList();
-                              await widget.appState.saveServerRoutes(srv.id, next);
+                              try {
+                                final next = srv.routes.where((r) => r.id != route.id).toList();
+                                await widget.appState.saveServerRoutes(srv.id, next);
+                              } catch (e) {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                                    SnackBar(
+                                      content: Text('删除线路失败：${VedroErrorFormatter.friendly(e)}'),
+                                    ),
+                                  );
+                                }
+                              }
                             },
                           ),
                       ],
@@ -1491,8 +1532,15 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                       ),
                     );
                     if (confirm != true || !context.mounted) return;
+                    final messenger = ScaffoldMessenger.maybeOf(context);
                     Navigator.pop(context);
-                    await widget.appState.deleteServer(srv.id);
+                    try {
+                      await widget.appState.deleteServer(srv.id);
+                    } catch (e) {
+                      messenger?.showSnackBar(
+                        SnackBar(content: Text('移除服务器失败：${VedroErrorFormatter.friendly(e)}')),
+                      );
+                    }
                   },
                   icon: const Icon(Icons.delete_outline_rounded, size: 16),
                   label: const Text('移除此服务器', style: TextStyle(fontSize: 12.5)),

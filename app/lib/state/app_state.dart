@@ -17,6 +17,7 @@ import '../core/theme/display_profile.dart';
 import '../core/theme/dynamic_color_engine.dart';
 import '../widgets/danmaku_engine.dart';
 import '../widgets/local_asr_engine.dart';
+import '../widgets/vedro_artwork.dart';
 
 /// Centralized user-friendly Chinese error formatter translating raw transport, TLS,
 /// DNS, HTTP status, and malformed HTML/JSON responses into actionable explanations.
@@ -610,13 +611,14 @@ class VedroAppState extends ChangeNotifier {
         'accept_invalid_certs': acceptInvalidCerts,
       }) as Map<String, dynamic>;
       if (epoch != _sessionEpoch || _disposed) {
-        return ServerCapabilitiesModel.fromJson(res['capabilities'] as Map<String, dynamic>);
+        throw VedroCoreException('连接操作已被新的切换或退出操作取代');
       }
       capabilities = ServerCapabilitiesModel.fromJson(
         res['capabilities'] as Map<String, dynamic>,
       );
       if (res['proxy_addr'] != null) proxyAddr = res['proxy_addr'].toString();
       connectedUrl = url.trim();
+      FadeNetworkImage.notifyGlobalRefresh();
       return capabilities!;
     } catch (e) {
       if (epoch == _sessionEpoch) {
@@ -696,6 +698,7 @@ class VedroAppState extends ChangeNotifier {
     loginStage = null;
     isLoadingHome = true;
     notifyListeners();
+    FadeNetworkImage.notifyGlobalRefresh();
     _startEventPolling();
   }
 
@@ -783,6 +786,7 @@ class VedroAppState extends ChangeNotifier {
       loginStage = null;
       isLoadingHome = !hasAnyHomeContent;
       notifyListeners();
+      FadeNetworkImage.notifyGlobalRefresh();
 
       _startEventPolling();
       unawaited(_reloadSavedServers());
@@ -824,7 +828,9 @@ class VedroAppState extends ChangeNotifier {
   }
 
   Future<bool> switchToServerById(String serverId) async {
-    if (serverId == activeServerId && isSignedIn) return true;
+    if (serverId == activeServerId && isSignedIn && homeError == null && hasAnyHomeContent) {
+      return true;
+    }
     for (final s in savedServers) {
       if (s.id == serverId) {
         await restoreSavedServer(s);
@@ -931,6 +937,7 @@ class VedroAppState extends ChangeNotifier {
       loginStage = null;
       isLoadingHome = true;
       notifyListeners();
+      FadeNetworkImage.notifyGlobalRefresh();
       _startEventPolling();
       unawaited(refreshHome());
       unawaited(refreshMeQuota());
@@ -974,8 +981,11 @@ class VedroAppState extends ChangeNotifier {
 
   Future<void> logout() async {
     ++_sessionEpoch;
+    ++_speedTestGen;
     _wsPollTimer?.cancel();
     _wsPollTimer = null;
+    _speedTestPollTimer?.cancel();
+    _speedTestPollTimer = null;
     try {
       await core.invoke('logout');
     } catch (_) {}
@@ -986,10 +996,14 @@ class VedroAppState extends ChangeNotifier {
     username = null;
     isAdmin = false;
     enableContentDownloading = false;
+    isBusy = false;
+    loginStage = null;
+    isSpeedTesting = false;
     meQuota = null;
     isLoadingQuota = false;
     isLoadingHome = false;
     homeError = null;
+    playlists = [];
     _clearHomeCollections();
     embygoAdminDashboard = null;
     notifyListeners();
@@ -1033,13 +1047,46 @@ class VedroAppState extends ChangeNotifier {
     try {
       final wantSuggestions = homeSections.any((s) => s.id == 'suggestions' && s.visible);
       final wantFavorites = homeSections.any((s) => s.id == 'favorites' && s.visible);
-      final res = await core.invoke('get_home', {
-        'include_suggestions': wantSuggestions,
-        'include_favorites': wantFavorites,
-      }) as Map<String, dynamic>;
+      Map<String, dynamic> res;
+      try {
+        res = await core.invoke('get_home', {
+          'include_suggestions': wantSuggestions,
+          'include_favorites': wantFavorites,
+        }) as Map<String, dynamic>;
+      } catch (firstErr) {
+        // Automatic self-healing if Rust core had not yet finished attaching the active server
+        final msg = firstErr.toString().toLowerCase();
+        if (msg.contains('no server connected') && activeServerId != null) {
+          final match = savedServers.where((s) => s.id == activeServerId).firstOrNull;
+          if (match != null && match.accessToken != null && match.userId != null) {
+            final route = match.activeRoute;
+            final targetUrl = route?.url.isNotEmpty == true ? route!.url : match.url;
+            final routeProxy = (route?.proxyUrl?.trim().isNotEmpty == true)
+                ? route!.proxyUrl!.trim()
+                : effectiveProxyUrl;
+            await core.invoke('restore_session', {
+              'server_id': match.id,
+              'url': targetUrl,
+              'access_token': match.accessToken,
+              'user_id': match.userId,
+              if (routeProxy.isNotEmpty) 'proxy_url': routeProxy,
+              'accept_invalid_certs': route?.acceptInvalidCerts ?? acceptInvalidCerts,
+            });
+            res = await core.invoke('get_home', {
+              'include_suggestions': wantSuggestions,
+              'include_favorites': wantFavorites,
+            }) as Map<String, dynamic>;
+          } else {
+            rethrow;
+          }
+        } else {
+          rethrow;
+        }
+      }
       if (epoch != _sessionEpoch || _disposed) return;
       _applyHomePayload(res);
       homeError = null;
+      FadeNetworkImage.notifyGlobalRefresh();
     } catch (e) {
       if (epoch == _sessionEpoch && !hasAnyHomeContent) {
         homeError = _humanizeError(e.toString());
@@ -1100,14 +1147,21 @@ class VedroAppState extends ChangeNotifier {
     if (seriesOrItemId.isEmpty) return null;
     try {
       final res = await core.invoke('get_track_preference', {
+        'scope_id': seriesOrItemId,
         'series_or_item_id': seriesOrItemId,
       });
       if (res is Map<String, dynamic>) {
+        final rawPref = res['preference'];
+        final data = rawPref is Map
+            ? Map<String, dynamic>.from(rawPref)
+            : (res.containsKey('audio_lang') || res.containsKey('subtitle_lang') ? res : null);
+        if (data == null) return null;
+        final subDisabled = data['subtitle_disabled'] == true;
         return (
-          audioLang: res['audio_lang']?.toString(),
-          subtitleLang: res['subtitle_lang']?.toString(),
-          audioIndex: asJsonInt(res['audio_index']),
-          subtitleIndex: asJsonInt(res['subtitle_index']),
+          audioLang: data['audio_lang']?.toString(),
+          subtitleLang: subDisabled ? 'off' : data['subtitle_lang']?.toString(),
+          audioIndex: asJsonInt(data['audio_index']),
+          subtitleIndex: asJsonInt(data['subtitle_index']),
         );
       }
     } catch (_) {}
@@ -1124,9 +1178,11 @@ class VedroAppState extends ChangeNotifier {
     if (seriesOrItemId.isEmpty || prefs.incognitoMode) return;
     try {
       await core.invoke('set_track_preference', {
+        'scope_id': seriesOrItemId,
         'series_or_item_id': seriesOrItemId,
         if (audioLang != null) 'audio_lang': audioLang,
-        if (subtitleLang != null) 'subtitle_lang': subtitleLang,
+        if (subtitleLang != null) 'subtitle_lang': subtitleLang == 'off' ? '' : subtitleLang,
+        if (subtitleLang != null) 'subtitle_disabled': subtitleLang == 'off',
         if (audioIndex != null) 'audio_index': audioIndex,
         if (subtitleIndex != null) 'subtitle_index': subtitleIndex,
       });
@@ -1277,21 +1333,44 @@ class VedroAppState extends ChangeNotifier {
     } catch (_) {}
   }
 
-  /// Strip sensitive query parameters (api_key/token/password/auth) from URLs before persisting history.
+  /// Strip userinfo credentials (`user:pass@`) and sensitive query parameters
+  /// (`api_key`, `token`, `password`, `auth`, `sig`, `StreamTicket`) before persisting history.
   static String sanitizeUrlForHistory(String raw) {
-    final uri = Uri.tryParse(raw.trim());
-    if (uri == null || !uri.hasQuery) return raw.trim();
-    const sensitive = {'api_key', 'apikey', 'token', 'access_token', 'password', 'pass', 'auth', 'sig', 'signature'};
-    final cleaned = <String, String>{};
-    uri.queryParameters.forEach((k, v) {
-      if (!sensitive.contains(k.toLowerCase())) {
-        cleaned[k] = v;
-      }
-    });
-    return uri.replace(
-      userInfo: uri.userInfo.isNotEmpty ? '' : null,
+    final trimmed = raw.trim();
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return trimmed;
+    const sensitive = {
+      'api_key',
+      'apikey',
+      'token',
+      'access_token',
+      'streamticket',
+      'password',
+      'pass',
+      'auth',
+      'sig',
+      'signature',
+    };
+    final cleaned = <String, List<String>>{};
+    if (uri.hasQuery) {
+      uri.queryParametersAll.forEach((k, values) {
+        if (!sensitive.contains(k.toLowerCase())) {
+          cleaned[k] = values;
+        }
+      });
+    }
+    // Note: In Dart `Uri.replace(queryParameters: null)` preserves the old query string!
+    // Rebuild explicitly when all query params were stripped so secrets are guaranteed gone.
+    final rebuilt = Uri(
+      scheme: uri.scheme,
+      userInfo: '',
+      host: uri.hasAuthority ? uri.host : null,
+      port: uri.hasPort ? uri.port : null,
+      path: uri.path,
       queryParameters: cleaned.isEmpty ? null : cleaned,
-    ).toString();
+      fragment: uri.hasFragment ? uri.fragment : null,
+    );
+    return rebuilt.toString();
   }
 
   Future<void> recordLocalHistory({
@@ -2736,7 +2815,7 @@ class VedroAppState extends ChangeNotifier {
     if (maxWidth != null) params.add('maxWidth=$maxWidth');
     params.add('quality=88');
     final q = params.isEmpty ? '' : '?${params.join('&')}';
-    final encType = Uri.encodeComponent(type);
+    final encType = type.split('/').where((s) => s.isNotEmpty).map(Uri.encodeComponent).join('/');
 
     if (proxyAddr != null && proxyAddr!.isNotEmpty) {
       return 'http://$proxyAddr/img/Items/${Uri.encodeComponent(itemId)}/Images/$encType$q';
@@ -2761,7 +2840,7 @@ class VedroAppState extends ChangeNotifier {
     if (maxWidth != null) params.add('maxWidth=$maxWidth');
     params.add('quality=86');
     final q = params.isEmpty ? '' : '?${params.join('&')}';
-    final encType = Uri.encodeComponent(type);
+    final encType = type.split('/').where((s) => s.isNotEmpty).map(Uri.encodeComponent).join('/');
     if (proxyAddr != null && proxyAddr!.isNotEmpty && serverId.isNotEmpty) {
       return 'http://$proxyAddr/img-srv/${Uri.encodeComponent(serverId)}/Items/${Uri.encodeComponent(itemId)}/Images/$encType$q';
     }
@@ -3110,11 +3189,13 @@ class VedroAppState extends ChangeNotifier {
     ++_speedTestGen;
     _speedTestPollTimer?.cancel();
     _speedTestPollTimer = null;
-    isSpeedTesting = false;
-    notifyListeners();
     try {
       await core.invoke('cancel_embygo_speedtest');
     } catch (_) {}
+    if (!_disposed) {
+      isSpeedTesting = false;
+      notifyListeners();
+    }
   }
 
   /// Query local persistent disk + memory image cache usage from the Rust core.

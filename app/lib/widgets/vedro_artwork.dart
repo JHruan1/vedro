@@ -105,6 +105,13 @@ class FadeNetworkImage extends StatefulWidget {
     this.placeholder,
   });
 
+  /// Bumped whenever server session / proxy transport becomes ready so any posters
+  /// that failed during cold start or VPN/proxy warm-up reload automatically in-place.
+  static final ValueNotifier<int> globalRefreshEpoch = ValueNotifier<int>(0);
+  static void notifyGlobalRefresh() {
+    globalRefreshEpoch.value = globalRefreshEpoch.value + 1;
+  }
+
   final String url;
   final BoxFit fit;
   final Alignment alignment;
@@ -118,7 +125,15 @@ class FadeNetworkImage extends StatefulWidget {
 
 class _FadeNetworkImageState extends State<FadeNetworkImage> {
   int _attempt = 0;
+  bool _hasLoaded = false;
+  bool _hadError = false;
   Timer? _retryTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    FadeNetworkImage.globalRefreshEpoch.addListener(_onGlobalRefresh);
+  }
 
   @override
   void didUpdateWidget(covariant FadeNetworkImage oldWidget) {
@@ -126,16 +141,41 @@ class _FadeNetworkImageState extends State<FadeNetworkImage> {
     if (oldWidget.url != widget.url) {
       _retryTimer?.cancel();
       _attempt = 0;
+      _hasLoaded = false;
+      _hadError = false;
     }
   }
 
   @override
   void dispose() {
+    FadeNetworkImage.globalRefreshEpoch.removeListener(_onGlobalRefresh);
     _retryTimer?.cancel();
     super.dispose();
   }
 
+  void _evictCurrentUrl() {
+    if (widget.url.isEmpty) return;
+    final baseProvider = NetworkImage(widget.url);
+    PaintingBinding.instance.imageCache.evict(baseProvider);
+    if (widget.cacheWidth != null) {
+      PaintingBinding.instance.imageCache.evict(
+        ResizeImage.resizeIfNeeded(widget.cacheWidth, null, baseProvider),
+      );
+    }
+  }
+
+  void _onGlobalRefresh() {
+    if (!mounted || _hasLoaded || !_hadError || widget.url.isEmpty) return;
+    _retryTimer?.cancel();
+    _evictCurrentUrl();
+    setState(() {
+      _hadError = false;
+      _attempt += 1;
+    });
+  }
+
   void _scheduleTransientRetry() {
+    _hadError = true;
     if (_attempt >= 3 || (_retryTimer?.isActive ?? false)) return;
     final delayMs = switch (_attempt) {
       0 => 650,
@@ -144,14 +184,11 @@ class _FadeNetworkImageState extends State<FadeNetworkImage> {
     };
     _retryTimer = Timer(Duration(milliseconds: delayMs), () {
       if (!mounted) return;
-      final baseProvider = NetworkImage(widget.url);
-      PaintingBinding.instance.imageCache.evict(baseProvider);
-      if (widget.cacheWidth != null) {
-        PaintingBinding.instance.imageCache.evict(
-          ResizeImage.resizeIfNeeded(widget.cacheWidth, null, baseProvider),
-        );
-      }
-      setState(() => _attempt += 1);
+      _evictCurrentUrl();
+      setState(() {
+        _hadError = false;
+        _attempt += 1;
+      });
     });
   }
 
@@ -168,6 +205,8 @@ class _FadeNetworkImageState extends State<FadeNetworkImage> {
       gaplessPlayback: true,
       frameBuilder: (_, child, frame, wasSynchronouslyLoaded) {
         if (wasSynchronouslyLoaded || frame != null) {
+          _hasLoaded = true;
+          _hadError = false;
           return child;
         }
         return widget.placeholder ?? const SizedBox.shrink();

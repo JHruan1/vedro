@@ -21,6 +21,8 @@ class NativePlaybackChannel {
   static final ValueNotifier<List<String>> droppedFilesNotifier = ValueNotifier<List<String>>(const []);
   static bool detectedAndroidTv = false;
   static bool supportsNativePip = false;
+  static String detectedPrimaryAbi = '';
+  static List<String> detectedSupportedAbis = const [];
   static bool _listenerBound = false;
   static String? _lastChromeSig;
 
@@ -188,6 +190,12 @@ class NativePlaybackChannel {
       if (res != null) {
         detectedAndroidTv = res['is_tv'] == true;
         supportsNativePip = res['supports_pip'] == true;
+        final abi = res['primary_abi']?.toString().trim() ?? '';
+        if (abi.isNotEmpty) detectedPrimaryAbi = abi;
+        final abis = res['supported_abis'];
+        if (abis is List) {
+          detectedSupportedAbis = abis.map((e) => e.toString()).where((s) => s.isNotEmpty).toList();
+        }
         return res;
       }
     } on MissingPluginException {
@@ -521,5 +529,54 @@ class NativePlaybackChannel {
       return false;
     } catch (_) {}
     return false;
+  }
+
+  /// Launch a locally downloaded & SHA-256 verified update package with the native OS installer:
+  /// - Android: `FileProvider` + `ACTION_VIEW` APK installer (prompts unknown-sources permission if needed)
+  /// - Windows: Inno Setup `/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS` + graceful window close
+  /// - macOS: `NSWorkspace.shared.open` (mounts DMG and opens Finder window)
+  /// - Linux: `xdg-open` / reveals installer in file manager
+  static Future<({bool ok, String? message})> installUpdatePackage(
+    String filePath, {
+    bool silent = true,
+  }) async {
+    final clean = filePath.trim();
+    if (clean.isEmpty) {
+      return (ok: false, message: '安装包路径为空');
+    }
+    try {
+      final res = await _channel.invokeMethod<dynamic>('installUpdatePackage', {
+        'path': clean,
+        'silent': silent,
+      });
+      if (res is Map) {
+        return (
+          ok: res['ok'] == true,
+          message: res['message']?.toString(),
+        );
+      }
+      if (res == true) {
+        return (ok: true, message: null);
+      }
+    } on MissingPluginException {
+      // Fallback below on desktop hosts without plugin handler
+    } catch (e) {
+      return (ok: false, message: e.toString());
+    }
+    if (!kIsWeb) {
+      try {
+        if (Platform.isMacOS) {
+          await Process.start('open', [clean], mode: ProcessStartMode.detached);
+          return (ok: true, message: null);
+        }
+        if (Platform.isLinux) {
+          await Process.start('xdg-open', [clean], mode: ProcessStartMode.detached);
+          return (ok: true, message: null);
+        }
+      } catch (e) {
+        return (ok: false, message: e.toString());
+      }
+    }
+    return (ok: false, message: '当前平台请手动打开已下载的安装包：$clean');
   }
 }

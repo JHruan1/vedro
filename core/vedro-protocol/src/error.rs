@@ -22,14 +22,15 @@ pub fn redact_sensitive_text(raw: &str) -> String {
             scheme_pos = auth_end;
         }
     }
-    // 2. Redact query/header secret tokens
+    // 2. Redact query/header secret tokens (`Token="` must precede `Token=` so quoted tokens don't leak!)
     for key in [
         "api_key=",
         "StreamTicket=",
         "streamticket=",
-        "token=",
-        "Token=",
         "Token=\"",
+        "token=\"",
+        "Token=",
+        "token=",
         "Bearer ",
         "bearer ",
     ] {

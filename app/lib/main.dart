@@ -1,3 +1,7 @@
+import 'dart:async';
+import 'dart:ui';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -11,37 +15,137 @@ import 'core/theme/vedro_theme.dart';
 import 'screens/shell_screen.dart';
 import 'state/app_state.dart';
 import 'widgets/app_lock_gate.dart';
+import 'widgets/local_asr_engine.dart';
 import 'widgets/vedro_ui.dart';
 import 'widgets/windows_immersive_frame.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  PlatformPerfProfile.configureImageCache();
-  MediaKit.ensureInitialized();
+  runZonedGuarded<void>(
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
+      PlatformPerfProfile.configureImageCache();
 
-  // Unified Apple-style full-bleed edge-to-edge chrome on both iOS and Android
-  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.light,
-    statusBarBrightness: Brightness.dark,
-    systemNavigationBarColor: Colors.transparent,
-    systemNavigationBarDividerColor: Colors.transparent,
-    systemNavigationBarIconBrightness: Brightness.light,
-    systemStatusBarContrastEnforced: false,
-    systemNavigationBarContrastEnforced: false,
-  ));
+      FlutterError.onError = (FlutterErrorDetails details) {
+        if (kDebugMode) {
+          FlutterError.presentError(details);
+        } else {
+          debugPrint('Vedro FlutterError: ${details.exceptionAsString()}');
+        }
+      };
 
-  String? dbPath;
-  try {
-    final dir = await getApplicationSupportDirectory();
-    dbPath = '${dir.path}/vedro.db';
-  } catch (_) {
-    dbPath = null;
+      PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+        debugPrint('Vedro uncaught platform error: $error');
+        return true;
+      };
+
+      if (!kDebugMode) {
+        ErrorWidget.builder = (FlutterErrorDetails details) => const Material(
+              color: Color(0xFF0B0B0D),
+              child: Center(
+                child: Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.error_outline_rounded, color: Color(0xFFF87171), size: 36),
+                      SizedBox(height: 10),
+                      Text(
+                        '当前视图渲染异常，请返回重试',
+                        style: TextStyle(color: Color(0xDEFFFFFF), fontSize: 14),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+      }
+
+      try {
+        // Unified Apple-style full-bleed edge-to-edge chrome on both iOS and Android
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+        SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.light,
+          statusBarBrightness: Brightness.dark,
+          systemNavigationBarColor: Colors.transparent,
+          systemNavigationBarDividerColor: Colors.transparent,
+          systemNavigationBarIconBrightness: Brightness.light,
+          systemStatusBarContrastEnforced: false,
+          systemNavigationBarContrastEnforced: false,
+        ));
+      } catch (_) {}
+
+      try {
+        MediaKit.ensureInitialized();
+      } catch (e) {
+        debugPrint('MediaKit init warning: $e');
+      }
+
+      String? dbPath;
+      try {
+        final dir = await getApplicationSupportDirectory();
+        dbPath = '${dir.path}/vedro.db';
+      } catch (_) {
+        dbPath = null;
+      }
+
+      try {
+        final core = VedroFfiBridge.open(dbPath: dbPath);
+        runApp(VedroApp(core: core));
+      } catch (e) {
+        runApp(_VedroStartupFailureApp(error: e.toString()));
+      }
+    },
+    (Object error, StackTrace stack) {
+      debugPrint('Vedro zoned error: $error');
+    },
+  );
+}
+
+class _VedroStartupFailureApp extends StatelessWidget {
+  const _VedroStartupFailureApp({required this.error});
+  final String error;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Vedro',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark(),
+      home: Scaffold(
+        backgroundColor: const Color(0xFF0B0B0D),
+        body: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: Padding(
+              padding: const EdgeInsets.all(28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Color(0xFFFBBF24), size: 46),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Vedro 核心引擎启动失败',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 19,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    error,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Color(0xB3FFFFFF), fontSize: 13, height: 1.45),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
-
-  final core = VedroFfiBridge.open(dbPath: dbPath);
-  runApp(VedroApp(core: core));
 }
 
 class VedroApp extends StatefulWidget {
@@ -55,6 +159,7 @@ class VedroApp extends StatefulWidget {
 class _VedroAppState extends State<VedroApp> with WidgetsBindingObserver {
   late final VedroAppState _appState;
   String? _lastOverlaySig;
+  String? _lastChromeSig;
   VedroSkin? _cachedSkin;
   ThemeData? _cachedTheme;
 
@@ -68,6 +173,17 @@ class _VedroAppState extends State<VedroApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _appState.setAppResumed(state == AppLifecycleState.resumed);
+  }
+
+  @override
+  void didHaveMemoryPressure() {
+    // Release decoded image cache & idle 230 MB ONNX ASR isolate immediately under OS RAM pressure
+    try {
+      PaintingBinding.instance.imageCache.clear();
+    } catch (_) {}
+    if (LocalAsrManager.instance.isWorkerLoaded && !LocalAsrManager.instance.isTranscribing) {
+      unawaited(LocalAsrManager.instance.unloadEngine());
+    }
   }
 
   @override
@@ -86,6 +202,9 @@ class _VedroAppState extends State<VedroApp> with WidgetsBindingObserver {
         prev.isLight == skin.isLight &&
         prev.canvas == skin.canvas &&
         prev.surface == skin.surface &&
+        prev.surface2 == skin.surface2 &&
+        prev.fg == skin.fg &&
+        prev.fg2 == skin.fg2 &&
         prev.accent == skin.accent &&
         prev.accentSecondary == skin.accentSecondary &&
         prev.cardRadius == skin.cardRadius &&
@@ -104,7 +223,10 @@ class _VedroAppState extends State<VedroApp> with WidgetsBindingObserver {
         prev.badgeStyle == skin.badgeStyle &&
         prev.progressStyle == skin.progressStyle &&
         prev.ctaStyle == skin.ctaStyle &&
-        prev.frameStyle == skin.frameStyle) {
+        prev.frameStyle == skin.frameStyle &&
+        prev.liquidSpecular == skin.liquidSpecular &&
+        prev.touchFeedbackStyle == skin.touchFeedbackStyle &&
+        prev.cardHoverEffect == skin.cardHoverEffect) {
       return _cachedTheme!;
     }
     _cachedSkin = skin;
@@ -137,11 +259,15 @@ class _VedroAppState extends State<VedroApp> with WidgetsBindingObserver {
           _lastOverlaySig = overlaySig;
           SystemChrome.setSystemUIOverlayStyle(overlayStyle);
         }
-        NativePlaybackChannel.syncWindowChrome(
-          isLight: skin.isLight,
-          canvasArgb: skin.canvas.toARGB32(),
-          fgArgb: skin.fg.toARGB32(),
-        );
+        final chromeSig = '${skin.isLight}:${skin.canvas.toARGB32()}:${skin.fg.toARGB32()}';
+        if (_lastChromeSig != chromeSig) {
+          _lastChromeSig = chromeSig;
+          NativePlaybackChannel.syncWindowChrome(
+            isLight: skin.isLight,
+            canvasArgb: skin.canvas.toARGB32(),
+            fgArgb: skin.fg.toARGB32(),
+          );
+        }
 
         final Widget child;
         if (!_appState.isInitialized || _appState.isAutoRestoring) {

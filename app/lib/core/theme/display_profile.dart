@@ -5,12 +5,15 @@ import 'dart:ui' show FlutterView, PlatformDispatcher;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
-/// Physical & logical display classification categories across phones, foldables, tablets & desktops.
+import '../platform/platform_perf.dart';
+
+/// Physical & logical display classification categories across phones, foldables, tablets, TVs & desktops.
 enum VedroFormFactor {
   compactPhone,
   standardPhone,
   foldableInner,
   tablet,
+  tv,
   desktopStandardDpi,
   desktopHiDpi,
   desktopUltraWide,
@@ -19,20 +22,22 @@ enum VedroFormFactor {
 /// Hardware-aware display metrics & PPI/DPR ergonomic profile.
 ///
 /// Computes platform-specific defaults and layout parameters from:
-/// - OS family (`android`, `ios`, `macos`, `windows`, `linux`)
+/// - OS family (`android`, `ios`, `macos`, `windows`, `linux`) + TV/Leanback capability
 /// - Logical viewport (`width`, `height`, `shortestSide`, `aspectRatio`)
 /// - Pixel density (`devicePixelRatio` -> physical resolution & estimated PPI)
-/// - Pointer modality (`isTouchPrimary` vs `hasMouseHover`)
+/// - Pointer modality (`isTouchPrimary` vs `isTv` D-Pad vs `supportsMouseHover`)
 class DisplayMetricsProfile {
   const DisplayMetricsProfile({
     required this.platform,
     required this.logicalSize,
     required this.devicePixelRatio,
+    this.isTv = false,
   });
 
   final String platform; // android | ios | macos | windows | linux | web
   final Size logicalSize;
   final double devicePixelRatio;
+  final bool isTv;
 
   static String _currentPlatformName() {
     if (kIsWeb) return 'web';
@@ -45,7 +50,10 @@ class DisplayMetricsProfile {
   }
 
   /// Inspect the live primary `FlutterView` before `BuildContext` is available (e.g. first-launch init).
-  factory DisplayMetricsProfile.fromPlatformDispatcher({String? platformOverride}) {
+  factory DisplayMetricsProfile.fromPlatformDispatcher({
+    String? platformOverride,
+    bool? isTvOverride,
+  }) {
     final FlutterView? view = PlatformDispatcher.instance.views.isNotEmpty
         ? PlatformDispatcher.instance.views.first
         : null;
@@ -58,16 +66,24 @@ class DisplayMetricsProfile {
       platform: platformOverride ?? _currentPlatformName(),
       logicalSize: logical,
       devicePixelRatio: dpr,
+      isTv: isTvOverride ?? PlatformPerfProfile.isTv,
     );
   }
 
-  /// Build from live `MediaQuery` so window resizes, foldable unfold, and multi-monitor DPI hops update live.
-  factory DisplayMetricsProfile.of(BuildContext context, {String? platformOverride}) {
-    final mq = MediaQuery.of(context);
+  /// Build from scoped `MediaQuery.sizeOf` + `devicePixelRatioOf` so keyboard/insets animations
+  /// never force unnecessary rebuilds across every card!
+  factory DisplayMetricsProfile.of(
+    BuildContext context, {
+    String? platformOverride,
+    bool? isTvOverride,
+  }) {
+    final size = MediaQuery.sizeOf(context);
+    final dpr = MediaQuery.devicePixelRatioOf(context).clamp(1.0, 5.0);
     return DisplayMetricsProfile(
       platform: platformOverride ?? _currentPlatformName(),
-      logicalSize: mq.size,
-      devicePixelRatio: mq.devicePixelRatio.clamp(1.0, 5.0),
+      logicalSize: size,
+      devicePixelRatio: dpr,
+      isTv: isTvOverride ?? PlatformPerfProfile.isTv,
     );
   }
 
@@ -76,7 +92,7 @@ class DisplayMetricsProfile {
   bool get isMacOS => platform == 'macos';
   bool get isWindows => platform == 'windows';
   bool get isLinux => platform == 'linux';
-  bool get isMobileOs => isAndroid || isIOS;
+  bool get isMobileOs => (isAndroid && !isTv) || isIOS;
   bool get isDesktopOs => isMacOS || isWindows || isLinux || platform == 'web';
 
   double get shortestSide => logicalSize.shortestSide;
@@ -96,15 +112,16 @@ class DisplayMetricsProfile {
   }
 
   /// True when primary interaction is finger touch without persistent mouse hover (`Android` / `iOS` phones & foldables).
-  bool get isTouchPrimary => isMobileOs;
+  bool get isTouchPrimary => isMobileOs && !isTv;
 
   /// True when mouse pointer hover effects (`hover_reveal`, `cardHoverEffect`) are meaningful.
-  bool get supportsMouseHover => !isMobileOs;
+  bool get supportsMouseHover => !isMobileOs && !isTv;
 
-  /// True when using compact mobile bottom navigation layout (`width < 820`).
-  bool get usesMobileChrome => logicalSize.width < 820;
+  /// True when using compact mobile bottom navigation layout (`width < 820` and not TV).
+  bool get usesMobileChrome => !isTv && logicalSize.width < 820;
 
   VedroFormFactor get formFactor {
+    if (isTv) return VedroFormFactor.tv;
     if (isMobileOs) {
       if (shortestSide < 380) return VedroFormFactor.compactPhone;
       if (shortestSide < 580) return VedroFormFactor.standardPhone;
@@ -145,6 +162,7 @@ class DisplayMetricsProfile {
       VedroFormFactor.standardPhone => devicePixelRatio >= 2.75 ? '高分超清手机' : '标准屏手机',
       VedroFormFactor.foldableInner => '折叠屏展开态',
       VedroFormFactor.tablet => '平板大屏',
+      VedroFormFactor.tv => '电视大屏 (遥控器模式)',
       VedroFormFactor.desktopStandardDpi => '桌面标准屏',
       VedroFormFactor.desktopHiDpi => '桌面 Retina 高分屏',
       VedroFormFactor.desktopUltraWide => '4K / 超宽巨幕桌面',
@@ -178,6 +196,11 @@ class DisplayMetricsProfile {
           'mobile_nav_style': 'floating_dock',
           'touch_feedback': 'spring_haptic',
         };
+      case VedroFormFactor.tv:
+        return const {
+          'nav_layout': 'left_rail',
+          'grid_density': 'comfortable',
+        };
       case VedroFormFactor.desktopStandardDpi:
       case VedroFormFactor.desktopHiDpi:
         return const {
@@ -202,6 +225,7 @@ class DisplayMetricsProfile {
   int get recommendedBufferSizeMb => switch (formFactor) {
         VedroFormFactor.compactPhone => 96,
         VedroFormFactor.standardPhone => 128,
+        VedroFormFactor.tv => 96,
         VedroFormFactor.foldableInner || VedroFormFactor.tablet => 192,
         VedroFormFactor.desktopStandardDpi || VedroFormFactor.desktopHiDpi => 256,
         VedroFormFactor.desktopUltraWide => 384,
@@ -212,6 +236,7 @@ class DisplayMetricsProfile {
         VedroFormFactor.compactPhone => 0.95,
         VedroFormFactor.standardPhone => 1.0,
         VedroFormFactor.foldableInner || VedroFormFactor.tablet => 1.05,
+        VedroFormFactor.tv => 1.18,
         VedroFormFactor.desktopStandardDpi => 1.0,
         VedroFormFactor.desktopHiDpi => 1.04,
         VedroFormFactor.desktopUltraWide => 1.12,
@@ -274,6 +299,8 @@ class DisplayMetricsProfile {
         return (h * 0.42).clamp(300.0, 420.0);
       case VedroFormFactor.tablet:
         return (h * (framed ? 0.50 : 0.58)).clamp(360.0, 520.0);
+      case VedroFormFactor.tv:
+        return (h * (framed ? 0.54 : 0.62)).clamp(300.0, 440.0);
       case VedroFormFactor.desktopStandardDpi:
       case VedroFormFactor.desktopHiDpi:
         return (h * (framed ? 0.58 : 0.70)).clamp(380.0, 720.0);

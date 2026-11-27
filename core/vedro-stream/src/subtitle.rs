@@ -35,18 +35,21 @@ pub fn detect_format(filename_or_ext: &str, content: &str) -> SubtitleFormat {
 
 /// Parse SRT, WebVTT, or ASS/SSA subtitle text into normalized millisecond cues.
 pub fn parse_subtitles(content: &str, format: SubtitleFormat) -> Vec<SubtitleCue> {
-    let clean = content.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let clean = content
+        .trim_start_matches('\u{feff}')
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
     match format {
         SubtitleFormat::Srt | SubtitleFormat::Vtt => parse_srt_or_vtt(&clean),
         SubtitleFormat::Ass => parse_ass(&clean),
     }
 }
 
-/// Shift all cue timestamps by `offset_ms` (clamped at 0).
+/// Shift all cue timestamps by `offset_ms` (clamped at 0, overflow-safe).
 pub fn shift_cues(cues: &mut [SubtitleCue], offset_ms: i64) {
     for cue in cues.iter_mut() {
-        cue.start_ms = (cue.start_ms + offset_ms).max(0);
-        cue.end_ms = (cue.end_ms + offset_ms).max(cue.start_ms);
+        cue.start_ms = cue.start_ms.saturating_add(offset_ms).max(0);
+        cue.end_ms = cue.end_ms.saturating_add(offset_ms).max(cue.start_ms);
     }
 }
 
@@ -66,29 +69,35 @@ pub fn render_webvtt(cues: &[SubtitleCue]) -> String {
 
 fn parse_srt_or_vtt(content: &str) -> Vec<SubtitleCue> {
     let mut cues = Vec::new();
-    for block in content.split("\n\n") {
-        let lines: Vec<&str> = block
-            .lines()
-            .map(str::trim_end)
-            .filter(|l| !l.trim().is_empty())
-            .collect();
-        if lines.is_empty() || lines[0].starts_with("WEBVTT") || lines[0].starts_with("NOTE") {
-            continue;
+    let mut block_lines: Vec<&str> = Vec::new();
+    let flush_block = |lines: &mut Vec<&str>, cues: &mut Vec<SubtitleCue>| {
+        if lines.is_empty() {
+            return;
         }
-        let timing_idx = lines.iter().position(|l| l.contains("-->"));
-        let Some(idx) = timing_idx else { continue };
-        let Some((start_ms, end_ms)) = parse_arrow_timing(lines[idx]) else {
-            continue;
-        };
-        let text = lines[idx + 1..].join("\n").trim().to_string();
-        if !text.is_empty() {
-            cues.push(SubtitleCue {
-                start_ms,
-                end_ms,
-                text,
-            });
+        if !lines[0].starts_with("WEBVTT") && !lines[0].starts_with("NOTE") {
+            if let Some(idx) = lines.iter().position(|l| l.contains("-->")) {
+                if let Some((start_ms, end_ms)) = parse_arrow_timing(lines[idx]) {
+                    let text = lines[idx + 1..].join("\n").trim().to_string();
+                    if !text.is_empty() {
+                        cues.push(SubtitleCue {
+                            start_ms,
+                            end_ms,
+                            text,
+                        });
+                    }
+                }
+            }
+        }
+        lines.clear();
+    };
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            flush_block(&mut block_lines, &mut cues);
+        } else {
+            block_lines.push(line.trim_end());
         }
     }
+    flush_block(&mut block_lines, &mut cues);
     cues
 }
 
@@ -113,13 +122,29 @@ fn parse_ts_ms(ts: &str) -> Option<i64> {
     let (s, ms) = match s_ms.split_once('.') {
         Some((sec, frac)) => {
             let sec_v = sec.parse::<i64>().ok()?;
-            let padded = format!("{frac:0<3}");
-            let ms_v = padded[..3].parse::<i64>().ok()?;
+            // Strictly take ASCII digits only (prevents UTF-8 char-boundary panics on malformed text)
+            let digits: String = frac
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .take(3)
+                .collect();
+            let ms_v = match digits.len() {
+                0 => 0,
+                1 => digits.parse::<i64>().ok()? * 100,
+                2 => digits.parse::<i64>().ok()? * 10,
+                _ => digits.parse::<i64>().ok()?,
+            };
             (sec_v, ms_v)
         }
         None => (s_ms.parse::<i64>().ok()?, 0),
     };
-    Some(((h * 3600 + m * 60 + s) * 1000) + ms)
+    Some(
+        h.saturating_mul(3600)
+            .saturating_add(m.saturating_mul(60))
+            .saturating_add(s)
+            .saturating_mul(1000)
+            .saturating_add(ms),
+    )
 }
 
 fn parse_ass(content: &str) -> Vec<SubtitleCue> {
@@ -136,26 +161,36 @@ fn parse_ass(content: &str) -> Vec<SubtitleCue> {
         if !in_events {
             continue;
         }
-        if let Some(rest) = line.strip_prefix("Format:") {
-            format_cols = rest.split(',').map(|s| s.trim().to_lowercase()).collect();
+        if line.len() >= 7 && line[..7].eq_ignore_ascii_case("format:") {
+            let rest = &line[7..];
+            format_cols = rest
+                .split(',')
+                .map(|s| s.trim().to_ascii_lowercase())
+                .collect();
             continue;
         }
-        if let Some(rest) = line.strip_prefix("Dialogue:") {
+        if line.len() >= 9 && line[..9].eq_ignore_ascii_case("dialogue:") {
+            let rest = &line[9..];
             let start_col = format_cols.iter().position(|c| c == "start").unwrap_or(1);
             let end_col = format_cols.iter().position(|c| c == "end").unwrap_or(2);
             let text_col = format_cols.iter().position(|c| c == "text").unwrap_or(9);
 
-            let parts: Vec<&str> = rest.splitn(text_col + 1, ',').collect();
-            if parts.len() <= text_col {
-                continue;
-            }
-            let Some(start_ms) = parse_ass_ts(parts[start_col].trim()) else {
+            let max_col = text_col.max(start_col).max(end_col);
+            let parts: Vec<&str> = rest.splitn(max_col + 1, ',').collect();
+            let (Some(&start_raw), Some(&end_raw), Some(&text_raw)) = (
+                parts.get(start_col),
+                parts.get(end_col),
+                parts.get(text_col),
+            ) else {
                 continue;
             };
-            let Some(end_ms) = parse_ass_ts(parts[end_col].trim()) else {
+            let Some(start_ms) = parse_ass_ts(start_raw.trim()) else {
                 continue;
             };
-            let text = clean_ass_text(parts[text_col]);
+            let Some(end_ms) = parse_ass_ts(end_raw.trim()) else {
+                continue;
+            };
+            let text = clean_ass_text(text_raw);
             if !text.is_empty() {
                 cues.push(SubtitleCue {
                     start_ms,
@@ -169,17 +204,33 @@ fn parse_ass(content: &str) -> Vec<SubtitleCue> {
 }
 
 fn parse_ass_ts(ts: &str) -> Option<i64> {
-    // H:MM:SS.cc (centiseconds)
+    // H:MM:SS.cc (centiseconds, tolerates 1-3 fractional digits)
     let parts: Vec<&str> = ts.split(':').collect();
     if parts.len() != 3 {
         return None;
     }
     let h = parts[0].parse::<i64>().ok()?;
     let m = parts[1].parse::<i64>().ok()?;
-    let (s, cs) = parts[2].split_once('.')?;
+    let (s, frac) = parts[2].split_once('.')?;
     let sec = s.parse::<i64>().ok()?;
-    let centis = cs.parse::<i64>().ok()?;
-    Some((h * 3600 + m * 60 + sec) * 1000 + centis * 10)
+    let digits: String = frac
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .take(3)
+        .collect();
+    let ms = match digits.len() {
+        0 => 0,
+        1 => digits.parse::<i64>().ok()? * 100,
+        2 => digits.parse::<i64>().ok()? * 10,
+        _ => digits.parse::<i64>().ok()?,
+    };
+    Some(
+        h.saturating_mul(3600)
+            .saturating_add(m.saturating_mul(60))
+            .saturating_add(sec)
+            .saturating_mul(1000)
+            .saturating_add(ms),
+    )
 }
 
 fn clean_ass_text(raw: &str) -> String {
@@ -213,8 +264,9 @@ fn clean_ass_text(raw: &str) -> String {
 }
 
 fn format_vtt_ts(ms: i64) -> String {
-    let total_s = ms / 1000;
-    let rem_ms = ms % 1000;
+    let clamped = ms.max(0);
+    let total_s = clamped / 1000;
+    let rem_ms = clamped % 1000;
     let h = total_s / 3600;
     let m = (total_s % 3600) / 60;
     let s = total_s % 60;

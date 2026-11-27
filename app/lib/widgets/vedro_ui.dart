@@ -279,7 +279,7 @@ class GlassSurface extends StatelessWidget {
   }
 }
 
-/// Tactile Apple-style damped press + desktop hover lift with hover-state callback.
+/// Tactile Apple-style damped press + desktop hover lift + 10-foot TV D-Pad focus ring.
 class PressableScale extends StatefulWidget {
   const PressableScale({
     super.key,
@@ -288,8 +288,14 @@ class PressableScale extends StatefulWidget {
     this.onLongPress,
     this.onSecondaryTap,
     this.onHoverChanged,
+    this.onFocusChanged,
     this.hoverScale = 1.028,
     this.pressScale = 0.965,
+    this.autofocus = false,
+    this.canRequestFocus = true,
+    this.focusNode,
+    this.borderRadius,
+    this.showFocusRing = true,
   });
 
   final Widget child;
@@ -297,16 +303,32 @@ class PressableScale extends StatefulWidget {
   final VoidCallback? onLongPress;
   final VoidCallback? onSecondaryTap;
   final ValueChanged<bool>? onHoverChanged;
+  final ValueChanged<bool>? onFocusChanged;
   final double hoverScale;
   final double pressScale;
+  final bool autofocus;
+  final bool canRequestFocus;
+  final FocusNode? focusNode;
+  final BorderRadius? borderRadius;
+  final bool showFocusRing;
 
   @override
   State<PressableScale> createState() => _PressableScaleState();
 }
 
 class _PressableScaleState extends State<PressableScale> {
+  static const Map<ShortcutActivator, Intent> _kActivateShortcuts = {
+    SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
+    SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+    SingleActivator(LogicalKeyboardKey.numpadEnter): ActivateIntent(),
+    SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+    SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
+  };
+
   bool _hovering = false;
   bool _pressing = false;
+  bool _focused = false;
+  bool _showFocusHighlight = false;
 
   void _setHover(bool v) {
     if (_hovering == v) return;
@@ -314,17 +336,69 @@ class _PressableScaleState extends State<PressableScale> {
     widget.onHoverChanged?.call(v);
   }
 
+  void _setFocus(bool v) {
+    if (_focused == v) return;
+    setState(() => _focused = v);
+    widget.onFocusChanged?.call(v);
+    if (v) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_focused) return;
+        if (Scrollable.maybeOf(context) != null) {
+          Scrollable.ensureVisible(
+            context,
+            alignment: 0.45,
+            duration: const Duration(milliseconds: 170),
+            curve: Curves.easeOutCubic,
+          );
+        }
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final focusActive = _focused && (_showFocusHighlight || PlatformPerfProfile.isTv);
+    final focusScale = widget.hoverScale > 1.0 ? widget.hoverScale : 1.018;
     final targetScale = _pressing
         ? widget.pressScale
-        : (_hovering ? widget.hoverScale : 1.0);
+        : (focusActive
+            ? focusScale
+            : (_hovering ? widget.hoverScale : 1.0));
 
-    final gesture = GestureDetector(
+    Widget content = widget.child;
+    if (focusActive && widget.showFocusRing) {
+      final skin = VedroSkin.of(context);
+      final ringRadius =
+          widget.borderRadius ?? BorderRadius.circular(skin.cardRadius.clamp(8.0, 16.0));
+      final ringColor = skin.isLight
+          ? skin.accent
+          : (PlatformPerfProfile.isTv ? Colors.white : skin.accent);
+      content = DecoratedBox(
+        position: DecorationPosition.foreground,
+        decoration: BoxDecoration(
+          borderRadius: ringRadius,
+          border: Border.all(
+            color: ringColor.withValues(alpha: 0.96),
+            width: PlatformPerfProfile.isTv ? 2.6 : 2.0,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: skin.accent.withValues(alpha: PlatformPerfProfile.isTv ? 0.36 : 0.24),
+              blurRadius: PlatformPerfProfile.isTv ? 14 : 10,
+              spreadRadius: 0.5,
+            ),
+          ],
+        ),
+        child: content,
+      );
+    }
+
+    final interactive = widget.onTap != null || widget.onLongPress != null;
+    Widget result = GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTapDown: (_) => setState(() => _pressing = true),
-      onTapUp: (_) => setState(() => _pressing = false),
-      onTapCancel: () => setState(() => _pressing = false),
+      onTapDown: interactive ? (_) => setState(() => _pressing = true) : null,
+      onTapUp: interactive ? (_) => setState(() => _pressing = false) : null,
+      onTapCancel: interactive ? () => setState(() => _pressing = false) : null,
       onTap: widget.onTap,
       onLongPress: widget.onLongPress,
       onSecondaryTap: widget.onSecondaryTap,
@@ -332,12 +406,45 @@ class _PressableScaleState extends State<PressableScale> {
         scale: targetScale,
         duration: Duration(milliseconds: _pressing ? 100 : 200),
         curve: _pressing ? Curves.easeOutQuad : VedroTheme.springCurve,
-        child: widget.child,
+        child: content,
       ),
     );
 
+    if (widget.canRequestFocus && interactive) {
+      result = FocusableActionDetector(
+        focusNode: widget.focusNode,
+        autofocus: widget.autofocus,
+        shortcuts: _kActivateShortcuts,
+        actions: {
+          ActivateIntent: CallbackAction<ActivateIntent>(
+            onInvoke: (_) {
+              widget.onTap?.call();
+              return null;
+            },
+          ),
+        },
+        mouseCursor: widget.onTap != null && !PlatformPerfProfile.isMobile
+            ? SystemMouseCursors.click
+            : MouseCursor.defer,
+        onShowHoverHighlight: PlatformPerfProfile.isMobile
+            ? null
+            : (v) {
+                _setHover(v);
+                if (!v && _pressing) setState(() => _pressing = false);
+              },
+        onShowFocusHighlight: (v) {
+          if (_showFocusHighlight != v) {
+            setState(() => _showFocusHighlight = v);
+          }
+        },
+        onFocusChange: _setFocus,
+        child: result,
+      );
+      return result;
+    }
+
     if (PlatformPerfProfile.isMobile) {
-      return gesture;
+      return result;
     }
 
     return MouseRegion(
@@ -347,7 +454,7 @@ class _PressableScaleState extends State<PressableScale> {
         _setHover(false);
         if (_pressing) setState(() => _pressing = false);
       },
-      child: gesture,
+      child: result,
     );
   }
 }
@@ -460,9 +567,11 @@ class VedroSegmentedControl<T> extends StatelessWidget {
           children: items.map((entry) {
             final (val, label) = entry;
             final active = val == selected;
-            return GestureDetector(
-              behavior: HitTestBehavior.opaque,
+            return PressableScale(
               onTap: () => onSelected(val),
+              hoverScale: 1.0,
+              pressScale: 0.96,
+              borderRadius: BorderRadius.circular(innerR),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
                 curve: VedroTheme.easeOut,
@@ -596,6 +705,7 @@ class VedroPrecisionSlider extends StatefulWidget {
 class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
   bool _hovering = false;
   bool _dragging = false;
+  bool _focused = false;
 
   double _quantize(double raw) {
     var v = raw.clamp(widget.min, widget.max);
@@ -612,6 +722,18 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
       v = (widget.min + steps * widget.step!).clamp(widget.min, widget.max);
     }
     return v;
+  }
+
+  void _stepBy(int direction) {
+    final span = (widget.max - widget.min).abs();
+    if (span <= 0) return;
+    final delta = (widget.step != null && widget.step! > 0) ? widget.step! : (span / 20.0);
+    final next = (widget.value + direction * delta).clamp(widget.min, widget.max);
+    final quantized = _quantize(next);
+    if ((quantized - widget.value).abs() > 1e-4) {
+      HapticFeedback.selectionClick();
+      widget.onChanged(quantized);
+    }
   }
 
   void _handleDx(double dx, double width) {
@@ -636,7 +758,7 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
     final accent = skin.accent;
     final span = (widget.max - widget.min) <= 0 ? 1.0 : (widget.max - widget.min);
     final ratio = ((widget.value - widget.min) / span).clamp(0.0, 1.0);
-    final active = _hovering || _dragging;
+    final active = _hovering || _dragging || _focused;
     final trackH = active ? 6.5 : 4.5;
     final canReset = widget.defaultValue != null &&
         (widget.value - widget.defaultValue!).abs() > (widget.step ?? 0.01) * 0.6;
@@ -661,23 +783,23 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
               if (canReset)
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
-                  child: GestureDetector(
+                  child: PressableScale(
                     onTap: () {
                       HapticFeedback.selectionClick();
                       widget.onChanged(widget.defaultValue!);
                     },
-                    child: MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: skin.subtleChipBg,
-                          borderRadius: BorderRadius.circular(5),
-                        ),
-                        child: Text(
-                          '复位',
-                          style: TextStyle(color: skin.fg3, fontSize: 11),
-                        ),
+                    hoverScale: 1.03,
+                    pressScale: 0.94,
+                    borderRadius: BorderRadius.circular(5),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: skin.subtleChipBg,
+                        borderRadius: BorderRadius.circular(5),
+                      ),
+                      child: Text(
+                        '复位',
+                        style: TextStyle(color: skin.fg3, fontSize: 11),
                       ),
                     ),
                   ),
@@ -702,105 +824,136 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
             ],
           ),
           const SizedBox(height: 6),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final w = constraints.maxWidth;
-              final centerRatio = ((0.0 - widget.min) / span).clamp(0.0, 1.0);
-              final fillStart = widget.centeredOrigin
-                  ? ((ratio < centerRatio ? ratio : centerRatio) * w)
-                  : 0.0;
-              final fillWidth = widget.centeredOrigin
-                  ? ((ratio - centerRatio).abs() * w)
-                  : (ratio * w);
-
-              return MouseRegion(
-                cursor: SystemMouseCursors.click,
-                onEnter: (_) => setState(() => _hovering = true),
-                onExit: (_) => setState(() => _hovering = false),
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTapDown: (d) => _handleDx(d.localPosition.dx, w),
-                  onHorizontalDragStart: (d) {
-                    setState(() => _dragging = true);
-                    _handleDx(d.localPosition.dx, w);
-                  },
-                  onHorizontalDragUpdate: (d) => _handleDx(d.localPosition.dx, w),
-                  onHorizontalDragEnd: (_) => setState(() => _dragging = false),
-                  onHorizontalDragCancel: () => setState(() => _dragging = false),
-                  child: SizedBox(
-                    height: 26,
-                    child: Stack(
-                      clipBehavior: Clip.none,
-                      alignment: Alignment.centerLeft,
-                      children: [
-                        AnimatedContainer(
-                          duration: const Duration(milliseconds: 140),
-                          height: trackH,
-                          decoration: BoxDecoration(
-                            color: skin.fg.withValues(alpha: skin.isLight ? 0.14 : 0.20),
-                            borderRadius: BorderRadius.circular(trackH / 2),
-                          ),
-                        ),
-                        for (final s in widget.snapValues)
-                          Positioned(
-                            left: (((s - widget.min) / span).clamp(0.0, 1.0) * w - 1)
-                                .clamp(0.0, (w - 2).clamp(0.0, w)),
-                            child: Container(
-                              width: 2,
-                              height: trackH + 3,
-                              decoration: BoxDecoration(
-                                color: skin.fg.withValues(alpha: 0.35),
-                                borderRadius: BorderRadius.circular(1),
-                              ),
-                            ),
-                          ),
-                        Positioned(
-                          left: fillStart,
-                          width: fillWidth.clamp(0.0, w),
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 70),
-                            height: trackH,
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [accent, skin.accentSecondary],
-                              ),
-                              borderRadius: BorderRadius.circular(trackH / 2),
-                            ),
-                          ),
-                        ),
-                        Positioned(
-                          left: (w * ratio - 8).clamp(0.0, (w - 16).clamp(0.0, w)),
-                          child: AnimatedScale(
-                            scale: _dragging ? 1.18 : (active ? 1.06 : 0.94),
-                            duration: const Duration(milliseconds: 140),
-                            curve: VedroTheme.easeOut,
-                            child: Container(
-                              width: 16,
-                              height: 16,
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: accent.withValues(alpha: 0.72),
-                                  width: 1.8,
-                                ),
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Color(0x55000000),
-                                    blurRadius: 8,
-                                    offset: Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              );
+          Focus(
+            onFocusChange: (hasFocus) {
+              if (_focused != hasFocus) setState(() => _focused = hasFocus);
             },
+            onKeyEvent: (_, event) {
+              if (event is KeyDownEvent || event is KeyRepeatEvent) {
+                if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                  _stepBy(-1);
+                  return KeyEventResult.handled;
+                }
+                if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                  _stepBy(1);
+                  return KeyEventResult.handled;
+                }
+              }
+              return KeyEventResult.ignored;
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 140),
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: _focused
+                    ? Border.all(
+                        color: skin.isLight ? skin.accent : Colors.white.withValues(alpha: 0.9),
+                        width: 1.8,
+                      )
+                    : null,
+              ),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final w = constraints.maxWidth;
+                  final centerRatio = ((0.0 - widget.min) / span).clamp(0.0, 1.0);
+                  final fillStart = widget.centeredOrigin
+                      ? ((ratio < centerRatio ? ratio : centerRatio) * w)
+                      : 0.0;
+                  final fillWidth = widget.centeredOrigin
+                      ? ((ratio - centerRatio).abs() * w)
+                      : (ratio * w);
+
+                  return MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    onEnter: (_) => setState(() => _hovering = true),
+                    onExit: (_) => setState(() => _hovering = false),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapDown: (d) => _handleDx(d.localPosition.dx, w),
+                      onHorizontalDragStart: (d) {
+                        setState(() => _dragging = true);
+                        _handleDx(d.localPosition.dx, w);
+                      },
+                      onHorizontalDragUpdate: (d) => _handleDx(d.localPosition.dx, w),
+                      onHorizontalDragEnd: (_) => setState(() => _dragging = false),
+                      onHorizontalDragCancel: () => setState(() => _dragging = false),
+                      child: SizedBox(
+                        height: 26,
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          alignment: Alignment.centerLeft,
+                          children: [
+                            AnimatedContainer(
+                              duration: const Duration(milliseconds: 140),
+                              height: trackH,
+                              decoration: BoxDecoration(
+                                color: skin.fg.withValues(alpha: skin.isLight ? 0.14 : 0.20),
+                                borderRadius: BorderRadius.circular(trackH / 2),
+                              ),
+                            ),
+                            for (final s in widget.snapValues)
+                              Positioned(
+                                left: (((s - widget.min) / span).clamp(0.0, 1.0) * w - 1)
+                                    .clamp(0.0, (w - 2).clamp(0.0, w)),
+                                child: Container(
+                                  width: 2,
+                                  height: trackH + 3,
+                                  decoration: BoxDecoration(
+                                    color: skin.fg.withValues(alpha: 0.35),
+                                    borderRadius: BorderRadius.circular(1),
+                                  ),
+                                ),
+                              ),
+                            Positioned(
+                              left: fillStart,
+                              width: fillWidth.clamp(0.0, w),
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 70),
+                                height: trackH,
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [accent, skin.accentSecondary],
+                                  ),
+                                  borderRadius: BorderRadius.circular(trackH / 2),
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              left: (w * ratio - 8).clamp(0.0, (w - 16).clamp(0.0, w)),
+                              child: AnimatedScale(
+                                scale: _dragging ? 1.18 : (active ? 1.06 : 0.94),
+                                duration: const Duration(milliseconds: 140),
+                                curve: VedroTheme.easeOut,
+                                child: Container(
+                                  width: 16,
+                                  height: 16,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: accent.withValues(alpha: 0.72),
+                                      width: 1.8,
+                                    ),
+                                    boxShadow: const [
+                                      BoxShadow(
+                                        color: Color(0x55000000),
+                                        blurRadius: 8,
+                                        offset: Offset(0, 2),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
           ),
           if (widget.ticks.isNotEmpty) ...[
             const SizedBox(height: 2),
@@ -808,23 +961,23 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: widget.ticks.map((t) {
                 final on = (widget.value - t.$1).abs() < 0.03;
-                return GestureDetector(
+                return PressableScale(
                   onTap: () {
                     HapticFeedback.selectionClick();
                     widget.onChanged(t.$1);
                   },
-                  child: MouseRegion(
-                    cursor: SystemMouseCursors.click,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
-                      child: Text(
-                        t.$2,
-                        style: TextStyle(
-                          color: on ? skin.fg : skin.fg3,
-                          fontSize: 11,
-                          fontWeight: on ? FontWeight.w600 : FontWeight.w400,
-                          fontFeatures: const [FontFeature.tabularFigures()],
-                        ),
+                  hoverScale: 1.03,
+                  pressScale: 0.95,
+                  borderRadius: BorderRadius.circular(5),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    child: Text(
+                      t.$2,
+                      style: TextStyle(
+                        color: on ? skin.fg : skin.fg3,
+                        fontSize: 11,
+                        fontWeight: on ? FontWeight.w600 : FontWeight.w400,
+                        fontFeatures: const [FontFeature.tabularFigures()],
                       ),
                     ),
                   ),
@@ -1309,6 +1462,9 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
                 : (isSelected ? skin.fg : skin.fg.withValues(alpha: 0.90));
             return InkWell(
               key: entry.itemKey,
+              autofocus: isSelected ||
+                  (idx == 0 && !items.any((e) => e.onTapOverride == null && e.value == selectedValue)),
+              focusColor: skin.accent.withValues(alpha: 0.22),
               onTap: () {
                 HapticFeedback.selectionClick();
                 Navigator.of(ctx).pop();

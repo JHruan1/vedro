@@ -12,6 +12,7 @@ import '../core/ffi/vedro_bridge.dart';
 import '../core/models/models.dart';
 import '../core/models/preferences.dart';
 import '../core/platform/native_playback_channel.dart';
+import '../core/platform/platform_perf.dart';
 import '../core/theme/display_profile.dart';
 import '../core/theme/dynamic_color_engine.dart';
 import '../widgets/danmaku_engine.dart';
@@ -61,13 +62,52 @@ class VedroAppState extends ChangeNotifier {
   List<MediaItemModel> nextUp = [];
   List<MediaItemModel> suggestions = [];
   List<MediaItemModel> favorites = [];
-  List<Map<String, dynamic>> latestByLibrary = [];
+  List<Map<String, dynamic>> _latestByLibrary = const [];
+  List<({MediaItemModel library, List<MediaItemModel> items})> _parsedLatestByLibrary = const [];
+
+  List<Map<String, dynamic>> get latestByLibrary => _latestByLibrary;
+  set latestByLibrary(List<Map<String, dynamic>> value) {
+    _latestByLibrary = value;
+    _parsedLatestByLibrary = [
+      for (final entry in value)
+        if (entry['library'] is Map<String, dynamic>)
+          (
+            library: MediaItemModel.fromJson(entry['library'] as Map<String, dynamic>),
+            items: _parseItems(entry['items']),
+          ),
+    ];
+  }
+
+  List<({MediaItemModel library, List<MediaItemModel> items})> get parsedLatestByLibrary =>
+      _parsedLatestByLibrary;
 
   // Playlists
   List<MediaItemModel> playlists = [];
 
   // Remote control toast messages from WebSocket
   String? remoteBannerMessage;
+
+  void dismissRemoteBanner() {
+    if (remoteBannerMessage == null) return;
+    remoteBannerMessage = null;
+    notifyListeners();
+  }
+
+  // Scoped high-frequency notifiers so 400ms download ticks & 220ms speedtest ticks
+  // NEVER trigger root `MaterialApp` rebuilds.
+  final ValueNotifier<int> downloadsTickNotifier = ValueNotifier<int>(0);
+  final ValueNotifier<int> speedtestTickNotifier = ValueNotifier<int>(0);
+
+  bool _disposed = false;
+  Timer? _prefsDebounceTimer;
+  Timer? _quotaRefreshTimer;
+  bool _prefsDirty = false;
+
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
+  }
 
   // Playback settings mirrored with Rust SQLite store
   Map<String, dynamic> settings = {};
@@ -295,6 +335,7 @@ class VedroAppState extends ChangeNotifier {
         } catch (_) {}
       }
 
+      PlatformPerfProfile.tvModeManualOverride = prefs.tvModeOverride;
       final recent = savedServers.where((s) => s.accessToken != null && s.userId != null).toList();
       final target = recent.isNotEmpty
           ? ((rememberedId != null
@@ -785,7 +826,7 @@ class VedroAppState extends ChangeNotifier {
     nextUp = [];
     suggestions = [];
     favorites = [];
-    latestByLibrary = [];
+    latestByLibrary = const [];
   }
 
   void _applyHomePayload(Map<String, dynamic> res) {
@@ -899,13 +940,105 @@ class VedroAppState extends ChangeNotifier {
         showHero: true,
       );
 
-  Future<void> updatePrefs(VedroPreferences updated) async {
+  Future<void> updatePrefs(VedroPreferences updated, {bool immediate = false}) async {
     prefs = updated;
+    PlatformPerfProfile.tvModeManualOverride = prefs.tvModeOverride;
+    _prefsDirty = true;
     notifyListeners();
+    if (immediate) {
+      await flushPrefsNow();
+      return;
+    }
+    _prefsDebounceTimer?.cancel();
+    _prefsDebounceTimer = Timer(const Duration(milliseconds: 240), () {
+      unawaited(flushPrefsNow());
+    });
+  }
+
+  Future<void> flushPrefsNow() async {
+    _prefsDebounceTimer?.cancel();
+    _prefsDebounceTimer = null;
+    if (!_prefsDirty) return;
+    _prefsDirty = false;
     try {
       await core.invoke('set_kv', {
         'key': 'vedro_prefs',
         'value': prefs.toJson(),
+      });
+    } catch (_) {}
+  }
+
+  /// Persistent resume position (in seconds) for local offline files / direct URLs.
+  Future<double> getLocalResumeSecs(String pathKey) async {
+    if (pathKey.trim().isEmpty) return 0.0;
+    try {
+      final kv = await core.invoke('get_kv', {'key': 'local_resume_v1'});
+      if (kv is Map<String, dynamic> && kv['value'] is Map) {
+        final v = (kv['value'] as Map)[pathKey];
+        if (v is num) return v.toDouble().clamp(0.0, 86400.0);
+      }
+    } catch (_) {}
+    return 0.0;
+  }
+
+  Future<void> saveLocalResumeSecs(String pathKey, double secs) async {
+    if (pathKey.trim().isEmpty || prefs.incognitoMode) return;
+    try {
+      final map = <String, dynamic>{};
+      final kv = await core.invoke('get_kv', {'key': 'local_resume_v1'});
+      if (kv is Map<String, dynamic> && kv['value'] is Map) {
+        (kv['value'] as Map).forEach((k, v) {
+          if (v is num) map[k.toString()] = v.toDouble();
+        });
+      }
+      if (secs <= 3.0) {
+        map.remove(pathKey);
+      } else {
+        map[pathKey] = secs;
+        while (map.length > 200) {
+          map.remove(map.keys.first);
+        }
+      }
+      await core.invoke('set_kv', {'key': 'local_resume_v1', 'value': map});
+    } catch (_) {}
+  }
+
+  /// Persistent local SQLite cache for AI subtitle translations so rewatching or resuming
+  /// never re-queries public translation endpoints.
+  Future<Map<int, String>> loadAiTranslationCache(String cacheKey) async {
+    if (cacheKey.isEmpty) return const {};
+    try {
+      final kv = await core.invoke('get_kv', {'key': 'ai_sub_cache_v1:$cacheKey'});
+      if (kv is Map<String, dynamic> && kv['value'] is Map) {
+        final out = <int, String>{};
+        (kv['value'] as Map).forEach((k, v) {
+          final idx = int.tryParse(k.toString());
+          final txt = v?.toString() ?? '';
+          if (idx != null && txt.isNotEmpty) {
+            out[idx] = txt;
+          }
+        });
+        return out;
+      }
+    } catch (_) {}
+    return const {};
+  }
+
+  Future<void> saveAiTranslationCache(String cacheKey, Map<int, String> translations) async {
+    if (cacheKey.isEmpty || translations.isEmpty) return;
+    try {
+      final serialized = <String, String>{};
+      var count = 0;
+      for (final entry in translations.entries) {
+        if (count >= 2500) break;
+        if (entry.value.isNotEmpty) {
+          serialized['${entry.key}'] = entry.value;
+          count++;
+        }
+      }
+      await core.invoke('set_kv', {
+        'key': 'ai_sub_cache_v1:$cacheKey',
+        'value': serialized,
       });
     } catch (_) {}
   }
@@ -1142,6 +1275,22 @@ class VedroAppState extends ChangeNotifier {
         if (currentIdx < 0) return;
         final task = downloads[currentIdx];
 
+        if (prefs.downloadWifiOnly) {
+          final wifi = await NativePlaybackChannel.isWifiConnected();
+          if (!wifi) {
+            _replaceDownload(
+              taskId,
+              (d) => d.copyWith(
+                status: 'paused',
+                speedBytesPerSec: 0,
+                error: '等待 Wi-Fi 连接（可在设置中关闭仅 Wi-Fi 下载）',
+              ),
+            );
+            await _persistDownloads();
+            return;
+          }
+        }
+
         _replaceDownload(
           taskId,
           (d) => d.copyWith(
@@ -1181,8 +1330,11 @@ class VedroAppState extends ChangeNotifier {
           final proxyUrl = prep['proxy_url']?.toString().trim() ?? '';
           final acceptInvalid = prep['accept_invalid_certs'] == true;
 
-          if (acceptInvalid) {
-            client.badCertificateCallback = (_, __, ___) => true;
+          final initialUri = Uri.parse(initialUrlStr);
+          final initialHost = initialUri.host.toLowerCase();
+          if (acceptInvalid && initialHost.isNotEmpty) {
+            client.badCertificateCallback =
+                (_, host, __) => host.toLowerCase() == initialHost;
           }
           if (proxyUrl.isNotEmpty) {
             final parsedProxy = Uri.tryParse(proxyUrl);
@@ -1194,7 +1346,7 @@ class VedroAppState extends ChangeNotifier {
 
           // Determine stable final path & `.part` resume path BEFORE issuing HTTP request
           final dir = Directory(downloadsDirectoryPath);
-          if (!dir.existsSync()) dir.createSync(recursive: true);
+          if (!await dir.exists()) await dir.create(recursive: true);
 
           String outPath = task.filePath;
           if (outPath.isEmpty) {
@@ -1203,6 +1355,7 @@ class VedroAppState extends ChangeNotifier {
                 : '${task.title}${task.subtitle.isNotEmpty ? ' - ${task.subtitle}' : ''}${task.versionLabel.isNotEmpty ? ' [${task.versionLabel}]' : ''}.$ext';
             final safeName = baseName
                 .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ()\[\]]+'), '_')
+                .replaceAll(RegExp(r'^\.+'), '')
                 .trim();
             outPath = '${dir.path}/${safeName.isEmpty ? '${task.itemId}.$ext' : safeName}';
             _replaceDownload(taskId, (d) => d.copyWith(filePath: outPath));
@@ -1329,6 +1482,7 @@ class VedroAppState extends ChangeNotifier {
             if (cdFilename.isNotEmpty) {
               final safeCd = cdFilename
                   .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-_. ()\[\]]+'), '_')
+                  .replaceAll(RegExp(r'^\.+'), '')
                   .trim();
               if (safeCd.isNotEmpty) {
                 outPath = '${dir.path}/$safeCd';
@@ -1388,12 +1542,19 @@ class VedroAppState extends ChangeNotifier {
           final sink = activePartFile.openWrite(mode: writeMode);
           var lastEmit = DateTime.now();
           var lastEmitBytes = received;
+          var bytesSinceFlush = 0;
 
           try {
             await for (final chunk in resp.timeout(const Duration(seconds: 25))) {
               if (handle.paused || handle.cancelled) break;
               sink.add(chunk);
               received += chunk.length;
+              bytesSinceFlush += chunk.length;
+              // Periodic flush applies backpressure so gigabit downloads never balloon RAM
+              if (bytesSinceFlush >= 1024 * 1024) {
+                bytesSinceFlush = 0;
+                await sink.flush();
+              }
               final now = DateTime.now();
               final elapsedMs = now.difference(lastEmit).inMilliseconds;
               if (elapsedMs >= 400) {
@@ -1411,6 +1572,7 @@ class VedroAppState extends ChangeNotifier {
                     status: 'downloading',
                     clearError: true,
                   ),
+                  tickOnly: true,
                 );
               }
             }
@@ -1526,9 +1688,14 @@ class VedroAppState extends ChangeNotifier {
     } finally {
       inFlightRefreshTimer?.cancel();
       _activeDownloadHandles.remove(taskId);
-      unawaited(refreshMeQuota());
-      Timer(const Duration(seconds: 2), () => unawaited(refreshMeQuota()));
-      _pumpDownloadQueue();
+      if (!_disposed) {
+        unawaited(refreshMeQuota());
+        _quotaRefreshTimer?.cancel();
+        _quotaRefreshTimer = Timer(const Duration(seconds: 2), () {
+          if (!_disposed) unawaited(refreshMeQuota());
+        });
+        _pumpDownloadQueue();
+      }
     }
   }
 
@@ -1582,12 +1749,18 @@ class VedroAppState extends ChangeNotifier {
 
   void _replaceDownload(
     String id,
-    DownloadTaskModel Function(DownloadTaskModel) transform,
-  ) {
+    DownloadTaskModel Function(DownloadTaskModel) transform, {
+    bool tickOnly = false,
+  }) {
     final idx = downloads.indexWhere((d) => d.id == id);
     if (idx >= 0) {
       downloads[idx] = transform(downloads[idx]);
-      notifyListeners();
+      if (!_disposed) {
+        downloadsTickNotifier.value = downloadsTickNotifier.value + 1;
+        if (!tickOnly) {
+          notifyListeners();
+        }
+      }
     }
   }
 
@@ -1634,8 +1807,14 @@ class VedroAppState extends ChangeNotifier {
 
   Future<void> removeSubtitleFont(String fontPath) async {
     try {
-      final f = File(fontPath);
-      if (f.existsSync()) f.deleteSync();
+      final fontsDir = Directory(fontsDirectoryPath).absolute.path;
+      final targetAbs = File(fontPath).absolute.path;
+      final normDir = fontsDir.replaceAll('\\', '/');
+      final normTarget = targetAbs.replaceAll('\\', '/');
+      if (normTarget.startsWith('$normDir/')) {
+        final f = File(targetAbs);
+        if (await f.exists()) await f.delete();
+      }
     } catch (_) {}
     final next = prefs.customFontPaths.where((p) => p != fontPath).toList();
     await updatePrefs(prefs.copyWith(customFontPaths: next));
@@ -1917,16 +2096,16 @@ class VedroAppState extends ChangeNotifier {
 
   Future<void> openExternalUrl(String url) async {
     final trimmed = url.trim();
-    if (trimmed.isEmpty) return;
+    if (!NativePlaybackChannel.isAllowedHttpUrl(trimmed)) return;
     final openedByPlugin = await NativePlaybackChannel.openUrl(trimmed);
     if (openedByPlugin) return;
     try {
       if (!kIsWeb && Platform.isMacOS) {
-        await Process.start('open', [trimmed]);
+        await Process.start('open', ['--', trimmed]);
       } else if (!kIsWeb && Platform.isWindows) {
         await Process.start('rundll32', ['url.dll,FileProtocolHandler', trimmed]);
       } else if (!kIsWeb && Platform.isLinux) {
-        await Process.start('xdg-open', [trimmed]);
+        await Process.start('xdg-open', ['--', trimmed]);
       }
     } catch (_) {}
   }
@@ -1960,8 +2139,10 @@ class VedroAppState extends ChangeNotifier {
       if (mediaSourceId != null) 'media_source_id': mediaSourceId,
       if (targetPlayer != 'builtin') 'player_id': targetPlayer,
     }) as Map<String, dynamic>;
-    final streamUrl = (res['url'] ?? '').toString();
-    if (streamUrl.isEmpty) throw Exception('无法获取外部播放直链');
+    final streamUrl = (res['url'] ?? '').toString().trim();
+    if (!NativePlaybackChannel.isAllowedHttpUrl(streamUrl)) {
+      throw Exception('无法获取有效的外部播放直链');
+    }
 
     if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
       final ok = await NativePlaybackChannel.launchExternalPlayer(
@@ -1984,13 +2165,13 @@ class VedroAppState extends ChangeNotifier {
           await Process.start('open', ['infuse://x-callback-url/play?url=${Uri.encodeComponent(streamUrl)}']);
           return '已通过 Infuse 打开';
         case 'vlc':
-          await Process.start('open', ['-a', 'VLC', streamUrl]);
+          await Process.start('open', ['-a', 'VLC', '--', streamUrl]);
           return '已通过 VLC 打开';
         case 'mpv':
-          await Process.start('open', ['-a', 'mpv', streamUrl]);
+          await Process.start('open', ['-a', 'mpv', '--', streamUrl]);
           return '已通过 MPV 打开';
         default:
-          await Process.start('open', [streamUrl]);
+          await Process.start('open', ['--', streamUrl]);
           return '已交由系统播放器打开';
       }
     } else if (!kIsWeb && Platform.isWindows) {
@@ -2005,11 +2186,11 @@ class VedroAppState extends ChangeNotifier {
       return '已调用外部播放器';
     } else if (!kIsWeb && Platform.isLinux) {
       if (targetPlayer == 'mpv') {
-        await Process.start('mpv', [streamUrl]);
+        await Process.start('mpv', ['--', streamUrl]);
       } else if (targetPlayer == 'vlc') {
-        await Process.start('vlc', [streamUrl]);
+        await Process.start('vlc', ['--', streamUrl]);
       } else {
-        await Process.start('xdg-open', [streamUrl]);
+        await Process.start('xdg-open', ['--', streamUrl]);
       }
       return '已调用外部播放器';
     }
@@ -2306,18 +2487,20 @@ class VedroAppState extends ChangeNotifier {
   }
 
   void _consumeCoreEvents() {
+    if (_disposed) return;
     final events = core.pollEvents();
     var changed = false;
+    var speedTick = false;
     for (final ev in events) {
       if (ev['source'] == 'speedtest') {
         final phase = ev['phase']?.toString();
         if (phase == 'ping') {
           speedTestLatencyMs = (ev['latency_ms'] as num?)?.toDouble();
           speedTestClientIp = ev['client_ip']?.toString();
-          changed = true;
+          speedTick = true;
         } else if (phase == 'download') {
           liveSpeedTestMbps = (ev['live_mbps'] as num?)?.toDouble();
-          changed = true;
+          speedTick = true;
         }
         continue;
       }
@@ -2332,6 +2515,9 @@ class VedroAppState extends ChangeNotifier {
         }
       }
     }
+    if (speedTick && !_disposed) {
+      speedtestTickNotifier.value = speedtestTickNotifier.value + 1;
+    }
     if (changed) notifyListeners();
   }
 
@@ -2343,6 +2529,7 @@ class VedroAppState extends ChangeNotifier {
     if (!resumed) {
       _wsPollTimer?.cancel();
       _wsPollTimer = null;
+      unawaited(flushPrefsNow());
     } else if (isSignedIn) {
       _startEventPolling();
     }
@@ -2536,13 +2723,27 @@ class VedroAppState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _wsPollTimer?.cancel();
     _speedTestPollTimer?.cancel();
+    _prefsDebounceTimer?.cancel();
+    _quotaRefreshTimer?.cancel();
+    if (_prefsDirty) {
+      _prefsDirty = false;
+      try {
+        unawaited(core.invoke('set_kv', {
+          'key': 'vedro_prefs',
+          'value': prefs.toJson(),
+        }));
+      } catch (_) {}
+    }
     for (final h in _activeDownloadHandles.values) {
       h.cancelled = true;
       h.abort();
     }
     _activeDownloadHandles.clear();
+    downloadsTickNotifier.dispose();
+    speedtestTickNotifier.dispose();
     super.dispose();
   }
 }

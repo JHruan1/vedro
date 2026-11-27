@@ -40,7 +40,7 @@ class ShellScreen extends StatefulWidget {
 class _ShellScreenState extends State<ShellScreen> {
   int _index = 0;
   final Set<int> _visitedTabs = {0};
-  bool _homeScrolled = false;
+  final ValueNotifier<bool> _homeScrolledNotifier = ValueNotifier<bool>(false);
   bool _topHovering = false;
   DateTime? _lastBackPressedAt;
   final GlobalKey _pageStageKey = GlobalKey(debugLabel: 'vedro-shell-page-stage');
@@ -53,11 +53,24 @@ class _ShellScreenState extends State<ShellScreen> {
     });
   }
 
+  void _onUpdateCheckerChanged() {
+    final ignored = VedroUpdateChecker.instance.ignoredVersion ?? '';
+    if (ignored.isNotEmpty && ignored != widget.appState.prefs.ignoredUpdateVersion) {
+      widget.appState.updatePrefs(
+        widget.appState.prefs.copyWith(ignoredUpdateVersion: ignored),
+      );
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     NativePlaybackChannel.ensureWindowListener();
     NativePlaybackChannel.droppedFilesNotifier.addListener(_onGlobalFilesDropped);
+    if (widget.appState.prefs.ignoredUpdateVersion.isNotEmpty) {
+      VedroUpdateChecker.instance.ignoredVersion = widget.appState.prefs.ignoredUpdateVersion;
+    }
+    VedroUpdateChecker.instance.addListener(_onUpdateCheckerChanged);
     if (!kIsWeb && !Platform.environment.containsKey('FLUTTER_TEST')) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         Future<void>.delayed(const Duration(seconds: 3), () {
@@ -73,6 +86,8 @@ class _ShellScreenState extends State<ShellScreen> {
 
   @override
   void dispose() {
+    _homeScrolledNotifier.dispose();
+    VedroUpdateChecker.instance.removeListener(_onUpdateCheckerChanged);
     NativePlaybackChannel.droppedFilesNotifier.removeListener(_onGlobalFilesDropped);
     super.dispose();
   }
@@ -127,6 +142,115 @@ class _ShellScreenState extends State<ShellScreen> {
         localPlaylistPaths: files,
       )),
     );
+  }
+
+  Future<void> _openNetworkUrlDialog() async {
+    final skin = VedroSkin.of(context);
+    final urlCtrl = TextEditingController();
+    String? err;
+    final submitted = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) => AlertDialog(
+          backgroundColor: skin.surface,
+          title: Text('打开网络串流链接', style: TextStyle(color: skin.fg, fontSize: 16)),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                TextField(
+                  controller: urlCtrl,
+                  autofocus: true,
+                  keyboardType: TextInputType.url,
+                  style: TextStyle(color: skin.fg, fontSize: 13.5),
+                  decoration: const InputDecoration(
+                    labelText: '视频直链 / M3U8 / HTTP(S) 地址',
+                    hintText: 'https://example.com/video.m3u8',
+                  ),
+                  onSubmitted: (_) {
+                    final u = urlCtrl.text.trim();
+                    if (!NativePlaybackChannel.isAllowedHttpUrl(u)) {
+                      setModal(() => err = '请输入有效的 http:// 或 https:// 链接');
+                      return;
+                    }
+                    Navigator.pop(ctx, u);
+                  },
+                ),
+                if (err != null) ...[
+                  const SizedBox(height: 8),
+                  Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+            FilledButton(
+              onPressed: () {
+                final u = urlCtrl.text.trim();
+                if (!NativePlaybackChannel.isAllowedHttpUrl(u)) {
+                  setModal(() => err = '请输入有效的 http:// 或 https:// 链接');
+                  return;
+                }
+                Navigator.pop(ctx, u);
+              },
+              child: const Text('立即播放'),
+            ),
+          ],
+        ),
+      ),
+    );
+    urlCtrl.dispose();
+    if (submitted == null || submitted.isEmpty || !mounted) return;
+    final uri = Uri.tryParse(submitted);
+    final seg = (uri != null && uri.pathSegments.isNotEmpty)
+        ? Uri.decodeComponent(uri.pathSegments.last)
+        : (uri?.host ?? '网络串流');
+    final title = seg.trim().isNotEmpty ? seg.trim() : '网络串流';
+    Navigator.of(context).push(
+      vedroRoute(PlayerScreen(
+        item: MediaItemModel(
+          id: 'net_${submitted.hashCode}',
+          name: title,
+          type: 'Video',
+        ),
+        appState: widget.appState,
+        localFilePath: submitted,
+      )),
+    );
+  }
+
+  void _handleRootBackPop(bool didPop) {
+    if (didPop) return;
+    if (_index != 0) {
+      setState(() => _index = 0);
+      return;
+    }
+    if (!widget.appState.prefs.confirmExitApp) {
+      SystemNavigator.pop();
+      return;
+    }
+    final now = DateTime.now();
+    if (_lastBackPressedAt != null &&
+        now.difference(_lastBackPressedAt!) < const Duration(milliseconds: 2200)) {
+      SystemNavigator.pop();
+      return;
+    }
+    _lastBackPressedAt = now;
+    HapticFeedback.lightImpact();
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        const SnackBar(
+          key: ValueKey('double-back-exit-toast'),
+          behavior: SnackBarBehavior.floating,
+          width: 172,
+          duration: Duration(milliseconds: 2000),
+          content: Text('再按一次退出', textAlign: TextAlign.center),
+        ),
+      );
   }
 
   static const _desktopNav = [
@@ -273,11 +397,7 @@ class _ShellScreenState extends State<ShellScreen> {
     final isLeftRail = wide && skin.navLayout == 'left_rail';
     final isCenteredCapsule = wide && skin.navLayout == 'centered_capsule';
     final isMinimalAutoHide = wide && skin.navLayout == 'minimal_auto_hide';
-    final topBarClear = _index == 0 &&
-        signedIn &&
-        !_homeScrolled &&
-        !skin.isLight &&
-        skin.heroStyle == 'full_bleed';
+    final isTv = PlatformPerfProfile.isTv;
     final childTopInset = wide
         ? (isLeftRail
             ? ((!kIsWeb && Platform.isWindows) ? 26.0 : 16.0)
@@ -300,12 +420,13 @@ class _ShellScreenState extends State<ShellScreen> {
             onGenreTap: _openGenre,
             onOpenFavorites: _openFavorites,
             onOpenLocalMedia: _openLocalMediaPicker,
+            onOpenNetworkUrl: _openNetworkUrlDialog,
             onOpenServerHub: _openServerHub,
             onOpenAddServer: _openAddServer,
             onOpenSettings: () => _selectTab(4),
             onScrollChanged: (scrolled) {
-              if (scrolled != _homeScrolled) {
-                setState(() => _homeScrolled = scrolled);
+              if (_homeScrolledNotifier.value != scrolled) {
+                _homeScrolledNotifier.value = scrolled;
               }
             },
           ),
@@ -315,6 +436,7 @@ class _ShellScreenState extends State<ShellScreen> {
             onServerSelected: () => _selectTab(0),
             onOpenAddServer: _openAddServer,
             onOpenLocalMedia: _openLocalMediaPicker,
+            onOpenNetworkUrl: _openNetworkUrlDialog,
             topInset: childTopInset,
           ),
         2 => SearchScreen(
@@ -366,119 +488,154 @@ class _ShellScreenState extends State<ShellScreen> {
         (skin.usesBlurredFanart && !homeHasHeroBackdrop) ? _resolveHomeFanartUrl() : null;
 
     if (wide) {
-      return CallbackShortcuts(
-        bindings: {
-          const SingleActivator(LogicalKeyboardKey.keyK, meta: true): _openSpotlight,
-          const SingleActivator(LogicalKeyboardKey.keyK, control: true): _openSpotlight,
-        },
-        child: Focus(
-          autofocus: true,
-          child: Scaffold(
-            backgroundColor: skin.canvas,
-            body: VedroSkinCanvas(
-              backdropImageUrl: fanartUrl,
-              // Unified stable Row -> Expanded -> Stack tree so switching `navLayout`
-              // (`left_rail` <-> `top_floating` <-> `centered_capsule` <-> `minimal_auto_hide`)
-              // NEVER unmounts or resets `SettingsScreen` or scroll positions!
-              child: Row(
-                key: const ValueKey('shell-unified-desktop-row'),
-                children: [
-                  if (isLeftRail)
-                    _VerticalSidebarRail(
-                      key: const ValueKey('shell-left-rail-layout'),
-                      appState: widget.appState,
-                      compact: size.width < 1120,
-                      activeIndex: _index,
-                      navItems: _desktopNav,
-                      onSelectIndex: _selectTab,
-                      onOpenServerHub: _openServerHub,
-                      onOpenSearch: _openSpotlight,
-                      onOpenLocalMedia: _openLocalMediaPicker,
-                      onOpenFavorites: _openFavorites,
-                      onOpenLayout: () => showHomeLayoutSheet(
-                        context: context,
-                        appState: widget.appState,
-                      ),
-                      onRefresh: widget.appState.refreshHome,
-                    ),
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        Positioned.fill(child: keyedStage),
-                        if (!isLeftRail && isCenteredCapsule)
-                          Positioned(
-                            top: 12,
-                            left: 20,
-                            right: 20,
-                            child: _CenteredCapsuleNavIsland(
-                              key: const ValueKey('shell-centered-capsule-nav'),
-                              appState: widget.appState,
-                              activeIndex: _index,
-                              navItems: _desktopNav,
-                              onSelectIndex: _selectTab,
-                              onOpenServerHub: _openServerHub,
-                              onOpenSearch: _openSpotlight,
-                              onOpenLocalMedia: _openLocalMediaPicker,
-                              onOpenFavorites: _openFavorites,
-                              onRefresh: widget.appState.refreshHome,
-                            ),
-                          )
-                        else if (!isLeftRail && isMinimalAutoHide)
-                          Positioned(
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            child: MouseRegion(
-                              onEnter: (_) => setState(() => _topHovering = true),
-                              onExit: (_) => setState(() => _topHovering = false),
-                              child: AnimatedOpacity(
-                                duration: const Duration(milliseconds: 200),
-                                opacity: (_topHovering || !_homeScrolled || _index != 0) ? 1.0 : 0.12,
-                                child: _FloatingDesktopHeader(
+      return PopScope(
+        canPop: !widget.appState.prefs.confirmExitApp && _index == 0,
+        onPopInvokedWithResult: (didPop, _) => _handleRootBackPop(didPop),
+        child: CallbackShortcuts(
+          bindings: {
+            const SingleActivator(LogicalKeyboardKey.keyK, meta: true): _openSpotlight,
+            const SingleActivator(LogicalKeyboardKey.keyK, control: true): _openSpotlight,
+          },
+          child: Focus(
+            autofocus: true,
+            child: Scaffold(
+              backgroundColor: skin.canvas,
+              body: VedroSkinCanvas(
+                backdropImageUrl: fanartUrl,
+                // Unified stable Row -> Expanded -> Stack tree so switching `navLayout`
+                // (`left_rail` <-> `top_floating` <-> `centered_capsule` <-> `minimal_auto_hide`)
+                // NEVER unmounts or resets `SettingsScreen` or scroll positions!
+                child: Padding(
+                  padding: isTv
+                      ? const EdgeInsets.symmetric(horizontal: 24, vertical: 14)
+                      : EdgeInsets.zero,
+                  child: Row(
+                    key: const ValueKey('shell-unified-desktop-row'),
+                    children: [
+                      if (isLeftRail)
+                        _VerticalSidebarRail(
+                          key: const ValueKey('shell-left-rail-layout'),
+                          appState: widget.appState,
+                          compact: size.width < 1120,
+                          activeIndex: _index,
+                          navItems: _desktopNav,
+                          onSelectIndex: _selectTab,
+                          onOpenServerHub: _openServerHub,
+                          onOpenSearch: _openSpotlight,
+                          onOpenLocalMedia: _openLocalMediaPicker,
+                          onOpenNetworkUrl: _openNetworkUrlDialog,
+                          onOpenFavorites: _openFavorites,
+                          onOpenLayout: () => showHomeLayoutSheet(
+                            context: context,
+                            appState: widget.appState,
+                          ),
+                          onRefresh: widget.appState.refreshHome,
+                        ),
+                      Expanded(
+                        child: Stack(
+                          children: [
+                            Positioned.fill(child: keyedStage),
+                            if (!isLeftRail && isCenteredCapsule)
+                              Positioned(
+                                top: 12,
+                                left: 20,
+                                right: 20,
+                                child: _CenteredCapsuleNavIsland(
+                                  key: const ValueKey('shell-centered-capsule-nav'),
                                   appState: widget.appState,
-                                  clear: topBarClear && !_topHovering,
                                   activeIndex: _index,
                                   navItems: _desktopNav,
                                   onSelectIndex: _selectTab,
                                   onOpenServerHub: _openServerHub,
                                   onOpenSearch: _openSpotlight,
                                   onOpenLocalMedia: _openLocalMediaPicker,
+                                  onOpenNetworkUrl: _openNetworkUrlDialog,
                                   onOpenFavorites: _openFavorites,
-                                  onOpenLayout: () => showHomeLayoutSheet(
-                                    context: context,
-                                    appState: widget.appState,
-                                  ),
                                   onRefresh: widget.appState.refreshHome,
                                 ),
+                              )
+                            else if (!isLeftRail && isMinimalAutoHide)
+                              Positioned(
+                                top: 0,
+                                left: 0,
+                                right: 0,
+                                child: ValueListenableBuilder<bool>(
+                                  valueListenable: _homeScrolledNotifier,
+                                  builder: (_, homeScrolled, __) {
+                                    final topBarClear = _index == 0 &&
+                                        signedIn &&
+                                        !homeScrolled &&
+                                        !skin.isLight &&
+                                        skin.heroStyle == 'full_bleed';
+                                    return MouseRegion(
+                                      onEnter: (_) => setState(() => _topHovering = true),
+                                      onExit: (_) => setState(() => _topHovering = false),
+                                      child: AnimatedOpacity(
+                                        duration: const Duration(milliseconds: 200),
+                                        opacity: (_topHovering || !homeScrolled || _index != 0)
+                                            ? 1.0
+                                            : 0.12,
+                                        child: _FloatingDesktopHeader(
+                                          appState: widget.appState,
+                                          clear: topBarClear && !_topHovering,
+                                          activeIndex: _index,
+                                          navItems: _desktopNav,
+                                          onSelectIndex: _selectTab,
+                                          onOpenServerHub: _openServerHub,
+                                          onOpenSearch: _openSpotlight,
+                                          onOpenLocalMedia: _openLocalMediaPicker,
+                                          onOpenNetworkUrl: _openNetworkUrlDialog,
+                                          onOpenFavorites: _openFavorites,
+                                          onOpenLayout: () => showHomeLayoutSheet(
+                                            context: context,
+                                            appState: widget.appState,
+                                          ),
+                                          onRefresh: widget.appState.refreshHome,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              )
+                            else if (!isLeftRail)
+                              Positioned(
+                                top: 0,
+                                left: 0,
+                                right: 0,
+                                child: ValueListenableBuilder<bool>(
+                                  valueListenable: _homeScrolledNotifier,
+                                  builder: (_, homeScrolled, __) {
+                                    final topBarClear = _index == 0 &&
+                                        signedIn &&
+                                        !homeScrolled &&
+                                        !skin.isLight &&
+                                        skin.heroStyle == 'full_bleed';
+                                    return _FloatingDesktopHeader(
+                                      appState: widget.appState,
+                                      clear: topBarClear,
+                                      activeIndex: _index,
+                                      navItems: _desktopNav,
+                                      onSelectIndex: _selectTab,
+                                      onOpenServerHub: _openServerHub,
+                                      onOpenSearch: _openSpotlight,
+                                      onOpenLocalMedia: _openLocalMediaPicker,
+                                      onOpenNetworkUrl: _openNetworkUrlDialog,
+                                      onOpenFavorites: _openFavorites,
+                                      onOpenLayout: () => showHomeLayoutSheet(
+                                        context: context,
+                                        appState: widget.appState,
+                                      ),
+                                      onRefresh: widget.appState.refreshHome,
+                                    );
+                                  },
+                                ),
                               ),
-                            ),
-                          )
-                        else if (!isLeftRail)
-                          Positioned(
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            child: _FloatingDesktopHeader(
-                              appState: widget.appState,
-                              clear: topBarClear,
-                              activeIndex: _index,
-                              navItems: _desktopNav,
-                              onSelectIndex: _selectTab,
-                              onOpenServerHub: _openServerHub,
-                              onOpenSearch: _openSpotlight,
-                              onOpenLocalMedia: _openLocalMediaPicker,
-                              onOpenFavorites: _openFavorites,
-                              onOpenLayout: () => showHomeLayoutSheet(
-                                context: context,
-                                appState: widget.appState,
-                              ),
-                              onRefresh: widget.appState.refreshHome,
-                            ),
-                          ),
-                      ],
-                    ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
@@ -488,11 +645,6 @@ class _ShellScreenState extends State<ShellScreen> {
 
     final dockR = skin.pillRadius >= 100 ? 30.0 : skin.pillRadius.clamp(12.0, 26.0);
     final mobileNav = skin.mobileNavStyle;
-    final shrunkByScroll =
-        widget.appState.prefs.autoShrinkNavOnScroll && _index == 0 && _homeScrolled;
-    final compactIcons = mobileNav == 'compact_icon_only' ||
-        !widget.appState.prefs.showNavLabels ||
-        shrunkByScroll;
     final fullTabBar = mobileNav == 'full_tab_bar';
 
     void triggerMobileTabTap(int i) {
@@ -504,112 +656,91 @@ class _ShellScreenState extends State<ShellScreen> {
       _selectTab(i);
     }
 
-    Widget bottomBar;
-    if (fullTabBar) {
-      final barBlur = PlatformPerfProfile.clampLiveBlur(24);
-      bottomBar = RepaintBoundary(
-        child: ClipRect(
-          key: const ValueKey('mobile-nav-full-tab-bar'),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: barBlur, sigmaY: barBlur),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: PlatformPerfProfile.adaptGlassFill(skin.glass),
-                border: Border(top: BorderSide(color: skin.border, width: 0.7)),
-              ),
-            child: SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    for (var i = 0; i < _mobileTabs.length; i++)
-                      _BottomTabButton(
-                        tab: _mobileTabs[i],
-                        selected: i == _index,
-                        iconOnly: false,
-                        onTap: () => triggerMobileTabTap(i),
+    final Widget bottomBar = ValueListenableBuilder<bool>(
+      valueListenable: _homeScrolledNotifier,
+      builder: (context, homeScrolled, _) {
+        final shrunkByScroll =
+            widget.appState.prefs.autoShrinkNavOnScroll && _index == 0 && homeScrolled;
+        final compactIcons = mobileNav == 'compact_icon_only' ||
+            !widget.appState.prefs.showNavLabels ||
+            shrunkByScroll;
+        if (fullTabBar) {
+          final barBlur = PlatformPerfProfile.clampLiveBlur(24);
+          return RepaintBoundary(
+            child: ClipRect(
+              key: const ValueKey('mobile-nav-full-tab-bar'),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: barBlur, sigmaY: barBlur),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: PlatformPerfProfile.adaptGlassFill(skin.glass),
+                    border: Border(top: BorderSide(color: skin.border, width: 0.7)),
+                  ),
+                  child: SafeArea(
+                    top: false,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          for (var i = 0; i < _mobileTabs.length; i++)
+                            _BottomTabButton(
+                              tab: _mobileTabs[i],
+                              selected: i == _index,
+                              iconOnly: false,
+                              onTap: () => triggerMobileTabTap(i),
+                            ),
+                        ],
                       ),
-                  ],
+                    ),
+                  ),
                 ),
               ),
             ),
-          ),
-        ),
-        ),
-      );
-    } else {
-      bottomBar = SafeArea(
-        top: false,
-        child: AnimatedPadding(
-          duration: const Duration(milliseconds: 240),
-          curve: VedroTheme.easeOut,
-          padding: EdgeInsets.fromLTRB(
-            shrunkByScroll ? 56 : (compactIcons ? 42 : 18),
-            0,
-            shrunkByScroll ? 56 : (compactIcons ? 42 : 18),
-            10,
-          ),
-          child: GlassSurface(
-            key: ValueKey('mobile-nav-$mobileNav'),
-            borderRadius: dockR,
-            blur: skin.backdropBlur.clamp(24.0, 44.0),
-            color: skin.glass,
-            borderColor: skin.borderStrong,
-            padding: EdgeInsets.symmetric(
-              horizontal: compactIcons ? 8 : 6,
-              vertical: compactIcons ? 4.5 : 5.5,
+          );
+        }
+        return SafeArea(
+          top: false,
+          child: AnimatedPadding(
+            duration: const Duration(milliseconds: 240),
+            curve: VedroTheme.easeOut,
+            padding: EdgeInsets.fromLTRB(
+              shrunkByScroll ? 56 : (compactIcons ? 42 : 18),
+              0,
+              shrunkByScroll ? 56 : (compactIcons ? 42 : 18),
+              10,
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                for (var i = 0; i < _mobileTabs.length; i++)
-                  _BottomTabButton(
-                    tab: _mobileTabs[i],
-                    selected: i == _index,
-                    iconOnly: compactIcons,
-                    onTap: () => triggerMobileTabTap(i),
-                  ),
-              ],
+            child: GlassSurface(
+              key: ValueKey('mobile-nav-$mobileNav'),
+              borderRadius: dockR,
+              blur: skin.backdropBlur.clamp(24.0, 44.0),
+              color: skin.glass,
+              borderColor: skin.borderStrong,
+              padding: EdgeInsets.symmetric(
+                horizontal: compactIcons ? 8 : 6,
+                vertical: compactIcons ? 4.5 : 5.5,
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  for (var i = 0; i < _mobileTabs.length; i++)
+                    _BottomTabButton(
+                      tab: _mobileTabs[i],
+                      selected: i == _index,
+                      iconOnly: compactIcons,
+                      onTap: () => triggerMobileTabTap(i),
+                    ),
+                ],
+              ),
             ),
           ),
-        ),
-      );
-    }
+        );
+      },
+    );
 
     return PopScope(
       canPop: !widget.appState.prefs.confirmExitApp && _index == 0,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop) return;
-        if (_index != 0) {
-          setState(() => _index = 0);
-          return;
-        }
-        if (!widget.appState.prefs.confirmExitApp) {
-          SystemNavigator.pop();
-          return;
-        }
-        final now = DateTime.now();
-        if (_lastBackPressedAt != null &&
-            now.difference(_lastBackPressedAt!) < const Duration(milliseconds: 2200)) {
-          SystemNavigator.pop();
-          return;
-        }
-        _lastBackPressedAt = now;
-        HapticFeedback.lightImpact();
-        ScaffoldMessenger.of(context)
-          ..clearSnackBars()
-          ..showSnackBar(
-            const SnackBar(
-              key: ValueKey('double-back-exit-toast'),
-              behavior: SnackBarBehavior.floating,
-              width: 172,
-              duration: Duration(milliseconds: 2000),
-              content: Text('再按一次退出', textAlign: TextAlign.center),
-            ),
-          );
-      },
+      onPopInvokedWithResult: (didPop, _) => _handleRootBackPop(didPop),
       child: Scaffold(
         backgroundColor: skin.canvas,
         extendBody: !fullTabBar,
@@ -635,6 +766,7 @@ class _VerticalSidebarRail extends StatelessWidget {
     required this.onOpenServerHub,
     required this.onOpenSearch,
     required this.onOpenLocalMedia,
+    required this.onOpenNetworkUrl,
     required this.onOpenFavorites,
     required this.onOpenLayout,
     required this.onRefresh,
@@ -648,6 +780,7 @@ class _VerticalSidebarRail extends StatelessWidget {
   final VoidCallback onOpenServerHub;
   final VoidCallback onOpenSearch;
   final VoidCallback onOpenLocalMedia;
+  final VoidCallback onOpenNetworkUrl;
   final VoidCallback onOpenFavorites;
   final VoidCallback onOpenLayout;
   final VoidCallback onRefresh;
@@ -797,7 +930,7 @@ class _VerticalSidebarRail extends StatelessWidget {
                 icon: Icons.search_rounded,
                 label: appState.savedServers.length > 1 ? '聚合搜索' : '搜索',
                 selected: activeIndex == 2,
-                trailingHint: '⌘K',
+                trailingHint: (!kIsWeb && Platform.isMacOS) ? '⌘K' : 'Ctrl+K',
                 onTap: onOpenSearch,
               ),
               const SizedBox(height: 6),
@@ -814,6 +947,12 @@ class _VerticalSidebarRail extends StatelessWidget {
                 label: '本地播放',
                 selected: false,
                 onTap: onOpenLocalMedia,
+              ),
+              railEntry(
+                icon: Icons.link_rounded,
+                label: '网络链接',
+                selected: false,
+                onTap: onOpenNetworkUrl,
               ),
               if (appState.isSignedIn) ...[
                 railEntry(
@@ -854,6 +993,7 @@ class _CenteredCapsuleNavIsland extends StatelessWidget {
     required this.onOpenServerHub,
     required this.onOpenSearch,
     required this.onOpenLocalMedia,
+    required this.onOpenNetworkUrl,
     required this.onOpenFavorites,
     required this.onRefresh,
   });
@@ -865,6 +1005,7 @@ class _CenteredCapsuleNavIsland extends StatelessWidget {
   final VoidCallback onOpenServerHub;
   final VoidCallback onOpenSearch;
   final VoidCallback onOpenLocalMedia;
+  final VoidCallback onOpenNetworkUrl;
   final VoidCallback onOpenFavorites;
   final VoidCallback onRefresh;
 
@@ -958,8 +1099,13 @@ class _CenteredCapsuleNavIsland extends StatelessWidget {
                   ),
                 ),
               const SizedBox(width: 8),
-              _IslandIconBtn(icon: Icons.search_rounded, tooltip: '搜索 (⌘K)', onTap: onOpenSearch),
+              _IslandIconBtn(
+                icon: Icons.search_rounded,
+                tooltip: (!kIsWeb && Platform.isMacOS) ? '搜索 (⌘K)' : '搜索 (Ctrl+K)',
+                onTap: onOpenSearch,
+              ),
               _IslandIconBtn(icon: Icons.folder_open_rounded, tooltip: '本地视频', onTap: onOpenLocalMedia),
+              _IslandIconBtn(icon: Icons.link_rounded, tooltip: '打开网络链接', onTap: onOpenNetworkUrl),
               if (appState.isSignedIn) ...[
                 _IslandIconBtn(icon: Icons.favorite_border_rounded, tooltip: '我的收藏', onTap: onOpenFavorites),
                 _IslandIconBtn(icon: Icons.refresh_rounded, tooltip: '刷新', onTap: onRefresh),
@@ -1012,6 +1158,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
     required this.onOpenServerHub,
     required this.onOpenSearch,
     required this.onOpenLocalMedia,
+    required this.onOpenNetworkUrl,
     required this.onOpenFavorites,
     required this.onOpenLayout,
     required this.onRefresh,
@@ -1025,6 +1172,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
   final VoidCallback onOpenServerHub;
   final VoidCallback onOpenSearch;
   final VoidCallback onOpenLocalMedia;
+  final VoidCallback onOpenNetworkUrl;
   final VoidCallback onOpenFavorites;
   final VoidCallback onOpenLayout;
   final VoidCallback onRefresh;
@@ -1250,7 +1398,7 @@ class _FloatingDesktopHeader extends StatelessWidget {
                             borderRadius: BorderRadius.circular(5),
                           ),
                           child: Text(
-                            '⌘K',
+                            (!kIsWeb && Platform.isMacOS) ? '⌘K' : 'Ctrl+K',
                             style: TextStyle(
                               color: clear ? const Color(0xB8FFFFFF) : skin.fg3,
                               fontSize: 10.5,
@@ -1267,6 +1415,12 @@ class _FloatingDesktopHeader extends StatelessWidget {
                   tooltip: '打开本地视频 / 文件夹（也支持直接拖入窗口）',
                   icon: Icons.folder_open_rounded,
                   onTap: onOpenLocalMedia,
+                ),
+                const SizedBox(width: 8),
+                headerCircleBtn(
+                  tooltip: '打开网络串流链接 (HTTP / HTTPS / M3U8)',
+                  icon: Icons.link_rounded,
+                  onTap: onOpenNetworkUrl,
                 ),
                 if (appState.isSignedIn) ...[
                   const SizedBox(width: 8),
@@ -1355,10 +1509,13 @@ class _BottomTabButton extends StatelessWidget {
     final pillFill = skin.isLight
         ? Colors.black.withValues(alpha: 0.065)
         : Colors.white.withValues(alpha: 0.11);
+    final pillR = skin.radiusForPill(46);
     return Expanded(
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
+      child: PressableScale(
         onTap: onTap,
+        hoverScale: 1.0,
+        pressScale: 0.94,
+        borderRadius: BorderRadius.circular(pillR),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
           curve: VedroTheme.easeOut,
@@ -1366,7 +1523,7 @@ class _BottomTabButton extends StatelessWidget {
           padding: EdgeInsets.symmetric(vertical: iconOnly ? 8.5 : 6.5),
           decoration: BoxDecoration(
             color: selected ? pillFill : Colors.transparent,
-            borderRadius: BorderRadius.circular(skin.radiusForPill(46)),
+            borderRadius: BorderRadius.circular(pillR),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,

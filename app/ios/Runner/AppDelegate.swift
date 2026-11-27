@@ -19,34 +19,91 @@ import UniformTypeIdentifiers
   }
 }
 
-/// Native iOS hardware & file picker bridge for Vedro:
-/// - Detects EDR headroom, Dolby Vision / HDR10 / HLG display support, ProMotion 120Hz & system proxy
-/// - Configures AVAudioSession for multichannel Apple Spatial Audio & Dolby Atmos E-AC-3 JOC
-/// - Native UIDocumentPickerViewController (`pickFiles`) for local videos, subtitles, danmaku XML & fonts
+/// Native iOS hardware, audio-session, brightness, battery & file picker bridge for Vedro:
+/// - Lazy AVAudioSession activation (does not interrupt user's background music on app launch)
+/// - Observes AVAudioSession interruption & route-change (pauses automatically on headphone unplug/call)
+/// - Real UIScreen brightness & UIDevice battery level/charging state
+/// - Validated HTTP/HTTPS external links & safe URLQueryItem encoding for Infuse/VLC
 final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
   static let channelName = "com.vedro.player/hardware"
   private static var retainedInstance: VedroHardwarePlugin?
+  private weak var channel: FlutterMethodChannel?
   private var pendingPickResult: FlutterResult?
+  private var originalBrightness: CGFloat?
+  private var audioObservers: [NSObjectProtocol] = []
 
   static func register(with messenger: FlutterBinaryMessenger) {
     let channel = FlutterMethodChannel(name: channelName, binaryMessenger: messenger)
     let instance = VedroHardwarePlugin()
+    instance.channel = channel
     retainedInstance = instance
-    instance.configureSpatialAudioSession()
-    channel.setMethodCallHandler(instance.handle)
+    channel.setMethodCallHandler { [weak instance] call, result in
+      instance?.handle(call, result: result)
+    }
   }
 
-  private func configureSpatialAudioSession() {
-    let session = AVAudioSession.sharedInstance()
-    do {
-      try session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo)
-      if #available(iOS 15.0, *) {
-        try? session.setSupportsMultichannelContent(true)
-      }
-      try session.setActive(true)
-    } catch {
-      NSLog("VedroHardwarePlugin: AVAudioSession setup warning: \(error)")
+  deinit {
+    removeAudioObservers()
+  }
+
+  private func isAllowedHttpUrl(_ raw: String) -> URL? {
+    guard let url = URL(string: raw),
+          let scheme = url.scheme?.lowercased(),
+          (scheme == "http" || scheme == "https"),
+          let host = url.host, !host.isEmpty else {
+      return nil
     }
+    return url
+  }
+
+  private func setAudioPlaybackActive(_ active: Bool) {
+    let session = AVAudioSession.sharedInstance()
+    if active {
+      do {
+        try session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo)
+        if #available(iOS 15.0, *) {
+          try? session.setSupportsMultichannelContent(true)
+        }
+        try session.setActive(true)
+      } catch {
+        NSLog("VedroHardwarePlugin: AVAudioSession activate warning: \(error)")
+      }
+      installAudioObservers()
+    } else {
+      removeAudioObservers()
+      try? session.setActive(false, options: .notifyOthersOnDeactivation)
+    }
+  }
+
+  private func installAudioObservers() {
+    if !audioObservers.isEmpty { return }
+    let nc = NotificationCenter.default
+    audioObservers.append(
+      nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+        guard let info = note.userInfo,
+              let typeVal = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeVal),
+              type == .began else { return }
+        self?.channel?.invokeMethod("audioInterrupted", arguments: ["reason": "interruption"])
+      }
+    )
+    audioObservers.append(
+      nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] note in
+        guard let info = note.userInfo,
+              let reasonVal = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonVal),
+              reason == .oldDeviceUnavailable else { return }
+        self?.channel?.invokeMethod("audioInterrupted", arguments: ["reason": "becoming_noisy"])
+      }
+    )
+  }
+
+  private func removeAudioObservers() {
+    let nc = NotificationCenter.default
+    for obs in audioObservers {
+      nc.removeObserver(obs)
+    }
+    audioObservers.removeAll()
   }
 
   private func topViewController() -> UIViewController? {
@@ -66,6 +123,44 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
     switch call.method {
     case "queryCapabilities":
       result(queryCapabilities())
+    case "setAudioPlaybackActive":
+      let args = call.arguments as? [String: Any]
+      let active = (args?["active"] as? Bool) ?? false
+      setAudioPlaybackActive(active)
+      result(nil)
+    case "getScreenBrightness":
+      DispatchQueue.main.async {
+        result(Double(UIScreen.main.brightness))
+      }
+    case "setScreenBrightness":
+      let args = call.arguments as? [String: Any]
+      let v = CGFloat((args?["value"] as? NSNumber)?.doubleValue ?? 0.5)
+      DispatchQueue.main.async {
+        if self.originalBrightness == nil {
+          self.originalBrightness = UIScreen.main.brightness
+        }
+        UIScreen.main.brightness = max(0.01, min(1.0, v))
+      }
+      result(nil)
+    case "resetScreenBrightness":
+      DispatchQueue.main.async {
+        if let orig = self.originalBrightness {
+          UIScreen.main.brightness = orig
+          self.originalBrightness = nil
+        }
+      }
+      result(nil)
+    case "getBatteryInfo":
+      DispatchQueue.main.async {
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        let raw = UIDevice.current.batteryLevel
+        let pct = raw >= 0 ? Int((raw * 100.0).rounded()) : -1
+        let st = UIDevice.current.batteryState
+        let charging = (st == .charging || st == .full)
+        result(["level": pct, "charging": charging])
+      }
+    case "isWifiConnected":
+      result(true)
     case "setKeepScreenOn":
       let args = call.arguments as? [String: Any]
       let enabled = (args?["enabled"] as? Bool) ?? false
@@ -91,6 +186,8 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
       let extensions = (args?["extensions"] as? [String]) ?? []
       let allowMultiple = (args?["allow_multiple"] as? Bool) ?? false
       DispatchQueue.main.async {
+        self.pendingPickResult?([String]())
+        self.pendingPickResult = nil
         guard let presenter = self.topViewController() else {
           result([String]())
           return
@@ -108,7 +205,7 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
     case "openUrl":
       let args = call.arguments as? [String: Any]
       let raw = (args?["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      guard let url = URL(string: raw) else {
+      guard let url = isAllowedHttpUrl(raw) else {
         result(false)
         return
       }
@@ -121,30 +218,35 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
       let args = call.arguments as? [String: Any]
       let streamUrl = (args?["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       let player = ((args?["player"] as? String) ?? "").lowercased()
-      let encoded = streamUrl.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? streamUrl
-      let candidateStr: String
-      switch player {
-      case "infuse":
-        candidateStr = "infuse://x-callback-url/play?url=\(encoded)"
-      case "vlc":
-        candidateStr = "vlc-x-callback://x-callback-url/stream?url=\(encoded)"
-      case "outplayer":
-        candidateStr = "outplayer://\(streamUrl)"
-      case "nplayer":
-        candidateStr = streamUrl
-          .replacingOccurrences(of: "https://", with: "nplayer-https://")
-          .replacingOccurrences(of: "http://", with: "nplayer-http://")
-      default:
-        candidateStr = streamUrl
-      }
-      guard let targetUrl = URL(string: candidateStr) ?? URL(string: streamUrl) else {
+      guard let validStreamUrl = isAllowedHttpUrl(streamUrl) else {
         result(false)
         return
       }
+      var targetUrl: URL?
+      switch player {
+      case "infuse":
+        var comps = URLComponents(string: "infuse://x-callback-url/play")
+        comps?.queryItems = [URLQueryItem(name: "url", value: validStreamUrl.absoluteString)]
+        targetUrl = comps?.url
+      case "vlc":
+        var comps = URLComponents(string: "vlc-x-callback://x-callback-url/stream")
+        comps?.queryItems = [URLQueryItem(name: "url", value: validStreamUrl.absoluteString)]
+        targetUrl = comps?.url
+      case "outplayer":
+        targetUrl = URL(string: "outplayer://\(validStreamUrl.absoluteString)")
+      case "nplayer":
+        let replaced = validStreamUrl.absoluteString
+          .replacingOccurrences(of: "https://", with: "nplayer-https://")
+          .replacingOccurrences(of: "http://", with: "nplayer-http://")
+        targetUrl = URL(string: replaced)
+      default:
+        targetUrl = validStreamUrl
+      }
+      let finalTarget = targetUrl ?? validStreamUrl
       DispatchQueue.main.async {
-        UIApplication.shared.open(targetUrl, options: [:]) { ok in
-          if !ok, targetUrl.absoluteString != streamUrl, let fallback = URL(string: streamUrl) {
-            UIApplication.shared.open(fallback, options: [:]) { ok2 in
+        UIApplication.shared.open(finalTarget, options: [:]) { ok in
+          if !ok, finalTarget.absoluteString != validStreamUrl.absoluteString {
+            UIApplication.shared.open(validStreamUrl, options: [:]) { ok2 in
               result(ok2)
             }
           } else {
@@ -152,7 +254,9 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
           }
         }
       }
-    case "enterPiP", "createVideoSurface":
+    case "enterPiP":
+      result(false)
+    case "createVideoSurface":
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
@@ -212,6 +316,9 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
     }
 
     return [
+      "is_tv": false,
+      "has_touchscreen": true,
+      "supports_pip": false,
       "supports_hdr10": supportsHdr10,
       "supports_hlg": supportsHlg,
       "supports_native_dolby_vision": supportsDovi,

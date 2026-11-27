@@ -6,10 +6,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use futures_util::StreamExt;
+use http::header::HeaderValue;
 use http::{header, Method, Request, Response, StatusCode};
-use http_body_util::Full;
-use hyper::body::Incoming;
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::{Frame, Incoming};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use lru::LruCache;
@@ -17,10 +21,22 @@ use parking_lot::{Mutex, RwLock};
 use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{mpsc, watch, Semaphore};
 use tracing::{debug, info, warn};
 
 use crate::cache::{CacheStats, ChunkCache, DEFAULT_CHUNK_SIZE};
+
+type ProxyBody = BoxBody<Bytes, std::io::Error>;
+
+const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_RAM_IMAGE_CACHE_BYTES: usize = if cfg!(any(target_os = "android", target_os = "ios")) {
+    24 * 1024 * 1024
+} else {
+    64 * 1024 * 1024
+};
+const MAX_DISK_IMAGE_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_DISK_IMAGE_FILES: usize = 2400;
+const MAX_REDIRECT_HOPS: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamProxyConfig {
@@ -39,7 +55,11 @@ pub struct StreamProxyConfig {
 impl Default for StreamProxyConfig {
     fn default() -> Self {
         Self {
-            cache_bytes: 64 * 1024 * 1024,
+            cache_bytes: if cfg!(any(target_os = "android", target_os = "ios")) {
+                32 * 1024 * 1024
+            } else {
+                64 * 1024 * 1024
+            },
             chunk_size: DEFAULT_CHUNK_SIZE,
             max_upstream_conns_per_session: 2,
             prefetch_chunks: 4,
@@ -70,39 +90,124 @@ pub struct ImageCacheStats {
 }
 
 struct RegisteredStream {
-    id: String,
+    cache_key: u64,
     upstream_url: RwLock<String>,
     headers: RwLock<HeaderMap>,
     total_size: AtomicU64,
     content_type: RwLock<String>,
     /// Strict per-session connection semaphore to respect embygo's connection cap.
     upstream_sem: Arc<Semaphore>,
-    /// Deduplicates concurrent fetches for the same chunk index.
-    in_flight: DashMap<u64, Arc<Notify>>,
+    /// Cancel-safe singleflight deduplication via `watch` channel (zero lost wakeups).
+    in_flight: DashMap<u64, watch::Receiver<bool>>,
     ticket_rotations: AtomicU64,
 }
 
-/// High-performance local loopback HTTP Range proxy & prefetch buffer.
+struct ByteBoundedImageCache {
+    lru: LruCache<String, (String, Bytes)>,
+    total_bytes: usize,
+    max_bytes: usize,
+}
+
+impl ByteBoundedImageCache {
+    fn new(max_entries: usize, max_bytes: usize) -> Self {
+        Self {
+            lru: LruCache::new(NonZeroUsize::new(max_entries.max(16)).expect("max_entries >= 16")),
+            total_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<(String, Bytes)> {
+        self.lru.get(key).cloned()
+    }
+
+    fn put(&mut self, key: String, ct: String, data: Bytes) {
+        let sz = data.len();
+        if sz > self.max_bytes {
+            return;
+        }
+        if let Some((_, old)) = self.lru.pop(&key) {
+            self.total_bytes = self.total_bytes.saturating_sub(old.len());
+        }
+        while self.total_bytes + sz > self.max_bytes {
+            if let Some((_, (_, evicted))) = self.lru.pop_lru() {
+                self.total_bytes = self.total_bytes.saturating_sub(evicted.len());
+            } else {
+                break;
+            }
+        }
+        if let Some((_, (_, evicted))) = self.lru.push(key, (ct, data)) {
+            self.total_bytes = self.total_bytes.saturating_sub(evicted.len());
+        }
+        self.total_bytes = self.total_bytes.saturating_add(sz);
+    }
+
+    fn len(&self) -> usize {
+        self.lru.len()
+    }
+
+    fn clear(&mut self) {
+        self.lru.clear();
+        self.total_bytes = 0;
+    }
+}
+
+/// RAII guard that removes a singleflight key and wakes all waiters even on task cancel/panic.
+struct SingleflightGuard<'a, K: Eq + std::hash::Hash + Clone> {
+    map: &'a DashMap<K, watch::Receiver<bool>>,
+    key: K,
+    tx: Option<watch::Sender<bool>>,
+}
+
+impl<K: Eq + std::hash::Hash + Clone> Drop for SingleflightGuard<'_, K> {
+    fn drop(&mut self) {
+        self.map.remove(&self.key);
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(true);
+        }
+    }
+}
+
+/// RAII guard for accurate `active_conns` tracking even on async cancellation.
+struct ActiveConnGuard<'a>(&'a AtomicUsize);
+
+impl<'a> ActiveConnGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self(counter)
+    }
+}
+
+impl Drop for ActiveConnGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// High-performance local loopback HTTP Range streaming proxy & prefetch buffer.
 ///
 /// Sits between `libmpv` / native players and `embygo` / `Emby` / `Jellyfin`:
+/// - Streams chunks zero-copy as they arrive via `StreamBody` (cuts seek latency & prevents OOM).
 /// - Strictly bounds upstream connections (`<= 2` per play session) to stay under embygo's cap.
-/// - Caches head + tail chunks + sliding read-ahead window for zero-stutter 4K Remux playback.
-/// - Allows transparent `StreamTicket` URL hot-swapping without restarting the media player.
-/// - Handles HTTP 429 `Retry-After` backoff cleanly.
+/// - Strips auth headers (`Authorization`, `X-Emby-Token`, `X-Emby-Authorization`, `Cookie`) on
+///   cross-origin 302 redirects (Alist/OSS/S3/CDN safety).
+/// - Locks down `/img/` and `/img-srv/` to validated image paths and `image/*` responses only.
+/// - Handles HTTP 429 `Retry-After` backoff cleanly with cancel-safe singleflight deduplication.
 pub struct StreamProxy {
     listen_addr: SocketAddr,
     http: RwLock<reqwest::Client>,
     transport_sig: RwLock<(Option<String>, bool)>,
     config: StreamProxyConfig,
     cache: ChunkCache,
+    next_session_key: AtomicU64,
     streams: Arc<DashMap<String, Arc<RegisteredStream>>>,
     image_upstream_base: RwLock<Option<String>>,
     image_upstream_headers: RwLock<HeaderMap>,
     server_image_upstreams: DashMap<String, (String, HeaderMap)>,
-    image_cache: Mutex<LruCache<String, (String, Bytes)>>,
+    image_cache: Mutex<ByteBoundedImageCache>,
     image_cache_dir: RwLock<Option<PathBuf>>,
     image_sem: Semaphore,
-    image_in_flight: DashMap<String, Arc<Notify>>,
+    image_in_flight: DashMap<String, watch::Receiver<bool>>,
     disk_write_counter: AtomicUsize,
     active_conns: Arc<AtomicUsize>,
     total_upstream_bytes: Arc<AtomicU64>,
@@ -122,12 +227,104 @@ fn build_proxy_http_client(
         .connect_timeout(Duration::from_secs(12))
         .timeout(Duration::from_secs(30))
         .tcp_nodelay(true)
+        // Manual redirect loop strips X-Emby-Token / X-Emby-Authorization across origins!
+        .redirect(reqwest::redirect::Policy::none())
         .danger_accept_invalid_certs(accept_invalid_certs);
     if let Some(p) = proxy_url.map(str::trim).filter(|s| !s.is_empty()) {
         let proxy = reqwest::Proxy::all(p).map_err(std::io::Error::other)?;
         builder = builder.proxy(proxy);
     }
     builder.build().map_err(std::io::Error::other)
+}
+
+fn strip_auth_headers(headers: &mut HeaderMap) {
+    headers.remove(reqwest::header::AUTHORIZATION);
+    headers.remove(reqwest::header::COOKIE);
+    headers.remove("x-emby-authorization");
+    headers.remove("x-emby-token");
+    headers.remove("X-Emby-Authorization");
+    headers.remove("X-Emby-Token");
+}
+
+fn same_origin(a: &url::Url, b: &url::Url) -> bool {
+    a.scheme().eq_ignore_ascii_case(b.scheme())
+        && a.host_str()
+            .map(|h| h.to_ascii_lowercase())
+            .eq(&b.host_str().map(|h| h.to_ascii_lowercase()))
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
+/// Follow up to `MAX_REDIRECT_HOPS` redirects while stripping auth headers on any cross-origin jump.
+async fn send_with_safe_redirects(
+    client: &reqwest::Client,
+    initial_url: &str,
+    initial_headers: HeaderMap,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let mut current_url = initial_url.to_string();
+    let mut current_headers = initial_headers;
+    for _ in 0..=MAX_REDIRECT_HOPS {
+        let resp = client
+            .get(&current_url)
+            .headers(current_headers.clone())
+            .send()
+            .await?;
+        if resp.status().is_redirection() {
+            if let Some(loc) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+            {
+                if let Ok(base) = url::Url::parse(&current_url) {
+                    if let Ok(next) = base.join(loc) {
+                        if matches!(next.scheme(), "http" | "https") {
+                            if !same_origin(&base, &next) {
+                                strip_auth_headers(&mut current_headers);
+                            }
+                            current_url = next.to_string();
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(resp);
+    }
+    client
+        .get(&current_url)
+        .headers(current_headers)
+        .send()
+        .await
+}
+
+/// Read an upstream response body up to `max_bytes`, aborting early if upstream ignores Range
+/// or returns an oversized payload (prevents OOM aborts).
+async fn read_response_capped(
+    resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Bytes, StatusCode> {
+    if let Some(cl) = resp.content_length() {
+        if cl as usize > max_bytes && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+    }
+    let cap = resp
+        .content_length()
+        .map(|n| (n as usize).min(max_bytes))
+        .unwrap_or_else(|| max_bytes.min(256 * 1024));
+    let mut buf = Vec::with_capacity(cap);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res.map_err(|_| StatusCode::BAD_GATEWAY)?;
+        let remaining = max_bytes.saturating_sub(buf.len());
+        if remaining == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if buf.len() >= max_bytes {
+            break;
+        }
+    }
+    Ok(Bytes::from(buf))
 }
 
 /// Deterministic 128-bit FNV-1a hex key for persistent on-disk artwork cache files.
@@ -140,6 +337,48 @@ fn image_disk_cache_filename(key: &str) -> String {
         h2 = h2.wrapping_mul(0x100000001b3) ^ (b as u64);
     }
     format!("{h1:016x}{h2:016x}")
+}
+
+/// Strict allowlist for `/img/` and `/img-srv/` relative paths so the local proxy can ONLY
+/// fetch media artwork endpoints and can NEVER be abused to access Emby API / admin routes.
+fn is_allowed_image_rel_path(rel_path: &str) -> bool {
+    if rel_path.is_empty() || rel_path.len() > 512 {
+        return false;
+    }
+    let lower = rel_path.to_ascii_lowercase();
+    if lower.contains("..")
+        || lower.contains('\\')
+        || lower.contains('@')
+        || lower.contains("%2e")
+        || lower.contains("%5c")
+        || lower.contains("%00")
+        || rel_path.bytes().any(|b| b < 0x20 || b == 0x7F)
+    {
+        return false;
+    }
+    // Emby / Jellyfin / EmbyGo artwork paths always contain `/images/` segment
+    let segs: Vec<&str> = rel_path.split('/').collect();
+    segs.len() >= 3
+        && segs
+            .iter()
+            .all(|s| !s.is_empty() && *s != "." && *s != "..")
+        && segs.iter().any(|s| s.eq_ignore_ascii_case("Images"))
+}
+
+fn safe_header_value(raw: &str, fallback: &'static str) -> HeaderValue {
+    HeaderValue::from_str(raw.trim()).unwrap_or_else(|_| HeaderValue::from_static(fallback))
+}
+
+fn full_body(bytes: Bytes) -> ProxyBody {
+    Full::new(bytes).map_err(|never| match never {}).boxed()
+}
+
+fn simple_response(status: StatusCode, body: &'static str) -> Response<ProxyBody> {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(full_body(Bytes::from_static(body.as_bytes())))
+        .unwrap_or_else(|_| Response::new(full_body(Bytes::new())))
 }
 
 impl StreamProxy {
@@ -158,14 +397,13 @@ impl StreamProxy {
             transport_sig: RwLock::new((None, false)),
             config,
             cache,
+            next_session_key: AtomicU64::new(1),
             streams: Arc::new(DashMap::new()),
             image_upstream_base: RwLock::new(None),
             image_upstream_headers: RwLock::new(HeaderMap::new()),
             server_image_upstreams: DashMap::new(),
-            image_cache: Mutex::new(LruCache::new(NonZeroUsize::new(512).unwrap())),
+            image_cache: Mutex::new(ByteBoundedImageCache::new(512, MAX_RAM_IMAGE_CACHE_BYTES)),
             image_cache_dir: RwLock::new(None),
-            // Bound concurrent upstream image fetches to 8 so cold Home mount (70+ posters)
-            // never triggers a 70-connection TLS/SOCKS5 handshake stampede or HTTP 429!
             image_sem: Semaphore::new(8),
             image_in_flight: DashMap::new(),
             disk_write_counter: AtomicUsize::new(0),
@@ -184,11 +422,13 @@ impl StreamProxy {
             loop {
                 tokio::select! {
                     _ = &mut shutdown_rx => {
-                        debug!("prism stream proxy shutting down");
+                        debug!("vedro stream proxy shutting down");
                         break;
                     }
                     accepted = listener.accept() => {
                         let Ok((stream, _peer)) = accepted else { continue };
+                        // Disable Nagle algorithm on loopback to eliminate 40ms delayed-ACK stalls!
+                        let _ = stream.set_nodelay(true);
                         let io = TokioIo::new(stream);
                         let p = Arc::clone(&server_proxy);
                         tokio::spawn(async move {
@@ -218,12 +458,20 @@ impl StreamProxy {
 
     pub fn set_image_cache_dir(&self, dir: PathBuf) {
         let _ = std::fs::create_dir_all(&dir);
-        *self.image_cache_dir.write() = Some(dir);
+        *self.image_cache_dir.write() = Some(dir.clone());
+        // Clean up any stale `.tmp` files left from prior crashes in background
+        tokio::spawn(async move {
+            if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
+                while let Ok(Some(entry)) = rd.next_entry().await {
+                    let p = entry.path();
+                    if p.extension().and_then(|e| e.to_str()) == Some("tmp") {
+                        let _ = tokio::fs::remove_file(&p).await;
+                    }
+                }
+            }
+        });
     }
 
-    /// Reconfigure upstream HTTP proxy / TLS verification for the local stream proxy.
-    /// Idempotent when `(proxy_url, accept_invalid_certs)` has not changed so warm HTTP/2
-    /// connection pools and RAM artwork caches are never needlessly torn down mid-render!
     pub fn configure_transport(
         &self,
         proxy_url: Option<&str>,
@@ -242,8 +490,11 @@ impl StreamProxy {
         Ok(())
     }
 
-    /// Configure upstream server base URL + auth headers for local RAM/disk-cached artwork proxying (`/img/...`).
-    pub fn set_image_upstream(&self, base_url: String, headers: HeaderMap) {
+    /// Configure upstream server base URL for artwork proxying (`/img/...`).
+    /// Deliberately strips auth tokens from image headers (Emby/Jellyfin/EmbyGo serve artwork unauthenticated)
+    /// so local proxy image endpoints can NEVER exfiltrate authenticated API data.
+    pub fn set_image_upstream(&self, base_url: String, mut headers: HeaderMap) {
+        strip_auth_headers(&mut headers);
         let normalized = base_url.trim_end_matches('/').to_string();
         let changed = self.image_upstream_base.read().as_deref() != Some(normalized.as_str());
         *self.image_upstream_base.write() = Some(normalized);
@@ -253,19 +504,19 @@ impl StreamProxy {
         }
     }
 
-    /// Register a server-specific artwork upstream for multi-server aggregated search (`/img-srv/{server_id}/...`).
     pub fn register_server_image_upstream(
         &self,
         server_id: String,
         base_url: String,
-        headers: HeaderMap,
+        mut headers: HeaderMap,
     ) {
+        strip_auth_headers(&mut headers);
         let normalized = base_url.trim_end_matches('/').to_string();
         self.server_image_upstreams
             .insert(server_id, (normalized, headers));
     }
 
-    /// Register an upstream media stream and return the local loopback URL for the player.
+    /// Register an upstream media stream and return `(stream_id, local_url)`.
     pub fn register_stream(
         self: &Arc<Self>,
         upstream_url: String,
@@ -274,8 +525,9 @@ impl StreamProxy {
         content_type: Option<String>,
     ) -> (String, String) {
         let id = uuid::Uuid::new_v4().simple().to_string();
+        let cache_key = self.next_session_key.fetch_add(1, Ordering::Relaxed);
         let entry = Arc::new(RegisteredStream {
-            id: id.clone(),
+            cache_key,
             upstream_url: RwLock::new(upstream_url),
             headers: RwLock::new(headers),
             total_size: AtomicU64::new(known_size.unwrap_or(0)),
@@ -290,13 +542,25 @@ impl StreamProxy {
         });
         self.streams.insert(id.clone(), Arc::clone(&entry));
 
-        // Pre-warm chunk 0 (MKV/MP4 header) and tail chunk (MKV Cues / MP4 moov) in background!
+        // Pre-warm chunk 0 (MKV/MP4 header) and tail chunk (MKV Cues / MP4 moov) IN PARALLEL
+        // when `known_size` is known!
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            let _ = this.fetch_chunk(&entry, 0).await;
             let total = entry.total_size.load(Ordering::Acquire);
             if total > this.cache.chunk_size() {
                 let last_chunk = (total - 1) / this.cache.chunk_size();
+                if last_chunk > 0 {
+                    let _ = tokio::join!(
+                        this.fetch_chunk(&entry, 0),
+                        this.fetch_chunk(&entry, last_chunk),
+                    );
+                    return;
+                }
+            }
+            let _ = this.fetch_chunk(&entry, 0).await;
+            let discovered = entry.total_size.load(Ordering::Acquire);
+            if discovered > this.cache.chunk_size() {
+                let last_chunk = (discovered - 1) / this.cache.chunk_size();
                 if last_chunk > 0 {
                     let _ = this.fetch_chunk(&entry, last_chunk).await;
                 }
@@ -307,8 +571,6 @@ impl StreamProxy {
         (id, local_url)
     }
 
-    /// Hot-swap the upstream URL (e.g. when rotating an expiring `embygo` `StreamTicket`)
-    /// without interrupting active playback.
     pub fn update_upstream_url(
         &self,
         stream_id: &str,
@@ -327,44 +589,59 @@ impl StreamProxy {
         }
     }
 
-    /// Remove a stream session and evict its chunks from RAM.
     pub fn unregister_stream(&self, stream_id: &str) {
-        self.streams.remove(stream_id);
-        self.cache.evict_session(stream_id);
+        if let Some((_, entry)) = self.streams.remove(stream_id) {
+            self.cache.evict_session(entry.cache_key);
+        }
     }
 
-    /// Read a byte slice directly from the proxy's cache/upstream (used by `inspector.rs`
-    /// to probe Dolby Vision / Atmos headers without opening an extra connection!).
+    /// Read a bounded byte slice directly from the proxy's cache/upstream (used by `inspector.rs`).
     pub async fn read_range(
         self: &Arc<Self>,
         stream_id: &str,
         start: u64,
         len: u64,
     ) -> Option<Bytes> {
+        if len == 0 {
+            return Some(Bytes::new());
+        }
         let entry = self.streams.get(stream_id)?.clone();
         let total = self.ensure_size(&entry).await?;
         if start >= total {
             return Some(Bytes::new());
         }
-        let end = (start + len).min(total) - 1;
-        self.read_exact_range(&entry, start, end, total).await.ok()
+        let capped_len = len.min(4 * 1024 * 1024);
+        let end = start
+            .saturating_add(capped_len)
+            .min(total)
+            .saturating_sub(1);
+        if start > end {
+            return Some(Bytes::new());
+        }
+        self.read_exact_range_bounded(&entry, start, end, total)
+            .await
+            .ok()
+    }
+
+    /// Fast instantaneous upstream bytes/sec readout (used by lock-free `vedro_proxy_speed_bps`).
+    pub fn current_speed_bps(&self) -> u64 {
+        let up_bytes = self.total_upstream_bytes.load(Ordering::Relaxed);
+        let mut sample = self.speed_sample.lock();
+        let dt = sample.0.elapsed().as_secs_f64();
+        if dt >= 0.35 {
+            let delta = up_bytes.saturating_sub(sample.1);
+            let bps = (delta as f64 / dt).round() as u64;
+            *sample = (Instant::now(), up_bytes, bps);
+            bps
+        } else {
+            sample.2
+        }
     }
 
     pub fn stats(&self) -> StreamProxyStats {
         let elapsed = self.started_at.elapsed().as_secs_f64().max(0.001);
         let up_bytes = self.total_upstream_bytes.load(Ordering::Relaxed);
-        let current_bps = {
-            let mut sample = self.speed_sample.lock();
-            let dt = sample.0.elapsed().as_secs_f64();
-            if dt >= 0.35 {
-                let delta = up_bytes.saturating_sub(sample.1);
-                let bps = (delta as f64 / dt).round() as u64;
-                *sample = (Instant::now(), up_bytes, bps);
-                bps
-            } else {
-                sample.2
-            }
-        };
+        let current_bps = self.current_speed_bps();
         let rotations: u64 = self
             .streams
             .iter()
@@ -384,7 +661,6 @@ impl StreamProxy {
         }
     }
 
-    /// Inspect local on-disk & RAM image cache occupancy.
     pub fn image_cache_stats(&self) -> ImageCacheStats {
         let mem_entries = self.image_cache.lock().len();
         let dir_opt = self.image_cache_dir.read().clone();
@@ -413,7 +689,6 @@ impl StreamProxy {
         }
     }
 
-    /// Purge both RAM LRU and persistent disk image cache files, returning `(removed_images, freed_bytes)`.
     pub fn clear_image_cache(&self) -> (usize, u64) {
         self.image_cache.lock().clear();
         let dir_opt = self.image_cache_dir.read().clone();
@@ -440,10 +715,37 @@ impl StreamProxy {
         (removed_images, freed_bytes)
     }
 
+    fn is_valid_loopback_host(&self, req: &Request<Incoming>) -> bool {
+        let Some(host_val) = req
+            .headers()
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+        else {
+            return true;
+        };
+        let port = self.listen_addr.port();
+        let expected_ip = format!("127.0.0.1:{port}");
+        let expected_lh = format!("localhost:{port}");
+        host_val.eq_ignore_ascii_case(&expected_ip)
+            || host_val.eq_ignore_ascii_case(&expected_lh)
+            || host_val == "127.0.0.1"
+            || host_val.eq_ignore_ascii_case("localhost")
+    }
+
     async fn handle_request(
         self: Arc<Self>,
         req: Request<Incoming>,
-    ) -> std::result::Result<Response<Full<Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<ProxyBody>, hyper::Error> {
+        if !matches!(*req.method(), Method::GET | Method::HEAD) {
+            return Ok(simple_response(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method not allowed",
+            ));
+        }
+        if !self.is_valid_loopback_host(&req) {
+            return Ok(simple_response(StatusCode::FORBIDDEN, "invalid host"));
+        }
+
         let path = req.uri().path();
         if let Some(srv_rest) = path.strip_prefix("/img-srv/") {
             if let Some((srv_id, img_rel)) = srv_rest.split_once('/') {
@@ -472,7 +774,7 @@ impl StreamProxy {
             ));
         };
 
-        let ctype = entry.content_type.read().clone();
+        let ctype = safe_header_value(&entry.content_type.read(), "application/octet-stream");
 
         if req.method() == Method::HEAD {
             return Ok(Response::builder()
@@ -480,8 +782,10 @@ impl StreamProxy {
                 .header(header::CONTENT_TYPE, ctype)
                 .header(header::CONTENT_LENGTH, total_size)
                 .header(header::ACCEPT_RANGES, "bytes")
-                .body(Full::new(Bytes::new()))
-                .unwrap());
+                .body(full_body(Bytes::new()))
+                .unwrap_or_else(|_| {
+                    simple_response(StatusCode::INTERNAL_SERVER_ERROR, "header error")
+                }));
         }
 
         let range_hdr = req
@@ -496,54 +800,135 @@ impl StreamProxy {
                     return Ok(Response::builder()
                         .status(StatusCode::RANGE_NOT_SATISFIABLE)
                         .header(header::CONTENT_RANGE, format!("bytes */{total_size}"))
-                        .body(Full::new(Bytes::new()))
-                        .unwrap());
+                        .body(full_body(Bytes::new()))
+                        .unwrap_or_else(|_| {
+                            simple_response(StatusCode::RANGE_NOT_SATISFIABLE, "range error")
+                        }));
                 }
             },
             None => (0, total_size.saturating_sub(1), false),
         };
 
-        // Cap a single HTTP response payload at 4 MiB for responsive streaming & low RAM peak;
-        // HTTP/1.1 Range clients (libmpv/FFmpeg/AVPlayer) naturally issue sequential Range requests.
-        let capped_end = if is_partial {
-            end.min(start + 4 * 1024 * 1024 - 1).min(total_size - 1)
-        } else {
-            end
+        // Zero-copy streaming response via StreamBody!
+        // Never buffers full movie or even 4 MiB before first byte; delivers chunk 0 immediately!
+        let cs = self.cache.chunk_size();
+        let first_chunk = start / cs;
+        let last_chunk = end.min(total_size.saturating_sub(1)) / cs;
+
+        // Fetch first chunk synchronously so upstream errors still map to accurate HTTP status codes
+        let first_data = match self.fetch_chunk(&entry, first_chunk).await {
+            Ok(d) => d,
+            Err(status) => return Ok(simple_response(status, "upstream range fetch failed")),
         };
 
-        match self
-            .read_exact_range(&entry, start, capped_end, total_size)
-            .await
-        {
-            Ok(data) => {
-                self.total_served_bytes
-                    .fetch_add(data.len() as u64, Ordering::Relaxed);
+        let first_chunk_start = first_chunk.saturating_mul(cs);
+        let first_local_start = start.saturating_sub(first_chunk_start) as usize;
+        let first_local_end =
+            (end.saturating_sub(first_chunk_start) as usize + 1).min(first_data.len());
+        let first_slice = if first_local_start < first_local_end {
+            first_data.slice(first_local_start..first_local_end)
+        } else {
+            Bytes::new()
+        };
 
-                // Trigger background sequential read-ahead prefetch
-                let next_chunk = (capped_end + 1) / self.cache.chunk_size();
-                self.spawn_prefetch(Arc::clone(&entry), next_chunk, total_size);
-
-                let mut builder = Response::builder()
-                    .status(if is_partial {
-                        StatusCode::PARTIAL_CONTENT
-                    } else {
-                        StatusCode::OK
-                    })
-                    .header(header::CONTENT_TYPE, ctype)
-                    .header(header::CONTENT_LENGTH, data.len())
-                    .header(header::ACCEPT_RANGES, "bytes");
-
-                if is_partial {
-                    let actual_end = start + data.len().saturating_sub(1) as u64;
-                    builder = builder.header(
-                        header::CONTENT_RANGE,
-                        format!("bytes {start}-{actual_end}/{total_size}"),
-                    );
-                }
-                Ok(builder.body(Full::new(data)).unwrap())
+        if first_chunk == last_chunk {
+            self.total_served_bytes
+                .fetch_add(first_slice.len() as u64, Ordering::Relaxed);
+            self.spawn_prefetch(Arc::clone(&entry), first_chunk + 1, total_size);
+            let mut builder = Response::builder()
+                .status(if is_partial {
+                    StatusCode::PARTIAL_CONTENT
+                } else {
+                    StatusCode::OK
+                })
+                .header(header::CONTENT_TYPE, ctype)
+                .header(header::CONTENT_LENGTH, first_slice.len())
+                .header(header::ACCEPT_RANGES, "bytes");
+            if is_partial {
+                let actual_end = start.saturating_add(first_slice.len().saturating_sub(1) as u64);
+                builder = builder.header(
+                    header::CONTENT_RANGE,
+                    format!("bytes {start}-{actual_end}/{total_size}"),
+                );
             }
-            Err(status) => Ok(simple_response(status, "upstream range fetch failed")),
+            return Ok(builder.body(full_body(first_slice)).unwrap_or_else(|_| {
+                simple_response(StatusCode::INTERNAL_SERVER_ERROR, "resp error")
+            }));
         }
+
+        // Multi-chunk streaming body (works for both open-ended Range AND non-Range full GETs with O(1) RAM!)
+        let content_len = end.saturating_sub(start).saturating_add(1);
+        let (tx, rx) = mpsc::channel::<Result<Frame<Bytes>, std::io::Error>>(3);
+        let this = Arc::clone(&self);
+        let entry_clone = Arc::clone(&entry);
+        tokio::spawn(async move {
+            if !first_slice.is_empty() {
+                this.total_served_bytes
+                    .fetch_add(first_slice.len() as u64, Ordering::Relaxed);
+                if tx.send(Ok(Frame::data(first_slice))).await.is_err() {
+                    return;
+                }
+            }
+            for chunk_idx in (first_chunk + 1)..=last_chunk {
+                // Keep 1-2 chunks pipelined ahead while streaming!
+                this.spawn_prefetch(Arc::clone(&entry_clone), chunk_idx + 1, total_size);
+                match this.fetch_chunk(&entry_clone, chunk_idx).await {
+                    Ok(chunk) => {
+                        if chunk.is_empty() {
+                            break;
+                        }
+                        let chunk_start = chunk_idx.saturating_mul(cs);
+                        let local_start = start.saturating_sub(chunk_start) as usize;
+                        let local_end =
+                            (end.saturating_sub(chunk_start) as usize + 1).min(chunk.len());
+                        if local_start >= local_end {
+                            break;
+                        }
+                        let slice = chunk.slice(local_start..local_end);
+                        this.total_served_bytes
+                            .fetch_add(slice.len() as u64, Ordering::Relaxed);
+                        if tx.send(Ok(Frame::data(slice))).await.is_err() {
+                            return;
+                        }
+                        // If upstream returned a short chunk before the final chunk, abort stream cleanly
+                        // so mpv sees EOF instead of silent byte-shift corruption!
+                        if chunk_idx < last_chunk && (chunk.len() as u64) < cs {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = tx
+                            .send(Err(std::io::Error::other("upstream chunk fetch failed")))
+                            .await;
+                        return;
+                    }
+                }
+            }
+        });
+
+        let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        });
+        let body: ProxyBody = BodyExt::boxed(StreamBody::new(stream));
+
+        let mut builder = Response::builder()
+            .status(if is_partial {
+                StatusCode::PARTIAL_CONTENT
+            } else {
+                StatusCode::OK
+            })
+            .header(header::CONTENT_TYPE, ctype)
+            .header(header::CONTENT_LENGTH, content_len)
+            .header(header::ACCEPT_RANGES, "bytes");
+        if is_partial {
+            builder = builder.header(
+                header::CONTENT_RANGE,
+                format!("bytes {start}-{end}/{total_size}"),
+            );
+        }
+        Ok(builder
+            .body(body)
+            .unwrap_or_else(|_| simple_response(StatusCode::INTERNAL_SERVER_ERROR, "resp error")))
     }
 
     async fn handle_image_request(
@@ -551,29 +936,22 @@ impl StreamProxy {
         server_id: Option<&str>,
         rel_path: &str,
         query: Option<&str>,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<ProxyBody> {
+        if !is_allowed_image_rel_path(rel_path) {
+            return simple_response(StatusCode::FORBIDDEN, "disallowed image path");
+        }
         let rel_with_q = match query {
             Some(q) if !q.is_empty() => format!("{rel_path}?{q}"),
             _ => rel_path.to_string(),
         };
         let (base, hdrs) = if let Some(sid) = server_id {
             let Some(entry) = self.server_image_upstreams.get(sid) else {
-                return Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .header(header::CACHE_CONTROL, "no-store")
-                    .body(Full::new(Bytes::from_static(
-                        b"unknown server image upstream",
-                    )))
-                    .unwrap();
+                return simple_response(StatusCode::NOT_FOUND, "unknown server image upstream");
             };
             entry.value().clone()
         } else {
             let Some(b) = self.image_upstream_base.read().clone() else {
-                return Response::builder()
-                    .status(StatusCode::SERVICE_UNAVAILABLE)
-                    .header(header::CACHE_CONTROL, "no-store")
-                    .body(Full::new(Bytes::from_static(b"no image upstream")))
-                    .unwrap();
+                return simple_response(StatusCode::SERVICE_UNAVAILABLE, "no image upstream");
             };
             (b, self.image_upstream_headers.read().clone())
         };
@@ -582,17 +960,16 @@ impl StreamProxy {
         let cache_key = url.clone();
 
         // 1. Sub-microsecond RAM LRU cache hit
-        if let Some((ct, body)) = self.image_cache.lock().get(&cache_key).cloned() {
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, ct.as_str())
-                .header(header::CONTENT_LENGTH, body.len())
-                .header(header::CACHE_CONTROL, "public, max-age=86400, immutable")
-                .body(Full::new(body))
-                .unwrap();
+        if let Some((ct, body)) = self.image_cache.lock().get(&cache_key) {
+            return build_image_response(
+                StatusCode::OK,
+                &ct,
+                body,
+                "public, max-age=86400, immutable",
+            );
         }
 
-        // 2. Persistent local disk cache hit (<2ms cold-start posters & hero banners with 0 network I/O!)
+        // 2. Persistent local disk cache hit
         let disk_dir = self.image_cache_dir.read().clone();
         let disk_stem = disk_dir
             .as_ref()
@@ -601,89 +978,108 @@ impl StreamProxy {
             let bin_path = dir.join(format!("{stem}.img"));
             let ct_path = dir.join(format!("{stem}.ct"));
             if let Ok(bytes_vec) = tokio::fs::read(&bin_path).await {
-                if !bytes_vec.is_empty() {
+                if !bytes_vec.is_empty() && bytes_vec.len() <= MAX_IMAGE_BYTES {
                     let ct = tokio::fs::read_to_string(&ct_path)
                         .await
                         .ok()
                         .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
+                        .filter(|s| {
+                            s.starts_with("image/") && !s.contains('\n') && !s.contains('\r')
+                        })
                         .unwrap_or_else(|| "image/jpeg".to_string());
                     let body = Bytes::from(bytes_vec);
                     self.image_cache
                         .lock()
-                        .put(cache_key.clone(), (ct.clone(), body.clone()));
-                    return Response::builder()
-                        .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, ct.as_str())
-                        .header(header::CONTENT_LENGTH, body.len())
-                        .header(header::CACHE_CONTROL, "public, max-age=86400, immutable")
-                        .body(Full::new(body))
-                        .unwrap();
+                        .put(cache_key.clone(), ct.clone(), body.clone());
+                    return build_image_response(
+                        StatusCode::OK,
+                        &ct,
+                        body,
+                        "public, max-age=86400, immutable",
+                    );
                 }
             }
         }
 
-        // 3. Singleflight deduplication: coalesce identical concurrent artwork fetches
-        if let Some(notify) = self.image_in_flight.get(&cache_key).map(|n| Arc::clone(&n)) {
-            notify.notified().await;
-            if let Some((ct, body)) = self.image_cache.lock().get(&cache_key).cloned() {
-                return Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, ct.as_str())
-                    .header(header::CONTENT_LENGTH, body.len())
-                    .header(header::CACHE_CONTROL, "public, max-age=86400, immutable")
-                    .body(Full::new(body))
-                    .unwrap();
+        // 3. Cancel-safe atomic singleflight deduplication via DashMap::entry + watch channel
+        let guard = match self.image_in_flight.entry(cache_key.clone()) {
+            Entry::Occupied(occ) => {
+                let mut rx = occ.get().clone();
+                drop(occ);
+                let _ = rx.wait_for(|done| *done).await;
+                if let Some((ct, body)) = self.image_cache.lock().get(&cache_key) {
+                    return build_image_response(
+                        StatusCode::OK,
+                        &ct,
+                        body,
+                        "public, max-age=86400, immutable",
+                    );
+                }
+                None
             }
-        }
-
-        let notify = Arc::new(Notify::new());
-        self.image_in_flight
-            .insert(cache_key.clone(), Arc::clone(&notify));
+            Entry::Vacant(vac) => {
+                let (tx, rx) = watch::channel(false);
+                vac.insert(rx);
+                Some(SingleflightGuard {
+                    map: &self.image_in_flight,
+                    key: cache_key.clone(),
+                    tx: Some(tx),
+                })
+            }
+        };
 
         let fetched = self.fetch_image_upstream_bounded(&url, &hdrs).await;
 
         if let (StatusCode::OK, ref ct, ref bytes) = fetched {
-            if !bytes.is_empty() && bytes.len() <= 4 * 1024 * 1024 && ct.starts_with("image/") {
+            if !bytes.is_empty() && bytes.len() <= MAX_IMAGE_BYTES && ct.starts_with("image/") {
                 self.image_cache
                     .lock()
-                    .put(cache_key.clone(), (ct.clone(), bytes.clone()));
+                    .put(cache_key.clone(), ct.clone(), bytes.clone());
                 if let (Some(dir), Some(stem)) = (disk_dir, disk_stem) {
                     let ct_clone = ct.clone();
                     let bytes_clone = bytes.clone();
                     let write_idx = self.disk_write_counter.fetch_add(1, Ordering::Relaxed);
                     tokio::spawn(async move {
+                        let uniq = uuid::Uuid::new_v4().simple().to_string();
                         let bin_path = dir.join(format!("{stem}.img"));
                         let ct_path = dir.join(format!("{stem}.ct"));
-                        let tmp_path = dir.join(format!("{stem}.tmp"));
-                        if tokio::fs::write(&tmp_path, &bytes_clone).await.is_ok() {
-                            let _ = tokio::fs::write(&ct_path, ct_clone.as_bytes()).await;
-                            let _ = tokio::fs::rename(&tmp_path, &bin_path).await;
+                        let tmp_bin = dir.join(format!("{stem}.{uniq}.tmp"));
+                        let tmp_ct = dir.join(format!("{stem}.{uniq}.ct.tmp"));
+                        if tokio::fs::write(&tmp_bin, &bytes_clone).await.is_ok()
+                            && tokio::fs::write(&tmp_ct, ct_clone.as_bytes()).await.is_ok()
+                        {
+                            let _ = tokio::fs::rename(&tmp_ct, &ct_path).await;
+                            let _ = tokio::fs::rename(&tmp_bin, &bin_path).await;
+                        } else {
+                            let _ = tokio::fs::remove_file(&tmp_bin).await;
+                            let _ = tokio::fs::remove_file(&tmp_ct).await;
                         }
                         if write_idx % 128 == 127 {
-                            prune_image_disk_cache(&dir, 2400).await;
+                            prune_image_disk_cache(
+                                &dir,
+                                MAX_DISK_IMAGE_FILES,
+                                MAX_DISK_IMAGE_CACHE_BYTES,
+                            )
+                            .await;
                         }
                     });
                 }
             }
         }
 
-        self.image_in_flight.remove(&cache_key);
-        notify.notify_waiters();
+        drop(guard);
 
         let (status, ct, bytes) = fetched;
+        // Security gate: NEVER return non-image payloads (e.g. JSON API responses) from `/img/`!
+        if status == StatusCode::OK && !ct.to_ascii_lowercase().starts_with("image/") {
+            return simple_response(StatusCode::BAD_GATEWAY, "upstream did not return an image");
+        }
         let cache_hdr = if status == StatusCode::OK {
             "public, max-age=86400"
         } else {
             "no-store"
         };
-        Response::builder()
-            .status(status)
-            .header(header::CONTENT_TYPE, ct)
-            .header(header::CONTENT_LENGTH, bytes.len())
-            .header(header::CACHE_CONTROL, cache_hdr)
-            .body(Full::new(bytes))
-            .unwrap()
+        build_image_response(status, &ct, bytes, cache_hdr)
     }
 
     async fn fetch_image_upstream_bounded(
@@ -702,7 +1098,7 @@ impl StreamProxy {
         let mut last_status = StatusCode::BAD_GATEWAY;
         for attempt in 0..3u64 {
             let client = self.http.read().clone();
-            match client.get(url).headers(hdrs.clone()).send().await {
+            match send_with_safe_redirects(&client, url, hdrs.clone()).await {
                 Ok(resp) => {
                     let raw_status = resp.status();
                     if raw_status == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -731,7 +1127,7 @@ impl StreamProxy {
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("image/jpeg")
                         .to_string();
-                    match resp.bytes().await {
+                    match read_response_capped(resp, MAX_IMAGE_BYTES).await {
                         Ok(bytes) => return (status, ct, bytes),
                         Err(_) if attempt < 2 => {
                             tokio::time::sleep(Duration::from_millis(200 * (attempt + 1))).await;
@@ -763,7 +1159,6 @@ impl StreamProxy {
         if existing > 0 {
             return Some(existing);
         }
-        // Fetch chunk 0 (0..chunk_size-1) which populates total_size from Content-Range!
         let _ = self.fetch_chunk(entry, 0).await.ok()?;
         let discovered = entry.total_size.load(Ordering::Acquire);
         if discovered > 0 {
@@ -773,7 +1168,7 @@ impl StreamProxy {
         }
     }
 
-    async fn read_exact_range(
+    async fn read_exact_range_bounded(
         &self,
         entry: &Arc<RegisteredStream>,
         start: u64,
@@ -786,23 +1181,27 @@ impl StreamProxy {
 
         if first_chunk == last_chunk {
             let chunk = self.fetch_chunk(entry, first_chunk).await?;
-            let local_start = (start - first_chunk * cs) as usize;
-            let local_end = ((end - first_chunk * cs) as usize + 1).min(chunk.len());
+            let local_start = (start - first_chunk.saturating_mul(cs)) as usize;
+            let local_end = ((end - first_chunk.saturating_mul(cs)) as usize + 1).min(chunk.len());
             if local_start >= chunk.len() {
                 return Ok(Bytes::new());
             }
             return Ok(chunk.slice(local_start..local_end));
         }
 
-        let expected_len = (end - start + 1) as usize;
+        let expected_len =
+            (end.saturating_sub(start).saturating_add(1)).min(4 * 1024 * 1024) as usize;
         let mut out = Vec::with_capacity(expected_len);
         for chunk_idx in first_chunk..=last_chunk {
             let chunk = self.fetch_chunk(entry, chunk_idx).await?;
-            let chunk_start = chunk_idx * cs;
+            let chunk_start = chunk_idx.saturating_mul(cs);
             let local_start = start.saturating_sub(chunk_start) as usize;
             let local_end = ((end.saturating_sub(chunk_start)) as usize + 1).min(chunk.len());
             if local_start < local_end {
                 out.extend_from_slice(&chunk[local_start..local_end]);
+            }
+            if chunk_idx < last_chunk && (chunk.len() as u64) < cs {
+                break;
             }
         }
         Ok(Bytes::from(out))
@@ -821,11 +1220,13 @@ impl StreamProxy {
         }
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            for idx in start_chunk..=(start_chunk + count - 1).min(max_chunk) {
-                if this.cache.peek_contains(&entry.id, idx) || entry.in_flight.contains_key(&idx) {
+            let end_chunk = start_chunk.saturating_add(count - 1).min(max_chunk);
+            for idx in start_chunk..=end_chunk {
+                if this.cache.peek_contains(entry.cache_key, idx)
+                    || entry.in_flight.contains_key(&idx)
+                {
                     continue;
                 }
-                // Only prefetch if semaphore has spare capacity so live seeks stay instant
                 if entry.upstream_sem.available_permits() == 0 {
                     break;
                 }
@@ -839,23 +1240,34 @@ impl StreamProxy {
         entry: &Arc<RegisteredStream>,
         chunk_idx: u64,
     ) -> Result<Bytes, StatusCode> {
-        if let Some(hit) = self.cache.get(&entry.id, chunk_idx) {
+        if let Some(hit) = self.cache.get(entry.cache_key, chunk_idx) {
             return Ok(hit);
         }
 
-        // Singleflight deduplication: if another task is already fetching this chunk, await it.
-        if let Some(notify) = entry.in_flight.get(&chunk_idx).map(|n| Arc::clone(&n)) {
-            notify.notified().await;
-            if let Some(hit) = self.cache.get(&entry.id, chunk_idx) {
-                return Ok(hit);
+        // Cancel-safe atomic singleflight deduplication via DashMap::entry + watch channel
+        let guard = match entry.in_flight.entry(chunk_idx) {
+            Entry::Occupied(occ) => {
+                let mut rx = occ.get().clone();
+                drop(occ);
+                let _ = rx.wait_for(|done| *done).await;
+                if let Some(hit) = self.cache.get(entry.cache_key, chunk_idx) {
+                    return Ok(hit);
+                }
+                None
             }
-        }
+            Entry::Vacant(vac) => {
+                let (tx, rx) = watch::channel(false);
+                vac.insert(rx);
+                Some(SingleflightGuard {
+                    map: &entry.in_flight,
+                    key: chunk_idx,
+                    tx: Some(tx),
+                })
+            }
+        };
 
-        let notify = Arc::new(Notify::new());
-        entry.in_flight.insert(chunk_idx, Arc::clone(&notify));
         let result = self.fetch_chunk_from_upstream(entry, chunk_idx).await;
-        entry.in_flight.remove(&chunk_idx);
-        notify.notify_waiters();
+        drop(guard);
         result
     }
 
@@ -871,28 +1283,27 @@ impl StreamProxy {
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
 
         let cs = self.cache.chunk_size();
-        let start = chunk_idx * cs;
+        let start = chunk_idx.saturating_mul(cs);
         let known_total = entry.total_size.load(Ordering::Acquire);
         let end = if known_total > 0 {
-            (start + cs - 1).min(known_total - 1)
+            start.saturating_add(cs - 1).min(known_total - 1)
         } else {
-            start + cs - 1
+            start.saturating_add(cs - 1)
         };
 
         let range_val = format!("bytes={start}-{end}");
+        let max_chunk_bytes = (cs as usize).saturating_add(64 * 1024);
 
         for attempt in 0..3 {
             let url = entry.upstream_url.read().clone();
             let mut hdrs = entry.headers.read().clone();
-            hdrs.insert(
-                reqwest::header::RANGE,
-                reqwest::header::HeaderValue::from_str(&range_val).unwrap(),
-            );
+            if let Ok(rv) = reqwest::header::HeaderValue::from_str(&range_val) {
+                hdrs.insert(reqwest::header::RANGE, rv);
+            }
 
-            self.active_conns.fetch_add(1, Ordering::Relaxed);
+            let _conn_guard = ActiveConnGuard::new(&self.active_conns);
             let http_client = self.http.read().clone();
-            let resp_res = http_client.get(&url).headers(hdrs).send().await;
-            self.active_conns.fetch_sub(1, Ordering::Relaxed);
+            let resp_res = send_with_safe_redirects(&http_client, &url, hdrs).await;
 
             match resp_res {
                 Ok(resp) => {
@@ -910,6 +1321,7 @@ impl StreamProxy {
                             chunk_idx,
                             wait_secs, "upstream returned 429; backing off cleanly"
                         );
+                        drop(_conn_guard);
                         tokio::time::sleep(Duration::from_secs(wait_secs)).await;
                         continue;
                     }
@@ -944,14 +1356,18 @@ impl StreamProxy {
                         }
                     }
 
-                    let data = resp.bytes().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+                    // Bounded read protects against servers ignoring Range and returning a 4GB 200 OK!
+                    let data = read_response_capped(resp, max_chunk_bytes).await?;
                     self.total_upstream_bytes
                         .fetch_add(data.len() as u64, Ordering::Relaxed);
-                    self.cache.put(&entry.id, chunk_idx, data.clone());
+                    self.cache.put(entry.cache_key, chunk_idx, data.clone());
                     return Ok(data);
                 }
                 Err(e) => {
-                    warn!(error = %e, attempt, chunk_idx, "upstream network error");
+                    let msg = e.to_string();
+                    let safe_msg = msg.split('?').next().unwrap_or(&msg);
+                    warn!(error = %safe_msg, attempt, chunk_idx, "upstream network error");
+                    drop(_conn_guard);
                     if attempt == 2 {
                         return Err(StatusCode::BAD_GATEWAY);
                     }
@@ -971,12 +1387,22 @@ impl Drop for StreamProxy {
     }
 }
 
-fn simple_response(status: StatusCode, body: &'static str) -> Response<Full<Bytes>> {
+fn build_image_response(
+    status: StatusCode,
+    ct: &str,
+    body: Bytes,
+    cache_control: &'static str,
+) -> Response<ProxyBody> {
     Response::builder()
         .status(status)
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Full::new(Bytes::from_static(body.as_bytes())))
-        .unwrap()
+        .header(
+            header::CONTENT_TYPE,
+            safe_header_value(ct, "application/octet-stream"),
+        )
+        .header(header::CONTENT_LENGTH, body.len())
+        .header(header::CACHE_CONTROL, cache_control)
+        .body(full_body(body))
+        .unwrap_or_else(|_| simple_response(StatusCode::INTERNAL_SERVER_ERROR, "image resp error"))
 }
 
 pub fn parse_range_header(header_val: &str, total_size: u64) -> Option<(u64, u64)> {
@@ -1014,33 +1440,42 @@ fn parse_content_range_total(header_val: &str) -> Option<u64> {
     total_str.trim().parse::<u64>().ok()
 }
 
-async fn prune_image_disk_cache(dir: &std::path::Path, max_images: usize) {
+async fn prune_image_disk_cache(dir: &std::path::Path, max_images: usize, max_bytes: u64) {
     let Ok(mut rd) = tokio::fs::read_dir(dir).await else {
         return;
     };
-    let mut entries = Vec::new();
+    let mut entries: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let mut total_bytes: u64 = 0;
     while let Ok(Some(entry)) = rd.next_entry().await {
         let p = entry.path();
         if p.extension().and_then(|e| e.to_str()) != Some("img") {
             continue;
         }
-        let mtime = entry
-            .metadata()
-            .await
-            .ok()
+        let meta = entry.metadata().await.ok();
+        let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        let mtime = meta
             .and_then(|m| m.modified().ok())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        entries.push((mtime, p));
+        total_bytes = total_bytes.saturating_add(len);
+        entries.push((mtime, len, p));
     }
-    if entries.len() <= max_images {
+    if entries.len() <= max_images && total_bytes <= max_bytes {
         return;
     }
-    entries.sort_by_key(|(m, _)| *m);
-    let remove_count = entries.len().saturating_sub(max_images * 3 / 4);
-    for (_, img_path) in entries.into_iter().take(remove_count) {
+    entries.sort_by_key(|(m, _, _)| *m);
+    let target_count = max_images * 3 / 4;
+    let target_bytes = max_bytes * 3 / 4;
+    let mut remaining_count = entries.len();
+    let mut remaining_bytes = total_bytes;
+    for (_, len, img_path) in entries {
+        if remaining_count <= target_count && remaining_bytes <= target_bytes {
+            break;
+        }
         let ct_path = img_path.with_extension("ct");
         let _ = tokio::fs::remove_file(&img_path).await;
         let _ = tokio::fs::remove_file(&ct_path).await;
+        remaining_count = remaining_count.saturating_sub(1);
+        remaining_bytes = remaining_bytes.saturating_sub(len);
     }
 }
 
@@ -1058,6 +1493,17 @@ mod tests {
             parse_content_range_total("bytes 0-1048575/123456789"),
             Some(123_456_789)
         );
+    }
+
+    #[test]
+    fn image_path_allowlist_blocks_traversal_and_non_image_routes() {
+        assert!(is_allowed_image_rel_path("Items/12345/Images/Primary"));
+        assert!(is_allowed_image_rel_path("Users/u1/Images/Primary"));
+        assert!(!is_allowed_image_rel_path("Users"));
+        assert!(!is_allowed_image_rel_path("Sessions"));
+        assert!(!is_allowed_image_rel_path("Items/../Users/Images/Primary"));
+        assert!(!is_allowed_image_rel_path("Items/%2e%2e/Images/Primary"));
+        assert!(!is_allowed_image_rel_path("emby-compat/status"));
     }
 
     #[tokio::test]

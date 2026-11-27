@@ -1,6 +1,7 @@
 package com.vedro.player
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -33,6 +34,20 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         hardwarePlugin = VedroHardwarePlugin.register(this, flutterEngine.dartExecutor.binaryMessenger)
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        hardwarePlugin?.notifyPipModeChanged(isInPictureInPictureMode)
+    }
+
+    override fun onDestroy() {
+        hardwarePlugin?.cleanup()
+        hardwarePlugin = null
+        super.onDestroy()
     }
 
     @Suppress("DEPRECATION")

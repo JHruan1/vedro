@@ -6,19 +6,35 @@ import 'package:flutter/services.dart';
 /// Platform channel bridging Flutter UI with native OS hardware & window capabilities:
 /// - macOS: Native NSWindow Fullscreen, Titlebar Zoom, Always-on-Top, NSOpenPanel Picker, Drag-and-Drop
 /// - Windows: Borderless Win32 Fullscreen, Zoom, Always-on-Top, IFileOpenDialog Picker, DXGI HDR10, WASAPI
-/// - Android: MediaCodec Dolby Vision probe, AudioTrack IEC61937 Atmos, PiP, WakeLock
-/// - iOS: Metal EDR + AVSampleBufferDisplayLayer Dolby Vision, AVAudioSession Spatial Audio, Idle Timer
+/// - Android & Android TV: TV/Leanback detection, AudioFocus/BecomingNoisy, real Brightness, Battery, Wi-Fi, PiP, WakeLock
+/// - iOS: Lazy AVAudioSession + interruption/route-change pause, real Brightness, Battery, EDR HDR/DoVi, Idle Timer
+/// - Linux: GTK Fullscreen, Always-on-Top, Idle Inhibit WakeLock, Safe URL open
 class NativePlaybackChannel {
   static const MethodChannel _channel = MethodChannel('com.vedro.player/hardware');
   static final ValueNotifier<bool> fullscreenNotifier = ValueNotifier<bool>(false);
   static final ValueNotifier<bool> maximizedNotifier = ValueNotifier<bool>(false);
   static final ValueNotifier<bool> playerHudAutoHideNotifier = ValueNotifier<bool>(false);
+  static final ValueNotifier<bool> pipModeNotifier = ValueNotifier<bool>(false);
+  static final ValueNotifier<int> audioInterruptCountNotifier = ValueNotifier<int>(0);
   static final ValueNotifier<List<String>> droppedFilesNotifier = ValueNotifier<List<String>>(const []);
+  static bool detectedAndroidTv = false;
+  static bool supportsNativePip = false;
   static bool _listenerBound = false;
   static String? _lastChromeSig;
 
-  /// Syncs native OS window titlebar / frame / status-bar / nav-bar colors with the active Vedro page skin
-  /// (Windows 11 DWM `DWMWA_CAPTION_COLOR` & `DWMWA_TEXT_COLOR`, macOS `NSWindow`, Android InsetsController, iOS UIWindow).
+  /// Defense-in-depth HTTP/HTTPS URL validator shared across all external openers.
+  static bool isAllowedHttpUrl(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return false;
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return false;
+    final scheme = uri.scheme.toLowerCase();
+    if (scheme != 'http' && scheme != 'https') return false;
+    if (uri.host.isEmpty) return false;
+    return !trimmed.contains('\r') && !trimmed.contains('\n') && !trimmed.contains('\x00');
+  }
+
+  /// Syncs native OS window titlebar / frame / status-bar / nav-bar colors with the active Vedro page skin.
   static Future<void> syncWindowChrome({
     required bool isLight,
     required int canvasArgb,
@@ -44,15 +60,9 @@ class NativePlaybackChannel {
     'srt', 'ass', 'ssa', 'vtt', 'sub', 'sup', 'idx', 'smi',
   };
 
-  static bool isVideoFile(String path) {
-    final ext = _extOf(path);
-    return videoExtensions.contains(ext);
-  }
+  static bool isVideoFile(String path) => videoExtensions.contains(_extOf(path));
 
-  static bool isSubtitleFile(String path) {
-    final ext = _extOf(path);
-    return subtitleExtensions.contains(ext);
-  }
+  static bool isSubtitleFile(String path) => subtitleExtensions.contains(_extOf(path));
 
   static String _extOf(String path) {
     final dot = path.lastIndexOf('.');
@@ -60,8 +70,6 @@ class NativePlaybackChannel {
     return path.substring(dot + 1).toLowerCase();
   }
 
-  /// Given a dropped/picked local video file OR folder, returns a naturally-sorted list
-  /// of playable video files in that folder plus the starting index.
   static ({List<String> files, int startIndex}) resolveLocalPlaylist(String path) {
     try {
       final type = FileSystemEntity.typeSync(path);
@@ -95,7 +103,6 @@ class NativePlaybackChannel {
     return (files: const [], startIndex: 0);
   }
 
-  /// Finds matching sidecar subtitle files (`.srt`/`.ass`/`.vtt`) sharing the same stem as [videoPath].
   static List<String> findSidecarSubtitles(String videoPath) {
     try {
       final file = File(videoPath);
@@ -128,6 +135,13 @@ class NativePlaybackChannel {
         if (fullscreenNotifier.value != fs) {
           fullscreenNotifier.value = fs;
         }
+      } else if (call.method == 'pipModeChanged' && call.arguments is Map) {
+        final inPip = (call.arguments as Map)['in_pip'] == true;
+        if (pipModeNotifier.value != inPip) {
+          pipModeNotifier.value = inPip;
+        }
+      } else if (call.method == 'audioInterrupted') {
+        audioInterruptCountNotifier.value = audioInterruptCountNotifier.value + 1;
       } else if (call.method == 'filesDropped' && call.arguments is Map) {
         final raw = (call.arguments as Map)['paths'];
         if (raw is List) {
@@ -141,21 +155,87 @@ class NativePlaybackChannel {
   }
 
   static Future<Map<String, dynamic>> queryDisplayAndAudioCapabilities() async {
+    ensureWindowListener();
     try {
       final res = await _channel.invokeMapMethod<String, dynamic>('queryCapabilities');
-      if (res != null) return res;
+      if (res != null) {
+        detectedAndroidTv = res['is_tv'] == true;
+        supportsNativePip = res['supports_pip'] == true;
+        return res;
+      }
     } on MissingPluginException {
       // Fallback on headless test runner or hosts without plugin registered
     } catch (_) {}
     return const {
-      'supports_hdr10': true,
-      'supports_hlg': true,
+      'is_tv': false,
+      'has_touchscreen': false,
+      'supports_pip': false,
+      'supports_hdr10': false,
+      'supports_hlg': false,
       'supports_native_dolby_vision': false,
       'supports_atmos_bitstream': false,
       'supports_spatial_audio': false,
-      'max_luminance_nits': 1000,
+      'max_luminance_nits': 400,
       'refresh_rate_hz': 60.0,
     };
+  }
+
+  static Future<void> setAudioPlaybackActive(bool active) async {
+    ensureWindowListener();
+    if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS)) return;
+    try {
+      await _channel.invokeMethod<void>('setAudioPlaybackActive', {'active': active});
+    } catch (_) {}
+  }
+
+  static Future<double?> getScreenBrightness() async {
+    if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS)) return null;
+    try {
+      final v = await _channel.invokeMethod<num>('getScreenBrightness');
+      return v?.toDouble().clamp(0.01, 1.0);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> setScreenBrightness(double value) async {
+    if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS)) return;
+    try {
+      await _channel.invokeMethod<void>('setScreenBrightness', {
+        'value': value.clamp(0.01, 1.0),
+      });
+    } catch (_) {}
+  }
+
+  static Future<void> resetScreenBrightness() async {
+    if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS)) return;
+    try {
+      await _channel.invokeMethod<void>('resetScreenBrightness');
+    } catch (_) {}
+  }
+
+  static Future<({int level, bool charging})?> getBatteryInfo() async {
+    if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS)) return null;
+    try {
+      final res = await _channel.invokeMapMethod<String, dynamic>('getBatteryInfo');
+      if (res != null) {
+        final lvl = (res['level'] as num?)?.toInt() ?? -1;
+        if (lvl >= 0) {
+          return (level: lvl.clamp(0, 100), charging: res['charging'] == true);
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  static Future<bool> isWifiConnected() async {
+    if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS)) return true;
+    try {
+      final ok = await _channel.invokeMethod<bool>('isWifiConnected');
+      return ok ?? true;
+    } catch (_) {
+      return true;
+    }
   }
 
   static Future<int?> attachNativeVideoSurface() async {
@@ -166,10 +246,17 @@ class NativePlaybackChannel {
     }
   }
 
-  static Future<void> enterPictureInPicture() async {
+  static Future<bool> enterPictureInPicture({int aspectW = 16, int aspectH = 9}) async {
+    ensureWindowListener();
     try {
-      await _channel.invokeMethod<void>('enterPiP');
-    } catch (_) {}
+      final ok = await _channel.invokeMethod<bool>('enterPiP', {
+        'aspect_w': aspectW,
+        'aspect_h': aspectH,
+      });
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
   }
 
   static Future<void> setKeepScreenOn(bool enabled) async {
@@ -178,9 +265,6 @@ class NativePlaybackChannel {
     } catch (_) {}
   }
 
-  /// Request an adaptive display refresh rate on Android (`0` = highest UI
-  /// refresh rate e.g. 90/120Hz for silky browsing; `60.0` during video playback
-  /// to cut mobile GPU/display power draw and phone heat).
   static Future<void> setPreferredFrameRate(double fps) async {
     if (kIsWeb || !Platform.isAndroid) return;
     try {
@@ -285,8 +369,6 @@ class NativePlaybackChannel {
     }
   }
 
-  /// Opens native macOS NSOpenPanel or Windows IFileOpenDialog.
-  /// Returns selected file/folder paths, or empty list if cancelled/unsupported.
   static Future<List<String>> pickFiles({
     List<String> extensions = const [],
     bool allowDirectory = false,
@@ -307,11 +389,10 @@ class NativePlaybackChannel {
     return const [];
   }
 
-  /// Opens an external HTTP/HTTPS or custom scheme URL using the OS native handler
-  /// (`Intent.ACTION_VIEW` on Android, `UIApplication.open` on iOS, `NSWorkspace` on macOS, `ShellExecuteW` on Windows).
   static Future<bool> openUrl(String url) async {
+    if (!isAllowedHttpUrl(url)) return false;
     try {
-      final ok = await _channel.invokeMethod<bool>('openUrl', {'url': url});
+      final ok = await _channel.invokeMethod<bool>('openUrl', {'url': url.trim()});
       if (ok != null) return ok;
     } on MissingPluginException {
       return false;
@@ -319,15 +400,15 @@ class NativePlaybackChannel {
     return false;
   }
 
-  /// Launches a media stream URL in a native external player (`Infuse`, `VLC`, `Outplayer`, `MX Player`, `PotPlayer`, etc.).
   static Future<bool> launchExternalPlayer(
     String url, {
     String player = '',
     String title = '',
   }) async {
+    if (!isAllowedHttpUrl(url)) return false;
     try {
       final ok = await _channel.invokeMethod<bool>('launchExternalPlayer', {
-        'url': url,
+        'url': url.trim(),
         'player': player,
         'title': title,
       });

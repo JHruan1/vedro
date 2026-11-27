@@ -1838,6 +1838,7 @@ class VedroAdaptiveSurface extends StatelessWidget {
     this.hovered = false,
     this.selected = false,
     this.blurSigma = 22.0,
+    this.enableLiveBlur = true,
   });
 
   final Widget child;
@@ -1846,6 +1847,7 @@ class VedroAdaptiveSurface extends StatelessWidget {
   final bool hovered;
   final bool selected;
   final double blurSigma;
+  final bool enableLiveBlur;
 
   @override
   Widget build(BuildContext context) {
@@ -1865,7 +1867,34 @@ class VedroAdaptiveSurface extends StatelessWidget {
       final effBlur = PlatformPerfProfile.clampLiveBlur(
         isLiquid ? (skin.backdropBlur * 0.85).clamp(14.0, 48.0) : blurSigma,
       );
-      final adaptedFill = PlatformPerfProfile.adaptGlassFill(fill);
+      final useLiveBlur =
+          enableLiveBlur && !PlatformPerfProfile.isMobile && !PlatformPerfProfile.isTv && effBlur > 0.5;
+      final adaptedFill = useLiveBlur
+          ? PlatformPerfProfile.adaptGlassFill(fill)
+          : fill.withValues(alpha: (fill.a + (skin.isLight ? 0.14 : 0.12)).clamp(0.45, 0.94));
+      final surfaceBody = DecoratedBox(
+        decoration: BoxDecoration(
+          color: adaptedFill,
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            stops: isLiquid ? const [0.0, 0.36, 1.0] : const [0.0, 1.0],
+            colors: isLiquid
+                ? [
+                    Colors.white.withValues(
+                      alpha: ((skin.isLight ? 0.52 : 0.14) * specMul).clamp(0.04, 0.75),
+                    ),
+                    Colors.white.withValues(alpha: skin.isLight ? 0.16 : 0.02),
+                    skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.06),
+                  ]
+                : [
+                    Colors.white.withValues(alpha: skin.isLight ? 0.34 : 0.065),
+                    Colors.transparent,
+                  ],
+          ),
+        ),
+        child: padding != null ? Padding(padding: padding!, child: child) : child,
+      );
       return RepaintBoundary(
         child: Container(
         decoration: isLiquid
@@ -1898,32 +1927,12 @@ class VedroAdaptiveSurface extends StatelessWidget {
               : null,
           child: ClipRRect(
             borderRadius: radius,
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: effBlur, sigmaY: effBlur),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: adaptedFill,
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    stops: isLiquid ? const [0.0, 0.36, 1.0] : const [0.0, 1.0],
-                    colors: isLiquid
-                        ? [
-                            Colors.white.withValues(
-                              alpha: ((skin.isLight ? 0.52 : 0.14) * specMul).clamp(0.04, 0.75),
-                            ),
-                            Colors.white.withValues(alpha: skin.isLight ? 0.16 : 0.02),
-                            skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.06),
-                          ]
-                        : [
-                            Colors.white.withValues(alpha: skin.isLight ? 0.34 : 0.065),
-                            Colors.transparent,
-                          ],
-                  ),
-                ),
-                child: padding != null ? Padding(padding: padding!, child: child) : child,
-              ),
-            ),
+            child: useLiveBlur
+                ? BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: effBlur, sigmaY: effBlur),
+                    child: surfaceBody,
+                  )
+                : surfaceBody,
           ),
         ),
         ),

@@ -2,15 +2,25 @@ package com.vedro.player
 
 import android.app.Activity
 import android.app.PictureInPictureParams
+import android.app.UiModeManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.MediaCodecList
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.util.Rational
 import android.view.Display
 import android.view.WindowManager
@@ -22,15 +32,18 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * Native Android hardware, SAF file picker & external intent bridge for Vedro:
- * - Probes Display HDR capabilities (Dolby Vision, HDR10, HLG, max luminance nits, refresh rate)
- * - Probes MediaCodec hardware decoders (video/dolby-vision, video/hevc, video/av01)
- * - Probes AudioManager IEC61937 bitstream passthrough (TrueHD Atmos, E-AC-3 JOC Atmos, DTS-HD MA) + Spatializer
- * - Native SAF `ACTION_OPEN_DOCUMENT` file picker (`pickFiles`) for local video, subtitles, danmaku XML & fonts
- * - Browser URL launching (`openUrl`) & external Android video player chooser (`launchExternalPlayer`)
- * - Handles Picture-in-Picture (PiP) and WakeLock/KeepScreenOn
+ * Native Android & Android TV hardware bridge for Vedro:
+ * - Android TV / Leanback / Touchscreen detection (`is_tv`, `has_touchscreen`, `supports_pip`)
+ * - Audio Focus & `ACTION_AUDIO_BECOMING_NOISY` (auto-pause when headphones/BT unplug or call arrives)
+ * - Real OS window screen brightness (`getScreenBrightness`, `setScreenBrightness`, `resetScreenBrightness`)
+ * - Battery level & charging state (`getBatteryInfo`) and Wi-Fi / unmetered check (`isWifiConnected`)
+ * - Safe PiP with dynamic video aspect ratio + `pipModeChanged` callback
+ * - Display HDR / MediaCodec / IEC61937 Atmos probing, SAF file picker & validated HTTP/HTTPS intents
  */
-class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.MethodCallHandler {
+class VedroHardwarePlugin(
+    private val activity: Activity,
+    private val channel: MethodChannel
+) : MethodChannel.MethodCallHandler {
     companion object {
         const val CHANNEL_NAME = "com.vedro.player/hardware"
         private const val REQ_PICK_FILES = 9401
@@ -41,16 +54,17 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
 
         fun register(activity: Activity, messenger: BinaryMessenger): VedroHardwarePlugin {
             val channel = MethodChannel(messenger, CHANNEL_NAME)
-            val plugin = VedroHardwarePlugin(activity)
+            val plugin = VedroHardwarePlugin(activity, channel)
             channel.setMethodCallHandler(plugin)
             return plugin
         }
 
-        /**
-         * Unlock native high refresh rate (90/120/144Hz) on Android during UI browsing (`fps <= 0f`)
-         * and step down to an energy-efficient 60Hz mode during video playback (`fps > 0f`) to
-         * prevent unnecessary battery drain and phone heating.
-         */
+        private fun isAllowedHttpUrl(raw: String): Boolean {
+            val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return false
+            val scheme = uri.scheme?.lowercase() ?: return false
+            return (scheme == "http" || scheme == "https") && !uri.host.isNullOrBlank()
+        }
+
         @Suppress("DEPRECATION")
         fun applyPreferredFrameRate(activity: Activity, fps: Float) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
@@ -87,18 +101,180 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
     }
 
     private var pendingPickResult: MethodChannel.Result? = null
+    private var noisyReceiverRegistered = false
+    private var audioFocusRequest: Any? = null
+
+    private val noisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+                emitAudioInterrupted("becoming_noisy")
+            }
+        }
+    }
+
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> emitAudioInterrupted("focus_loss")
+        }
+    }
+
+    private fun emitAudioInterrupted(reason: String) {
+        activity.runOnUiThread {
+            try {
+                channel.invokeMethod("audioInterrupted", mapOf("reason" to reason))
+            } catch (_: Throwable) {}
+        }
+    }
+
+    fun notifyPipModeChanged(inPip: Boolean) {
+        activity.runOnUiThread {
+            try {
+                channel.invokeMethod("pipModeChanged", mapOf("in_pip" to inPip))
+            } catch (_: Throwable) {}
+        }
+    }
+
+    fun cleanup() {
+        setAudioPlaybackActive(false)
+        pendingPickResult?.success(emptyList<String>())
+        pendingPickResult = null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun setAudioPlaybackActive(active: Boolean) {
+        val am = activity.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        if (active) {
+            if (!noisyReceiverRegistered) {
+                try {
+                    val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        activity.registerReceiver(noisyReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                    } else {
+                        activity.registerReceiver(noisyReceiver, filter)
+                    }
+                    noisyReceiverRegistered = true
+                } catch (_: Throwable) {}
+            }
+            if (am != null) {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                            .setAudioAttributes(
+                                AudioAttributes.Builder()
+                                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                                    .build()
+                            )
+                            .setAcceptsDelayedFocusGain(false)
+                            .setOnAudioFocusChangeListener(audioFocusListener)
+                            .build()
+                        audioFocusRequest = req
+                        am.requestAudioFocus(req)
+                    } else {
+                        am.requestAudioFocus(
+                            audioFocusListener,
+                            AudioManager.STREAM_MUSIC,
+                            AudioManager.AUDIOFOCUS_GAIN
+                        )
+                    }
+                } catch (_: Throwable) {}
+            }
+        } else {
+            if (noisyReceiverRegistered) {
+                try {
+                    activity.unregisterReceiver(noisyReceiver)
+                } catch (_: Throwable) {}
+                noisyReceiverRegistered = false
+            }
+            if (am != null) {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        (audioFocusRequest as? AudioFocusRequest)?.let { am.abandonAudioFocusRequest(it) }
+                        audioFocusRequest = null
+                    } else {
+                        am.abandonAudioFocus(audioFocusListener)
+                    }
+                } catch (_: Throwable) {}
+            }
+        }
+    }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "queryCapabilities" -> result.success(queryCapabilities())
-            "enterPiP" -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    val params = PictureInPictureParams.Builder()
-                        .setAspectRatio(Rational(16, 9))
-                        .build()
-                    activity.enterPictureInPictureMode(params)
+            "setAudioPlaybackActive" -> {
+                val active = call.argument<Boolean>("active") ?: false
+                setAudioPlaybackActive(active)
+                result.success(null)
+            }
+            "getScreenBrightness" -> {
+                var value = activity.window.attributes.screenBrightness
+                if (value < 0f) {
+                    val sys = runCatching {
+                        Settings.System.getInt(activity.contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+                    }.getOrDefault(128)
+                    value = (sys / 255f).coerceIn(0.05f, 1.0f)
+                }
+                result.success(value.toDouble())
+            }
+            "setScreenBrightness" -> {
+                val v = (call.argument<Number>("value")?.toFloat() ?: 0.5f).coerceIn(0.01f, 1.0f)
+                activity.runOnUiThread {
+                    try {
+                        val lp = activity.window.attributes
+                        lp.screenBrightness = v
+                        activity.window.attributes = lp
+                    } catch (_: Throwable) {}
                 }
                 result.success(null)
+            }
+            "resetScreenBrightness" -> {
+                activity.runOnUiThread {
+                    try {
+                        val lp = activity.window.attributes
+                        lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                        activity.window.attributes = lp
+                    } catch (_: Throwable) {}
+                }
+                result.success(null)
+            }
+            "getBatteryInfo" -> {
+                val intent = runCatching {
+                    activity.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                }.getOrNull()
+                val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+                val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+                val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+                val pct = if (level >= 0 && scale > 0) ((level * 100) / scale).coerceIn(0, 100) else -1
+                val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL
+                result.success(mapOf("level" to pct, "charging" to charging))
+            }
+            "isWifiConnected" -> {
+                result.success(isUnmeteredOrWifi())
+            }
+            "enterPiP" -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                    activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+                ) {
+                    val aw = (call.argument<Number>("aspect_w")?.toInt() ?: 16).coerceAtLeast(1)
+                    val ah = (call.argument<Number>("aspect_h")?.toInt() ?: 9).coerceAtLeast(1)
+                    // Clamp ratio to Android's strict PiP bounds [0.4184, 2.39] to prevent IllegalArgumentException
+                    val ratio = (aw.toDouble() / ah.toDouble()).coerceIn(0.45, 2.35)
+                    val rational = Rational((ratio * 100).toInt().coerceAtLeast(45), 100)
+                    val ok = try {
+                        val params = PictureInPictureParams.Builder()
+                            .setAspectRatio(rational)
+                            .build()
+                        activity.enterPictureInPictureMode(params)
+                    } catch (_: Throwable) {
+                        false
+                    }
+                    result.success(ok)
+                } else {
+                    result.success(false)
+                }
             }
             "setKeepScreenOn" -> {
                 val enabled = call.argument<Boolean>("enabled") ?: false
@@ -151,7 +327,7 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
             }
             "openUrl" -> {
                 val url = call.argument<String>("url")?.trim() ?: ""
-                if (url.isEmpty()) {
+                if (!isAllowedHttpUrl(url)) {
                     result.success(false)
                     return
                 }
@@ -169,7 +345,7 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
                 val url = call.argument<String>("url")?.trim() ?: ""
                 val player = (call.argument<String>("player") ?: "").lowercase()
                 val title = call.argument<String>("title") ?: ""
-                if (url.isEmpty()) {
+                if (!isAllowedHttpUrl(url)) {
                     result.success(false)
                     return
                 }
@@ -177,6 +353,24 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
             }
             "createVideoSurface" -> result.success(null)
             else -> result.notImplemented()
+        }
+    }
+
+    private fun isUnmeteredOrWifi(): Boolean {
+        return try {
+            val cm = activity.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                ?: return true
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val net = cm.activeNetwork ?: return false
+                val caps = cm.getNetworkCapabilities(net) ?: return false
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+            } else {
+                !cm.isActiveNetworkMetered
+            }
+        } catch (_: Throwable) {
+            true
         }
     }
 
@@ -201,22 +395,26 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
             pending.success(emptyList<String>())
             return true
         }
+        val appCtx = activity.applicationContext
         Thread {
-            val pickedDir = File(activity.cacheDir, "picked").apply { mkdirs() }
+            val pickedDir = File(appCtx.cacheDir, "picked").apply { mkdirs() }
             try {
                 val existing = pickedDir.listFiles()?.sortedBy { it.lastModified() } ?: emptyList()
-                if (existing.size > 10) {
-                    existing.take(existing.size - 10).forEach { runCatching { it.delete() } }
+                if (existing.size > 6) {
+                    existing.take(existing.size - 6).forEach { runCatching { it.delete() } }
                 }
             } catch (_: Throwable) {}
 
             val paths = mutableListOf<String>()
             for (uri in uris) {
                 try {
-                    val rawName = resolveDisplayName(uri) ?: "picked_${System.currentTimeMillis()}"
-                    val safeName = rawName.replace(Regex("[^A-Za-z0-9._\\-\\u4e00-\\u9fa5 ()\\[\\]]"), "_")
+                    val rawName = resolveDisplayName(appCtx, uri) ?: "picked_${System.currentTimeMillis()}"
+                    val safeName = rawName
+                        .replace(Regex("[^A-Za-z0-9._\\-\\u4e00-\\u9fa5 ()\\[\\]]"), "_")
+                        .trimStart('.')
+                        .ifEmpty { "picked_${System.currentTimeMillis()}" }
                     val dest = File(pickedDir, safeName)
-                    activity.contentResolver.openInputStream(uri)?.use { input ->
+                    appCtx.contentResolver.openInputStream(uri)?.use { input ->
                         FileOutputStream(dest).use { out ->
                             input.copyTo(out, bufferSize = 64 * 1024)
                         }
@@ -226,16 +424,18 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
                     }
                 } catch (_: Throwable) {}
             }
-            activity.runOnUiThread {
-                pending.success(paths)
+            if (!activity.isFinishing && !activity.isDestroyed) {
+                activity.runOnUiThread {
+                    pending.success(paths)
+                }
             }
         }.start()
         return true
     }
 
-    private fun resolveDisplayName(uri: Uri): String? {
+    private fun resolveDisplayName(ctx: Context, uri: Uri): String? {
         try {
-            activity.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
                 if (c.moveToFirst()) {
                     val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     if (idx >= 0) {
@@ -281,6 +481,20 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
         } catch (_: Throwable) {
             false
         }
+    }
+
+    private fun isAndroidTvDevice(): Boolean {
+        val uiMode = activity.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+        if (uiMode?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION) {
+            return true
+        }
+        val pm = activity.packageManager
+        if (pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
+            pm.hasSystemFeature("android.hardware.type.television")
+        ) {
+            return true
+        }
+        return !pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
     }
 
     private fun queryCapabilities(): Map<String, Any> {
@@ -338,9 +552,16 @@ class VedroHardwarePlugin(private val activity: Activity) : MethodChannel.Method
             }
         }
 
+        val isTv = isAndroidTvDevice()
+        val hasTouchscreen = activity.packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
+        val supportsPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
         val systemProxyUrl = detectAndroidProxyUrl()
 
         return mapOf(
+            "is_tv" to isTv,
+            "has_touchscreen" to hasTouchscreen,
+            "supports_pip" to supportsPip,
             "supports_hdr10" to supportsHdr10,
             "supports_hlg" to supportsHlg,
             "supports_native_dolby_vision" to (supportsDisplayDolbyVision && hasDoviDecoder),

@@ -8,6 +8,16 @@ import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
 import '../core/theme/vedro_skin.dart';
 
+bool isTrustedReleaseUrl(String raw) {
+  final uri = Uri.tryParse(raw.trim());
+  if (uri == null || uri.scheme.toLowerCase() != 'https') return false;
+  final host = uri.host.toLowerCase();
+  return host == 'github.com' ||
+      host == 'objects.githubusercontent.com' ||
+      host == 'release-assets.githubusercontent.com' ||
+      host.endsWith('.githubusercontent.com');
+}
+
 class VedroReleaseAsset {
   const VedroReleaseAsset({
     required this.name,
@@ -51,8 +61,12 @@ class VedroReleaseInfo {
     final rawAssets = ((j['assets'] as List<dynamic>?) ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(VedroReleaseAsset.fromJson)
-        .where((a) => a.name.isNotEmpty && a.downloadUrl.isNotEmpty)
+        .where((a) => a.name.isNotEmpty && isTrustedReleaseUrl(a.downloadUrl))
         .toList();
+    final rawHtmlUrl = (j['html_url'] ?? '').toString().trim();
+    final safeHtmlUrl = isTrustedReleaseUrl(rawHtmlUrl)
+        ? rawHtmlUrl
+        : 'https://github.com/JHruan1/vedro/releases';
     return VedroReleaseInfo(
       tagName: tag,
       version: normVersion,
@@ -60,7 +74,7 @@ class VedroReleaseInfo {
           ? j['name'].toString().trim()
           : tag,
       releaseNotes: (j['body'] ?? '').toString().trim(),
-      htmlUrl: (j['html_url'] ?? 'https://github.com/JHruan1/vedro/releases').toString(),
+      htmlUrl: safeHtmlUrl,
       publishedAt: j['published_at']?.toString(),
       assets: rawAssets,
     );
@@ -163,7 +177,14 @@ class VedroUpdateChecker extends ChangeNotifier {
       req.headers.set('Accept', 'application/vnd.github+json');
       req.headers.set('User-Agent', 'Vedro/${normalizeSemver(curVer)}');
       final resp = await req.close().timeout(const Duration(seconds: 12));
-      final body = await resp.transform(utf8.decoder).join().timeout(const Duration(seconds: 12));
+      final chunks = <int>[];
+      await for (final chunk in resp.timeout(const Duration(seconds: 12))) {
+        chunks.addAll(chunk);
+        if (chunks.length > 2 * 1024 * 1024) {
+          throw Exception('更新元数据超出大小限制');
+        }
+      }
+      final body = utf8.decode(chunks, allowMalformed: true);
       if (resp.statusCode != 200) {
         throw Exception('HTTP ${resp.statusCode}');
       }
@@ -182,10 +203,11 @@ class VedroUpdateChecker extends ChangeNotifier {
     bool force = false,
   }) async {
     if (isChecking) return latestRelease;
-    if (!force && latestRelease != null && this.currentVersion == currentVersion) {
+    final norm = normalizeSemver(currentVersion);
+    if (!force && latestRelease != null && this.currentVersion == norm) {
       return latestRelease;
     }
-    this.currentVersion = normalizeSemver(currentVersion);
+    this.currentVersion = norm;
     isChecking = true;
     lastError = null;
     notifyListeners();

@@ -62,6 +62,10 @@ class _MockVedroCore implements VedroCoreClient {
   int mockImageCacheMemEntries = 18;
   int subtitleBatchTranslateCalls = 0;
   int asrSliceCalls = 0;
+  bool failAsrSlices = false;
+
+  @override
+  int get proxySpeedBps => 0;
   List<Map<String, dynamic>> mockDevices = [
     <String, dynamic>{
       'DeviceId': 'dev-current-win',
@@ -811,6 +815,9 @@ class _MockVedroCore implements VedroCoreClient {
         return <String, dynamic>{'translations': out, 'model': 'mock-ai'};
       case 'ai_transcribe_audio_slice':
         asrSliceCalls += 1;
+        if (failAsrSlices) {
+          throw Exception('ASR service unavailable');
+        }
         final startMs = (((params['start_secs'] as num?)?.toDouble() ?? 0.0) * 1000).round();
         return <String, dynamic>{
           'detected_language': 'ja',
@@ -2057,10 +2064,10 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 200));
 
-    // 1. Hero uses ShaderMask(BlendMode.dstIn) alpha fade (no bottom seam!) & renders Slide 0
+    // 1. Hero uses zero-saveLayer ClipRect + gradient dissolve (no offscreen ShaderMask!) & renders Slide 0
     expect(find.byKey(const ValueKey('hero-page-view')), findsOneWidget);
-    final mask = tester.widget<ShaderMask>(find.byKey(const ValueKey('hero-alpha-mask-0')));
-    expect(mask.blendMode, equals(BlendMode.dstIn));
+    expect(find.byKey(const ValueKey('hero-alpha-mask-0')), findsOneWidget);
+    expect(tester.widget(find.byKey(const ValueKey('hero-alpha-mask-0'))), isA<ClipRect>());
     expect(find.text('人生切割术'), findsOneWidget);
 
     // 2. Horizontal swipe switches Hero slide from '人生切割术' -> '幕府将军'!
@@ -2767,7 +2774,7 @@ void main() {
     // 1. Preferences round-trip for AI subtitle, ASR, and beauty filter settings
     const basePrefs = VedroPreferences();
     expect(basePrefs.aiSubtitleMode, equals('bilingual_trans_top'));
-    expect(basePrefs.aiSubtitleBatchSize, equals(16));
+    expect(basePrefs.aiSubtitleBatchSize, equals(18));
     expect(basePrefs.beautyFilterPreset, equals('off'));
     expect(basePrefs.isAsrReady, isFalse);
 
@@ -2814,9 +2821,9 @@ void main() {
     expect(subCtrl.activeCueNotifier.value?.original, equals('Hello world.'));
     expect(subCtrl.activeCueNotifier.value?.translated, equals('[简体中文] Hello world.'));
 
-    // Switching target language in-place immediately re-translates (YouTube Auto-Translate style)
+    // Switching target language in-place re-translates after respectful public-API pacing interval
     await subCtrl.setTargetLang('日本語');
-    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 2600));
     await tester.pump();
     expect(subCtrl.activeCueNotifier.value?.translated, equals('[日本語] Hello world.'));
 
@@ -2850,7 +2857,7 @@ void main() {
       durationSecs: 60.0,
       targetLang: '简体中文',
     );
-    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 2600));
     await tester.pump();
     expect(mock.asrSliceCalls, greaterThanOrEqualTo(1));
     expect(subCtrl.totalCues, greaterThanOrEqualTo(1));
@@ -2889,22 +2896,26 @@ void main() {
       'assets': [
         {
           'name': 'vedro-v0.3.12-windows-x64-setup.exe',
-          'browser_download_url': 'https://example.com/win.exe',
+          'browser_download_url':
+              'https://github.com/JHruan1/vedro/releases/download/v0.3.12/vedro-v0.3.12-windows-x64-setup.exe',
           'size': 28000000,
         },
         {
           'name': 'vedro-v0.3.12-macos-universal.dmg',
-          'browser_download_url': 'https://example.com/mac.dmg',
+          'browser_download_url':
+              'https://github.com/JHruan1/vedro/releases/download/v0.3.12/vedro-v0.3.12-macos-universal.dmg',
           'size': 50000000,
         },
         {
           'name': 'vedro-v0.3.12-android-arm64-v8a.apk',
-          'browser_download_url': 'https://example.com/android.apk',
+          'browser_download_url':
+              'https://github.com/JHruan1/vedro/releases/download/v0.3.12/vedro-v0.3.12-android-arm64-v8a.apk',
           'size': 40000000,
         },
         {
           'name': 'vedro-v0.3.12-ios-unsigned.ipa',
-          'browser_download_url': 'https://example.com/ios.ipa',
+          'browser_download_url':
+              'https://github.com/JHruan1/vedro/releases/download/v0.3.12/vedro-v0.3.12-ios-unsigned.ipa',
           'size': 16000000,
         },
       ],
@@ -2923,7 +2934,8 @@ void main() {
         'assets': [
           {
             'name': 'vedro-v0.3.12-windows-x64-setup.exe',
-            'browser_download_url': 'https://example.com/win.exe',
+            'browser_download_url':
+                'https://github.com/JHruan1/vedro/releases/download/v0.3.12/vedro-v0.3.12-windows-x64-setup.exe',
             'size': 28000000,
           },
         ],
@@ -3034,5 +3046,157 @@ void main() {
     expect(find.byKey(const ValueKey('settings-beauty-filter-card')), findsOneWidget);
     expect(find.text('自然清透'), findsOneWidget);
     expect(find.text('粉嫩气色'), findsOneWidget);
+  });
+
+  testWidgets(
+      'v0.4.0: TV D-Pad focus activation, ASR anti-flash circuit breaker, Bilibili public-API rate limit policy & security validators',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    // 1. Security URL validators
+    expect(
+      isTrustedReleaseUrl('https://github.com/JHruan1/vedro/releases/download/v0.4.0/app.apk'),
+      isTrue,
+    );
+    expect(
+      isTrustedReleaseUrl('https://objects.githubusercontent.com/github-production-release-asset/1'),
+      isTrue,
+    );
+    expect(isTrustedReleaseUrl('http://github.com/JHruan1/vedro'), isFalse);
+    expect(isTrustedReleaseUrl('https://evil.example.com/vedro.apk'), isFalse);
+    expect(NativePlaybackChannel.isAllowedHttpUrl('https://stream.example.com/a.m3u8'), isTrue);
+    expect(NativePlaybackChannel.isAllowedHttpUrl('http://192.168.1.10:8096/v.mkv'), isTrue);
+    expect(NativePlaybackChannel.isAllowedHttpUrl('file:///etc/passwd'), isFalse);
+    expect(NativePlaybackChannel.isAllowedHttpUrl('javascript:alert(1)'), isFalse);
+
+    // 2. Respectful Bilibili public API rate limit policy vs custom OpenAI endpoint
+    expect(
+      AiSubtitleTranslatorController.isBilibiliPublicEndpoint('https://index-translate.bilibili.com/v1'),
+      isTrue,
+    );
+    final biliPolicy = AiSubtitleTranslatorController.rateLimitPolicyFor(
+      'https://index-translate.bilibili.com/v1',
+    );
+    expect(biliPolicy.isPublicSharedApi, isTrue);
+    expect(biliPolicy.maxConcurrency, equals(1));
+    expect(biliPolicy.minIntervalMs, greaterThanOrEqualTo(2400));
+    expect(biliPolicy.maxLookaheadSecs, lessThanOrEqualTo(55));
+    expect(biliPolicy.maxBatchSize, lessThanOrEqualTo(24));
+
+    final customPolicy = AiSubtitleTranslatorController.rateLimitPolicyFor(
+      'https://api.deepseek.com/v1',
+    );
+    expect(customPolicy.isPublicSharedApi, isFalse);
+    expect(customPolicy.maxConcurrency, greaterThanOrEqualTo(2));
+
+    // 3. TV D-Pad focus activation on PressableScale & Left/Right stepping on VedroPrecisionSlider
+    var tapped = 0;
+    var sliderVal = 1.0;
+    final btnFocus = FocusNode();
+    addTearDown(btnFocus.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(VedroSkin.obsidian),
+        home: Scaffold(
+          body: Column(
+            children: [
+              PressableScale(
+                focusNode: btnFocus,
+                autofocus: true,
+                onTap: () => tapped += 1,
+                child: const SizedBox(width: 120, height: 44, child: Text('TV 按钮')),
+              ),
+              StatefulBuilder(
+                builder: (ctx, setLocal) => VedroPrecisionSlider(
+                  label: '音量',
+                  value: sliderVal,
+                  min: 0.0,
+                  max: 2.0,
+                  step: 0.25,
+                  valueText: sliderVal.toStringAsFixed(2),
+                  onChanged: (v) => setLocal(() => sliderVal = v),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(tapped, equals(1));
+
+    // Move focus to slider track and step right via D-Pad arrowRight
+    final sliderTrackFinder = find.descendant(
+      of: find.byType(VedroPrecisionSlider),
+      matching: find.byType(LayoutBuilder),
+    );
+    expect(sliderTrackFinder, findsWidgets);
+    Focus.of(tester.element(sliderTrackFinder.first)).requestFocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(sliderVal, greaterThan(1.0));
+
+    // 4. ASR anti-flashing retry cap & circuit breaker
+    final failingCore = _MockVedroCore()..failAsrSlices = true;
+    final app = VedroAppState(failingCore);
+    app.prefs = app.prefs.copyWith(
+      asrEngine: 'cloud',
+      asrEnabled: true,
+      asrBaseUrl: 'https://api.groq.com/openai/v1',
+      asrApiKey: 'gsk_test',
+      asrModel: 'whisper-large-v3-turbo',
+    );
+    addTearDown(app.dispose);
+
+    final ctrl = AiSubtitleTranslatorController(appState: app, mediaTitle: 'Test Video');
+    addTearDown(ctrl.dispose);
+
+    await ctrl.enableAsr(
+      sourceUrl: 'http://127.0.0.1:28080/stream.mkv',
+      currentPositionSecs: 0.0,
+    );
+    // Repeated position updates while ASR keeps failing must never loop endlessly or show "0 句"
+    for (var t = 0; t < 5; t++) {
+      ctrl.updatePosition(t * 1.0);
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(failingCore.asrSliceCalls, lessThanOrEqualTo(4));
+    expect(ctrl.activeCueNotifier.value?.statusHint ?? '', isNot(contains('已识别 0 句')));
+
+    // 5. AppLockGate lockout after 5 wrong PIN attempts
+    final lockPrefs = const VedroPreferences().copyWith(
+      passcodeEnabled: true,
+      passcodeHash: hashPasscode('1234'),
+    );
+    final lockApp = VedroAppState(_MockVedroCore())
+      ..isInitialized = true
+      ..prefs = lockPrefs;
+    addTearDown(lockApp.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(VedroSkin.obsidian),
+        home: AppLockGate(
+          appState: lockApp,
+          child: const Text('UNLOCKED_HOME'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('UNLOCKED_HOME'), findsNothing);
+    for (var attempt = 0; attempt < 5; attempt++) {
+      for (final d in ['9', '9', '9', '9']) {
+        await tester.tap(find.text(d));
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(find.textContaining('尝试次数过多'), findsOneWidget);
   });
 }

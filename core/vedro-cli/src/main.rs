@@ -16,10 +16,14 @@ fn main() -> Result<()> {
 
     match args[1].as_str() {
         "inspect" => {
+            use std::io::Read;
             let path = args.get(2).context("missing file path")?;
-            let data = std::fs::read(path).with_context(|| format!("reading {path}"))?;
-            let head = &data[..data.len().min(512 * 1024)];
-            let inspected = inspect_media_header(head);
+            let file = std::fs::File::open(path).with_context(|| format!("opening {path}"))?;
+            let mut head = Vec::with_capacity(512 * 1024);
+            file.take(512 * 1024)
+                .read_to_end(&mut head)
+                .with_context(|| format!("reading header of {path}"))?;
+            let inspected = inspect_media_header(&head);
             println!("{}", serde_json::to_string_pretty(&inspected)?);
         }
         "profile-matrix" => {

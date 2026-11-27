@@ -97,11 +97,15 @@ pub struct VedroStore {
 
 impl VedroStore {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let conn = Connection::open(path)?;
+        let p = path.as_ref();
+        let conn = Connection::open(p)?;
+        restrict_unix_file_perms(p);
         let store = Self {
             conn: Mutex::new(conn),
         };
         store.migrate()?;
+        // Also restrict WAL/SHM companion files created during migrate
+        restrict_unix_file_perms(p);
         Ok(store)
     }
 
@@ -121,6 +125,9 @@ impl VedroStore {
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
+            PRAGMA busy_timeout = 5000;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA cache_size = -16000;
 
             CREATE TABLE IF NOT EXISTS servers (
                 id TEXT PRIMARY KEY,
@@ -160,6 +167,11 @@ impl VedroStore {
                 cached_at INTEGER NOT NULL,
                 PRIMARY KEY (server_id, cache_key)
             );
+
+            CREATE INDEX IF NOT EXISTS idx_servers_last_connected
+                ON servers(last_connected_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_item_cache_cached_at
+                ON item_cache(cached_at);
             ",
         )?;
 
@@ -169,6 +181,12 @@ impl VedroStore {
             [],
         );
         let _ = conn.execute("ALTER TABLE servers ADD COLUMN active_route_id TEXT", []);
+        // Prune expired cache rows older than 7 days to keep DB lean
+        let cutoff = chrono::Utc::now().timestamp() - 7 * 86_400;
+        let _ = conn.execute(
+            "DELETE FROM item_cache WHERE cached_at < ?1",
+            params![cutoff],
+        );
         Ok(())
     }
 
@@ -241,14 +259,38 @@ impl VedroStore {
     }
 
     pub fn delete_server(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute("DELETE FROM servers WHERE id = ?1", params![id])?;
-        conn.execute("DELETE FROM item_cache WHERE server_id = ?1", params![id])?;
-        conn.execute(
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM servers WHERE id = ?1", params![id])?;
+        tx.execute("DELETE FROM item_cache WHERE server_id = ?1", params![id])?;
+        tx.execute(
             "DELETE FROM track_preferences WHERE server_id = ?1",
             params![id],
         )?;
+        let home_key = format!("home_cache_v1:{id}");
+        tx.execute("DELETE FROM settings WHERE key = ?1", params![home_key])?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// Batch-fetch settings matching a key prefix in a single query (eliminates N+1 lookups).
+    pub fn get_settings_by_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let conn = self.conn.lock();
+        let pattern = format!("{prefix}%");
+        let mut stmt =
+            conn.prepare_cached("SELECT key, value_json FROM settings WHERE key LIKE ?1")?;
+        let rows = stmt.query_map(params![pattern], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = std::collections::HashMap::new();
+        for r in rows {
+            let (k, v) = r?;
+            out.insert(k, v);
+        }
+        Ok(out)
     }
 
     pub fn set_setting<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
@@ -356,6 +398,24 @@ impl VedroStore {
         .map_err(StorageError::from)
     }
 }
+
+#[cfg(unix)]
+fn restrict_unix_file_perms(db_path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let base = db_path.to_string_lossy();
+    for candidate in [
+        db_path.to_path_buf(),
+        std::path::PathBuf::from(format!("{base}-wal")),
+        std::path::PathBuf::from(format!("{base}-shm")),
+    ] {
+        if candidate.exists() {
+            let _ = std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_unix_file_perms(_db_path: &Path) {}
 
 fn row_to_server_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<ServerProfile> {
     let routes_str: String = row.get::<_, Option<String>>(9)?.unwrap_or_default();

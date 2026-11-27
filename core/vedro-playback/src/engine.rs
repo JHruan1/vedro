@@ -65,7 +65,7 @@ pub struct PlaybackStats {
 }
 
 struct MpvInstance {
-    lib: LibMpv,
+    lib: &'static LibMpv,
     handle: *mut MpvHandle,
 }
 
@@ -89,23 +89,27 @@ impl PlaybackEngine {
     /// Initialize a new `PlaybackEngine` with the given `PlaybackConfig`.
     /// Uses real `libmpv` when available on the host.
     pub fn new(config: PlaybackConfig) -> Result<Arc<Self>> {
-        let lib = LibMpv::load().map_err(PlaybackError::BackendUnavailable)?;
+        let lib = LibMpv::load_shared().map_err(PlaybackError::BackendUnavailable)?;
         let handle = lib.create_handle().ok_or(PlaybackError::InitFailed(-1))?;
+        // Wrap in RAII immediately so any early error cleanly calls mpv_terminate_destroy
+        let inst = MpvInstance { lib, handle };
 
         let init_opts = config.build_mpv_options(&HdrFormat::Sdr, None);
         for (k, v) in &init_opts {
-            if let Err(rc) = lib.set_option_string(handle, k, v) {
+            if let Err(rc) = inst.lib.set_option_string(inst.handle, k, v) {
                 // Non-fatal: some options (e.g. d3d11/macvk/gpu-next) depend on host libmpv build
                 debug!(option = %k, value = %v, rc, "skipping unsupported libmpv option");
             }
         }
-        lib.initialize(handle).map_err(PlaybackError::InitFailed)?;
-        let (maj, min) = lib.api_version();
+        inst.lib
+            .initialize(inst.handle)
+            .map_err(PlaybackError::InitFailed)?;
+        let (maj, min) = inst.lib.api_version();
         info!(api_version = %format!("{maj}.{min}"), "initialized libmpv playback engine");
 
         Ok(Arc::new(Self {
             config: Mutex::new(config),
-            mpv: Mutex::new(Some(MpvInstance { lib, handle })),
+            mpv: Mutex::new(Some(inst)),
             last_hdr: Mutex::new(None),
             last_audio: Mutex::new(None),
         }))
@@ -154,9 +158,13 @@ impl PlaybackEngine {
                 "no"
             },
         );
+        let is_mobile = matches!(
+            cfg.platform,
+            crate::config::TargetPlatform::Android | crate::config::TargetPlatform::Ios
+        );
         let _ = self.set_property(
             "hdr-compute-peak",
-            if hdr_decision.hdr_compute_peak {
+            if hdr_decision.hdr_compute_peak && !is_mobile {
                 "yes"
             } else {
                 "no"
@@ -208,7 +216,8 @@ impl PlaybackEngine {
     }
 
     pub fn set_volume(&self, volume: f64) -> Result<()> {
-        let clamped = volume.clamp(0.0, 150.0);
+        let clamped = volume.clamp(0.0, 200.0);
+        let _ = self.set_property("volume-max", "200");
         self.set_property("volume", &format!("{clamped:.1}"))
     }
 
@@ -237,8 +246,8 @@ impl PlaybackEngine {
         let mut args = vec!["sub-add", url_or_path, "select"];
         let t_str;
         let l_str;
-        if let Some(t) = title {
-            t_str = t.to_string();
+        if title.is_some() || lang.is_some() {
+            t_str = title.unwrap_or("").to_string();
             args.push(&t_str);
             if let Some(l) = lang {
                 l_str = l.to_string();

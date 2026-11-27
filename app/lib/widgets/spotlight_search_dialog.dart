@@ -6,6 +6,7 @@ import '../core/models/models.dart';
 import '../core/theme/vedro_skin.dart';
 import '../state/app_state.dart';
 import 'vedro_artwork.dart';
+import 'vedro_ui.dart';
 
 /// macOS Spotlight / Forward style multi-server aggregated instant search palette (`⌘K`).
 Future<void> showSpotlightSearch({
@@ -56,6 +57,7 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
   List<Map<String, dynamic>> _servers = [];
   String? _filterServerId;
   bool _searching = false;
+  int _searchGen = 0;
 
   @override
   void dispose() {
@@ -67,6 +69,7 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
   void _onChanged(String val) {
     _debounce?.cancel();
     if (val.trim().isEmpty) {
+      _searchGen++;
       setState(() {
         _hits = [];
         _servers = [];
@@ -79,10 +82,11 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
   }
 
   Future<void> _runSearch(String term) async {
+    final gen = ++_searchGen;
     setState(() => _searching = true);
     try {
       final res = await widget.appState.aggregatedSearch(term, limit: 24);
-      if (mounted) {
+      if (mounted && gen == _searchGen) {
         setState(() {
           _hits = res.hits;
           _servers = res.servers;
@@ -92,8 +96,9 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
           }
         });
       }
+    } catch (_) {
     } finally {
-      if (mounted) setState(() => _searching = false);
+      if (mounted && gen == _searchGen) setState(() => _searching = false);
     }
   }
 
@@ -250,13 +255,13 @@ class _SpotlightSearchOverlayState extends State<_SpotlightSearchOverlay> {
                                         border: Border.all(color: skin.border, width: 0.6),
                                       ),
                                     clipBehavior: Clip.antiAlias,
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        GeneratedArt(seed: h.id, label: h.name),
-                                        if (thumbUrl.isNotEmpty) FadeNetworkImage(url: thumbUrl),
-                                      ],
-                                    ),
+                                    child: thumbUrl.isNotEmpty
+                                        ? FadeNetworkImage(
+                                            url: thumbUrl,
+                                            cacheWidth: 120,
+                                            placeholder: GeneratedArt(seed: h.id, label: h.name),
+                                          )
+                                        : GeneratedArt(seed: h.id, label: h.name),
                                   ),
                                   const SizedBox(width: 14),
                                   Expanded(
@@ -369,8 +374,9 @@ class _SrvFilterChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    return GestureDetector(
+    return PressableScale(
       onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),

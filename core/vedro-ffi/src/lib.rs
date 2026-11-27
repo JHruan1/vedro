@@ -2,9 +2,12 @@
 use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use std::sync::Arc;
-use std::time::Duration;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
+use dashmap::DashMap;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -78,19 +81,110 @@ struct ActivePlaybackSession {
     subtitle_stream_index: Option<i32>,
 }
 
+const MAX_SUBTITLE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_DANMAKU_BYTES: usize = 16 * 1024 * 1024;
+
 /// Core runtime backing both the C-ABI FFI library (`libvedro_ffi`) and native Rust hosts.
+/// Field order & explicit `Drop` ensure playback/ws/proxy stop before the Tokio runtime shuts down.
 pub struct VedroRuntime {
-    rt: Runtime,
-    store: VedroStore,
-    proxy: Arc<StreamProxy>,
-    client: Mutex<Option<EmbyClient>>,
-    ws: Mutex<Option<WebSocketSession>>,
     engine: Mutex<Option<Arc<PlaybackEngine>>>,
-    playback_config: Mutex<PlaybackConfig>,
+    ws: Mutex<Option<WebSocketSession>>,
     active_session: Mutex<Option<ActivePlaybackSession>>,
+    client: Mutex<Option<EmbyClient>>,
+    proxy: Arc<StreamProxy>,
+    store: Arc<VedroStore>,
+    playback_config: Mutex<PlaybackConfig>,
     events: Arc<Mutex<VecDeque<Value>>>,
     identity: Mutex<ClientIdentity>,
     speedtest_cancel: Arc<std::sync::atomic::AtomicBool>,
+    http_default: reqwest::Client,
+    http_direct: reqwest::Client,
+    asr_temp_dir: PathBuf,
+    rt: Option<Runtime>,
+}
+
+impl Drop for VedroRuntime {
+    fn drop(&mut self) {
+        // 1. Terminate libmpv first so it stops reading from StreamProxy
+        self.engine.lock().take();
+        // 2. Stop active WebSocket session
+        if let Some(mut ws) = self.ws.lock().take() {
+            if let Some(ref rt) = self.rt {
+                let _ = rt.block_on(tokio::time::timeout(Duration::from_millis(500), ws.stop()));
+            }
+        }
+        // 3. Unregister active stream
+        if let Some(sess) = self.active_session.lock().take() {
+            self.proxy.unregister_stream(&sess.stream_id);
+        }
+        // 4. Shut down Tokio runtime with bounded timeout so shutdown never hangs
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_timeout(Duration::from_secs(2));
+        }
+    }
+}
+
+fn validate_http_url(raw: &str) -> Result<url::Url, String> {
+    let parsed = url::Url::parse(raw.trim()).map_err(|e| format!("无效的 URL: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err("仅支持 http:// 或 https:// 协议地址".to_string());
+    }
+    Ok(parsed)
+}
+
+fn is_bilibili_index_url(base_url: &str) -> bool {
+    url::Url::parse(base_url.trim())
+        .ok()
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h.eq_ignore_ascii_case("index-translate.bilibili.com"))
+        })
+        .unwrap_or(false)
+}
+
+fn same_origin_as_client(client: &EmbyClient, target_url: &str) -> bool {
+    let Ok(target) = url::Url::parse(target_url) else {
+        return false;
+    };
+    let base = client.base_url();
+    target.scheme().eq_ignore_ascii_case(base.scheme())
+        && target
+            .host_str()
+            .map(|h| h.to_ascii_lowercase())
+            .eq(&base.host_str().map(|h| h.to_ascii_lowercase()))
+        && target.port_or_known_default() == base.port_or_known_default()
+}
+
+async fn read_reqwest_body_capped(
+    resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    use futures_util::StreamExt;
+    if let Some(cl) = resp.content_length() {
+        if cl as usize > max_bytes {
+            return Err(format!(
+                "响应体积超过上限 ({} MB)",
+                max_bytes / (1024 * 1024)
+            ));
+        }
+    }
+    let mut buf = Vec::with_capacity(
+        resp.content_length()
+            .map(|n| (n as usize).min(max_bytes))
+            .unwrap_or(64 * 1024),
+    );
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res.map_err(|e| vedro_protocol::error::format_transport_error(&e))?;
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(format!(
+                "响应体积超过上限 ({} MB)",
+                max_bytes / (1024 * 1024)
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 impl VedroRuntime {
@@ -113,11 +207,40 @@ impl VedroRuntime {
             .filter(|p| !p.is_empty() && *p != ":memory:")
             .and_then(|p| std::path::Path::new(p).parent().map(|d| d.to_path_buf()));
 
-        let store = match db_path {
-            None | Some("") | Some(":memory:") => VedroStore::open_in_memory(),
-            Some(p) => VedroStore::open(p),
+        let store = Arc::new(
+            match db_path {
+                None | Some("") | Some(":memory:") => VedroStore::open_in_memory(),
+                Some(p) => VedroStore::open(p),
+            }
+            .map_err(|e| format!("failed to open storage: {e}"))?,
+        );
+
+        let asr_temp_dir = db_dir
+            .as_ref()
+            .map(|d| d.join("asr_tmp"))
+            .unwrap_or_else(|| std::env::temp_dir().join("vedro_asr_tmp"));
+        let _ = std::fs::create_dir_all(&asr_temp_dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&asr_temp_dir, std::fs::Permissions::from_mode(0o700));
         }
-        .map_err(|e| format!("failed to open storage: {e}"))?;
+
+        let http_default = reqwest::Client::builder()
+            .pool_max_idle_per_host(8)
+            .connect_timeout(Duration::from_secs(12))
+            .timeout(Duration::from_secs(45))
+            .tcp_nodelay(true)
+            .build()
+            .map_err(|e| format!("failed to build default http client: {e}"))?;
+        let http_direct = reqwest::Client::builder()
+            .pool_max_idle_per_host(8)
+            .connect_timeout(Duration::from_secs(12))
+            .timeout(Duration::from_secs(60))
+            .tcp_nodelay(true)
+            .no_proxy()
+            .build()
+            .map_err(|e| format!("failed to build direct http client: {e}"))?;
 
         let saved_cfg: PlaybackConfig = store
             .get_setting("playback_config")
@@ -191,18 +314,25 @@ impl VedroRuntime {
         }
 
         Ok(Self {
-            rt,
-            store,
-            proxy,
-            client: Mutex::new(None),
-            ws: Mutex::new(None),
             engine: Mutex::new(None),
-            playback_config: Mutex::new(saved_cfg),
+            ws: Mutex::new(None),
             active_session: Mutex::new(None),
+            client: Mutex::new(None),
+            proxy,
+            store,
+            playback_config: Mutex::new(saved_cfg),
             events: Arc::new(Mutex::new(VecDeque::with_capacity(256))),
             identity: Mutex::new(identity),
             speedtest_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            http_default,
+            http_direct,
+            asr_temp_dir,
+            rt: Some(rt),
         })
+    }
+
+    pub fn proxy_speed_bps(&self) -> u64 {
+        self.proxy.current_speed_bps()
     }
 
     pub fn poll_events(&self) -> Vec<Value> {
@@ -211,7 +341,10 @@ impl VedroRuntime {
     }
 
     pub fn invoke(&self, method: &str, params: Value) -> Result<Value, String> {
-        self.rt.block_on(self.invoke_async(method, params))
+        let Some(ref rt) = self.rt else {
+            return Err("runtime shut down".to_string());
+        };
+        rt.block_on(self.invoke_async(method, params))
     }
 
     fn require_client(&self) -> Result<EmbyClient, String> {
@@ -257,36 +390,71 @@ impl VedroRuntime {
             };
             let learned_key = format!("learned_streams_v1:{}:{}", item.id, src_id);
             if let Ok(Some(learned)) = self.store.get_setting::<Vec<MediaStream>>(&learned_key) {
-                if !learned.is_empty() {
-                    let mut merged: Vec<MediaStream> = ms
-                        .media_streams
-                        .iter()
-                        .filter(|s| s.is_external)
-                        .cloned()
-                        .collect();
-                    let offset = merged.iter().map(|s| s.index + 1).max().unwrap_or(0).max(0);
-                    for (idx, mut st) in learned.into_iter().enumerate() {
-                        if offset > 0 && st.index < offset {
-                            st.index = offset + idx as i32;
-                        }
-                        merged.push(st);
+                apply_learned_streams(ms, learned);
+            }
+        }
+    }
+
+    /// Batch-enrich an entire episode list with ONE single SQLite prefix query (eliminates N+1 up to 5000 queries!).
+    fn enrich_items_batch_with_learned_tracks(&self, items: &mut [BaseItemDto]) {
+        let needs_any = items.iter().any(|it| {
+            !it.id.is_empty()
+                && it.media_sources.iter().any(|ms| {
+                    !ms.media_streams.iter().any(|s| {
+                        s.stream_type.eq_ignore_ascii_case("Audio")
+                            || s.stream_type.eq_ignore_ascii_case("Video")
+                    })
+                })
+        });
+        if !needs_any {
+            return;
+        }
+        let Ok(all_learned) = self.store.get_settings_by_prefix("learned_streams_v1:") else {
+            return;
+        };
+        if all_learned.is_empty() {
+            return;
+        }
+        for item in items.iter_mut() {
+            if item.id.is_empty() || item.media_sources.is_empty() {
+                continue;
+            }
+            for ms in &mut item.media_sources {
+                let has_av = ms.media_streams.iter().any(|s| {
+                    s.stream_type.eq_ignore_ascii_case("Audio")
+                        || s.stream_type.eq_ignore_ascii_case("Video")
+                });
+                if has_av {
+                    continue;
+                }
+                let src_id = if ms.id.is_empty() {
+                    "default"
+                } else {
+                    ms.id.as_str()
+                };
+                let key = format!("learned_streams_v1:{}:{}", item.id, src_id);
+                if let Some(raw_json) = all_learned.get(&key) {
+                    if let Ok(learned) = serde_json::from_str::<Vec<MediaStream>>(raw_json) {
+                        apply_learned_streams(ms, learned);
                     }
-                    ms.media_streams = merged;
                 }
             }
         }
     }
 
     fn start_websocket(&self, client: EmbyClient) {
+        let Some(ref rt) = self.rt else {
+            return;
+        };
         if let Some(mut old) = self.ws.lock().take() {
-            self.rt.spawn(async move {
+            rt.spawn(async move {
                 old.stop().await;
             });
         }
         let (session, mut rx) = WebSocketSession::spawn(client);
         *self.ws.lock() = Some(session);
         let events = Arc::clone(&self.events);
-        self.rt.spawn(async move {
+        rt.spawn(async move {
             while let Some(ev) = rx.recv().await {
                 if let Ok(v) = serde_json::to_value(&ev) {
                     let mut q = events.lock();
@@ -791,12 +959,13 @@ impl VedroRuntime {
                     } else {
                         format!("线路 {}", routes.len() + 1)
                     };
+                    let transport = client.transport_options();
                     routes.push(ServerRoute {
                         id: rid.clone(),
                         name: rname,
                         url: current_url.clone(),
-                        proxy_url: None,
-                        accept_invalid_certs: false,
+                        proxy_url: transport.proxy_url.clone(),
+                        accept_invalid_certs: transport.accept_invalid_certs,
                     });
                     Some(rid)
                 };
@@ -1006,7 +1175,7 @@ impl VedroRuntime {
                     "latest_by_library": latest_by_library,
                 });
 
-                // Persist Home SWR snapshot keyed by server ID for 0ms instant Home render on next launch!
+                // Persist Home SWR snapshot asynchronously so `get_home` returns to Flutter immediately!
                 let cache_sid = self
                     .store
                     .get_setting::<String>("last_active_server_id")
@@ -1021,9 +1190,12 @@ impl VedroRuntime {
                             cid
                         }
                     });
-                let _ = self
-                    .store
-                    .set_setting(&format!("home_cache_v1:{cache_sid}"), &out);
+                let store_bg = Arc::clone(&self.store);
+                let out_bg = out.clone();
+                let key_bg = format!("home_cache_v1:{cache_sid}");
+                tokio::task::spawn_blocking(move || {
+                    let _ = store_bg.set_setting(&key_bg, &out_bg);
+                });
 
                 Ok(out)
             }
@@ -1074,10 +1246,8 @@ impl VedroRuntime {
                     .episodes(&series_id, season_id, start_index, limit)
                     .await
                     .map_err(|e| e.to_string())?;
-                for ep in &mut res.items {
-                    self.enrich_item_with_learned_tracks(ep);
-                }
-                Ok(serde_json::to_value(res).unwrap())
+                self.enrich_items_batch_with_learned_tracks(&mut res.items);
+                serde_json::to_value(res).map_err(|e| e.to_string())
             }
 
             "get_filters" => {
@@ -1542,9 +1712,9 @@ impl VedroRuntime {
                     .await
                     .map_err(|e| e.to_string())?;
 
-                let chosen = pb
-                    .media_sources
-                    .first()
+                let chosen = media_source_id
+                    .and_then(|req_id| pb.media_sources.iter().find(|s| s.id == req_id))
+                    .or_else(|| pb.media_sources.first())
                     .cloned()
                     .ok_or_else(|| "no media source returned".to_string())?;
 
@@ -1791,7 +1961,9 @@ impl VedroRuntime {
                     .map_err(|e| e.to_string())?;
                 let src = pb
                     .media_sources
-                    .first()
+                    .iter()
+                    .find(|s| s.id == active.1)
+                    .or_else(|| pb.media_sources.first())
                     .ok_or_else(|| "no media source on refresh".to_string())?;
                 let new_url = src
                     .direct_stream_url
@@ -1803,6 +1975,11 @@ impl VedroRuntime {
                 let swapped = self
                     .proxy
                     .update_upstream_url(&active.2, resolved.to_string(), None);
+                if swapped && !pb.play_session_id.is_empty() {
+                    if let Some(ref mut sess) = *self.active_session.lock() {
+                        sess.play_session_id = pb.play_session_id.clone();
+                    }
+                }
                 Ok(json!({
                     "swapped": swapped,
                     "play_session_id": pb.play_session_id,
@@ -2259,7 +2436,10 @@ impl VedroRuntime {
                         let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
                         if resp.status().is_success() {
                             ping_samples_ms.push(elapsed);
-                            if let Ok(body) = resp.json::<Value>().await {
+                            if let Ok(Ok(body)) =
+                                tokio::time::timeout(Duration::from_secs(4), resp.json::<Value>())
+                                    .await
+                            {
                                 if let Some(ip) = body
                                     .get("Ip")
                                     .and_then(Value::as_str)
@@ -2615,10 +2795,9 @@ impl VedroRuntime {
 
             "ai_translate" => {
                 let base_url = str_param(&params, "base_url")?;
+                let _ = validate_http_url(&base_url)?;
                 let api_key = params.get("api_key").and_then(Value::as_str).unwrap_or("");
-                let is_bilibili_index = base_url
-                    .to_ascii_lowercase()
-                    .contains("index-translate.bilibili.com")
+                let is_bilibili_index = is_bilibili_index_url(&base_url)
                     || params
                         .get("model")
                         .and_then(Value::as_str)
@@ -2647,11 +2826,11 @@ impl VedroRuntime {
                     .unwrap_or(is_bilibili_index);
 
                 let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-                let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(30));
-                if direct_ip {
-                    builder = builder.no_proxy();
-                }
-                let http = builder.build().map_err(|e| e.to_string())?;
+                let http = if direct_ip {
+                    &self.http_direct
+                } else {
+                    &self.http_default
+                };
 
                 let payload = if is_bilibili_index {
                     json!({
@@ -2740,6 +2919,12 @@ impl VedroRuntime {
                 let format_hint = params.get("format").and_then(Value::as_str).unwrap_or("");
 
                 let (raw_text, ext_hint) = if let Some(path) = local_path {
+                    let meta = tokio::fs::metadata(path)
+                        .await
+                        .map_err(|e| format!("无法读取本地字幕文件: {e}"))?;
+                    if meta.len() as usize > MAX_SUBTITLE_BYTES {
+                        return Err("字幕文件超过 16 MB 限制".to_string());
+                    }
                     let bytes = tokio::fs::read(path)
                         .await
                         .map_err(|e| format!("无法读取本地字幕文件: {e}"))?;
@@ -2762,25 +2947,37 @@ impl VedroRuntime {
                                     .map(|u| u.to_string())
                                     .unwrap_or_else(|_| raw_url.to_string())
                             };
-                        (resolved, client.auth_headers())
+                        // Security: ONLY attach Emby auth headers when target origin matches the
+                        // connected server AND does not already carry a StreamTicket!
+                        let hdrs = if same_origin_as_client(&client, &resolved)
+                            && !vedro_protocol::auth::url_has_stream_ticket(&resolved)
+                        {
+                            client.auth_headers()
+                        } else {
+                            reqwest::header::HeaderMap::new()
+                        };
+                        (resolved, hdrs)
                     } else {
                         (raw_url.to_string(), reqwest::header::HeaderMap::new())
                     };
+                    let _ = validate_http_url(&resolved_url)?;
 
-                    let http = reqwest::Client::builder()
-                        .timeout(Duration::from_secs(20))
-                        .build()
-                        .map_err(|e| e.to_string())?;
-                    let resp = http
+                    let resp = self
+                        .http_default
                         .get(&resolved_url)
                         .headers(headers)
                         .send()
                         .await
-                        .map_err(|e| format!("拉取字幕失败: {e}"))?;
+                        .map_err(|e| {
+                            format!(
+                                "拉取字幕失败: {}",
+                                vedro_protocol::error::format_transport_error(&e)
+                            )
+                        })?;
                     if !resp.status().is_success() {
                         return Err(format!("拉取字幕失败: HTTP {}", resp.status().as_u16()));
                     }
-                    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+                    let bytes = read_reqwest_body_capped(resp, MAX_SUBTITLE_BYTES).await?;
                     (
                         String::from_utf8_lossy(&bytes).to_string(),
                         if format_hint.is_empty() {
@@ -2816,10 +3013,9 @@ impl VedroRuntime {
 
             "ai_translate_subtitle_batch" => {
                 let base_url = str_param(&params, "base_url")?;
+                let _ = validate_http_url(&base_url)?;
                 let api_key = params.get("api_key").and_then(Value::as_str).unwrap_or("");
-                let is_bilibili_index = base_url
-                    .to_ascii_lowercase()
-                    .contains("index-translate.bilibili.com")
+                let is_bilibili_index = is_bilibili_index_url(&base_url)
                     || params
                         .get("model")
                         .and_then(Value::as_str)
@@ -2890,11 +3086,11 @@ impl VedroRuntime {
                 );
 
                 let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-                let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(45));
-                if direct_ip {
-                    builder = builder.no_proxy();
-                }
-                let http = builder.build().map_err(|e| e.to_string())?;
+                let http = if direct_ip {
+                    &self.http_direct
+                } else {
+                    &self.http_default
+                };
 
                 let payload = if let Some(sys) = sys_prompt {
                     json!({
@@ -2961,6 +3157,7 @@ impl VedroRuntime {
 
             "ai_transcribe_audio_slice" => {
                 let asr_base_url = str_param(&params, "asr_base_url")?;
+                let _ = validate_http_url(&asr_base_url)?;
                 let asr_api_key = params
                     .get("asr_api_key")
                     .and_then(Value::as_str)
@@ -3008,12 +3205,17 @@ impl VedroRuntime {
                 let audio_source = if let Some(p) = local_path {
                     vedro_stream::AudioSliceSource::LocalFile(std::path::PathBuf::from(p))
                 } else if let Some(u) = source_url {
+                    let _ = validate_http_url(u)?;
                     let hdrs = if u.starts_with("http://127.0.0.1:") {
                         reqwest::header::HeaderMap::new()
                     } else {
                         self.client
                             .lock()
                             .as_ref()
+                            .filter(|c| {
+                                same_origin_as_client(c, u)
+                                    && !vedro_protocol::auth::url_has_stream_ticket(u)
+                            })
                             .map(|c| c.auth_headers())
                             .unwrap_or_default()
                     };
@@ -3025,11 +3227,7 @@ impl VedroRuntime {
                     return Err("缺少音频源（source_url 或 local_path）".to_string());
                 };
 
-                let media_http = reqwest::Client::builder()
-                    .timeout(Duration::from_secs(25))
-                    .no_proxy()
-                    .build()
-                    .map_err(|e| e.to_string())?;
+                let media_http = self.http_direct.clone();
                 let handle = tokio::runtime::Handle::current();
                 let wav_bytes = tokio::task::spawn_blocking(move || {
                     vedro_stream::extract_audio_slice_wav(
@@ -3056,11 +3254,11 @@ impl VedroRuntime {
                     "{}/audio/transcriptions",
                     asr_base_url.trim_end_matches('/')
                 );
-                let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(60));
-                if direct_ip {
-                    builder = builder.no_proxy();
-                }
-                let asr_http = builder.build().map_err(|e| e.to_string())?;
+                let asr_http = if direct_ip {
+                    &self.http_direct
+                } else {
+                    &self.http_default
+                };
                 let mut req = asr_http
                     .post(&endpoint)
                     .header(
@@ -3138,12 +3336,17 @@ impl VedroRuntime {
                 let audio_source = if let Some(p) = local_path {
                     vedro_stream::AudioSliceSource::LocalFile(std::path::PathBuf::from(p))
                 } else if let Some(u) = source_url {
+                    let _ = validate_http_url(u)?;
                     let hdrs = if u.starts_with("http://127.0.0.1:") {
                         reqwest::header::HeaderMap::new()
                     } else {
                         self.client
                             .lock()
                             .as_ref()
+                            .filter(|c| {
+                                same_origin_as_client(c, u)
+                                    && !vedro_protocol::auth::url_has_stream_ticket(u)
+                            })
                             .map(|c| c.auth_headers())
                             .unwrap_or_default()
                     };
@@ -3155,11 +3358,7 @@ impl VedroRuntime {
                     return Err("缺少音频源（source_url 或 local_path）".to_string());
                 };
 
-                let media_http = reqwest::Client::builder()
-                    .timeout(Duration::from_secs(25))
-                    .no_proxy()
-                    .build()
-                    .map_err(|e| e.to_string())?;
+                let media_http = self.http_direct.clone();
                 let handle = tokio::runtime::Handle::current();
                 let wav_bytes = tokio::task::spawn_blocking(move || {
                     vedro_stream::extract_audio_slice_wav(
@@ -3173,11 +3372,38 @@ impl VedroRuntime {
                 .await
                 .map_err(|e| format!("音频提取任务异常: {e}"))??;
 
-                let wav_path = std::env::temp_dir()
+                let _ = tokio::fs::create_dir_all(&self.asr_temp_dir).await;
+                // Periodically sweep orphaned temp WAV files older than 5 minutes
+                let sweep_dir = self.asr_temp_dir.clone();
+                tokio::spawn(async move {
+                    if let Ok(mut rd) = tokio::fs::read_dir(&sweep_dir).await {
+                        let now = std::time::SystemTime::now();
+                        while let Ok(Some(ent)) = rd.next_entry().await {
+                            if let Ok(meta) = ent.metadata().await {
+                                if let Ok(mod_t) = meta.modified() {
+                                    if now.duration_since(mod_t).unwrap_or_default()
+                                        > Duration::from_secs(300)
+                                    {
+                                        let _ = tokio::fs::remove_file(ent.path()).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                let wav_path = self
+                    .asr_temp_dir
                     .join(format!("vedro_asr_{}.wav", uuid::Uuid::new_v4().simple()));
                 tokio::fs::write(&wav_path, &wav_bytes)
                     .await
                     .map_err(|e| format!("写入临时音频切片失败: {e}"))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(&wav_path, std::fs::Permissions::from_mode(0o600));
+                }
 
                 Ok(json!({
                     "wav_path": wav_path.to_string_lossy().to_string(),
@@ -3188,21 +3414,20 @@ impl VedroRuntime {
 
             "ai_list_models" => {
                 let base_url = str_param(&params, "base_url")?;
+                let _ = validate_http_url(&base_url)?;
                 let api_key = params.get("api_key").and_then(Value::as_str).unwrap_or("");
-                let is_bilibili_index = base_url
-                    .to_ascii_lowercase()
-                    .contains("index-translate.bilibili.com");
+                let is_bilibili_index = is_bilibili_index_url(&base_url);
                 let direct_ip = params
                     .get("direct_ip")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
 
                 let endpoint = format!("{}/models", base_url.trim_end_matches('/'));
-                let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(12));
-                if direct_ip {
-                    builder = builder.no_proxy();
-                }
-                let http = builder.build().map_err(|e| e.to_string())?;
+                let http = if direct_ip {
+                    &self.http_direct
+                } else {
+                    &self.http_default
+                };
                 let mut req = http.get(&endpoint).header(
                     reqwest::header::USER_AGENT,
                     if is_bilibili_index {
@@ -3550,34 +3775,63 @@ impl VedroRuntime {
     }
 
     fn build_danmaku_http_client(&self) -> Result<reqwest::Client, String> {
-        let mut builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(12))
-            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36");
-        if let Some(client) = self.client.lock().as_ref() {
-            let opts = client.transport_options();
-            builder = builder.danger_accept_invalid_certs(opts.accept_invalid_certs);
-            if let Some(p) = opts
+        // Security: NEVER inherit a LAN media server's `accept_invalid_certs` for public internet danmaku fetches!
+        let proxy_opt = self.client.lock().as_ref().and_then(|client| {
+            client
+                .transport_options()
                 .proxy_url
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-            {
-                if let Ok(proxy) = reqwest::Proxy::all(p) {
-                    builder = builder.proxy(proxy);
-                }
+                .map(ToString::to_string)
+        });
+        let mut builder = reqwest::Client::builder()
+            .timeout(Duration::from_secs(12))
+            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36");
+        if let Some(p) = proxy_opt {
+            if let Ok(proxy) = reqwest::Proxy::all(&p) {
+                builder = builder.proxy(proxy);
             }
         }
         builder.build().map_err(|e| e.to_string())
     }
 }
 
+fn apply_learned_streams(ms: &mut MediaSourceInfo, learned: Vec<MediaStream>) {
+    if learned.is_empty() {
+        return;
+    }
+    let mut merged: Vec<MediaStream> = ms
+        .media_streams
+        .iter()
+        .filter(|s| s.is_external)
+        .cloned()
+        .collect();
+    let offset = merged
+        .iter()
+        .map(|s| s.index.saturating_add(1))
+        .max()
+        .unwrap_or(0)
+        .max(0);
+    for (idx, mut st) in learned.into_iter().enumerate() {
+        if offset > 0 && st.index < offset {
+            st.index = offset.saturating_add(idx as i32);
+        }
+        merged.push(st);
+    }
+    ms.media_streams = merged;
+}
+
 fn clean_danmaku_title(raw: &str) -> String {
     let mut s = raw.trim().to_string();
-    // Strip common video extensions
+    // Strip common video extensions (to_ascii_lowercase preserves exact UTF-8 byte offsets!)
     for ext in [
         ".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".mov", ".webm", ".strm",
     ] {
-        if s.len() > ext.len() && s.to_lowercase().ends_with(ext) {
+        if s.len() > ext.len()
+            && s.is_char_boundary(s.len() - ext.len())
+            && s[s.len() - ext.len()..].eq_ignore_ascii_case(ext)
+        {
             s.truncate(s.len() - ext.len());
         }
     }
@@ -3600,8 +3854,8 @@ fn clean_danmaku_title(raw: &str) -> String {
     if !s.contains(' ') && (s.matches('.').count() >= 2 || s.matches('_').count() >= 2) {
         s = s.replace(['.', '_'], " ");
     }
-    // Truncate at common release / technical tokens
-    let lower = s.to_lowercase();
+    // Truncate at common release / technical tokens (`to_ascii_lowercase` guarantees 1:1 byte indices!)
+    let lower = s.to_ascii_lowercase();
     let cut_tokens = [
         " 2160p", " 1080p", " 720p", " 4k", " bluray", " blu-ray", " remux", " web-dl", " webrip",
         " hdtv", " hevc", " x265", " x264", " h265", " h264", " dovi", " hdr", " s01", " s02",
@@ -3610,7 +3864,7 @@ fn clean_danmaku_title(raw: &str) -> String {
     let mut cut_at = s.len();
     for tok in cut_tokens {
         if let Some(pos) = lower.find(tok) {
-            if pos >= 2 && pos < cut_at {
+            if pos >= 2 && pos < cut_at && s.is_char_boundary(pos) {
                 cut_at = pos;
             }
         }
@@ -3707,41 +3961,51 @@ fn extract_episode_number_from_text(text: &str) -> Option<u64> {
 }
 
 async fn fetch_danmaku_xml_text(http: &reqwest::Client, url: &str) -> Result<String, String> {
-    use std::io::Read;
+    let _ = validate_http_url(url)?;
     let resp = http
         .get(url)
         .header("Accept-Encoding", "identity")
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| vedro_protocol::error::format_transport_error(&e))?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status().as_u16()));
     }
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let bytes = read_reqwest_body_capped(resp, MAX_DANMAKU_BYTES).await?;
     if bytes.starts_with(b"<?xml")
         || bytes.starts_with(b"<i>")
         || bytes.windows(3).any(|w| w == b"<d ")
     {
         return Ok(String::from_utf8_lossy(&bytes).into_owned());
     }
-    // Bilibili `comment.bilibili.com/{cid}.xml` uses raw RFC-1951 deflate without zlib header
-    let mut inflated = Vec::new();
-    if flate2::read::DeflateDecoder::new(&bytes[..])
-        .read_to_end(&mut inflated)
-        .is_ok()
-        && !inflated.is_empty()
-    {
-        return Ok(String::from_utf8_lossy(&inflated).into_owned());
-    }
-    let mut zlib_out = Vec::new();
-    if flate2::read::ZlibDecoder::new(&bytes[..])
-        .read_to_end(&mut zlib_out)
-        .is_ok()
-        && !zlib_out.is_empty()
-    {
-        return Ok(String::from_utf8_lossy(&zlib_out).into_owned());
-    }
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    // Offload deflate/zlib decompression to blocking pool with strict 16 MiB zip-bomb cap!
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let cap = (MAX_DANMAKU_BYTES + 1) as u64;
+        let mut inflated = Vec::new();
+        if flate2::read::DeflateDecoder::new(&bytes[..])
+            .take(cap)
+            .read_to_end(&mut inflated)
+            .is_ok()
+            && !inflated.is_empty()
+            && inflated.len() <= MAX_DANMAKU_BYTES
+        {
+            return Ok(String::from_utf8_lossy(&inflated).into_owned());
+        }
+        let mut zlib_out = Vec::new();
+        if flate2::read::ZlibDecoder::new(&bytes[..])
+            .take(cap)
+            .read_to_end(&mut zlib_out)
+            .is_ok()
+            && !zlib_out.is_empty()
+            && zlib_out.len() <= MAX_DANMAKU_BYTES
+        {
+            return Ok(String::from_utf8_lossy(&zlib_out).into_owned());
+        }
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    })
+    .await
+    .map_err(|e| format!("弹幕解压任务异常: {e}"))?
 }
 
 async fn dandan_auto_match(
@@ -3860,7 +4124,15 @@ async fn dandan_auto_match(
     })))
 }
 
+static BILI_COOKIE_CACHE: OnceLock<Mutex<Option<(Instant, String)>>> = OnceLock::new();
+
 async fn bilibili_cookie_header(http: &reqwest::Client) -> String {
+    let cache = BILI_COOKIE_CACHE.get_or_init(|| Mutex::new(None));
+    if let Some((ts, ref cookie)) = *cache.lock() {
+        if ts.elapsed() < Duration::from_secs(3600) {
+            return cookie.clone();
+        }
+    }
     if let Ok(resp) = http
         .get("https://api.bilibili.com/x/frontend/finger/spi")
         .header("Referer", "https://www.bilibili.com/")
@@ -3871,7 +4143,9 @@ async fn bilibili_cookie_header(http: &reqwest::Client) -> String {
             let b3 = v.pointer("/data/b_3").and_then(Value::as_str).unwrap_or("");
             let b4 = v.pointer("/data/b_4").and_then(Value::as_str).unwrap_or("");
             if !b3.is_empty() {
-                return format!("buvid3={b3}; buvid4={b4}");
+                let cookie = format!("buvid3={b3}; buvid4={b4}");
+                *cache.lock() = Some((Instant::now(), cookie.clone()));
+                return cookie;
             }
         }
     }
@@ -4210,22 +4484,48 @@ fn container_mime_type(container: &str) -> String {
 
 // =============================================================================
 // C-ABI Exports (Flutter dart:ffi, Swift, Kotlin, C++)
+//
+// Runtime handles live in a process-wide `Arc<VedroRuntime>` registry so a concurrent
+// `vedro_destroy` NEVER frees a runtime while another isolate is mid-`vedro_invoke`!
 // =============================================================================
+
+static RUNTIME_REGISTRY: OnceLock<DashMap<usize, Arc<VedroRuntime>>> = OnceLock::new();
+static NEXT_RUNTIME_ID: AtomicUsize = AtomicUsize::new(1);
+
+fn registry() -> &'static DashMap<usize, Arc<VedroRuntime>> {
+    RUNTIME_REGISTRY.get_or_init(DashMap::new)
+}
+
+fn lookup_runtime(rt: *mut VedroRuntime) -> Option<Arc<VedroRuntime>> {
+    if rt.is_null() {
+        return None;
+    }
+    registry()
+        .get(&(rt as usize))
+        .map(|e| Arc::clone(e.value()))
+}
 
 #[no_mangle]
 pub extern "C" fn vedro_init(db_path_utf8: *const c_char) -> *mut VedroRuntime {
-    let db_path = if db_path_utf8.is_null() {
-        None
-    } else {
-        unsafe { CStr::from_ptr(db_path_utf8) }.to_str().ok()
-    };
-    match VedroRuntime::new(db_path) {
-        Ok(rt) => Box::into_raw(Box::new(rt)),
-        Err(e) => {
-            warn!(error = %e, "vedro_init failed");
-            std::ptr::null_mut()
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let db_path = if db_path_utf8.is_null() {
+            None
+        } else {
+            unsafe { CStr::from_ptr(db_path_utf8) }.to_str().ok()
+        };
+        match VedroRuntime::new(db_path) {
+            Ok(rt) => {
+                let id = NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed);
+                registry().insert(id, Arc::new(rt));
+                id as *mut VedroRuntime
+            }
+            Err(e) => {
+                warn!(error = %e, "vedro_init failed");
+                std::ptr::null_mut()
+            }
         }
-    }
+    }));
+    res.unwrap_or(std::ptr::null_mut())
 }
 
 #[no_mangle]
@@ -4234,42 +4534,72 @@ pub extern "C" fn vedro_invoke(
     method_utf8: *const c_char,
     params_json_utf8: *const c_char,
 ) -> *mut c_char {
-    if rt.is_null() || method_utf8.is_null() {
-        return to_c_string(&json!({"ok": false, "error": "null runtime or method"}).to_string());
-    }
-    let runtime = unsafe { &*rt };
-    let method = match unsafe { CStr::from_ptr(method_utf8) }.to_str() {
-        Ok(s) => s,
-        Err(_) => {
-            return to_c_string(&json!({"ok": false, "error": "invalid utf8 method"}).to_string())
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if rt.is_null() || method_utf8.is_null() {
+            return to_c_string(
+                &json!({"ok": false, "error": "null runtime or method"}).to_string(),
+            );
         }
-    };
-    let params = if params_json_utf8.is_null() {
-        json!({})
-    } else {
-        match unsafe { CStr::from_ptr(params_json_utf8) }.to_str() {
-            Ok(raw) if !raw.trim().is_empty() => {
-                serde_json::from_str(raw).unwrap_or_else(|_| json!({}))
+        let Some(runtime) = lookup_runtime(rt) else {
+            return to_c_string(&json!({"ok": false, "error": "runtime disposed"}).to_string());
+        };
+        let method = match unsafe { CStr::from_ptr(method_utf8) }.to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                return to_c_string(
+                    &json!({"ok": false, "error": "invalid utf8 method"}).to_string(),
+                )
             }
-            _ => json!({}),
-        }
-    };
+        };
+        let params = if params_json_utf8.is_null() {
+            json!({})
+        } else {
+            match unsafe { CStr::from_ptr(params_json_utf8) }.to_str() {
+                Ok(raw) if raw.trim().is_empty() => json!({}),
+                Ok(raw) => match serde_json::from_str::<Value>(raw) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return to_c_string(
+                            &json!({"ok": false, "error": format!("invalid params JSON: {e}")})
+                                .to_string(),
+                        );
+                    }
+                },
+                Err(_) => {
+                    return to_c_string(
+                        &json!({"ok": false, "error": "invalid utf8 params"}).to_string(),
+                    );
+                }
+            }
+        };
 
-    let envelope = match runtime.invoke(method, params) {
-        Ok(data) => json!({"ok": true, "data": data}),
-        Err(err) => json!({"ok": false, "error": err}),
-    };
-    to_c_string(&envelope.to_string())
+        let envelope = match runtime.invoke(method, params) {
+            Ok(data) => json!({"ok": true, "data": data}),
+            Err(err) => json!({"ok": false, "error": err}),
+        };
+        to_c_string(&envelope.to_string())
+    }));
+    res.unwrap_or_else(|_| to_c_string(r#"{"ok":false,"error":"internal core panic recovered"}"#))
 }
 
 #[no_mangle]
 pub extern "C" fn vedro_poll_events(rt: *mut VedroRuntime) -> *mut c_char {
-    if rt.is_null() {
-        return to_c_string("[]");
-    }
-    let runtime = unsafe { &*rt };
-    let events = runtime.poll_events();
-    to_c_string(&serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_string()))
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(runtime) = lookup_runtime(rt) else {
+            return to_c_string("[]");
+        };
+        let events = runtime.poll_events();
+        to_c_string(&serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_string()))
+    }));
+    res.unwrap_or_else(|_| to_c_string("[]"))
+}
+
+#[no_mangle]
+pub extern "C" fn vedro_proxy_speed_bps(rt: *mut VedroRuntime) -> u64 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        lookup_runtime(rt).map(|r| r.proxy_speed_bps()).unwrap_or(0)
+    }))
+    .unwrap_or(0)
 }
 
 #[no_mangle]
@@ -4280,18 +4610,18 @@ pub extern "C" fn vedro_version() -> *const c_char {
 #[no_mangle]
 pub extern "C" fn vedro_free_string(ptr: *mut c_char) {
     if !ptr.is_null() {
-        unsafe {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             let _ = CString::from_raw(ptr);
-        }
+        }));
     }
 }
 
 #[no_mangle]
 pub extern "C" fn vedro_destroy(rt: *mut VedroRuntime) {
     if !rt.is_null() {
-        unsafe {
-            let _ = Box::from_raw(rt);
-        }
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = registry().remove(&(rt as usize));
+        }));
     }
 }
 

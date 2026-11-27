@@ -591,12 +591,12 @@ fn parse_mkv_tracks(data: &[u8], header_info: &InspectedMedia) -> Vec<InspectedT
     let Some((tracks_len_opt, size_bytes)) = read_ebml_size(after_id) else {
         return Vec::new();
     };
-    let body_start = tracks_pos + 4 + size_bytes;
+    let body_start = tracks_pos.saturating_add(4).saturating_add(size_bytes);
     if body_start >= header_slice.len() {
         return Vec::new();
     }
     let body_end = tracks_len_opt
-        .map(|l| (body_start + l).min(header_slice.len()))
+        .map(|l| body_start.saturating_add(l).min(header_slice.len()))
         .unwrap_or(header_slice.len());
     let mut cursor = &header_slice[body_start..body_end];
     let mut out = Vec::new();
@@ -612,11 +612,14 @@ fn parse_mkv_tracks(data: &[u8], header_info: &InspectedMedia) -> Vec<InspectedT
         let Some(elem_size) = elem_size_opt else {
             break;
         };
-        if hdr_len + elem_size > cursor.len() {
+        let Some(end) = hdr_len.checked_add(elem_size) else {
+            break;
+        };
+        if end > cursor.len() {
             break;
         }
-        let payload = &cursor[hdr_len..hdr_len + elem_size];
-        cursor = &cursor[hdr_len + elem_size..];
+        let payload = &cursor[hdr_len..end];
+        cursor = &cursor[end..];
 
         // 0xAE = TrackEntry
         if id == 0xAE {
@@ -649,11 +652,14 @@ fn parse_mkv_track_entry(entry: &[u8], header_info: &InspectedMedia) -> Option<I
             break;
         };
         let h = id_len + sz_len;
-        if h + sz > cur.len() {
+        let Some(end) = h.checked_add(sz) else {
+            break;
+        };
+        if end > cur.len() {
             break;
         }
-        let val = &cur[h..h + sz];
-        cur = &cur[h + sz..];
+        let val = &cur[h..end];
+        cur = &cur[end..];
 
         match id {
             0x83 => track_type = ebml_uint(val), // TrackType: 1=video, 2=audio, 17=subtitle
@@ -678,11 +684,14 @@ fn parse_mkv_track_entry(entry: &[u8], header_info: &InspectedMedia) -> Option<I
                         break;
                     };
                     let vh = vid_l + vsz_l;
-                    if vh + vsz > vcur.len() {
+                    let Some(vend) = vh.checked_add(vsz) else {
+                        break;
+                    };
+                    if vend > vcur.len() {
                         break;
                     }
-                    let vval = &vcur[vh..vh + vsz];
-                    vcur = &vcur[vh + vsz..];
+                    let vval = &vcur[vh..vend];
+                    vcur = &vcur[vend..];
                     match vid {
                         0xB0 => width = Some(ebml_uint(vval) as u32),
                         0xBA => height = Some(ebml_uint(vval) as u32),
@@ -701,11 +710,14 @@ fn parse_mkv_track_entry(entry: &[u8], header_info: &InspectedMedia) -> Option<I
                         break;
                     };
                     let ah = aid_l + asz_l;
-                    if ah + asz > acur.len() {
+                    let Some(aend) = ah.checked_add(asz) else {
+                        break;
+                    };
+                    if aend > acur.len() {
                         break;
                     }
-                    let aval = &acur[ah..ah + asz];
-                    acur = &acur[ah + asz..];
+                    let aval = &acur[ah..aend];
+                    acur = &acur[aend..];
                     if aid == 0x9F {
                         channels = Some(ebml_uint(aval) as u32);
                     }
@@ -774,12 +786,12 @@ fn parse_mkv_track_entry(entry: &[u8], header_info: &InspectedMedia) -> Option<I
 
 fn walk_mp4_boxes<'a>(buf: &'a [u8], mut f: impl FnMut(&[u8; 4], &'a [u8])) {
     let mut pos = 0usize;
-    while pos + 8 <= buf.len() {
+    while pos.checked_add(8).is_some_and(|e| e <= buf.len()) {
         let size32 =
             u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
         let tag: [u8; 4] = [buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]];
         let (hdr, box_size) = if size32 == 1 {
-            if pos + 16 > buf.len() {
+            if pos.checked_add(16).is_none_or(|e| e > buf.len()) {
                 break;
             }
             let sz64 = u64::from_be_bytes([
@@ -791,18 +803,24 @@ fn walk_mp4_boxes<'a>(buf: &'a [u8], mut f: impl FnMut(&[u8; 4], &'a [u8])) {
                 buf[pos + 13],
                 buf[pos + 14],
                 buf[pos + 15],
-            ]) as usize;
-            (16usize, sz64)
+            ]);
+            let Ok(sz) = usize::try_from(sz64) else {
+                break;
+            };
+            (16usize, sz)
         } else if size32 == 0 {
             (8usize, buf.len() - pos)
         } else {
             (8usize, size32)
         };
-        if box_size < hdr || pos + box_size > buf.len() {
+        let Some(end) = pos.checked_add(box_size) else {
+            break;
+        };
+        if box_size < hdr || end > buf.len() {
             break;
         }
-        f(&tag, &buf[pos + hdr..pos + box_size]);
-        pos += box_size;
+        f(&tag, &buf[pos + hdr..end]);
+        pos = end;
     }
 }
 

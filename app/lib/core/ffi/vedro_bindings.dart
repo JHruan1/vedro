@@ -2,6 +2,7 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
 
 /// Opaque handle matching `VedroRuntime` in `core/vedro-ffi/include/vedro_ffi.h`.
 final class VedroRuntime extends Opaque {}
@@ -23,6 +24,9 @@ typedef VedroInvokeDart = Pointer<Utf8> Function(
 typedef VedroPollEventsNative = Pointer<Utf8> Function(Pointer<VedroRuntime> rt);
 typedef VedroPollEventsDart = Pointer<Utf8> Function(Pointer<VedroRuntime> rt);
 
+typedef VedroProxySpeedBpsNative = Uint64 Function(Pointer<VedroRuntime> rt);
+typedef VedroProxySpeedBpsDart = int Function(Pointer<VedroRuntime> rt);
+
 typedef VedroVersionNative = Pointer<Utf8> Function();
 typedef VedroVersionDart = Pointer<Utf8> Function();
 
@@ -40,20 +44,33 @@ class VedroNativeBindings {
         pollEvents = lib.lookupFunction<VedroPollEventsNative, VedroPollEventsDart>(
           'vedro_poll_events',
         ),
+        proxySpeedBps = _lookupSpeedOptional(lib),
         version = lib.lookupFunction<VedroVersionNative, VedroVersionDart>('vedro_version'),
         freeString = lib.lookupFunction<VedroFreeStringNative, VedroFreeStringDart>(
           'vedro_free_string',
         ),
         destroy = lib.lookupFunction<VedroDestroyNative, VedroDestroyDart>('vedro_destroy');
 
+  static VedroProxySpeedBpsDart? _lookupSpeedOptional(DynamicLibrary lib) {
+    try {
+      return lib.lookupFunction<VedroProxySpeedBpsNative, VedroProxySpeedBpsDart>(
+        'vedro_proxy_speed_bps',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   final VedroInitDart init;
   final VedroInvokeDart invoke;
   final VedroPollEventsDart pollEvents;
+  final VedroProxySpeedBpsDart? proxySpeedBps;
   final VedroVersionDart version;
   final VedroFreeStringDart freeString;
   final VedroDestroyDart destroy;
 
   /// Dynamically load `libvedro_ffi` for Android, iOS, macOS, Windows, or Linux.
+  /// Release builds strictly load from the signed app bundle / executable directory.
   static VedroNativeBindings load({String? overridePath}) {
     if (overridePath != null && overridePath.isNotEmpty) {
       return VedroNativeBindings(DynamicLibrary.open(overridePath));
@@ -63,28 +80,33 @@ class VedroNativeBindings {
     }
     if (Platform.isMacOS) {
       return VedroNativeBindings(_openFirst([
-        'libvedro_ffi.dylib',
         '@executable_path/../Frameworks/libvedro_ffi.dylib',
+        'libvedro_ffi.dylib',
       ]));
     }
     if (Platform.isWindows) {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
       return VedroNativeBindings(_openFirst([
-        'vedro_ffi.dll',
-        'libvedro_ffi.dll',
+        '$exeDir\\vedro_ffi.dll',
+        '$exeDir\\libvedro_ffi.dll',
+        if (!kReleaseMode) 'vedro_ffi.dll',
+        if (!kReleaseMode) 'libvedro_ffi.dll',
       ]));
     }
     if (Platform.isAndroid) {
       return VedroNativeBindings(DynamicLibrary.open('libvedro_ffi.so'));
     }
     // Linux desktop / test environment
-    final envPath = Platform.environment['VEDRO_FFI_PATH'];
+    final exeDir = File(Platform.resolvedExecutable).parent.path;
+    final envPath = kReleaseMode ? null : Platform.environment['VEDRO_FFI_PATH'];
     return VedroNativeBindings(_openFirst([
       if (envPath != null && envPath.isNotEmpty) envPath,
+      '$exeDir/lib/libvedro_ffi.so',
       'libvedro_ffi.so',
-      '../target/release/libvedro_ffi.so',
-      '../target/debug/libvedro_ffi.so',
-      'target/release/libvedro_ffi.so',
-      'target/debug/libvedro_ffi.so',
+      if (!kReleaseMode) '../target/release/libvedro_ffi.so',
+      if (!kReleaseMode) '../target/debug/libvedro_ffi.so',
+      if (!kReleaseMode) 'target/release/libvedro_ffi.so',
+      if (!kReleaseMode) 'target/debug/libvedro_ffi.so',
     ]));
   }
 

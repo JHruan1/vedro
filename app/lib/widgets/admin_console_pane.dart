@@ -27,6 +27,7 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
   String _tab = 'overview'; // overview | sessions | devices | users | tasks | activity
   bool _refreshing = false;
   bool _scanning = false;
+  String? _loadError;
   String _userFilter = '';
   String _deviceFilter = '';
   final TextEditingController _userSearchCtrl = TextEditingController();
@@ -46,10 +47,17 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
   }
 
   Future<void> _reload() async {
-    setState(() => _refreshing = true);
+    setState(() {
+      _refreshing = true;
+      _loadError = null;
+    });
     try {
       await widget.appState.loadEmbyGoAdminDashboard();
-    } catch (_) {} finally {
+    } catch (e) {
+      if (mounted) {
+        _loadError = e.toString().replaceFirst('VedroCoreException: ', '');
+      }
+    } finally {
       if (mounted) setState(() => _refreshing = false);
     }
   }
@@ -62,6 +70,12 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('已触发全库扫描')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('触发扫描失败：$e')),
         );
       }
     } finally {
@@ -322,7 +336,22 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 48),
             child: Center(
-              child: CircularProgressIndicator(strokeWidth: 2, color: skin.fg2),
+              child: _refreshing
+                  ? CircularProgressIndicator(strokeWidth: 2, color: skin.fg2)
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(CupertinoIcons.exclamationmark_triangle, size: 28, color: skin.fg3),
+                        const SizedBox(height: 10),
+                        Text(
+                          _loadError != null ? '加载管理面板失败：$_loadError' : '无法获取服务器管理数据',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: skin.fg2, fontSize: 13.5),
+                        ),
+                        const SizedBox(height: 14),
+                        FilledButton(onPressed: _reload, child: const Text('重试')),
+                      ],
+                    ),
             ),
           )
         else
@@ -645,7 +674,41 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                 icon: CupertinoIcons.xmark_circle,
                 label: '断开',
                 danger: true,
-                onTap: () => widget.appState.adminEndSession(id),
+                onTap: () async {
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      backgroundColor: skin.surface,
+                      title: Text('断开 $user 的会话？',
+                          style: TextStyle(color: skin.fg, fontSize: 16)),
+                      content: Text(
+                        itemTitle != null ? '将中断对方正在播放的「$itemTitle」。' : '将强制结束该客户端会话。',
+                        style: TextStyle(color: skin.fg2, fontSize: 13.5),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text('取消'),
+                        ),
+                        FilledButton(
+                          style: FilledButton.styleFrom(backgroundColor: VedroTheme.danger),
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('断开'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (ok != true || !mounted) return;
+                  try {
+                    await widget.appState.adminEndSession(id);
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('断开会话失败：$e')),
+                      );
+                    }
+                  }
+                },
               ),
           ],
         ),
@@ -865,11 +928,41 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
                         ),
                         onPressed: () async {
                           final firstUser = d.users.entries.first;
-                          await widget.appState.removeUserDevice(
-                            targetUserId: firstUser.key,
-                            deviceId: d.deviceId,
+                          final ok = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              backgroundColor: skin.surface,
+                              title: Text('移除设备「${d.name.isEmpty ? d.deviceId : d.name}」？',
+                                  style: TextStyle(color: skin.fg, fontSize: 16)),
+                              content: Text('该设备将被迫退出登录并释放名额。',
+                                  style: TextStyle(color: skin.fg2, fontSize: 13.5)),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text('取消'),
+                                ),
+                                FilledButton(
+                                  style: FilledButton.styleFrom(backgroundColor: VedroTheme.danger),
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  child: const Text('移除'),
+                                ),
+                              ],
+                            ),
                           );
-                          await _reload();
+                          if (ok != true || !mounted) return;
+                          try {
+                            await widget.appState.removeUserDevice(
+                              targetUserId: firstUser.key,
+                              deviceId: d.deviceId,
+                            );
+                            await _reload();
+                          } catch (e) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('移除设备失败：$e')),
+                              );
+                            }
+                          }
                         },
                         child: const Text('移除', style: TextStyle(fontSize: 12.5)),
                       ),
@@ -895,8 +988,12 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
             loading = false;
             widget.appState
                 .loadUserDevices(targetUserId: uid)
-                .then((loaded) => setModal(() => list = loaded))
-                .catchError((_) => setModal(() => list = const []));
+                .then((loaded) {
+                  if (ctx.mounted) setModal(() => list = loaded);
+                })
+                .catchError((_) {
+                  if (ctx.mounted) setModal(() => list = const []);
+                });
           }
           return AlertDialog(
             backgroundColor: skin.surface,
@@ -1070,7 +1167,15 @@ class _AdminConsolePaneState extends State<AdminConsolePane> {
       ),
     );
     if (confirm == true) {
-      await widget.appState.adminDeleteUser(uid);
+      try {
+        await widget.appState.adminDeleteUser(uid);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('删除用户失败：$e')),
+          );
+        }
+      }
     }
   }
 
@@ -1399,46 +1504,46 @@ class _AdminTabStrip extends StatelessWidget {
           final wide = constraints.maxWidth >= 480;
           Widget buildPill((String id, String label, int? count) tab, {required bool expand}) {
             final active = tab.$1 == selected;
-            final pill = GestureDetector(
+            final pill = PressableScale(
               onTap: () => onSelected(tab.$1),
-              child: MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 170),
-                  height: 32,
-                  padding: EdgeInsets.symmetric(horizontal: expand ? 6 : 14),
-                  decoration: BoxDecoration(
-                    color: active ? skin.activePillBg : Colors.transparent,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  alignment: Alignment.center,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
+              borderRadius: BorderRadius.circular(999),
+              hoverScale: 1.01,
+              pressScale: 0.97,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 170),
+                height: 32,
+                padding: EdgeInsets.symmetric(horizontal: expand ? 6 : 14),
+                decoration: BoxDecoration(
+                  color: active ? skin.activePillBg : Colors.transparent,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                alignment: Alignment.center,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      tab.$2,
+                      style: TextStyle(
+                        color: active ? skin.activePillFg : skin.fg2,
+                        fontSize: 12.5,
+                        fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                      ),
+                    ),
+                    if (tab.$3 != null) ...[
+                      const SizedBox(width: 4),
                       Text(
-                        tab.$2,
+                        '${tab.$3}',
                         style: TextStyle(
-                          color: active ? skin.activePillFg : skin.fg2,
-                          fontSize: 12.5,
-                          fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                          color: active
+                              ? skin.activePillFg.withValues(alpha: 0.85)
+                              : skin.fg3,
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w600,
+                          fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                       ),
-                      if (tab.$3 != null) ...[
-                        const SizedBox(width: 4),
-                        Text(
-                          '${tab.$3}',
-                          style: TextStyle(
-                            color: active
-                                ? skin.activePillFg.withValues(alpha: 0.85)
-                                : skin.fg3,
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w600,
-                            fontFeatures: const [FontFeature.tabularFigures()],
-                          ),
-                        ),
-                      ],
                     ],
-                  ),
+                  ],
                 ),
               ),
             );

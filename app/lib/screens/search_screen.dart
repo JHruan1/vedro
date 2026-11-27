@@ -32,6 +32,7 @@ class _SearchScreenState extends State<SearchScreen> {
   String? _filterServerId;
   String _typeFilter = 'all'; // all | Movie | Series | Person
   bool _searching = false;
+  int _searchGen = 0;
 
   @override
   void dispose() {
@@ -43,10 +44,12 @@ class _SearchScreenState extends State<SearchScreen> {
   void _onChanged(String val) {
     _debounce?.cancel();
     if (val.trim().isEmpty) {
+      _searchGen++;
       setState(() {
         _hits = [];
         _servers = [];
         _filterServerId = null;
+        _searching = false;
       });
       return;
     }
@@ -54,13 +57,14 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Future<void> _runSearch(String term, {bool saveHistory = false}) async {
+    final gen = ++_searchGen;
     setState(() => _searching = true);
     if (saveHistory) {
       unawaited(widget.appState.addSearchHistory(term));
     }
     try {
       final res = await widget.appState.aggregatedSearch(term, limit: 36);
-      if (mounted) {
+      if (mounted && gen == _searchGen) {
         setState(() {
           _hits = res.hits;
           _servers = res.servers;
@@ -70,8 +74,10 @@ class _SearchScreenState extends State<SearchScreen> {
           }
         });
       }
+    } catch (_) {
+      // Keep previous/empty state gracefully
     } finally {
-      if (mounted) setState(() => _searching = false);
+      if (mounted && gen == _searchGen) setState(() => _searching = false);
     }
   }
 
@@ -150,19 +156,25 @@ class _SearchScreenState extends State<SearchScreen> {
                       borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
                       borderSide: BorderSide(color: skin.accent, width: 1.2),
                     ),
-                    suffixIcon: _ctrl.text.isNotEmpty
-                        ? IconButton(
-                            icon: Icon(Icons.cancel_rounded, size: 17, color: skin.fg3),
-                            onPressed: () {
-                              _ctrl.clear();
-                              setState(() {
-                                _hits = [];
-                                _servers = [];
-                                _filterServerId = null;
-                              });
-                            },
-                          )
-                        : null,
+                    suffixIcon: ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: _ctrl,
+                      builder: (_, value, __) => value.text.isNotEmpty
+                          ? IconButton(
+                              icon: Icon(Icons.cancel_rounded, size: 17, color: skin.fg3),
+                              onPressed: () {
+                                _debounce?.cancel();
+                                _searchGen++;
+                                _ctrl.clear();
+                                setState(() {
+                                  _hits = [];
+                                  _servers = [];
+                                  _filterServerId = null;
+                                  _searching = false;
+                                });
+                              },
+                            )
+                          : const SizedBox.shrink(),
+                    ),
                   ),
                 ),
               ),
@@ -321,13 +333,19 @@ class _SearchScreenState extends State<SearchScreen> {
                                                     boxShadow: skin.posterShadow(),
                                                   ),
                                                   clipBehavior: Clip.antiAlias,
-                                                  child: Stack(
-                                                    fit: StackFit.expand,
-                                                    children: [
-                                                      GeneratedArt(seed: hit.id, label: hit.name),
-                                                      if (url.isNotEmpty) FadeNetworkImage(url: url),
-                                                    ],
-                                                  ),
+                                                  child: url.isNotEmpty
+                                                      ? FadeNetworkImage(
+                                                          url: url,
+                                                          cacheWidth: 320,
+                                                          placeholder: GeneratedArt(
+                                                            seed: hit.id,
+                                                            label: hit.name,
+                                                          ),
+                                                        )
+                                                      : GeneratedArt(
+                                                          seed: hit.id,
+                                                          label: hit.name,
+                                                        ),
                                                 ),
                                               ),
                                               SizedBox(height: cardMetrics.captionTopGap),
@@ -461,23 +479,26 @@ class _ServerTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.only(right: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 13),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: selected ? skin.activePillBg : skin.surface2,
-          borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: selected ? skin.activePillFg : skin.fg2,
-            fontSize: 12.5,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+    final r = skin.radiusForPill(32);
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: PressableScale(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(r),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 13),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? skin.activePillBg : skin.surface2,
+            borderRadius: BorderRadius.circular(r),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? skin.activePillFg : skin.fg2,
+              fontSize: 12.5,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+            ),
           ),
         ),
       ),
@@ -494,14 +515,16 @@ class _TypePill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
-    return GestureDetector(
+    final r = skin.radiusForPill(32);
+    return PressableScale(
       onTap: onTap,
+      borderRadius: BorderRadius.circular(r),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: selected ? skin.activePillBg : skin.surface2,
-          borderRadius: BorderRadius.circular(skin.radiusForPill(32)),
+          borderRadius: BorderRadius.circular(r),
         ),
         child: Text(
           label,

@@ -41,7 +41,7 @@ struct HttpRangeMediaSource {
     len: Option<u64>,
     pos: u64,
     buf_start: u64,
-    buf: Vec<u8>,
+    buf: bytes::Bytes,
 }
 
 impl HttpRangeMediaSource {
@@ -59,7 +59,7 @@ impl HttpRangeMediaSource {
             len: None,
             pos: 0,
             buf_start: 0,
-            buf: Vec::new(),
+            buf: bytes::Bytes::new(),
         };
         // Fetch initial header window & discover total size from Content-Range
         src.fill_window(0)
@@ -71,13 +71,15 @@ impl HttpRangeMediaSource {
         if let Some(total) = self.len {
             if offset >= total {
                 self.buf_start = offset;
-                self.buf.clear();
+                self.buf = bytes::Bytes::new();
                 return Ok(());
             }
         }
         let end = match self.len {
-            Some(total) => (offset + HTTP_WINDOW_BYTES - 1).min(total.saturating_sub(1)),
-            None => offset + HTTP_WINDOW_BYTES - 1,
+            Some(total) => {
+                (offset.saturating_add(HTTP_WINDOW_BYTES - 1)).min(total.saturating_sub(1))
+            }
+            None => offset.saturating_add(HTTP_WINDOW_BYTES - 1),
         };
         let range_header = format!("bytes={offset}-{end}");
         let client = self.client.clone();
@@ -88,7 +90,8 @@ impl HttpRangeMediaSource {
             reqwest::header::HeaderValue::from_str(&range_header).map_err(std::io::Error::other)?,
         );
 
-        let (bytes, total_len) = self.handle.block_on(async move {
+        let (data_bytes, total_len) = self.handle.block_on(async move {
+            use futures_util::StreamExt;
             let resp = client
                 .get(&url)
                 .headers(hdrs)
@@ -96,6 +99,12 @@ impl HttpRangeMediaSource {
                 .await
                 .map_err(std::io::Error::other)?;
             let status = resp.status();
+            if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+                return Ok::<(bytes::Bytes, Option<u64>), std::io::Error>((
+                    bytes::Bytes::new(),
+                    None,
+                ));
+            }
             if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
                 return Err(std::io::Error::other(format!(
                     "HTTP {} reading audio range",
@@ -115,15 +124,30 @@ impl HttpRangeMediaSource {
                         None
                     }
                 });
-            let data = resp.bytes().await.map_err(std::io::Error::other)?;
-            Ok::<(Vec<u8>, Option<u64>), std::io::Error>((data.to_vec(), total))
+            // Bound read strictly to HTTP_WINDOW_BYTES so a server ignoring Range (returning 200 OK
+            // on a multi-GB movie) NEVER causes OOM!
+            let max_read = (HTTP_WINDOW_BYTES as usize).min(1024 * 1024);
+            let mut out = Vec::with_capacity(max_read.min(256 * 1024));
+            let mut stream = resp.bytes_stream();
+            while let Some(chunk_res) = stream.next().await {
+                let chunk = chunk_res.map_err(std::io::Error::other)?;
+                let remaining = max_read.saturating_sub(out.len());
+                if remaining == 0 {
+                    break;
+                }
+                out.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                if out.len() >= max_read {
+                    break;
+                }
+            }
+            Ok((bytes::Bytes::from(out), total))
         })?;
 
         if let Some(t) = total_len {
             self.len = Some(t);
         }
         self.buf_start = offset;
-        self.buf = bytes;
+        self.buf = data_bytes;
         Ok(())
     }
 }
@@ -161,10 +185,10 @@ impl Seek for HttpRangeMediaSource {
                 total as i128 + d as i128
             }
         };
-        if next < 0 {
+        if next < 0 || next > u64::MAX as i128 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "negative seek",
+                "invalid seek offset",
             ));
         }
         self.pos = next as u64;
@@ -254,28 +278,44 @@ fn extract_via_symphonia(
         .map_err(|e| format!("无法解析媒体音轨容器: {e}"))?;
 
     let mut format = probed.format;
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-        .ok_or_else(|| "未在视频中找到支持的音频轨道".to_string())?;
-    let track_id = track.id;
-    let codec_params = track.codec_params.clone();
+    // Select the first DECODABLE audio track (explicitly skipping video/subtitle tracks & unsupported codecs like AC-3/DTS).
+    let codecs = symphonia::default::get_codecs();
+    let mut chosen: Option<(
+        u32,
+        symphonia::core::codecs::CodecParameters,
+        Box<dyn symphonia::core::codecs::Decoder>,
+    )> = None;
+    for t in format.tracks() {
+        let cp = &t.codec_params;
+        if cp.codec == symphonia::core::codecs::CODEC_TYPE_NULL {
+            continue;
+        }
+        if cp.sample_rate.is_none() && cp.channels.is_none() {
+            continue;
+        }
+        if let Ok(dec) = codecs.make(cp, &DecoderOptions::default()) {
+            chosen = Some((t.id, cp.clone(), dec));
+            break;
+        }
+    }
+    let (track_id, codec_params, mut decoder) = chosen.ok_or_else(|| {
+        "当前视频音轨编码暂不支持纯本地内置解码（如 AC-3/DTS/Opus，需 ffmpeg 或使用 AAC/MP3/FLAC/Vorbis 音轨）".to_string()
+    })?;
     let time_base = codec_params.time_base;
-
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &DecoderOptions::default())
-        .map_err(|e| format!("当前音频编码暂不支持内置解码（可安装 ffmpeg 自动兜底）: {e}"))?;
 
     if start_secs >= 0.5 {
         let seek_time = Time::from(start_secs);
-        let _ = format.seek(
+        if let Err(seek_err) = format.seek(
             SeekMode::Coarse,
             SeekTo::Time {
                 time: seek_time,
                 track_id: Some(track_id),
             },
-        );
+        ) {
+            if start_secs >= 2.0 {
+                return Err(format!("音频流定位失败，无法快速切片: {seek_err}"));
+            }
+        }
         decoder.reset();
     }
 
@@ -283,6 +323,7 @@ fn extract_via_symphonia(
     let mut mono_16k: Vec<f32> =
         Vec::with_capacity((duration_secs * TARGET_SAMPLE_RATE as f64) as usize);
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
+    let mut mono_scratch: Vec<f32> = Vec::with_capacity(4096);
     let mut decoded_packets: usize = 0;
 
     loop {
@@ -350,8 +391,8 @@ fn extract_via_symphonia(
         buf.copy_interleaved_ref(decoded);
         let samples = buf.samples();
 
-        let mono_src = downmix_to_mono(samples, channels);
-        resample_linear_into(&mono_src, src_rate, TARGET_SAMPLE_RATE, &mut mono_16k);
+        downmix_to_mono_into(samples, channels, &mut mono_scratch);
+        resample_linear_into(&mono_scratch, src_rate, TARGET_SAMPLE_RATE, &mut mono_16k);
 
         let max_samples = (duration_secs * TARGET_SAMPLE_RATE as f64).ceil() as usize;
         if mono_16k.len() >= max_samples {
@@ -373,44 +414,114 @@ fn extract_via_ffmpeg_fallback(
     start_secs: f64,
     duration_secs: f64,
 ) -> Result<Vec<u8>, String> {
-    let input = match source {
-        AudioSliceSource::LocalFile(p) => p.to_string_lossy().to_string(),
-        AudioSliceSource::HttpUrl { url, .. } => url.clone(),
+    let (input, whitelist, headers_arg) = match source {
+        AudioSliceSource::LocalFile(p) => {
+            let canon = std::fs::canonicalize(p).map_err(|e| format!("invalid local file: {e}"))?;
+            let s = canon.to_string_lossy().to_string();
+            (format!("file:{s}"), "file", None)
+        }
+        AudioSliceSource::HttpUrl { url, headers } => {
+            let parsed = url::Url::parse(url).map_err(|e| format!("invalid url: {e}"))?;
+            if !matches!(parsed.scheme(), "http" | "https") {
+                return Err("unsupported URL scheme for ffmpeg".to_string());
+            }
+            let mut hdr_lines = String::new();
+            for (k, v) in headers.iter() {
+                if let Ok(vs) = v.to_str() {
+                    if !vs.contains('\r') && !vs.contains('\n') {
+                        hdr_lines.push_str(k.as_str());
+                        hdr_lines.push_str(": ");
+                        hdr_lines.push_str(vs);
+                        hdr_lines.push_str("\r\n");
+                    }
+                }
+            }
+            (
+                parsed.to_string(),
+                "http,https,tcp,tls,crypto",
+                if hdr_lines.is_empty() {
+                    None
+                } else {
+                    Some(hdr_lines)
+                },
+            )
+        }
     };
-    let output = std::process::Command::new("ffmpeg")
-        .args([
-            "-nostdin",
-            "-loglevel",
-            "error",
-            "-ss",
-            &format!("{start_secs:.3}"),
-            "-t",
-            &format!("{duration_secs:.3}"),
-            "-i",
-            &input,
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-f",
-            "wav",
-            "pipe:1",
-        ])
-        .output()
-        .map_err(|e| format!("ffmpeg fallback unavailable: {e}"))?;
-    if !output.status.success() || output.stdout.len() <= 44 {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    let mut cmd = std::process::Command::new("ffmpeg");
+    cmd.args([
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-protocol_whitelist",
+        whitelist,
+    ]);
+    if let Some(ref h) = headers_arg {
+        cmd.args(["-headers", h]);
     }
-    Ok(output.stdout)
+    cmd.args([
+        "-ss",
+        &format!("{start_secs:.3}"),
+        "-t",
+        &format!("{duration_secs:.3}"),
+        "-i",
+        &input,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-f",
+        "wav",
+        "pipe:1",
+    ])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("ffmpeg fallback unavailable: {e}"))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+    let mut stdout_pipe = child.stdout.take();
+    let reader_handle = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        if let Some(ref mut pipe) = stdout_pipe {
+            let _ = pipe.take(8 * 1024 * 1024).read_to_end(&mut out);
+        }
+        out
+    });
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout_buf = reader_handle.join().unwrap_or_default();
+                if !status.success() || stdout_buf.len() <= 44 {
+                    return Err("ffmpeg audio slice extraction failed".to_string());
+                }
+                return Ok(stdout_buf);
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("ffmpeg audio slice extraction timed out".to_string());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("ffmpeg wait error: {e}"));
+            }
+        }
+    }
 }
 
-fn downmix_to_mono(interleaved: &[f32], channels: usize) -> Vec<f32> {
+fn downmix_to_mono_into(interleaved: &[f32], channels: usize, out: &mut Vec<f32>) {
+    out.clear();
     if channels <= 1 {
-        return interleaved.to_vec();
+        out.extend_from_slice(interleaved);
+        return;
     }
     let frames = interleaved.len() / channels;
-    let mut out = Vec::with_capacity(frames);
+    out.reserve(frames);
     let inv = 1.0 / channels as f32;
     for f in 0..frames {
         let mut sum = 0.0f32;
@@ -419,6 +530,12 @@ fn downmix_to_mono(interleaved: &[f32], channels: usize) -> Vec<f32> {
         }
         out.push(sum * inv);
     }
+}
+
+#[cfg(test)]
+fn downmix_to_mono(interleaved: &[f32], channels: usize) -> Vec<f32> {
+    let mut out = Vec::new();
+    downmix_to_mono_into(interleaved, channels, &mut out);
     out
 }
 

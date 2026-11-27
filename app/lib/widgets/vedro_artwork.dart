@@ -102,6 +102,7 @@ class FadeNetworkImage extends StatefulWidget {
     this.alignment = Alignment.center,
     this.cacheWidth,
     this.filterQuality = FilterQuality.medium,
+    this.placeholder,
   });
 
   final String url;
@@ -109,6 +110,7 @@ class FadeNetworkImage extends StatefulWidget {
   final Alignment alignment;
   final int? cacheWidth;
   final FilterQuality filterQuality;
+  final Widget? placeholder;
 
   @override
   State<FadeNetworkImage> createState() => _FadeNetworkImageState();
@@ -142,14 +144,20 @@ class _FadeNetworkImageState extends State<FadeNetworkImage> {
     };
     _retryTimer = Timer(Duration(milliseconds: delayMs), () {
       if (!mounted) return;
-      PaintingBinding.instance.imageCache.evict(NetworkImage(widget.url));
+      final baseProvider = NetworkImage(widget.url);
+      PaintingBinding.instance.imageCache.evict(baseProvider);
+      if (widget.cacheWidth != null) {
+        PaintingBinding.instance.imageCache.evict(
+          ResizeImage.resizeIfNeeded(widget.cacheWidth, null, baseProvider),
+        );
+      }
       setState(() => _attempt += 1);
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (widget.url.isEmpty) return const SizedBox.shrink();
+    if (widget.url.isEmpty) return widget.placeholder ?? const SizedBox.shrink();
     return Image.network(
       widget.url,
       key: ValueKey('${widget.url}#$_attempt'),
@@ -162,11 +170,11 @@ class _FadeNetworkImageState extends State<FadeNetworkImage> {
         if (wasSynchronouslyLoaded || frame != null) {
           return child;
         }
-        return const SizedBox.shrink();
+        return widget.placeholder ?? const SizedBox.shrink();
       },
       errorBuilder: (_, __, ___) {
         _scheduleTransientRetry();
-        return const SizedBox.shrink();
+        return widget.placeholder ?? const SizedBox.shrink();
       },
     );
   }
@@ -314,6 +322,7 @@ class VedroArtwork extends StatelessWidget {
     this.landscape = false,
     this.isHero = false,
     this.width,
+    this.displayWidth,
     this.alignment = Alignment.center,
     this.showInitials = true,
   });
@@ -324,6 +333,7 @@ class VedroArtwork extends StatelessWidget {
   final bool landscape;
   final bool isHero;
   final int? width;
+  final double? displayWidth;
   final Alignment alignment;
   final bool showInitials;
 
@@ -337,25 +347,33 @@ class VedroArtwork extends StatelessWidget {
         : null;
 
     final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
+    final placeholder = GeneratedArt(seed: seed, label: label);
     Widget? artLayer;
+    var replacesPlaceholder = false;
     if (isHero) {
       final reqW = width ?? (PlatformPerfProfile.isMobile ? 1280 : 1920);
-      final cacheW = PlatformPerfProfile.imageCacheWidthFor(reqW.toDouble() / 1.5, dpr);
+      final logicalW = displayWidth ?? (reqW.toDouble() / 1.5);
+      final cacheW = PlatformPerfProfile.imageCacheWidthFor(logicalW, dpr);
       final art = appState.backdropArt(item, width: reqW) ??
           (fallbackItem != null ? appState.backdropArt(fallbackItem!, width: reqW) : null);
       if (art != null) {
-        artLayer = art.isPoster
-            ? _AmbientBlurBackdrop(url: art.url)
-            : FadeNetworkImage(
-                url: art.url,
-                fit: BoxFit.cover,
-                alignment: alignment,
-                cacheWidth: cacheW,
-              );
+        if (art.isPoster) {
+          artLayer = _AmbientBlurBackdrop(url: art.url);
+        } else {
+          replacesPlaceholder = true;
+          artLayer = FadeNetworkImage(
+            url: art.url,
+            fit: BoxFit.cover,
+            alignment: alignment,
+            cacheWidth: cacheW,
+            placeholder: placeholder,
+          );
+        }
       }
     } else if (landscape) {
       final w = width ?? 640;
-      final cacheW = PlatformPerfProfile.imageCacheWidthFor(w.toDouble() / 1.6, dpr);
+      final logicalW = displayWidth ?? (w.toDouble() / 1.6);
+      final cacheW = PlatformPerfProfile.imageCacheWidthFor(logicalW, dpr);
       final primaryArt = appState.wideArt(item, width: w);
       final fbArt = fallbackItem != null ? appState.wideArt(fallbackItem!, width: w) : null;
       // Prefer real 16:9 landscape still/backdrop from item first, then from fallbackItem (Season/Series),
@@ -369,36 +387,49 @@ class VedroArtwork extends StatelessWidget {
         chosen = primaryArt ?? fbArt;
       }
       if (chosen != null) {
-        artLayer = chosen.isPoster
-            ? FramedPoster(url: chosen.url, tinyUrl: chosen.tinyUrl, cacheWidth: cacheW)
-            : FadeNetworkImage(
-                url: chosen.url,
-                fit: BoxFit.cover,
-                alignment: alignment,
-                cacheWidth: cacheW,
-              );
+        if (chosen.isPoster) {
+          artLayer = FramedPoster(url: chosen.url, tinyUrl: chosen.tinyUrl, cacheWidth: cacheW);
+        } else {
+          replacesPlaceholder = true;
+          artLayer = FadeNetworkImage(
+            url: chosen.url,
+            fit: BoxFit.cover,
+            alignment: alignment,
+            cacheWidth: cacheW,
+            placeholder: placeholder,
+          );
+        }
       }
     } else {
       final reqW = width ?? 420;
-      final cacheW = PlatformPerfProfile.imageCacheWidthFor(reqW.toDouble() / 1.6, dpr);
+      final logicalW = displayWidth ?? (reqW.toDouble() / 1.6);
+      final cacheW = PlatformPerfProfile.imageCacheWidthFor(logicalW, dpr);
       final url = appState.posterArtUrl(item, width: reqW) ??
           (fallbackItem != null ? appState.posterArtUrl(fallbackItem!, width: reqW) : null);
       if (url != null) {
+        replacesPlaceholder = true;
         artLayer = FadeNetworkImage(
           url: url,
           fit: BoxFit.cover,
           alignment: alignment,
           cacheWidth: cacheW,
+          placeholder: placeholder,
         );
       }
     }
 
+    if (artLayer == null) {
+      return ClipRect(child: placeholder);
+    }
+    if (replacesPlaceholder) {
+      return ClipRect(child: artLayer);
+    }
     return ClipRect(
       child: Stack(
         fit: StackFit.expand,
         children: [
-          GeneratedArt(seed: seed, label: label),
-          if (artLayer != null) artLayer,
+          placeholder,
+          artLayer,
         ],
       ),
     );

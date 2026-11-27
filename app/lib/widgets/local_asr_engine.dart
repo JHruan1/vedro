@@ -47,7 +47,6 @@ class LocalAsrModelSpec {
 
   static const List<String> vadUrls = [
     'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx',
-    'https://ghfast.top/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx',
   ];
 }
 
@@ -77,6 +76,10 @@ class LocalAsrManager extends ChangeNotifier {
   ReceivePort? _workerExitPort;
   String _loadedModelSig = '';
   Future<void>? _startingWorker;
+  int _activeTranscriptions = 0;
+
+  bool get isWorkerLoaded => _workerIsolate != null;
+  bool get isTranscribing => _activeTranscriptions > 0;
 
   Future<Directory> _resolveModelDir() async {
     if (modelDirPath != null && modelDirPath!.isNotEmpty) {
@@ -232,9 +235,12 @@ class LocalAsrManager extends ChangeNotifier {
         var uri = Uri.parse(rawUrl);
         HttpClientResponse? resp;
         for (var hop = 0; hop < 8; hop++) {
+          if (uri.scheme.toLowerCase() != 'https') {
+            throw Exception('拒绝非 HTTPS 模型下载地址: ${uri.scheme}');
+          }
           final req = await client.getUrl(uri);
           req.followRedirects = false;
-          req.headers.set(HttpHeaders.userAgentHeader, 'Vedro-ASR/0.3');
+          req.headers.set(HttpHeaders.userAgentHeader, 'Vedro-ASR/0.4');
           final r = await req.close().timeout(const Duration(seconds: 25));
           if (r.isRedirect && r.headers.value(HttpHeaders.locationHeader) != null) {
             final loc = r.headers.value(HttpHeaders.locationHeader)!;
@@ -254,7 +260,7 @@ class LocalAsrManager extends ChangeNotifier {
         var received = 0;
         var lastEmitMs = 0;
 
-        await for (final chunk in resp) {
+        await for (final chunk in resp.timeout(const Duration(seconds: 30))) {
           if (_cancelRequested) {
             throw Exception('已取消下载');
           }
@@ -282,6 +288,9 @@ class LocalAsrManager extends ChangeNotifier {
         try {
           await sink?.close();
         } catch (_) {}
+        try {
+          if (partFile.existsSync()) partFile.deleteSync();
+        } catch (_) {}
         if (_cancelRequested) rethrow;
       } finally {
         client.close(force: true);
@@ -298,51 +307,60 @@ class LocalAsrManager extends ChangeNotifier {
     required double sliceStartSecs,
     String language = 'auto',
   }) async {
-    await refreshStatus();
-    if (!isModelDownloaded) {
-      throw Exception('尚未下载本地离线语音模型，请先前往「设置 → AI 翻译」下载 SenseVoice 模型');
-    }
-    final dir = await _resolveModelDir();
-    final modelPath = '${dir.path}/${LocalAsrModelSpec.modelFileName}';
-    final tokensPath = '${dir.path}/${LocalAsrModelSpec.tokensFileName}';
-    final vadPath = hasVadModel ? '${dir.path}/${LocalAsrModelSpec.vadFileName}' : '';
-    final normLang = (language.trim().isEmpty || language.trim().toLowerCase() == 'auto')
-        ? 'auto'
-        : language.trim().toLowerCase();
-    final numThreads = (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? 2 : 4;
-    final sig = '$modelPath::$tokensPath::$vadPath::$normLang::$numThreads';
-
-    await _ensureWorker(
-      modelPath: modelPath,
-      tokensPath: tokensPath,
-      vadPath: vadPath,
-      language: normLang,
-      numThreads: numThreads,
-      sig: sig,
-    );
-
-    final sendPort = _workerSendPort;
-    if (sendPort == null) {
-      throw Exception('本地语音识别引擎初始化失败');
-    }
-
+    _activeTranscriptions += 1;
     final reply = ReceivePort();
-    sendPort.send(<String, dynamic>{
-      'cmd': 'transcribe',
-      'wav_path': wavPath,
-      'slice_start_ms': (sliceStartSecs * 1000).round(),
-      'reply': reply.sendPort,
-    });
-    final resp = await reply.first.timeout(const Duration(seconds: 60));
-    reply.close();
+    try {
+      await refreshStatus();
+      if (!isModelDownloaded) {
+        throw Exception('尚未下载本地离线语音模型，请先前往「设置 → AI 翻译」下载 SenseVoice 模型');
+      }
+      final dir = await _resolveModelDir();
+      final modelPath = '${dir.path}/${LocalAsrModelSpec.modelFileName}';
+      final tokensPath = '${dir.path}/${LocalAsrModelSpec.tokensFileName}';
+      final vadPath = hasVadModel ? '${dir.path}/${LocalAsrModelSpec.vadFileName}' : '';
+      final normLang = (language.trim().isEmpty || language.trim().toLowerCase() == 'auto')
+          ? 'auto'
+          : language.trim().toLowerCase();
+      final numThreads = (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? 2 : 4;
+      final sig = '$modelPath::$tokensPath::$vadPath::$normLang::$numThreads';
 
-    if (resp is Map && resp['error'] != null) {
-      throw Exception(resp['error'].toString());
+      await _ensureWorker(
+        modelPath: modelPath,
+        tokensPath: tokensPath,
+        vadPath: vadPath,
+        language: normLang,
+        numThreads: numThreads,
+        sig: sig,
+      );
+
+      final sendPort = _workerSendPort;
+      if (sendPort == null) {
+        throw Exception('本地语音识别引擎初始化失败');
+      }
+
+      sendPort.send(<String, dynamic>{
+        'cmd': 'transcribe',
+        'wav_path': wavPath,
+        'slice_start_ms': (sliceStartSecs * 1000).round(),
+        'reply': reply.sendPort,
+      });
+      final resp = await reply.first.timeout(const Duration(seconds: 60));
+
+      if (resp is Map && resp['error'] != null) {
+        throw Exception(resp['error'].toString());
+      }
+      if (resp is Map && resp['cues'] is List) {
+        return (resp['cues'] as List).whereType<Map<String, dynamic>>().toList();
+      }
+      return const [];
+    } finally {
+      _activeTranscriptions = (_activeTranscriptions - 1).clamp(0, 1 << 20);
+      reply.close();
+      try {
+        final f = File(wavPath);
+        if (f.existsSync()) f.deleteSync();
+      } catch (_) {}
     }
-    if (resp is Map && resp['cues'] is List) {
-      return (resp['cues'] as List).whereType<Map<String, dynamic>>().toList();
-    }
-    return const [];
   }
 
   Future<void> _ensureWorker({
@@ -361,12 +379,12 @@ class LocalAsrManager extends ChangeNotifier {
 
     final completer = Completer<void>();
     _startingWorker = completer.future;
+    final readyPort = ReceivePort();
     try {
       await unloadEngine();
-      final readyPort = ReceivePort();
       final exitPort = ReceivePort();
       _workerExitPort = exitPort;
-      _workerIsolate = await Isolate.spawn(
+      final isolate = await Isolate.spawn(
         _localAsrIsolateEntry,
         <String, dynamic>{
           'ready': readyPort.sendPort,
@@ -378,8 +396,18 @@ class LocalAsrManager extends ChangeNotifier {
         },
         onExit: exitPort.sendPort,
       );
+      _workerIsolate = isolate;
+      exitPort.listen((_) {
+        if (_workerIsolate == isolate) {
+          _workerIsolate = null;
+          _workerSendPort = null;
+          _loadedModelSig = '';
+          _workerExitPort?.close();
+          _workerExitPort = null;
+        }
+      });
+
       final initMsg = await readyPort.first.timeout(const Duration(seconds: 30));
-      readyPort.close();
       if (initMsg is Map && initMsg['error'] != null) {
         await unloadEngine();
         throw Exception(initMsg['error'].toString());
@@ -393,29 +421,44 @@ class LocalAsrManager extends ChangeNotifier {
       }
       completer.complete();
     } catch (e) {
+      await unloadEngine();
       if (!completer.isCompleted) completer.completeError(e);
       rethrow;
     } finally {
+      readyPort.close();
       _startingWorker = null;
     }
   }
 
-  /// Free ONNX recognizer + VAD native memory and terminate the worker isolate.
+  /// Gracefully free ONNX recognizer + VAD native C++ memory BEFORE terminating the worker isolate.
+  /// Avoids leaking 230–400 MB of native ONNX heap on `Isolate.immediate` termination.
   Future<void> unloadEngine() async {
     final sp = _workerSendPort;
+    final iso = _workerIsolate;
+    final exitPort = _workerExitPort;
     _workerSendPort = null;
+    _workerIsolate = null;
+    _workerExitPort = null;
     _loadedModelSig = '';
+
     if (sp != null) {
+      final ackPort = ReceivePort();
       try {
-        sp.send(const <String, dynamic>{'cmd': 'shutdown'});
-      } catch (_) {}
+        sp.send(<String, dynamic>{
+          'cmd': 'shutdown',
+          'ack': ackPort.sendPort,
+        });
+        await ackPort.first.timeout(const Duration(seconds: 3));
+      } catch (_) {
+        // Fallback to hard kill if the worker is wedged
+      } finally {
+        ackPort.close();
+      }
     }
     try {
-      _workerIsolate?.kill(priority: Isolate.immediate);
+      iso?.kill(priority: Isolate.immediate);
     } catch (_) {}
-    _workerIsolate = null;
-    _workerExitPort?.close();
-    _workerExitPort = null;
+    exitPort?.close();
   }
 }
 
@@ -578,8 +621,20 @@ void _localAsrIsolateEntry(Map<String, dynamic> initArgs) {
     if (msg is! Map) return;
     final cmd = msg['cmd']?.toString();
     if (cmd == 'shutdown') {
-      recognizer?.free();
-      vad?.free();
+      try {
+        recognizer?.free();
+        recognizer = null;
+      } catch (_) {}
+      try {
+        vad?.free();
+        vad = null;
+      } catch (_) {}
+      final ack = msg['ack'];
+      if (ack is SendPort) {
+        try {
+          ack.send(true);
+        } catch (_) {}
+      }
       inbox.close();
       return;
     }
@@ -601,23 +656,24 @@ void _localAsrIsolateEntry(Map<String, dynamic> initArgs) {
         }
 
         final segments = <({int startSample, Float32List samples})>[];
-        if (vad != null) {
-          vad.reset();
+        final activeVad = vad;
+        if (activeVad != null) {
+          activeVad.reset();
           const win = 512;
           for (var offset = 0; offset + win <= samples.length; offset += win) {
-            vad.acceptWaveform(Float32List.sublistView(samples, offset, offset + win));
-            while (!vad.isEmpty()) {
-              final seg = vad.front();
-              vad.pop();
+            activeVad.acceptWaveform(Float32List.sublistView(samples, offset, offset + win));
+            while (!activeVad.isEmpty()) {
+              final seg = activeVad.front();
+              activeVad.pop();
               if (seg.samples.length >= 3200) {
                 segments.add((startSample: seg.start, samples: seg.samples));
               }
             }
           }
-          vad.flush();
-          while (!vad.isEmpty()) {
-            final seg = vad.front();
-            vad.pop();
+          activeVad.flush();
+          while (!activeVad.isEmpty()) {
+            final seg = activeVad.front();
+            activeVad.pop();
             if (seg.samples.length >= 3200) {
               segments.add((startSample: seg.start, samples: seg.samples));
             }
@@ -626,14 +682,23 @@ void _localAsrIsolateEntry(Map<String, dynamic> initArgs) {
           segments.addAll(splitSpeechByEnergy(samples));
         }
 
+        final activeRecognizer = recognizer;
+        if (activeRecognizer == null) {
+          reply.send(const <String, dynamic>{'error': '本地识别引擎未初始化'});
+          return;
+        }
         final cues = <Map<String, dynamic>>[];
         for (final seg in segments) {
-          final stream = recognizer!.createStream();
-          stream.acceptWaveform(samples: seg.samples, sampleRate: 16000);
-          recognizer.decode(stream);
-          final res = recognizer.getResult(stream);
-          stream.free();
-          final text = cleanSenseVoiceText(res.text);
+          final stream = activeRecognizer.createStream();
+          String rawText;
+          try {
+            stream.acceptWaveform(samples: seg.samples, sampleRate: 16000);
+            activeRecognizer.decode(stream);
+            rawText = activeRecognizer.getResult(stream).text;
+          } finally {
+            stream.free();
+          }
+          final text = cleanSenseVoiceText(rawText);
           if (text.isEmpty) continue;
           final startMs = sliceStartMs + ((seg.startSample / 16.0).round());
           final durMs = (seg.samples.length / 16.0).round();

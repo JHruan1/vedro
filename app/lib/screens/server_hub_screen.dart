@@ -20,6 +20,7 @@ class ServerHubScreen extends StatefulWidget {
     required this.onServerSelected,
     required this.onOpenAddServer,
     this.onOpenLocalMedia,
+    this.onOpenNetworkUrl,
     this.topInset = 0,
   });
 
@@ -27,6 +28,7 @@ class ServerHubScreen extends StatefulWidget {
   final VoidCallback onServerSelected;
   final void Function([String? initialUrl]) onOpenAddServer;
   final VoidCallback? onOpenLocalMedia;
+  final VoidCallback? onOpenNetworkUrl;
   final double topInset;
 
   @override
@@ -120,6 +122,38 @@ class _ServerHubScreenState extends State<ServerHubScreen> {
                           ],
                         ),
                       ),
+                      if (widget.onOpenNetworkUrl != null) ...[
+                        PressableScale(
+                          key: const ValueKey('server-hub-network-url-btn'),
+                          onTap: widget.onOpenNetworkUrl,
+                          borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
+                          child: Container(
+                            height: 36,
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            decoration: BoxDecoration(
+                              color: skin.subtleChipBg,
+                              borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
+                              border: skin.cardBorder(),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.link_rounded, size: 15.5, color: skin.fg2),
+                                const SizedBox(width: 6),
+                                Text(
+                                  '网络链接',
+                                  style: TextStyle(
+                                    color: skin.fg,
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
                       if (widget.onOpenLocalMedia != null) ...[
                         PressableScale(
                           key: const ValueKey('server-hub-local-video-btn'),

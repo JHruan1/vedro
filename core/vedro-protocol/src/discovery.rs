@@ -53,21 +53,28 @@ pub async fn discover_lan_servers(timeout: Duration) -> Result<Vec<DiscoveredSer
         let remaining = deadline - now;
         match tokio::time::timeout(remaining, socket.recv_from(&mut buf)).await {
             Ok(Ok((n, peer))) => {
+                if found.len() >= 64 {
+                    break;
+                }
                 if let Ok(pkt) = serde_json::from_slice::<DiscoveryPacket>(&buf[..n]) {
-                    if !pkt.address.is_empty() {
+                    let addr = pkt.address.trim();
+                    let valid_http = url::Url::parse(addr)
+                        .map(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
+                        .unwrap_or(false);
+                    if valid_http {
                         let key = if pkt.id.is_empty() {
-                            pkt.address.clone()
+                            addr.to_string()
                         } else {
                             pkt.id.clone()
                         };
                         found.entry(key).or_insert(DiscoveredServer {
                             id: pkt.id,
-                            name: if pkt.name.is_empty() {
+                            name: if pkt.name.trim().is_empty() {
                                 peer.ip().to_string()
                             } else {
-                                pkt.name
+                                pkt.name.trim().to_string()
                             },
-                            address: pkt.address,
+                            address: addr.to_string(),
                             endpoint_address: pkt.endpoint_address,
                         });
                     }

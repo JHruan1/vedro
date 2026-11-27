@@ -18,6 +18,12 @@ const DEFAULT_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,CanDownl
 /// `People`, `Chapters`, `MediaSources` track arrays, `Studios`, `Tags` across ~200 Home items).
 const HOME_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,Overview,Genres,Taglines,ChildCount,RecursiveItemCount,CanDownload,MediaSourceCount,ProductionYear,CommunityRating,OfficialRating,PremiereDate,EndDate,Status";
 
+/// Lightweight fields for library grids, seasons, similar rails, and person credits (5-10x smaller payload).
+const LIST_ITEM_FIELDS: &str = "PrimaryImageAspectRatio,Genres,ChildCount,RecursiveItemCount,CanDownload,MediaSourceCount,ProductionYear,CommunityRating,OfficialRating,PremiereDate,EndDate,Status,SortName,DateCreated";
+
+/// Slim fields for episode lists (keeps MediaSources + Overview for version badges & synopsis, skips heavy People/Chapters/Trailers).
+const EPISODE_LIST_FIELDS: &str = "PrimaryImageAspectRatio,MediaSources,CanDownload,Overview,MediaSourceCount,PremiereDate,ProductionYear,CommunityRating,OfficialRating";
+
 /// High-performance async REST client supporting `embygo`, `Emby`, and `Jellyfin`.
 ///
 /// Key invariants tailored for `embygo`:
@@ -129,15 +135,28 @@ impl EmbyClient {
         st.user_id = None;
     }
 
-    /// Build an absolute URL for a relative API path, preserving any configured path prefix.
+    /// Build an absolute URL for a relative API path, preserving any configured path prefix
+    /// without duplicating subpath prefixes (e.g. `https://host/emby` + `/emby/Videos/...`).
     pub fn endpoint_url(&self, path: &str) -> Result<Url> {
         let trimmed = path.trim_start_matches('/');
         let base_str = self.base_url.as_str().trim_end_matches('/');
-        let prefix = self.state.read().capabilities.api_prefix.clone();
-        let full = if prefix.is_empty() {
-            format!("{base_str}/{trimmed}")
+        let base_path = self.base_url.path().trim_matches('/');
+        let deduped = if !base_path.is_empty()
+            && (trimmed == base_path || trimmed.starts_with(&format!("{base_path}/")))
+        {
+            trimmed[base_path.len()..].trim_start_matches('/')
         } else {
-            format!("{base_str}/{}/{trimmed}", prefix.trim_matches('/'))
+            trimmed
+        };
+        let prefix = self.state.read().capabilities.api_prefix.clone();
+        let norm_prefix = prefix.trim_matches('/');
+        let full = if norm_prefix.is_empty()
+            || deduped == norm_prefix
+            || deduped.starts_with(&format!("{norm_prefix}/"))
+        {
+            format!("{base_str}/{deduped}")
+        } else {
+            format!("{base_str}/{norm_prefix}/{deduped}")
         };
         Ok(Url::parse(&full)?)
     }
@@ -346,11 +365,21 @@ impl EmbyClient {
         let bytes = resp.bytes().await?;
         let info: PublicSystemInfo = serde_json::from_slice(&bytes)?;
 
-        // 401/403/200 on `/emby-compat/status` indicates embygo; 404 indicates Emby/Jellyfin.
-        let is_embygo_hint = matches!(
-            embygo_res,
-            Ok(_) | Err(ProtocolError::Unauthorized(_)) | Err(ProtocolError::Forbidden(_))
-        );
+        // 200 on `/emby-compat/status` (or 401/403 with JSON/Emby headers when not blocked by a generic proxy)
+        // indicates embygo; 404 indicates standard Emby/Jellyfin.
+        let is_embygo_hint = match &embygo_res {
+            Ok(r) => r
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|ct| ct.to_ascii_lowercase().contains("json"))
+                .unwrap_or(true),
+            Err(ProtocolError::Unauthorized(m)) | Err(ProtocolError::Forbidden(m)) => {
+                let lower = m.to_ascii_lowercase();
+                !lower.contains("<html") && !lower.contains("cloudflare")
+            }
+            _ => false,
+        };
 
         let caps = ServerCapabilities::detect(
             &info,
@@ -594,7 +623,7 @@ impl EmbyClient {
     pub async fn items(&self, query: &ItemsQuery) -> Result<ItemsResult<BaseItemDto>> {
         let uid = self.require_user_id()?;
         let mut q: Vec<(&str, String)> = vec![
-            ("Fields", DEFAULT_ITEM_FIELDS.into()),
+            ("Fields", LIST_ITEM_FIELDS.into()),
             ("EnableUserData", "true".into()),
         ];
         if let Some(v) = &query.parent_id {
@@ -680,7 +709,7 @@ impl EmbyClient {
         let uid = self.require_user_id()?;
         let q = vec![
             ("UserId", uid),
-            ("Fields", DEFAULT_ITEM_FIELDS.into()),
+            ("Fields", LIST_ITEM_FIELDS.into()),
             ("EnableUserData", "true".into()),
         ];
         self.request_json(Method::GET, &format!("Shows/{series_id}/Seasons"), &q, None)
@@ -697,7 +726,7 @@ impl EmbyClient {
         let uid = self.require_user_id()?;
         let mut q = vec![
             ("UserId", uid),
-            ("Fields", DEFAULT_ITEM_FIELDS.into()),
+            ("Fields", EPISODE_LIST_FIELDS.into()),
             ("EnableUserData", "true".into()),
         ];
         if let Some(sid) = season_id {
@@ -723,7 +752,7 @@ impl EmbyClient {
         let q = vec![
             ("UserId", uid),
             ("Limit", limit.to_string()),
-            ("Fields", DEFAULT_ITEM_FIELDS.into()),
+            ("Fields", LIST_ITEM_FIELDS.into()),
             ("EnableUserData", "true".into()),
         ];
         self.request_json(Method::GET, &format!("Items/{item_id}/Similar"), &q, None)
@@ -751,7 +780,7 @@ impl EmbyClient {
 
     pub async fn person_credits(&self, person_id: &str) -> Result<ItemsResult<BaseItemDto>> {
         let q = vec![
-            ("Fields", DEFAULT_ITEM_FIELDS.into()),
+            ("Fields", LIST_ITEM_FIELDS.into()),
             ("EnableUserData", "true".into()),
         ];
         match self
@@ -1371,7 +1400,8 @@ impl EmbyClient {
 
 fn normalize_base_url(raw: &str) -> Result<Url> {
     let trimmed = raw.trim().trim_end_matches('/');
-    let candidate = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+    let lower = trimmed.to_ascii_lowercase();
+    let candidate = if lower.starts_with("http://") || lower.starts_with("https://") {
         trimmed.to_string()
     } else {
         format!("http://{trimmed}")

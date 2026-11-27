@@ -61,8 +61,16 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     );
     ctrl.dispose();
     if (name != null && name.isNotEmpty) {
-      await widget.appState.core.invoke('create_playlist', {'name': name, 'item_ids': <String>[]});
-      await widget.appState.refreshPlaylists();
+      try {
+        await widget.appState.core.invoke('create_playlist', {'name': name, 'item_ids': <String>[]});
+        await widget.appState.refreshPlaylists();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('新建片单失败：$e')),
+          );
+        }
+      }
     }
   }
 
@@ -169,8 +177,11 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                                   children: [
                                     for (var i = 0; i < list.length; i++) ...[
                                       if (i > 0) Divider(height: 1, indent: 16, endIndent: 16, color: skin.border),
-                                      InkWell(
+                                      PressableScale(
                                         onTap: () => _openPlaylist(list[i]),
+                                        hoverScale: 1.0,
+                                        pressScale: 0.99,
+                                        borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 16.0)),
                                         child: Padding(
                                           padding: const EdgeInsets.symmetric(
                                             horizontal: 16,
@@ -262,6 +273,7 @@ class _PlaylistDetailPage extends StatefulWidget {
 class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
   List<MediaItemModel> _items = [];
   bool _loading = true;
+  String? _loadError;
 
   @override
   void initState() {
@@ -270,7 +282,10 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
   }
 
   Future<void> _load() async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
     try {
       final res = await widget.appState.core.invoke('get_playlist_items', {
         'playlist_id': widget.playlist.id,
@@ -282,18 +297,46 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
             .map(MediaItemModel.fromJson)
             .toList();
       });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loadError = e.toString().replaceFirst('VedroCoreException: ', ''));
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
   Future<void> _removeEntry(MediaItemModel item) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('移出片单「${item.displayName}」？'),
+        content: const Text('仅从此片单移出，不会删除服务器中的影片文件。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: VedroTheme.danger),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('移出'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
     final entryId = item.playlistItemId ?? item.id;
-    await widget.appState.core.invoke('remove_from_playlist', {
-      'playlist_id': widget.playlist.id,
-      'entry_ids': [entryId],
-    });
-    await _load();
+    try {
+      await widget.appState.core.invoke('remove_from_playlist', {
+        'playlist_id': widget.playlist.id,
+        'entry_ids': [entryId],
+      });
+      await _load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('移出失败：$e')),
+        );
+      }
+    }
   }
 
   Future<void> _confirmDeletePlaylist() async {
@@ -313,8 +356,16 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
       ),
     );
     if (ok == true) {
-      await widget.appState.deletePlaylist(widget.playlist.id);
-      if (mounted) Navigator.of(context).pop();
+      try {
+        await widget.appState.deletePlaylist(widget.playlist.id);
+        if (mounted) Navigator.of(context).pop();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('删除片单失败：$e')),
+          );
+        }
+      }
     }
   }
 
@@ -394,11 +445,23 @@ class _PlaylistDetailPageState extends State<_PlaylistDetailPage> {
               Expanded(
                 child: _loading
                     ? Center(child: CircularProgressIndicator(strokeWidth: 2, color: skin.fg2))
-                    : _items.isEmpty
+                    : _loadError != null && _items.isEmpty
                         ? Center(
-                            child: Text('此片单还没有影片，可在任意详情页点击「片单」添加',
-                                style: TextStyle(color: skin.fg3, fontSize: 13.5)),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text('加载片单失败：$_loadError',
+                                    style: TextStyle(color: skin.fg2, fontSize: 13.5)),
+                                const SizedBox(height: 12),
+                                FilledButton(onPressed: _load, child: const Text('重试')),
+                              ],
+                            ),
                           )
+                        : _items.isEmpty
+                            ? Center(
+                                child: Text('此片单还没有影片，可在任意详情页点击「片单」添加',
+                                    style: TextStyle(color: skin.fg3, fontSize: 13.5)),
+                              )
                       : LayoutBuilder(
                           builder: (context, constraints) {
                             final effectiveStyle =

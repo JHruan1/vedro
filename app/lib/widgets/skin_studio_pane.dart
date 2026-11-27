@@ -830,9 +830,10 @@ class _ResponsiveStagePreviewCard extends StatelessWidget {
                       for (var i = 0; i < samples.length; i++)
                         Padding(
                           padding: EdgeInsets.only(left: i == 0 ? 0 : 4),
-                          child: GestureDetector(
+                          child: PressableScale(
                             key: ValueKey('preview-scene-${samples[i].id}'),
                             onTap: () => onSelectSample(i),
+                            borderRadius: BorderRadius.circular(999),
                             child: AnimatedContainer(
                               duration: const Duration(milliseconds: 180),
                               padding: EdgeInsets.symmetric(
@@ -1243,38 +1244,38 @@ class _ColorSwatchCircle extends StatelessWidget {
   Widget build(BuildContext context) {
     return Tooltip(
       message: tooltip,
-      child: GestureDetector(
+      child: PressableScale(
         onTap: onTap,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 160),
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-              border: selected
-                  ? Border.all(color: Colors.white, width: 2.2)
-                  : Border.all(color: Colors.white.withValues(alpha: 0.16), width: 0.8),
-              boxShadow: selected
-                  ? [
-                      BoxShadow(
-                        color: color.withValues(alpha: 0.45),
-                        blurRadius: 10,
-                        offset: const Offset(0, 3),
-                      ),
-                    ]
-                  : null,
-            ),
-            child: selected
-                ? Icon(
-                    Icons.check_rounded,
-                    size: 18,
-                    color: highContrastOn(color),
-                  )
+        hoverScale: 1.08,
+        pressScale: 0.92,
+        borderRadius: BorderRadius.circular(999),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: selected
+                ? Border.all(color: Colors.white, width: 2.2)
+                : Border.all(color: Colors.white.withValues(alpha: 0.16), width: 0.8),
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: color.withValues(alpha: 0.45),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ]
                 : null,
           ),
+          child: selected
+              ? Icon(
+                  Icons.check_rounded,
+                  size: 18,
+                  color: highContrastOn(color),
+                )
+              : null,
         ),
       ),
     );
@@ -1299,39 +1300,39 @@ class _CustomColorCircle extends StatelessWidget {
 
     return Tooltip(
       message: '自定义 HEX 颜色',
-      child: GestureDetector(
+      child: PressableScale(
         onTap: onTap,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: customColor,
-              gradient: customColor == null
-                  ? const SweepGradient(
-                      colors: [
-                        Color(0xFFFF375F),
-                        Color(0xFFFF9F0A),
-                        Color(0xFF30D158),
-                        Color(0xFF32ADE6),
-                        Color(0xFF5E5CE6),
-                        Color(0xFFBF5AF2),
-                        Color(0xFFFF375F),
-                      ],
-                    )
-                  : null,
-              border: Border.all(
-                color: selected ? Colors.white : skin.borderStrong,
-                width: selected ? 2.2 : 0.9,
-              ),
+        hoverScale: 1.08,
+        pressScale: 0.92,
+        borderRadius: BorderRadius.circular(999),
+        child: Container(
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: customColor,
+            gradient: customColor == null
+                ? const SweepGradient(
+                    colors: [
+                      Color(0xFFFF375F),
+                      Color(0xFFFF9F0A),
+                      Color(0xFF30D158),
+                      Color(0xFF32ADE6),
+                      Color(0xFF5E5CE6),
+                      Color(0xFFBF5AF2),
+                      Color(0xFFFF375F),
+                    ],
+                  )
+                : null,
+            border: Border.all(
+              color: selected ? Colors.white : skin.borderStrong,
+              width: selected ? 2.2 : 0.9,
             ),
-            child: Icon(
-              selected ? Icons.check_rounded : Icons.colorize_rounded,
-              size: 16,
-              color: customColor != null ? highContrastOn(customColor) : Colors.white,
-            ),
+          ),
+          child: Icon(
+            selected ? Icons.check_rounded : Icons.colorize_rounded,
+            size: 16,
+            color: customColor != null ? highContrastOn(customColor) : Colors.white,
           ),
         ),
       ),

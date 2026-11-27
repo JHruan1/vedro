@@ -88,10 +88,17 @@ final class VedroHardwarePlugin: NSObject {
       observers.append(nc.addObserver(forName: NSWindow.didExitFullScreenNotification, object: win, queue: .main) { [weak self] _ in
         self?.channel?.invokeMethod("fullscreenChanged", arguments: ["fullscreen": false])
       })
+      observers.append(nc.addObserver(forName: NSWindow.willCloseNotification, object: win, queue: .main) { [weak self] _ in
+        self?.setPreventSleep(false)
+        VedroHardwarePlugin.retainedInstance = nil
+      })
     }
   }
 
+  private static var retainedInstance: VedroHardwarePlugin?
+
   deinit {
+    setPreventSleep(false)
     for obs in observers {
       NotificationCenter.default.removeObserver(obs)
     }
@@ -100,7 +107,10 @@ final class VedroHardwarePlugin: NSObject {
   static func register(with messenger: FlutterBinaryMessenger, window: NSWindow?) {
     let channel = FlutterMethodChannel(name: channelName, binaryMessenger: messenger)
     let instance = VedroHardwarePlugin(window: window, channel: channel)
-    channel.setMethodCallHandler(instance.handle)
+    retainedInstance = instance
+    channel.setMethodCallHandler { [weak instance] call, result in
+      instance?.handle(call, result: result)
+    }
   }
 
   func emitDroppedFiles(_ paths: [String]) {
@@ -212,12 +222,17 @@ final class VedroHardwarePlugin: NSObject {
           result(response == .OK ? panel.urls.map { $0.path } : [String]())
         }
       }
-    case "enterPiP", "createVideoSurface":
+    case "enterPiP":
+      result(false)
+    case "createVideoSurface":
       result(nil)
     case "openUrl":
       let args = call.arguments as? [String: Any]
       let raw = (args?["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      guard let url = URL(string: raw) else {
+      guard let url = URL(string: raw),
+            let scheme = url.scheme?.lowercased(),
+            (scheme == "http" || scheme == "https"),
+            let host = url.host, !host.isEmpty else {
         result(false)
         return
       }
@@ -282,6 +297,9 @@ final class VedroHardwarePlugin: NSObject {
     let supportsDovi = supportsHdr && headroom > 1.2
 
     return [
+      "is_tv": false,
+      "has_touchscreen": false,
+      "supports_pip": false,
       "supports_hdr10": supportsHdr,
       "supports_hlg": supportsHdr,
       "supports_native_dolby_vision": supportsDovi,

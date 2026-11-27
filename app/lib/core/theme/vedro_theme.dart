@@ -98,6 +98,7 @@ class VedroTheme {
       splashFactory: NoSplash.splashFactory,
       highlightColor: skin.fg.withValues(alpha: 0.05),
       hoverColor: skin.fg.withValues(alpha: 0.04),
+      focusColor: skin.accent.withValues(alpha: 0.22),
       colorScheme: scheme,
       pageTransitionsTheme: const PageTransitionsTheme(
         builders: {
@@ -184,6 +185,13 @@ class VedroTheme {
             fontFamilyFallback: _cjkFallback,
           ),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(btnRadius)),
+        ).copyWith(
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return BorderSide(color: isLight ? const Color(0xFF09090B) : Colors.white, width: 2.2);
+            }
+            return BorderSide.none;
+          }),
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
@@ -191,17 +199,43 @@ class VedroTheme {
           foregroundColor: skin.fg,
           side: BorderSide(color: skin.borderStrong, width: 0.9),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(btnRadius)),
+        ).copyWith(
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return BorderSide(color: skin.accent, width: 2.2);
+            }
+            return BorderSide(color: skin.borderStrong, width: 0.9);
+          }),
+          backgroundColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return skin.accent.withValues(alpha: 0.16);
+            }
+            return null;
+          }),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
-        style: TextButton.styleFrom(foregroundColor: skin.fg2),
+        style: TextButton.styleFrom(foregroundColor: skin.fg2).copyWith(
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return BorderSide(color: skin.accent, width: 1.8);
+            }
+            return BorderSide.none;
+          }),
+          backgroundColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return skin.accent.withValues(alpha: 0.14);
+            }
+            return null;
+          }),
+        ),
       ),
       sliderTheme: SliderThemeData(
         trackHeight: 3.2,
         activeTrackColor: skin.accent,
         inactiveTrackColor: skin.fg.withValues(alpha: 0.18),
         thumbColor: isLight ? skin.accent : Colors.white,
-        overlayColor: skin.accent.withValues(alpha: 0.16),
+        overlayColor: skin.accent.withValues(alpha: 0.22),
         thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5.5),
         overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
       ),
@@ -210,7 +244,12 @@ class VedroTheme {
         trackColor: WidgetStateProperty.resolveWith(
           (states) => states.contains(WidgetState.selected) ? skin.accent : skin.surface3,
         ),
-        trackOutlineColor: WidgetStateProperty.all(Colors.transparent),
+        trackOutlineColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.focused) ? skin.accent : Colors.transparent,
+        ),
+        trackOutlineWidth: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.focused) ? 2.0 : 0.0,
+        ),
       ),
       snackBarTheme: SnackBarThemeData(
         backgroundColor: isLight ? const Color(0xFF18181B) : skin.surface2,

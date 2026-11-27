@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../platform/platform_perf.dart';
 import '../theme/display_profile.dart';
 import '../theme/dynamic_color_engine.dart';
 import '../theme/vedro_skin.dart';
@@ -354,6 +355,8 @@ class VedroPreferences {
     this.confirmExitPlayer = false,
     this.confirmExitApp = true,
     this.incognitoMode = false,
+    this.tvModeOverride = false,
+    this.ignoredUpdateVersion = '',
     // 播放设置
     this.bufferSizeMb = 128,
     this.autoPlayNext = true,
@@ -417,8 +420,8 @@ class VedroPreferences {
     this.aiBilingualSubtitle = true,
     this.aiSubtitleMode = 'bilingual_trans_top', // bilingual_trans_top | bilingual_orig_top | translated_only
     this.aiSubtitleFontScale = 1.0,
-    this.aiSubtitleBatchSize = 16,
-    this.aiSubtitleLookaheadSecs = 120,
+    this.aiSubtitleBatchSize = 18,
+    this.aiSubtitleLookaheadSecs = 60,
     this.aiDirectClientIp = true,
     this.aiCachedModels = const [],
     // AI 语音识别 (ASR · 无字幕视频听音转双语字幕)
@@ -481,6 +484,8 @@ class VedroPreferences {
   final bool confirmExitPlayer;
   final bool confirmExitApp;
   final bool incognitoMode;
+  final bool tvModeOverride;
+  final String ignoredUpdateVersion;
 
   final int bufferSizeMb;
   final bool autoPlayNext;
@@ -578,7 +583,7 @@ class VedroPreferences {
   AccentPalette get accentPalette => AccentPalette.byId(accentId);
 
   static bool get _currentIsMobileOs =>
-      !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+      !kIsWeb && ((Platform.isAndroid && !PlatformPerfProfile.isTv) || Platform.isIOS);
 
   Map<String, dynamic> overridesForPlatform({bool? isMobile}) {
     final mobile = isMobile ?? _currentIsMobileOs;
@@ -759,6 +764,8 @@ class VedroPreferences {
     bool? confirmExitPlayer,
     bool? confirmExitApp,
     bool? incognitoMode,
+    bool? tvModeOverride,
+    String? ignoredUpdateVersion,
     int? bufferSizeMb,
     bool? autoPlayNext,
     bool? autoSkipIntro,
@@ -873,6 +880,8 @@ class VedroPreferences {
         confirmExitPlayer: confirmExitPlayer ?? this.confirmExitPlayer,
         confirmExitApp: confirmExitApp ?? this.confirmExitApp,
         incognitoMode: incognitoMode ?? this.incognitoMode,
+        tvModeOverride: tvModeOverride ?? this.tvModeOverride,
+        ignoredUpdateVersion: ignoredUpdateVersion ?? this.ignoredUpdateVersion,
         bufferSizeMb: bufferSizeMb ?? this.bufferSizeMb,
         autoPlayNext: autoPlayNext ?? this.autoPlayNext,
         autoSkipIntro: autoSkipIntro ?? this.autoSkipIntro,
@@ -988,6 +997,8 @@ class VedroPreferences {
         'confirm_exit_player': confirmExitPlayer,
         'confirm_exit_app': confirmExitApp,
         'incognito_mode': incognitoMode,
+        'tv_mode_override': tvModeOverride,
+        'ignored_update_version': ignoredUpdateVersion,
         'buffer_size_mb': bufferSizeMb,
         'auto_play_next': autoPlayNext,
         'auto_skip_intro': autoSkipIntro,
@@ -1113,6 +1124,8 @@ class VedroPreferences {
         confirmExitPlayer: j['confirm_exit_player'] == true,
         confirmExitApp: j['confirm_exit_app'] != false,
         incognitoMode: j['incognito_mode'] == true,
+        tvModeOverride: j['tv_mode_override'] == true,
+        ignoredUpdateVersion: (j['ignored_update_version'] ?? '').toString(),
         bufferSizeMb: (j['buffer_size_mb'] as num?)?.toInt() ?? 128,
         autoPlayNext: j['auto_play_next'] != false,
         autoSkipIntro: j['auto_skip_intro'] == true,
@@ -1171,9 +1184,9 @@ class VedroPreferences {
         aiSubtitleMode: (j['ai_subtitle_mode'] ?? 'bilingual_trans_top').toString(),
         aiSubtitleFontScale:
             ((j['ai_subtitle_font_scale'] as num?)?.toDouble() ?? 1.0).clamp(0.6, 1.8),
-        aiSubtitleBatchSize: ((j['ai_subtitle_batch_size'] as num?)?.toInt() ?? 16).clamp(8, 32),
+        aiSubtitleBatchSize: ((j['ai_subtitle_batch_size'] as num?)?.toInt() ?? 18).clamp(8, 32),
         aiSubtitleLookaheadSecs:
-            ((j['ai_subtitle_lookahead_secs'] as num?)?.toInt() ?? 120).clamp(30, 300),
+            ((j['ai_subtitle_lookahead_secs'] as num?)?.toInt() ?? 60).clamp(30, 300),
         aiDirectClientIp: j['ai_direct_client_ip'] != false,
         aiCachedModels: ((j['ai_cached_models'] as List<dynamic>?) ?? const [])
             .map((e) => e.toString())

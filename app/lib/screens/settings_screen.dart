@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../core/models/models.dart';
 import '../core/models/preferences.dart';
 import '../core/platform/native_playback_channel.dart';
+import '../core/platform/platform_perf.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
@@ -278,8 +279,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   bool get _canShowAdmin => widget.appState.isSignedIn && widget.appState.isAdmin;
 
+  bool get _canShowEmbyGoTools =>
+      !widget.appState.isSignedIn ||
+      widget.appState.capabilities == null ||
+      widget.appState.capabilities!.isEmbyGo;
+
   List<_NavItemMeta> get _visibleNavItems {
-    final all = _canShowAdmin ? [..._baseNavItems, _adminNavItem] : _baseNavItems;
+    final base = _canShowEmbyGoTools
+        ? _baseNavItems
+        : _baseNavItems
+            .where((i) => i.section != _SettingsSection.speedtest && i.section != _SettingsSection.devices)
+            .toList();
+    final all = _canShowAdmin ? [...base, _adminNavItem] : base;
     final q = _filter.trim().toLowerCase();
     if (q.isEmpty) return all;
     return all
@@ -353,7 +364,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final skin = VedroSkin.of(context);
     final wide = MediaQuery.sizeOf(context).width >= 820;
     final items = _visibleNavItems;
-    if (!_canShowAdmin && _active == _SettingsSection.admin) {
+    if ((!_canShowAdmin && _active == _SettingsSection.admin) ||
+        (!_canShowEmbyGoTools &&
+            (_active == _SettingsSection.speedtest || _active == _SettingsSection.devices))) {
       _active = _SettingsSection.servers;
     }
 
@@ -587,45 +600,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ));
       for (final meta in entry.value) {
         final selected = meta.section == _active;
+        final itemR = skin.cardRadius.clamp(6.0, 11.0);
         out.add(Padding(
           padding: const EdgeInsets.only(bottom: 2),
-          child: MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: GestureDetector(
-              onTap: () => _selectSection(meta.section),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 140),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7.5),
-                decoration: BoxDecoration(
-                  color: selected ? skin.unifiedTileColor(selected: true) : Colors.transparent,
-                  borderRadius: BorderRadius.circular(skin.cardRadius.clamp(6.0, 11.0)),
-                  border: selected
-                      ? Border.all(color: skin.borderStrong, width: 0.8)
-                      : null,
-                ),
-                child: Row(
-                  children: [
-                    _AppleSquircleIcon(
-                      icon: meta.icon,
-                      top: meta.tintTop,
-                      bottom: meta.tintBottom,
-                      size: 24,
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        meta.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: selected ? skin.fg : skin.fg2,
-                          fontSize: 13.5,
-                          fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                        ),
+          child: PressableScale(
+            onTap: () => _selectSection(meta.section),
+            hoverScale: 1.01,
+            pressScale: 0.98,
+            borderRadius: BorderRadius.circular(itemR),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 140),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7.5),
+              decoration: BoxDecoration(
+                color: selected ? skin.unifiedTileColor(selected: true) : Colors.transparent,
+                borderRadius: BorderRadius.circular(itemR),
+                border: selected
+                    ? Border.all(color: skin.borderStrong, width: 0.8)
+                    : null,
+              ),
+              child: Row(
+                children: [
+                  _AppleSquircleIcon(
+                    icon: meta.icon,
+                    top: meta.tintTop,
+                    bottom: meta.tintBottom,
+                    size: 24,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      meta.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: selected ? skin.fg : skin.fg2,
+                        fontSize: 13.5,
+                        fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -656,12 +670,13 @@ class _SidebarServerMiniCard extends StatelessWidget {
     final theme = activeSrv != null ? style.resolveTheme(activeSrv.id) : ServerCardTheme.all.first;
     final cardAccent = theme.cardAccent(skin);
 
-    return GestureDetector(
+    return PressableScale(
       onTap: onTap,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: Container(
-          padding: const EdgeInsets.all(10),
+      hoverScale: 1.01,
+      pressScale: 0.98,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topLeft,
@@ -732,8 +747,7 @@ class _SidebarServerMiniCard extends StatelessWidget {
             ],
           ),
         ),
-      ),
-    );
+      );
   }
 }
 
@@ -1013,6 +1027,13 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
 
   // 1a. 播放测速 (EmbyGo /emby-compat/speedtest)
   Widget _buildSpeedTest(VedroAppState app) {
+    return ListenableBuilder(
+      listenable: app.speedtestTickNotifier,
+      builder: (context, _) => _buildSpeedTestInner(app),
+    );
+  }
+
+  Widget _buildSpeedTestInner(VedroAppState app) {
     final skin = VedroSkin.of(context);
     final res = app.lastSpeedTestResult;
     final running = app.isSpeedTesting;
@@ -1426,6 +1447,13 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
 
   // 2. 下载与缓存
   Widget _buildDownloads(VedroAppState app, VedroPreferences p) {
+    return ListenableBuilder(
+      listenable: app.downloadsTickNotifier,
+      builder: (context, _) => _buildDownloadsInner(app, p),
+    );
+  }
+
+  Widget _buildDownloadsInner(VedroAppState app, VedroPreferences p) {
     final skin = VedroSkin.of(context);
     final totalBytes = app.downloads.fold<int>(0, (sum, d) => sum + d.downloadedBytes);
     final dq = app.meQuota?.downloadQuota;
@@ -1446,100 +1474,117 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
             children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
-                child: Row(
+                child: Wrap(
+                  spacing: 12,
+                  runSpacing: 10,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  alignment: WrapAlignment.spaceBetween,
                   children: [
-                    Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.14),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Icon(
-                        Icons.photo_library_outlined,
-                        size: 19,
-                        color: Theme.of(context).colorScheme.secondary,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(
+                            Icons.photo_library_outlined,
+                            size: 19,
+                            color: Theme.of(context).colorScheme.secondary,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 360),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                '海报与剧照本地缓存',
-                                style: TextStyle(
-                                  color: skin.fg,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                              Wrap(
+                                spacing: 8,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                children: [
+                                  Text(
+                                    '海报与剧照本地缓存',
+                                    style: TextStyle(
+                                      color: skin.fg,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  Text(
+                                    imgSizeLabel,
+                                    style: TextStyle(
+                                      color: Theme.of(context).colorScheme.secondary,
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w700,
+                                      fontFeatures: const [FontFeature.tabularFigures()],
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 8),
+                              const SizedBox(height: 3),
                               Text(
-                                imgSizeLabel,
-                                style: TextStyle(
-                                  color: Theme.of(context).colorScheme.secondary,
-                                  fontSize: 13.5,
-                                  fontWeight: FontWeight.w700,
-                                  fontFeatures: const [FontFeature.tabularFigures()],
-                                ),
+                                app.isLoadingImageCacheStats
+                                    ? '正在统计缓存占用…'
+                                    : '已缓存 $imgFiles 张本地图片 · 内存热缓存 $imgMemEntries 张（避免重复网络加载）',
+                                style: TextStyle(color: skin.fg3, fontSize: 12),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 3),
-                          Text(
-                            app.isLoadingImageCacheStats
-                                ? '正在统计缓存占用…'
-                                : '已缓存 $imgFiles 张本地图片 · 内存热缓存 $imgMemEntries 张（避免重复网络加载）',
-                            style: TextStyle(color: skin.fg3, fontSize: 12),
-                          ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
-                    IconButton(
-                      tooltip: '刷新缓存统计',
-                      visualDensity: VisualDensity.compact,
-                      icon: app.isLoadingImageCacheStats
-                          ? SizedBox(
-                              width: 15,
-                              height: 15,
-                              child: CircularProgressIndicator(strokeWidth: 1.8, color: skin.fg2),
-                            )
-                          : Icon(Icons.refresh_rounded, size: 18, color: skin.fg2),
-                      onPressed: app.isLoadingImageCacheStats ? null : () => app.loadImageCacheStats(),
-                    ),
-                    const SizedBox(width: 4),
-                    OutlinedButton.icon(
-                      key: const ValueKey('clear-image-cache-btn'),
-                      onPressed: app.isClearingImageCache
-                          ? null
-                          : () async {
-                              final res = await app.clearImageCache();
-                              if (!mounted) return;
-                              final removed = (res['removed_files'] as num?)?.toInt() ?? 0;
-                              final freed = (res['freed_bytes'] as num?)?.toInt() ?? 0;
-                              final freedLabel =
-                                  fmtFileSize(freed).isEmpty ? '0 B' : fmtFileSize(freed);
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    removed > 0
-                                        ? '已清理 $removed 张缓存图片，释放 $freedLabel'
-                                        : '本地图片缓存已清空',
-                                  ),
-                                ),
-                              );
-                            },
-                      icon: app.isClearingImageCache
-                          ? const SizedBox(
-                              width: 13,
-                              height: 13,
-                              child: CircularProgressIndicator(strokeWidth: 1.8),
-                            )
-                          : const Icon(Icons.cleaning_services_rounded, size: 15),
-                      label: const Text('清理缓存', style: TextStyle(fontSize: 12.5)),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: '刷新缓存统计',
+                          visualDensity: VisualDensity.compact,
+                          icon: app.isLoadingImageCacheStats
+                              ? SizedBox(
+                                  width: 15,
+                                  height: 15,
+                                  child: CircularProgressIndicator(strokeWidth: 1.8, color: skin.fg2),
+                                )
+                              : Icon(Icons.refresh_rounded, size: 18, color: skin.fg2),
+                          onPressed:
+                              app.isLoadingImageCacheStats ? null : () => app.loadImageCacheStats(),
+                        ),
+                        const SizedBox(width: 4),
+                        OutlinedButton.icon(
+                          key: const ValueKey('clear-image-cache-btn'),
+                          onPressed: app.isClearingImageCache
+                              ? null
+                              : () async {
+                                  final res = await app.clearImageCache();
+                                  if (!mounted) return;
+                                  final removed = (res['removed_files'] as num?)?.toInt() ?? 0;
+                                  final freed = (res['freed_bytes'] as num?)?.toInt() ?? 0;
+                                  final freedLabel =
+                                      fmtFileSize(freed).isEmpty ? '0 B' : fmtFileSize(freed);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        removed > 0
+                                            ? '已清理 $removed 张缓存图片，释放 $freedLabel'
+                                            : '本地图片缓存已清空',
+                                      ),
+                                    ),
+                                  );
+                                },
+                          icon: app.isClearingImageCache
+                              ? const SizedBox(
+                                  width: 13,
+                                  height: 13,
+                                  child: CircularProgressIndicator(strokeWidth: 1.8),
+                                )
+                              : const Icon(Icons.cleaning_services_rounded, size: 15),
+                          label: const Text('清理缓存', style: TextStyle(fontSize: 12.5)),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -2361,20 +2406,20 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 onTap: () => _updatePrefs(p.copyWith(subtitleFontFamily: family)),
               ),
             for (final path in p.customFontPaths)
-              _CheckRow(
-                title: path.split('/').last,
-                subtitle: path,
-                selected: p.subtitleFontFamily ==
-                    path.split('/').last.replaceAll(RegExp(r'\.(ttf|otf|ttc)$', caseSensitive: false), ''),
-                onTap: () {
-                  final stem = path.split('/').last.replaceAll(RegExp(r'\.(ttf|otf|ttc)$', caseSensitive: false), '');
-                  _updatePrefs(p.copyWith(subtitleFontFamily: stem));
-                },
-                trailing: IconButton(
-                  icon: Icon(Icons.delete_outline_rounded, size: 18, color: skin.fg3),
-                  onPressed: () => app.removeSubtitleFont(path),
-                ),
-              ),
+              () {
+                final base = path.replaceAll('\\', '/').split('/').last;
+                final stem = base.replaceAll(RegExp(r'\.(ttf|otf|ttc)$', caseSensitive: false), '');
+                return _CheckRow(
+                  title: base,
+                  subtitle: path,
+                  selected: p.subtitleFontFamily == stem,
+                  onTap: () => _updatePrefs(p.copyWith(subtitleFontFamily: stem)),
+                  trailing: IconButton(
+                    icon: Icon(Icons.delete_outline_rounded, size: 18, color: skin.fg3),
+                    onPressed: () => app.removeSubtitleFont(path),
+                  ),
+                );
+              }(),
           ],
         ),
       ],
@@ -2480,17 +2525,44 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                         },
                       ),
                     ),
-                    const SizedBox(width: 4),
-                    ReorderableDragStartListener(
-                      index: idx,
-                      child: MouseRegion(
-                        cursor: SystemMouseCursors.grab,
-                        child: Padding(
-                          padding: const EdgeInsets.all(6),
-                          child: Icon(Icons.drag_handle_rounded, size: 19, color: skin.fg3),
+                    if (PlatformPerfProfile.isTv) ...[
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: '上移',
+                        icon: Icon(Icons.keyboard_arrow_up_rounded, size: 19, color: skin.fg2),
+                        onPressed: idx == 0
+                            ? null
+                            : () {
+                                final moved = sections.removeAt(idx);
+                                sections.insert(idx - 1, moved);
+                                app.saveHomeLayout(sections);
+                              },
+                      ),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: '下移',
+                        icon: Icon(Icons.keyboard_arrow_down_rounded, size: 19, color: skin.fg2),
+                        onPressed: idx == sections.length - 1
+                            ? null
+                            : () {
+                                final moved = sections.removeAt(idx);
+                                sections.insert(idx + 1, moved);
+                                app.saveHomeLayout(sections);
+                              },
+                      ),
+                    ] else ...[
+                      const SizedBox(width: 4),
+                      ReorderableDragStartListener(
+                        index: idx,
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.grab,
+                          child: Padding(
+                            padding: const EdgeInsets.all(6),
+                            child: Icon(Icons.drag_handle_rounded, size: 19, color: skin.fg3),
+                          ),
                         ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -2597,6 +2669,12 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
         _heading('界面偏好'),
         _GroupedCard(
           children: [
+            _SwitchRow(
+              title: 'TV 遥控器大屏模式',
+              subtitle: '强制启用大屏遥控器焦点高亮、方向键操作与安全边距（Android TV 默认自动开启）',
+              value: p.tvModeOverride,
+              onChanged: (v) => _updatePrefs(p.copyWith(tvModeOverride: v)),
+            ),
             if (showAndroidBackConfirm)
               _SwitchRow(
                 key: const ValueKey('pref-confirm-exit-app'),
@@ -2632,8 +2710,8 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
 
   // 8. 播放设置
   Widget _buildPlayback(VedroPreferences p) {
-    final isMobileOs = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
-    final supportsPip = !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isMacOS);
+    final isMobileOs = !kIsWeb && (Platform.isAndroid || Platform.isIOS) && !PlatformPerfProfile.isTv;
+    final supportsPip = NativePlaybackChannel.supportsNativePip;
     final playerChoices = <String, String>{
       'builtin': !kIsWeb && Platform.isIOS ? '内置播放核心（推荐）' : '内置 Rust + MPV（推荐）',
       if (!kIsWeb && Platform.isAndroid) ...{
@@ -3212,6 +3290,15 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               onChanged: (v) => _updatePrefs(p.copyWith(subtitlePos: v.round())),
             ),
             _SliderRow(
+              title: '字幕描边宽度',
+              valueText: p.subtitleOutlineWidth.toStringAsFixed(1),
+              value: p.subtitleOutlineWidth,
+              min: 0.0,
+              max: 5.0,
+              divisions: 10,
+              onChanged: (v) => _updatePrefs(p.copyWith(subtitleOutlineWidth: v)),
+            ),
+            _SliderRow(
               title: '背景遮罩不透明度',
               valueText: '${(p.subtitleBgOpacity * 100).round()}%',
               value: p.subtitleBgOpacity,
@@ -3232,8 +3319,9 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                     final on = p.subtitleColorHex == hex;
                     return Padding(
                       padding: const EdgeInsets.only(left: 8),
-                      child: GestureDetector(
+                      child: PressableScale(
                         onTap: () => _updatePrefs(p.copyWith(subtitleColorHex: hex)),
+                        borderRadius: BorderRadius.circular(8),
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5.5),
                           decoration: BoxDecoration(
@@ -3469,6 +3557,39 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 ],
               ),
             ),
+            if (isBili)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                  decoration: BoxDecoration(
+                    color: VedroSkin.of(context).accent.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: VedroSkin.of(context).accent.withValues(alpha: 0.28),
+                      width: 0.7,
+                    ),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.shield_outlined,
+                          size: 15, color: VedroSkin.of(context).accent),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Bilibili 公共免费接口已自动启用礼貌限流保护：单线程请求、≥2.4 秒间隔、预读上限 55 秒且本地持久化缓存译文，不重复轰炸公共服务；如需更快并发可切换 DeepSeek / OpenAI / Ollama。',
+                          style: TextStyle(
+                            color: VedroSkin.of(context).fg2,
+                            fontSize: 11.5,
+                            height: 1.45,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             _InlineSegmentedRow<String>(
               title: '目标语言',
               value: p.aiTargetLang,
@@ -4048,7 +4169,10 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
                 if (v) {
                   await _openSetPinDialog(p);
                 } else {
-                  await _updatePrefs(p.copyWith(passcodeEnabled: false));
+                  final verified = await _verifyCurrentPin(p, title: '输入当前密码以关闭应用锁');
+                  if (verified && mounted) {
+                    await _updatePrefs(p.copyWith(passcodeEnabled: false));
+                  }
                 }
               },
             ),
@@ -4056,7 +4180,12 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
               _ActionRow(
                 title: '修改 4 位解锁密码',
                 trailing: Icon(Icons.chevron_right_rounded, size: 18, color: VedroSkin.of(context).fg3),
-                onTap: () => _openSetPinDialog(p),
+                onTap: () async {
+                  final verified = await _verifyCurrentPin(p, title: '验证当前密码');
+                  if (verified && mounted) {
+                    await _openSetPinDialog(p);
+                  }
+                },
               ),
             _InlineSegmentedRow<int>(
               title: '自动锁定时间',
@@ -4068,6 +4197,52 @@ class _SettingsDetailPaneState extends State<_SettingsDetailPane> {
         ),
       ],
     );
+  }
+
+  Future<bool> _verifyCurrentPin(VedroPreferences p, {required String title}) async {
+    if (p.passcodeHash.isEmpty) return true;
+    final ctrl = TextEditingController();
+    String? err;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setModal) => AlertDialog(
+          title: Text(title),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                obscureText: true,
+                maxLength: 4,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: '请输入当前 4 位数字密码', counterText: ''),
+              ),
+              if (err != null) ...[
+                const SizedBox(height: 8),
+                Text(err!, style: const TextStyle(color: VedroTheme.danger, fontSize: 12.5)),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+            FilledButton(
+              onPressed: () {
+                if (hashPasscode(ctrl.text.trim()) != p.passcodeHash) {
+                  setModal(() => err = '密码不正确');
+                  return;
+                }
+                Navigator.pop(ctx, true);
+              },
+              child: const Text('验证'),
+            ),
+          ],
+        ),
+      ),
+    );
+    ctrl.dispose();
+    return ok == true;
   }
 
   Future<void> _openSetPinDialog(VedroPreferences p) async {
@@ -4416,25 +4591,25 @@ class _InlineSegmentedRow<T> extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: items.map((entry) {
             final active = entry.$1 == value;
-            return GestureDetector(
+            return PressableScale(
               key: keyPrefix != null ? ValueKey('$keyPrefix-${entry.$1}') : null,
               onTap: () => onChanged(entry.$1),
-              child: MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 140),
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: active ? skin.activePillBg : Colors.transparent,
-                    borderRadius: BorderRadius.circular(7),
-                  ),
-                  child: Text(
-                    entry.$2,
-                    style: TextStyle(
-                      color: active ? skin.activePillFg : skin.fg3,
-                      fontSize: 12,
-                      fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-                    ),
+              hoverScale: 1.0,
+              pressScale: 0.96,
+              borderRadius: BorderRadius.circular(7),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 140),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: active ? skin.activePillBg : Colors.transparent,
+                  borderRadius: BorderRadius.circular(7),
+                ),
+                child: Text(
+                  entry.$2,
+                  style: TextStyle(
+                    color: active ? skin.activePillFg : skin.fg3,
+                    fontSize: 12,
+                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                   ),
                 ),
               ),

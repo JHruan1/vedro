@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 /// Ultra-lightweight, cross-platform Beauty Filter presets combining:
 /// 1. **Flutter GPU Color Matrix** (`ColorFilter.matrix` on the `Video` texture):
@@ -270,13 +271,20 @@ vec4 hook() {
 ''';
   }
 
-  /// Write the verified single-pass shader to a cached file in system temp dir and return its path.
+  /// Write the verified single-pass shader to the app's private support directory and return its path.
   /// Returns `null` when `presetId == 'off'`.
   static Future<String?> prepareShaderFile(String presetId, double strength) async {
     final src = buildGlslSource(presetId, strength);
     if (src == null) return null;
     final bucket = (strength.clamp(0.15, 1.0) * 20).round();
-    final dir = Directory('${Directory.systemTemp.path}/vedro_shaders_v2');
+    String basePath;
+    try {
+      final support = await getApplicationSupportDirectory();
+      basePath = support.path;
+    } catch (_) {
+      basePath = Directory.systemTemp.path;
+    }
+    final dir = Directory('$basePath/vedro_shaders_v2');
     if (!dir.existsSync()) {
       await dir.create(recursive: true);
     }

@@ -7,6 +7,7 @@ import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
 import 'media_card.dart';
+import 'vedro_ui.dart';
 
 /// Skin-adaptive horizontal scrolling rail:
 /// - Zero ugly desktop scrollbars
@@ -84,7 +85,7 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
       textScaler: textScaler,
       devicePixelRatio: profile.devicePixelRatio,
     );
-    final vPad = wide ? 18.0 : 4.0;
+    final vPad = (wide || PlatformPerfProfile.isTv) ? 20.0 : 6.0;
     final railHeight = cardMetrics.cardHeight + vPad;
 
     final titleStyle = skin.applyHeadlineMood(
@@ -102,11 +103,13 @@ class _HorizontalMediaRailState extends State<HorizontalMediaRail> {
         Padding(
           padding: EdgeInsets.fromLTRB(padX, topGap, padX, wide ? 10 : 7),
           child: widget.onSeeAll != null
-              ? MouseRegion(
-                  cursor: SystemMouseCursors.click,
-                  child: GestureDetector(
-                    onTap: widget.onSeeAll,
-                    behavior: HitTestBehavior.opaque,
+              ? PressableScale(
+                  onTap: widget.onSeeAll,
+                  hoverScale: 1.0,
+                  pressScale: 0.97,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -334,28 +337,31 @@ class _SmoothHorizontalStripState extends State<SmoothHorizontalStrip> {
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 820;
-    final padTop = wide ? 8.0 : 2.0;
-    final padBottom = wide ? 10.0 : 2.0;
+    final isTv = PlatformPerfProfile.isTv;
+    final padTop = (wide || isTv) ? 9.0 : 3.0;
+    final padBottom = (wide || isTv) ? 11.0 : 3.0;
     final paddleTop = ((widget.paddleCenterY ?? (widget.height * 0.44)) - 20)
         .clamp(8.0, (widget.height - 48).clamp(8.0, widget.height));
 
-    final list = ScrollConfiguration(
-      behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
-      child: ListView.separated(
-        controller: _ctrl,
-        padding: EdgeInsets.fromLTRB(widget.padX, padTop, widget.padX, padBottom),
-        scrollDirection: Axis.horizontal,
-        cacheExtent: PlatformPerfProfile.scrollCacheExtent,
-        physics: const BouncingScrollPhysics(
-          parent: AlwaysScrollableScrollPhysics(),
+    final list = FocusTraversalGroup(
+      child: ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+        child: ListView.separated(
+          controller: _ctrl,
+          padding: EdgeInsets.fromLTRB(widget.padX, padTop, widget.padX, padBottom),
+          scrollDirection: Axis.horizontal,
+          cacheExtent: PlatformPerfProfile.scrollCacheExtent,
+          physics: const BouncingScrollPhysics(
+            parent: AlwaysScrollableScrollPhysics(),
+          ),
+          itemCount: widget.itemCount,
+          separatorBuilder: (_, __) => SizedBox(width: widget.spacing),
+          itemBuilder: widget.itemBuilder,
         ),
-        itemCount: widget.itemCount,
-        separatorBuilder: (_, __) => SizedBox(width: widget.spacing),
-        itemBuilder: widget.itemBuilder,
       ),
     );
 
-    if (!wide || PlatformPerfProfile.isMobile) {
+    if (!wide || PlatformPerfProfile.isMobile || isTv) {
       return SizedBox(height: widget.height, child: list);
     }
 

@@ -64,6 +64,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   List<int> _years = [];
   int _total = 0;
   bool _loading = false;
+  String? _loadError;
+  int _requestGen = 0;
   static const int _pageSize = 60;
 
   @override
@@ -95,64 +97,112 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (_scrollCtrl.position.pixels >= _scrollCtrl.position.maxScrollExtent - 500 &&
         !_loading &&
         _items.length < _total) {
-      _loadPage(_items.length);
+      _loadPage(_items.length, gen: _requestGen);
     }
   }
 
   Future<void> _loadFiltersAndReset() async {
-    try {
-      final f = await widget.appState.core.invoke('get_filters', {
-        if (_selectedLibrary != null) 'parent_id': _selectedLibrary!.id,
-      }) as Map<String, dynamic>;
-      _genres = ((f['Genres'] as List<dynamic>?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .toList();
-      _years = ((f['Years'] as List<dynamic>?) ?? const [])
-          .map((e) => int.tryParse(e.toString()))
-          .whereType<int>()
-          .toList()
-        ..sort((a, b) => b.compareTo(a));
-    } catch (_) {}
-    await _resetAndLoad();
-  }
-
-  Future<void> _resetAndLoad() async {
+    final gen = ++_requestGen;
     setState(() {
       _items = [];
       _total = 0;
+      _loadError = null;
+      _loading = true;
     });
-    await _loadPage(0);
+    final filtersFuture = widget.appState.core.invoke('get_filters', {
+      if (_selectedLibrary != null) 'parent_id': _selectedLibrary!.id,
+    }).catchError((_) => <String, dynamic>{});
+    final itemsFuture = _fetchPageData(0);
+
+    try {
+      final results = await Future.wait<dynamic>([filtersFuture, itemsFuture]);
+      if (!mounted || gen != _requestGen) return;
+      final f = results[0] as Map<String, dynamic>;
+      final page = results[1] as ({List<MediaItemModel> items, int total});
+      setState(() {
+        _genres = ((f['Genres'] as List<dynamic>?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+        _years = ((f['Years'] as List<dynamic>?) ?? const [])
+            .map((e) => int.tryParse(e.toString()))
+            .whereType<int>()
+            .toList()
+          ..sort((a, b) => b.compareTo(a));
+        _items = page.items;
+        _total = page.total;
+        _loadError = null;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted || gen != _requestGen) return;
+      setState(() {
+        _loadError = e.toString().replaceFirst('VedroCoreException: ', '');
+        _loading = false;
+      });
+    }
   }
 
-  Future<void> _loadPage(int startIndex) async {
-    if (_loading) return;
-    setState(() => _loading = true);
+  Future<({List<MediaItemModel> items, int total})> _fetchPageData(int startIndex) async {
+    final res = await widget.appState.core.invoke('get_items', {
+      if (_selectedLibrary != null) 'ParentId': _selectedLibrary!.id,
+      'IncludeItemTypes': _mediaTypeFilter,
+      'Recursive': true,
+      'SortBy': _sortBy,
+      'SortOrder': _sortOrder,
+      'StartIndex': startIndex,
+      'Limit': _pageSize,
+      if (_selectedGenreId != null) 'GenreIds': _selectedGenreId,
+      if (_selectedGenreName != null && _selectedGenreId == null) 'Genres': _selectedGenreName,
+      if (_selectedYear != null) 'Years': '$_selectedYear',
+      if (_onlyUnplayed) 'IsPlayed': false,
+      if (_onlyFavorite) 'IsFavorite': true,
+    }) as Map<String, dynamic>;
+    final fetched = ((res['Items'] as List<dynamic>?) ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(MediaItemModel.fromJson)
+        .toList();
+    final total = (res['TotalRecordCount'] as num?)?.toInt() ?? (startIndex + fetched.length);
+    return (items: fetched, total: total);
+  }
+
+  Future<void> _resetAndLoad() async {
+    final gen = ++_requestGen;
+    setState(() {
+      _items = [];
+      _total = 0;
+      _loadError = null;
+      _loading = false;
+    });
+    await _loadPage(0, gen: gen);
+  }
+
+  Future<void> _loadPage(int startIndex, {required int gen}) async {
+    if (_loading && gen == _requestGen) return;
+    setState(() {
+      _loading = true;
+      if (startIndex == 0) _loadError = null;
+    });
     try {
-      final res = await widget.appState.core.invoke('get_items', {
-        if (_selectedLibrary != null) 'ParentId': _selectedLibrary!.id,
-        'IncludeItemTypes': _mediaTypeFilter,
-        'Recursive': true,
-        'SortBy': _sortBy,
-        'SortOrder': _sortOrder,
-        'StartIndex': startIndex,
-        'Limit': _pageSize,
-        if (_selectedGenreId != null) 'GenreIds': _selectedGenreId,
-        if (_selectedGenreName != null && _selectedGenreId == null) 'Genres': _selectedGenreName,
-        if (_selectedYear != null) 'Years': '$_selectedYear',
-        if (_onlyUnplayed) 'IsPlayed': false,
-        if (_onlyFavorite) 'IsFavorite': true,
-      }) as Map<String, dynamic>;
-      final fetched = ((res['Items'] as List<dynamic>?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(MediaItemModel.fromJson)
-          .toList();
-      if (!mounted) return;
+      final page = await _fetchPageData(startIndex);
+      if (!mounted || gen != _requestGen) return;
       setState(() {
-        _items.addAll(fetched);
-        _total = (res['TotalRecordCount'] as num?)?.toInt() ?? _items.length;
+        if (startIndex == 0) {
+          _items = page.items;
+        } else {
+          _items.addAll(page.items);
+        }
+        _total = page.total;
+        _loadError = null;
+      });
+    } catch (e) {
+      if (!mounted || gen != _requestGen) return;
+      setState(() {
+        _loadError = e.toString().replaceFirst('VedroCoreException: ', '');
       });
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && gen == _requestGen) {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -437,6 +487,30 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     );
                   }
                   if (_items.isEmpty) {
+                    if (_loadError != null) {
+                      return Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.cloud_off_rounded, size: 32, color: skin.fg3),
+                              const SizedBox(height: 10),
+                              Text(
+                                '加载媒体库失败：$_loadError',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: skin.fg2, fontSize: 13.5),
+                              ),
+                              const SizedBox(height: 14),
+                              FilledButton(
+                                onPressed: _resetAndLoad,
+                                child: const Text('重试'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }
                     return Center(
                       child: Text(
                         '没有符合筛选条件的内容',
@@ -445,60 +519,66 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     );
                   }
                   if (_listViewMode) {
-                    return ListView.separated(
-                      controller: _scrollCtrl,
-                      cacheExtent: PlatformPerfProfile.scrollCacheExtent,
-                      padding: EdgeInsets.fromLTRB(padX, 4, padX, wide ? 44 : 108),
-                      itemCount: _items.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 10),
-                      itemBuilder: (_, idx) {
-                        final item = _items[idx];
-                        return _LibraryListTile(
-                          item: item,
-                          appState: widget.appState,
-                          onTap: () => widget.onItemTap(item),
-                        );
-                      },
+                    return RefreshIndicator(
+                      onRefresh: _resetAndLoad,
+                      child: ListView.separated(
+                        controller: _scrollCtrl,
+                        cacheExtent: PlatformPerfProfile.scrollCacheExtent,
+                        padding: EdgeInsets.fromLTRB(padX, 4, padX, wide ? 44 : 108),
+                        itemCount: _items.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
+                        itemBuilder: (_, idx) {
+                          final item = _items[idx];
+                          return _LibraryListTile(
+                            item: item,
+                            appState: widget.appState,
+                            onTap: () => widget.onItemTap(item),
+                          );
+                        },
+                      ),
                     );
                   }
-                  return GridView.builder(
-                    key: const ValueKey('library-poster-grid'),
-                    controller: _scrollCtrl,
-                    cacheExtent: PlatformPerfProfile.scrollCacheExtent,
-                    padding: EdgeInsets.fromLTRB(padX, 6, padX, wide ? 44 : 108),
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: gridLayout.columns,
-                      mainAxisSpacing: gridLayout.mainSpacing,
-                      crossAxisSpacing: gridLayout.crossSpacing,
-                      mainAxisExtent: gridLayout.cardHeight,
+                  return RefreshIndicator(
+                    onRefresh: _resetAndLoad,
+                    child: GridView.builder(
+                      key: const ValueKey('library-poster-grid'),
+                      controller: _scrollCtrl,
+                      cacheExtent: PlatformPerfProfile.scrollCacheExtent,
+                      padding: EdgeInsets.fromLTRB(padX, 6, padX, wide ? 44 : 108),
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: gridLayout.columns,
+                        mainAxisSpacing: gridLayout.mainSpacing,
+                        crossAxisSpacing: gridLayout.crossSpacing,
+                        mainAxisExtent: gridLayout.cardHeight,
+                      ),
+                      itemCount: _items.length + (_loading ? 1 : 0),
+                      itemBuilder: (context, idx) {
+                        if (idx >= _items.length) {
+                          return Center(
+                            child: SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: skin.fg2,
+                              ),
+                            ),
+                          );
+                        }
+                        final item = _items[idx];
+                        return MediaCard(
+                          item: item,
+                          appState: widget.appState,
+                          width: gridLayout.cardWidth,
+                          landscape: isWideThumb,
+                          onTap: () => widget.onItemTap(item),
+                          onQuickPlay: widget.onQuickPlay == null
+                              ? null
+                              : () => widget.onQuickPlay!(item),
+                        );
+                      },
                     ),
-                    itemCount: _items.length + (_loading ? 1 : 0),
-                                  itemBuilder: (context, idx) {
-                                    if (idx >= _items.length) {
-                                      return Center(
-                                        child: SizedBox(
-                                          width: 20,
-                                          height: 20,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                            color: skin.fg2,
-                                          ),
-                                        ),
-                                      );
-                                    }
-                                    final item = _items[idx];
-                                    return MediaCard(
-                                      item: item,
-                                      appState: widget.appState,
-                                      width: gridLayout.cardWidth,
-                                      landscape: isWideThumb,
-                                      onTap: () => widget.onItemTap(item),
-                                      onQuickPlay: widget.onQuickPlay == null
-                                          ? null
-                                          : () => widget.onQuickPlay!(item),
-                                    );
-                                  },
-                                );
+                  );
                               },
                             ),
             ),

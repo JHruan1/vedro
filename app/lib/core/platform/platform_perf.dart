@@ -3,21 +3,27 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
+import 'native_playback_channel.dart';
+
 /// Per-platform rendering, animation, and thermal optimization policy.
 ///
-/// Tuned individually for Android, iOS, macOS, Windows, and Linux to keep
+/// Tuned individually for Android, Android TV, iOS, macOS, Windows, and Linux to keep
 /// animations locked to native display refresh rates (60/90/120Hz) while
 /// aggressively eliminating GPU overdraw, large-sigma `BackdropFilter` stalls,
 /// redundant `saveLayer` passes, and mobile SoC thermal throttling.
 class PlatformPerfProfile {
   PlatformPerfProfile._();
 
+  /// Optional user-controlled TV / D-Pad Remote Mode override (for TV boxes that don't declare LEANBACK).
+  static bool tvModeManualOverride = false;
+
   static bool get isAndroid => !kIsWeb && Platform.isAndroid;
   static bool get isIOS => !kIsWeb && Platform.isIOS;
   static bool get isMacOS => !kIsWeb && Platform.isMacOS;
   static bool get isWindows => !kIsWeb && Platform.isWindows;
   static bool get isLinux => !kIsWeb && Platform.isLinux;
-  static bool get isMobile => isAndroid || isIOS;
+  static bool get isTv => NativePlaybackChannel.detectedAndroidTv || tvModeManualOverride;
+  static bool get isMobile => (isAndroid && !isTv) || isIOS;
   static bool get isDesktop => isMacOS || isWindows || isLinux;
 
   /// Maximum Gaussian sigma for live `BackdropFilter` surfaces composited over

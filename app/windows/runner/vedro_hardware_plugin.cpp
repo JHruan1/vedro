@@ -51,8 +51,35 @@ std::wstring Utf8ToWide(const std::string& str) {
   return out;
 }
 
+bool IsAllowedHttpUrl(const std::string& url) {
+  auto starts_ci = [&](const char* prefix) {
+    size_t n = strlen(prefix);
+    if (url.size() <= n) return false;
+    for (size_t i = 0; i < n; ++i) {
+      if (tolower(static_cast<unsigned char>(url[i])) != prefix[i]) return false;
+    }
+    return true;
+  };
+  if (!starts_ci("http://") && !starts_ci("https://")) return false;
+  for (unsigned char c : url) {
+    if (c < 0x20 || c == '"' || c == '`' || c == '|') return false;
+  }
+  return true;
+}
+
+double QueryWindowsRefreshRateHz() {
+  DEVMODEW dm = {};
+  dm.dmSize = sizeof(dm);
+  if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm) &&
+      dm.dmDisplayFrequency >= 24 && dm.dmDisplayFrequency <= 500) {
+    return static_cast<double>(dm.dmDisplayFrequency);
+  }
+  return 60.0;
+}
+
 std::vector<std::string> PickFilesWindows(HWND hwnd,
                                           bool allow_directory,
+                                          bool allow_multiple,
                                           const std::vector<std::string>& extensions,
                                           const std::string& title) {
   std::vector<std::string> results;
@@ -67,6 +94,8 @@ std::vector<std::string> PickFilesWindows(HWND hwnd,
     options |= FOS_FORCEFILESYSTEM;
     if (allow_directory) {
       options |= FOS_PICKFOLDERS;
+    } else if (allow_multiple) {
+      options |= FOS_ALLOWMULTISELECT;
     }
     dialog->SetOptions(options);
   }
@@ -90,12 +119,29 @@ std::vector<std::string> PickFilesWindows(HWND hwnd,
   }
 
   if (SUCCEEDED(dialog->Show(hwnd))) {
-    ComPtr<IShellItem> item;
-    if (SUCCEEDED(dialog->GetResult(&item))) {
-      PWSTR path = nullptr;
-      if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
-        results.push_back(WideToUtf8(path));
-        CoTaskMemFree(path);
+    ComPtr<IShellItemArray> items;
+    if (allow_multiple && !allow_directory && SUCCEEDED(dialog->GetResults(&items))) {
+      DWORD count = 0;
+      if (SUCCEEDED(items->GetCount(&count))) {
+        for (DWORD i = 0; i < count; ++i) {
+          ComPtr<IShellItem> item;
+          if (SUCCEEDED(items->GetItemAt(i, &item))) {
+            PWSTR path = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+              results.push_back(WideToUtf8(path));
+              CoTaskMemFree(path);
+            }
+          }
+        }
+      }
+    } else {
+      ComPtr<IShellItem> item;
+      if (SUCCEEDED(dialog->GetResult(&item))) {
+        PWSTR path = nullptr;
+        if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+          results.push_back(WideToUtf8(path));
+          CoTaskMemFree(path);
+        }
       }
     }
   }
@@ -233,6 +279,9 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
           auto display = ProbeDxgiHdrCapabilities();
           bool atmos_bitstream = ProbeWasapiExclusiveAtmosSupport();
           flutter::EncodableMap map = {
+              {flutter::EncodableValue("is_tv"), flutter::EncodableValue(false)},
+              {flutter::EncodableValue("has_touchscreen"), flutter::EncodableValue(false)},
+              {flutter::EncodableValue("supports_pip"), flutter::EncodableValue(false)},
               {flutter::EncodableValue("supports_hdr10"),
                flutter::EncodableValue(display.supports_hdr10)},
               {flutter::EncodableValue("supports_hlg"),
@@ -246,7 +295,7 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
               {flutter::EncodableValue("max_luminance_nits"),
                flutter::EncodableValue(display.max_luminance_nits)},
               {flutter::EncodableValue("refresh_rate_hz"),
-               flutter::EncodableValue(60.0)},
+               flutter::EncodableValue(QueryWindowsRefreshRateHz())},
           };
           result->Success(flutter::EncodableValue(map));
         } else if (method == "createVideoSurface") {
@@ -352,12 +401,17 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
           result->Success(flutter::EncodableValue(enabled));
         } else if (method == "pickFiles") {
           bool allow_dir = false;
+          bool allow_multiple = false;
           std::vector<std::string> exts;
           std::string title = "Select File";
           if (const auto* args = std::get_if<flutter::EncodableMap>(call.arguments())) {
             auto dir_it = args->find(flutter::EncodableValue("allow_directory"));
             if (dir_it != args->end()) {
               if (const auto* b = std::get_if<bool>(&dir_it->second)) allow_dir = *b;
+            }
+            auto mul_it = args->find(flutter::EncodableValue("allow_multiple"));
+            if (mul_it != args->end()) {
+              if (const auto* b = std::get_if<bool>(&mul_it->second)) allow_multiple = *b;
             }
             auto title_it = args->find(flutter::EncodableValue("title"));
             if (title_it != args->end()) {
@@ -372,7 +426,7 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
               }
             }
           }
-          auto picked = PickFilesWindows(hwnd, allow_dir, exts, title);
+          auto picked = PickFilesWindows(hwnd, allow_dir, allow_multiple, exts, title);
           flutter::EncodableList out;
           for (const auto& p : picked) out.push_back(flutter::EncodableValue(p));
           result->Success(flutter::EncodableValue(out));
@@ -427,7 +481,7 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
               if (const auto* s = std::get_if<std::string>(&pit->second)) player = *s;
             }
           }
-          if (url.empty()) {
+          if (!IsAllowedHttpUrl(url)) {
             result->Success(flutter::EncodableValue(false));
           } else {
             std::string target_uri = url;

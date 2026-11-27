@@ -213,9 +213,15 @@ impl PlaybackConfig {
         };
         set("hwdec", hwdec_val);
         set("hwdec-codecs", "all");
+        let is_mobile = matches!(self.platform, TargetPlatform::Android | TargetPlatform::Ios);
+        if is_mobile {
+            set("vd-lavc-threads", "4");
+        }
+        set("framedrop", "vo");
+        set("gpu-shader-cache", "yes");
+        set("volume-max", "200");
 
         // 3. Dolby Vision RPU & HDR10/HDR10+/HLG Pipeline
-        let is_mobile = matches!(self.platform, TargetPlatform::Android | TargetPlatform::Ios);
         let hdr_decision = resolve_hdr_pipeline(
             self.platform,
             &self.display,

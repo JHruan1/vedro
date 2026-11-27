@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/models/models.dart';
+import '../core/platform/platform_perf.dart';
 import '../core/theme/vedro_skin.dart';
 import '../state/app_state.dart';
 import 'vedro_ui.dart';
@@ -207,21 +208,52 @@ class _HomeLayoutEditorState extends State<_HomeLayoutEditor> {
                             _commit();
                           },
                         ),
-                        const SizedBox(width: 4),
-                        ReorderableDragStartListener(
-                          index: idx,
-                          child: MouseRegion(
-                            cursor: SystemMouseCursors.grab,
-                            child: Padding(
-                              padding: const EdgeInsets.all(6),
-                              child: Icon(
-                                Icons.drag_handle_rounded,
-                                size: 19,
-                                color: skin.fg3,
+                        if (PlatformPerfProfile.isTv) ...[
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: '上移',
+                            icon: Icon(Icons.keyboard_arrow_up_rounded, size: 19, color: skin.fg2),
+                            onPressed: idx == 0
+                                ? null
+                                : () {
+                                    setState(() {
+                                      final moved = _sections.removeAt(idx);
+                                      _sections.insert(idx - 1, moved);
+                                    });
+                                    _commit();
+                                  },
+                          ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: '下移',
+                            icon: Icon(Icons.keyboard_arrow_down_rounded, size: 19, color: skin.fg2),
+                            onPressed: idx == _sections.length - 1
+                                ? null
+                                : () {
+                                    setState(() {
+                                      final moved = _sections.removeAt(idx);
+                                      _sections.insert(idx + 1, moved);
+                                    });
+                                    _commit();
+                                  },
+                          ),
+                        ] else ...[
+                          const SizedBox(width: 4),
+                          ReorderableDragStartListener(
+                            index: idx,
+                            child: MouseRegion(
+                              cursor: SystemMouseCursors.grab,
+                              child: Padding(
+                                padding: const EdgeInsets.all(6),
+                                child: Icon(
+                                  Icons.drag_handle_rounded,
+                                  size: 19,
+                                  color: skin.fg3,
+                                ),
                               ),
                             ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                   ),

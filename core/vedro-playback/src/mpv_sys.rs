@@ -5,7 +5,8 @@
 //! calls into the native `libmpv` + `libplacebo` playback engine at runtime.
 
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_double, c_int, c_void};
+use std::os::raw::{c_char, c_double, c_int, c_ulong, c_void};
+use std::sync::OnceLock;
 
 use libloading::{Library, Symbol};
 
@@ -40,7 +41,9 @@ type FnGetProperty =
 type FnCommand = unsafe extern "C" fn(*mut MpvHandle, *const *const c_char) -> c_int;
 type FnWaitEvent = unsafe extern "C" fn(*mut MpvHandle, c_double) -> *mut MpvEvent;
 type FnFree = unsafe extern "C" fn(*mut c_void);
-type FnClientApiVersion = unsafe extern "C" fn() -> u64;
+type FnClientApiVersion = unsafe extern "C" fn() -> c_ulong;
+
+static LIB_MPV_CACHE: OnceLock<Result<LibMpv, String>> = OnceLock::new();
 
 pub struct LibMpv {
     _lib: Library,
@@ -61,6 +64,14 @@ unsafe impl Send for LibMpv {}
 unsafe impl Sync for LibMpv {}
 
 impl LibMpv {
+    /// Load `libmpv` once per process and keep it pinned (avoids unsafe `dlclose` crashes on GPU/FFmpeg DSOs).
+    pub fn load_shared() -> Result<&'static Self, String> {
+        LIB_MPV_CACHE
+            .get_or_init(Self::load)
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
     /// Attempt to load the system/bundled `libmpv` dynamic library for the current OS.
     pub fn load() -> Result<Self, String> {
         let candidates: &[&str] = match std::env::consts::OS {
@@ -140,8 +151,9 @@ impl LibMpv {
         }
     }
 
+    #[allow(clippy::unnecessary_cast)]
     pub fn api_version(&self) -> (u32, u32) {
-        let v = unsafe { (self.client_api_version)() };
+        let v = unsafe { (self.client_api_version)() } as u64;
         (((v >> 16) & 0xFFFF) as u32, (v & 0xFFFF) as u32)
     }
 
@@ -155,6 +167,9 @@ impl LibMpv {
     }
 
     pub fn initialize(&self, handle: *mut MpvHandle) -> Result<(), c_int> {
+        if handle.is_null() {
+            return Err(-4);
+        }
         let rc = unsafe { (self.initialize)(handle) };
         if rc < 0 {
             Err(rc)
@@ -164,7 +179,9 @@ impl LibMpv {
     }
 
     pub fn terminate_destroy(&self, handle: *mut MpvHandle) {
-        unsafe { (self.terminate_destroy)(handle) };
+        if !handle.is_null() {
+            unsafe { (self.terminate_destroy)(handle) };
+        }
     }
 
     pub fn set_option_string(
@@ -173,6 +190,9 @@ impl LibMpv {
         name: &str,
         value: &str,
     ) -> Result<(), c_int> {
+        if handle.is_null() {
+            return Err(-4);
+        }
         let k = CString::new(name).map_err(|_| -4)?;
         let v = CString::new(value).map_err(|_| -4)?;
         let rc = unsafe { (self.set_option_string)(handle, k.as_ptr(), v.as_ptr()) };
@@ -189,6 +209,9 @@ impl LibMpv {
         name: &str,
         value: &str,
     ) -> Result<(), c_int> {
+        if handle.is_null() {
+            return Err(-4);
+        }
         let k = CString::new(name).map_err(|_| -4)?;
         let v = CString::new(value).map_err(|_| -4)?;
         let rc = unsafe { (self.set_property_string)(handle, k.as_ptr(), v.as_ptr()) };
@@ -200,6 +223,9 @@ impl LibMpv {
     }
 
     pub fn get_property_string(&self, handle: *mut MpvHandle, name: &str) -> Option<String> {
+        if handle.is_null() {
+            return None;
+        }
         let k = CString::new(name).ok()?;
         let ptr = unsafe { (self.get_property_string)(handle, k.as_ptr()) };
         if ptr.is_null() {
@@ -213,6 +239,9 @@ impl LibMpv {
     }
 
     pub fn get_property_f64(&self, handle: *mut MpvHandle, name: &str) -> Option<f64> {
+        if handle.is_null() {
+            return None;
+        }
         let k = CString::new(name).ok()?;
         let mut out: c_double = 0.0;
         let rc = unsafe {
@@ -231,6 +260,9 @@ impl LibMpv {
     }
 
     pub fn get_property_i64(&self, handle: *mut MpvHandle, name: &str) -> Option<i64> {
+        if handle.is_null() {
+            return None;
+        }
         let k = CString::new(name).ok()?;
         let mut out: i64 = 0;
         let rc = unsafe {
@@ -249,6 +281,9 @@ impl LibMpv {
     }
 
     pub fn get_property_bool(&self, handle: *mut MpvHandle, name: &str) -> Option<bool> {
+        if handle.is_null() {
+            return None;
+        }
         let k = CString::new(name).ok()?;
         let mut out: c_int = 0;
         let rc = unsafe {
@@ -267,6 +302,9 @@ impl LibMpv {
     }
 
     pub fn command(&self, handle: *mut MpvHandle, args: &[&str]) -> Result<(), c_int> {
+        if handle.is_null() {
+            return Err(-4);
+        }
         let c_args: Vec<CString> = args
             .iter()
             .map(|a| CString::new(*a).map_err(|_| -4))
@@ -282,6 +320,9 @@ impl LibMpv {
     }
 
     pub fn drain_events(&self, handle: *mut MpvHandle) -> Vec<c_int> {
+        if handle.is_null() {
+            return Vec::new();
+        }
         let mut ids = Vec::new();
         for _ in 0..32 {
             let ev = unsafe { (self.wait_event)(handle, 0.0) };

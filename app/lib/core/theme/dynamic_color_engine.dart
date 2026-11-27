@@ -54,33 +54,36 @@ class DynamicColorEngine {
   }
 
   static Future<Color?> _extractInternal(String url) async {
-    final completer = Completer<ui.Image?>();
+    final completer = Completer<ImageInfo?>();
     final provider = ResizeImage(NetworkImage(url), width: 64, height: 64);
     final stream = provider.resolve(ImageConfiguration.empty);
     late final ImageStreamListener listener;
     Timer? timer;
 
-    void finish(ui.Image? img) {
+    void finish(ImageInfo? info) {
       timer?.cancel();
       try {
         stream.removeListener(listener);
       } catch (_) {}
       if (!completer.isCompleted) {
-        completer.complete(img);
+        completer.complete(info);
+      } else {
+        info?.dispose();
       }
     }
 
     listener = ImageStreamListener(
-      (info, _) => finish(info.image),
+      (info, _) => finish(info.clone()),
       onError: (_, __) => finish(null),
     );
     timer = Timer(const Duration(milliseconds: 3500), () => finish(null));
     stream.addListener(listener);
 
-    final image = await completer.future;
-    if (image == null) return null;
+    final info = await completer.future;
+    if (info == null) return null;
 
     try {
+      final image = info.image;
       final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
       if (data == null) return null;
       final color = extractDominantSeedFromRgba(
@@ -97,6 +100,8 @@ class DynamicColorEngine {
       return color;
     } catch (_) {
       return null;
+    } finally {
+      info.dispose();
     }
   }
 

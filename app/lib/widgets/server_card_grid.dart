@@ -890,8 +890,9 @@ class _LayoutToggleBtn extends StatelessWidget {
     final skin = VedroSkin.of(context);
     return Tooltip(
       message: tooltip,
-      child: GestureDetector(
+      child: PressableScale(
         onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
         child: Container(
           width: 26,
           height: 24,
@@ -1220,8 +1221,9 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                 runSpacing: 8,
                 children: ServerCardTheme.all.map((t) {
                   final on = previewTheme.id == t.id;
-                  return GestureDetector(
+                  return PressableScale(
                     onTap: () => setState(() => _themeId = t.id),
+                    borderRadius: BorderRadius.circular(9),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
@@ -1265,8 +1267,9 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                 runSpacing: 8,
                 children: ServerCardStyle.icons.entries.map((entry) {
                   final on = _iconId == entry.key;
-                  return GestureDetector(
+                  return PressableScale(
                     onTap: () => setState(() => _iconId = entry.key),
+                    borderRadius: BorderRadius.circular(9),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
@@ -1411,6 +1414,28 @@ class _ServerCardSettingsSheetState extends State<_ServerCardSettingsSheet> {
                 child: TextButton.icon(
                   style: TextButton.styleFrom(foregroundColor: VedroTheme.danger),
                   onPressed: () async {
+                    final confirm = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        backgroundColor: skin.surface,
+                        title: Text('移除服务器「$previewName」？',
+                            style: TextStyle(color: skin.fg, fontSize: 16)),
+                        content: Text('将移除本地保存的登录凭证与线路配置，不会影响远程服务器数据。',
+                            style: TextStyle(color: skin.fg2, fontSize: 13.5)),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx, false),
+                            child: const Text('取消'),
+                          ),
+                          FilledButton(
+                            style: FilledButton.styleFrom(backgroundColor: VedroTheme.danger),
+                            onPressed: () => Navigator.pop(ctx, true),
+                            child: const Text('移除'),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirm != true || !context.mounted) return;
                     Navigator.pop(context);
                     await widget.appState.deleteServer(srv.id);
                   },

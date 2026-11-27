@@ -53,7 +53,12 @@ class _DetailScreenState extends State<DetailScreen> {
   int _selectedSourceIndex = 0;
   int _selectedSeriesVersionIndex = 0;
   bool _loading = true;
+  String? _loadError;
   Future<void>? _loadFuture;
+  String? _lastChromeSig;
+  Color? _cachedMonetSeed;
+  String? _cachedSkinSig;
+  ThemeData? _cachedDetailTheme;
   String _episodeViewMode = 'cards'; // 'grid' | 'cards' | 'list'
   bool _episodeModeUserChosen = false;
   bool _episodeDescending = false;
@@ -159,12 +164,16 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Future<void> _loadDetails() async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
     try {
       if (_item.type == 'Person') {
         final cRes = await widget.appState.core.invoke('get_person_credits', {
           'person_id': _item.id,
         }) as Map<String, dynamic>;
+        if (!mounted) return;
         _personCredits = ((cRes['Items'] as List<dynamic>?) ?? const [])
             .whereType<Map<String, dynamic>>()
             .map(MediaItemModel.fromJson)
@@ -175,6 +184,7 @@ class _DetailScreenState extends State<DetailScreen> {
           widget.appState.core.invoke('get_item', {'item_id': _item.id}),
           widget.appState.core.invoke('get_seasons', {'series_id': _item.id}),
         ]);
+        if (!mounted) return;
         final res = results[0] as Map<String, dynamic>;
         final sRes = results[1] as Map<String, dynamic>;
         _item = MediaItemModel.fromJson(res['item'] as Map<String, dynamic>);
@@ -198,6 +208,7 @@ class _DetailScreenState extends State<DetailScreen> {
       } else {
         final res = await widget.appState.core.invoke('get_item', {'item_id': _item.id})
             as Map<String, dynamic>;
+        if (!mounted) return;
         _item = MediaItemModel.fromJson(res['item'] as Map<String, dynamic>);
         _similar = ((res['similar'] as List<dynamic>?) ?? const [])
             .whereType<Map<String, dynamic>>()
@@ -211,6 +222,10 @@ class _DetailScreenState extends State<DetailScreen> {
           _selectedSourceIndex = 0;
         }
         _refreshDetailMonetSeed();
+      }
+    } catch (e) {
+      if (mounted) {
+        _loadError = e.toString().replaceFirst('VedroCoreException: ', '');
       }
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -535,7 +550,12 @@ class _DetailScreenState extends State<DetailScreen> {
                   maxScale: 3.0,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(14),
-                    child: Image.network(posterUrl, fit: BoxFit.contain),
+                    child: Image.network(
+                      posterUrl,
+                      cacheWidth: 1600,
+                      filterQuality: FilterQuality.medium,
+                      fit: BoxFit.contain,
+                    ),
                   ),
                 ),
               ),
@@ -1051,20 +1071,22 @@ class _DetailScreenState extends State<DetailScreen> {
     final prefs = widget.appState.prefs;
     if (prefs.dynamicMonet && _detailMonetSeed != null) {
       final sysBrightness = View.of(context).platformDispatcher.platformBrightness;
-      return TweenAnimationBuilder<Color?>(
-        tween: ColorTween(begin: _detailMonetSeed, end: _detailMonetSeed),
-        duration: Duration(milliseconds: prefs.reduceMotion ? 0 : 380),
-        curve: VedroTheme.easeOut,
-        builder: (ctx, seed, _) {
-          final dynSkin = prefs.activeSkinFor(
-            systemBrightness: sysBrightness,
-            dynamicSeedOverride: seed ?? _detailMonetSeed,
-          );
-          return Theme(
-            data: VedroTheme.fromSkin(dynSkin),
-            child: Builder(builder: _buildThemedDetail),
-          );
-        },
+      final sig =
+          '${prefs.skinId}|${prefs.themeMode}|${prefs.accentId}|${prefs.tonalChroma}|${sysBrightness.index}|${_detailMonetSeed!.toARGB32()}';
+      if (_cachedDetailTheme == null ||
+          _cachedSkinSig != sig ||
+          _cachedMonetSeed != _detailMonetSeed) {
+        final dynSkin = prefs.activeSkinFor(
+          systemBrightness: sysBrightness,
+          dynamicSeedOverride: _detailMonetSeed,
+        );
+        _cachedDetailTheme = VedroTheme.fromSkin(dynSkin);
+        _cachedSkinSig = sig;
+        _cachedMonetSeed = _detailMonetSeed;
+      }
+      return Theme(
+        data: _cachedDetailTheme!,
+        child: Builder(builder: _buildThemedDetail),
       );
     }
     return _buildThemedDetail(context);
@@ -1082,11 +1104,15 @@ class _DetailScreenState extends State<DetailScreen> {
       systemStatusBarContrastEnforced: false,
       systemNavigationBarContrastEnforced: false,
     );
-    NativePlaybackChannel.syncWindowChrome(
-      isLight: skin.isLight,
-      canvasArgb: skin.canvas.toARGB32(),
-      fgArgb: skin.fg.toARGB32(),
-    );
+    final chromeSig = '${skin.isLight}|${skin.canvas.toARGB32()}|${skin.fg.toARGB32()}';
+    if (_lastChromeSig != chromeSig) {
+      _lastChromeSig = chromeSig;
+      NativePlaybackChannel.syncWindowChrome(
+        isLight: skin.isLight,
+        canvasArgb: skin.canvas.toARGB32(),
+        fgArgb: skin.fg.toARGB32(),
+      );
+    }
     final size = MediaQuery.sizeOf(context);
     final wide = size.width >= 820;
     final ultraWide = size.width >= 1080;
@@ -1105,8 +1131,6 @@ class _DetailScreenState extends State<DetailScreen> {
     final tagline = _item.taglines.isNotEmpty ? _item.taglines.first : null;
     final downloadTarget = _resolveDownloadTarget();
     final canDownload = widget.appState.canDownloadItem(downloadTarget ?? _item);
-    final dlTask = widget.appState.findDownloadForItem(downloadTarget?.id ?? _item.id);
-    final localReady = dlTask != null && dlTask.status == 'completed' && dlTask.filePath.isNotEmpty;
 
     final directors = _item.people
         .where((p) => (p.type ?? '').toLowerCase() == 'director')
@@ -1179,271 +1203,282 @@ class _DetailScreenState extends State<DetailScreen> {
     final eyebrowText = eyebrowParts.join(' · ');
 
     Widget buildActionRow() {
-      // Keep Play CTA visible from Frame 0 for both Movies AND Series so buttons NEVER pop in late!
-      final hasPrimaryPlay = _item.isPlayable || _item.isSeries;
-      final String playLabel = _item.isPlayable
-          ? (localReady
-              ? '播放离线缓存'
-              : (_item.playbackPositionTicks > 0
-                  ? '继续播放 ${fmtDurationTicks(_item.playbackPositionTicks)}'
-                  : '播放'))
-          : (nextEpToPlay != null
-              ? (nextEpToPlay.resumeProgress > 0.01
-                  ? '继续观看 ${nextEpToPlay.episodeCode ?? nextEpToPlay.displayName}'
-                  : '播放 ${nextEpToPlay.episodeCode ?? '第 1 集'}')
-              : '播放 S01E01');
-      final double playProgress =
-          _item.isPlayable ? _item.resumeProgress : (nextEpToPlay?.resumeProgress ?? 0.0);
-      Future<void> onPrimaryPlay() async {
-        if (_item.isPlayable) {
-          _play(
-            _item,
-            sourceId: _activeSource?.id,
-            localPath: localReady ? dlTask.filePath : null,
-          );
-          return;
-        }
-        if (nextEpToPlay == null && _loadFuture != null) {
-          await _loadFuture;
-        }
-        if (!mounted) return;
-        final resolvedEp = nextEpToPlay ??
-            (_episodes.isNotEmpty
-                ? _episodes.firstWhere(
-                    (e) => e.resumeProgress > 0.01,
-                    orElse: () => _episodes.firstWhere(
-                      (e) => !e.played,
-                      orElse: () => _episodes.first,
-                    ),
-                  )
-                : null);
-        if (resolvedEp != null) {
-          _play(
-            resolvedEp,
-            sourceId: _matchingSourceIdForEpisode(resolvedEp),
-          );
-        }
-      }
+      return ListenableBuilder(
+        listenable: widget.appState.downloadsTickNotifier,
+        builder: (context, _) {
+          final liveDlTask =
+              widget.appState.findDownloadForItem(downloadTarget?.id ?? _item.id);
+          final liveLocalReady = liveDlTask != null &&
+              liveDlTask.status == 'completed' &&
+              liveDlTask.filePath.isNotEmpty;
+          // Keep Play CTA visible from Frame 0 for both Movies AND Series so buttons NEVER pop in late!
+          final hasPrimaryPlay = _item.isPlayable || _item.isSeries;
+          final String playLabel = _item.isPlayable
+              ? (liveLocalReady
+                  ? '播放离线缓存'
+                  : (_item.playbackPositionTicks > 0
+                      ? '继续播放 ${fmtDurationTicks(_item.playbackPositionTicks)}'
+                      : '播放'))
+              : (nextEpToPlay != null
+                  ? (nextEpToPlay.resumeProgress > 0.01
+                      ? '继续观看 ${nextEpToPlay.episodeCode ?? nextEpToPlay.displayName}'
+                      : '播放 ${nextEpToPlay.episodeCode ?? '第 1 集'}')
+                  : '播放 S01E01');
+          final double playProgress =
+              _item.isPlayable ? _item.resumeProgress : (nextEpToPlay?.resumeProgress ?? 0.0);
+          Future<void> onPrimaryPlay() async {
+            if (_item.isPlayable) {
+              _play(
+                _item,
+                sourceId: _activeSource?.id,
+                localPath: liveLocalReady ? liveDlTask.filePath : null,
+              );
+              return;
+            }
+            if (nextEpToPlay == null && _loadFuture != null) {
+              await _loadFuture;
+            }
+            if (!mounted) return;
+            final resolvedEp = nextEpToPlay ??
+                (_episodes.isNotEmpty
+                    ? _episodes.firstWhere(
+                        (e) => e.resumeProgress > 0.01,
+                        orElse: () => _episodes.firstWhere(
+                          (e) => !e.played,
+                          orElse: () => _episodes.first,
+                        ),
+                      )
+                    : null);
+            if (resolvedEp != null) {
+              _play(
+                resolvedEp,
+                sourceId: _matchingSourceIdForEpisode(resolvedEp),
+              );
+            }
+          }
 
-      final actions = <({
-        Key? key,
-        IconData icon,
-        String label,
-        String tooltip,
-        bool active,
-        Color color,
-        VoidCallback onTap,
-      })>[
-        if (_item.isPlayable && _item.playbackPositionTicks > 0)
-          (
-            key: null,
-            icon: Icons.replay_rounded,
-            label: '从头',
-            tooltip: '从头播放',
-            active: false,
-            color: skin.fg,
-            onTap: () => _play(_item, sourceId: _activeSource?.id, fromBeginning: true),
-          ),
-        if (_item.type != 'Person')
-          (
-            key: null,
-            icon: Icons.check_rounded,
-            label: _item.played ? '已看' : '标已看',
-            tooltip: _item.played ? '已看（点击取消）' : '标为已看',
-            active: _item.played,
-            color: _item.played ? accent : skin.fg,
-            onTap: () async {
-              await widget.appState.togglePlayed(_item);
-              await _loadDetails();
-            },
-          ),
-        (
-          key: null,
-          icon: _item.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-          label: _item.isFavorite ? '已收藏' : '收藏',
-          tooltip: _item.isFavorite ? '取消收藏' : '收藏',
-          active: _item.isFavorite,
-          color: _item.isFavorite ? VedroTheme.danger : skin.fg,
-          onTap: () async {
-            await widget.appState.toggleFavorite(_item);
-            await _loadDetails();
-          },
-        ),
-        if (localReady || canDownload)
-          (
-            key: const ValueKey('detail-download-button'),
-            icon: localReady ? Icons.download_done_rounded : Icons.arrow_downward_rounded,
-            label: localReady ? '已缓存' : (_item.isSeries ? '下载' : '缓存'),
-            tooltip: localReady ? '播放已缓存文件' : '离线下载',
-            active: localReady,
-            color: localReady ? const Color(0xFF10B981) : skin.fg,
-            onTap: localReady
-                ? () => _play(downloadTarget ?? _item, localPath: dlTask.filePath)
-                : _startDownload,
-          ),
-        (
-          key: null,
-          icon: Icons.more_horiz_rounded,
-          label: '更多',
-          tooltip: '更多（字幕挂载 / 外部播放器 / 片单 / AI 翻译）',
-          active: false,
-          color: skin.fg,
-          onTap: _openMoreSheet,
-        ),
-      ];
+          final actions = <({
+            Key? key,
+            IconData icon,
+            String label,
+            String tooltip,
+            bool active,
+            Color color,
+            VoidCallback onTap,
+          })>[
+            if (_item.isPlayable && _item.playbackPositionTicks > 0)
+              (
+                key: null,
+                icon: Icons.replay_rounded,
+                label: '从头',
+                tooltip: '从头播放',
+                active: false,
+                color: skin.fg,
+                onTap: () => _play(_item, sourceId: _activeSource?.id, fromBeginning: true),
+              ),
+            if (_item.type != 'Person')
+              (
+                key: null,
+                icon: Icons.check_rounded,
+                label: _item.played ? '已看' : '标已看',
+                tooltip: _item.played ? '已看（点击取消）' : '标为已看',
+                active: _item.played,
+                color: _item.played ? accent : skin.fg,
+                onTap: () async {
+                  await widget.appState.togglePlayed(_item);
+                  await _loadDetails();
+                },
+              ),
+            (
+              key: null,
+              icon: _item.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+              label: _item.isFavorite ? '已收藏' : '收藏',
+              tooltip: _item.isFavorite ? '取消收藏' : '收藏',
+              active: _item.isFavorite,
+              color: _item.isFavorite ? VedroTheme.danger : skin.fg,
+              onTap: () async {
+                await widget.appState.toggleFavorite(_item);
+                await _loadDetails();
+              },
+            ),
+            if (liveLocalReady || canDownload)
+              (
+                key: const ValueKey('detail-download-button'),
+                icon: liveLocalReady ? Icons.download_done_rounded : Icons.arrow_downward_rounded,
+                label: liveLocalReady ? '已缓存' : (_item.isSeries ? '下载' : '缓存'),
+                tooltip: liveLocalReady ? '播放已缓存文件' : '离线下载',
+                active: liveLocalReady,
+                color: liveLocalReady ? const Color(0xFF10B981) : skin.fg,
+                onTap: liveLocalReady
+                    ? () => _play(downloadTarget ?? _item, localPath: liveDlTask.filePath)
+                    : _startDownload,
+              ),
+            (
+              key: null,
+              icon: Icons.more_horiz_rounded,
+              label: '更多',
+              tooltip: '更多（字幕挂载 / 外部播放器 / 片单 / AI 翻译）',
+              active: false,
+              color: skin.fg,
+              onTap: _openMoreSheet,
+            ),
+          ];
 
-      return LayoutBuilder(
-        builder: (ctx, constraints) {
-          final singleLine = constraints.maxWidth >= 460;
-          if (singleLine) {
-            return Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                if (hasPrimaryPlay)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 4),
-                    child: _ProgressPlayPill(
+          return LayoutBuilder(
+            builder: (ctx, constraints) {
+              final singleLine = constraints.maxWidth >= 460;
+              if (singleLine) {
+                return Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    if (hasPrimaryPlay)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: _ProgressPlayPill(
+                          label: playLabel,
+                          progress: playProgress,
+                          accent: accent,
+                          onTap: onPrimaryPlay,
+                        ),
+                      ),
+                    for (var i = 0; i < actions.length; i++)
+                      KeyedSubtree(
+                        key: actions[i].key,
+                        child: Tooltip(
+                          message: actions[i].tooltip,
+                          child: _AppleCircleActionButton(
+                            icon: actions[i].icon,
+                            active: actions[i].active,
+                            color: actions[i].color,
+                            onTap: actions[i].onTap,
+                          ),
+                        ),
+                      ),
+                    if (playProgress > 0.02)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: 64,
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(2),
+                                child: LinearProgressIndicator(
+                                  value: playProgress.clamp(0.04, 1.0),
+                                  minHeight: 3,
+                                  backgroundColor: skin.fg.withValues(alpha: 0.16),
+                                  color: skin.ctaStyle == 'contrast' ? skin.fg : accent,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              '已看 ${(playProgress * 100).round()}%',
+                              style: TextStyle(
+                                color: skin.fg2,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                                fontFeatures: const [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                );
+              }
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (hasPrimaryPlay) ...[
+                    _ProgressPlayPill(
                       label: playLabel,
                       progress: playProgress,
                       accent: accent,
+                      fullWidth: true,
                       onTap: onPrimaryPlay,
                     ),
-                  ),
-                for (var i = 0; i < actions.length; i++)
-                  KeyedSubtree(
-                    key: actions[i].key,
-                    child: Tooltip(
-                      message: actions[i].tooltip,
-                      child: _AppleCircleActionButton(
-                        icon: actions[i].icon,
-                        active: actions[i].active,
-                        color: actions[i].color,
-                        onTap: actions[i].onTap,
+                    if (playProgress > 0.02) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(2),
+                              child: LinearProgressIndicator(
+                                value: playProgress.clamp(0.04, 1.0),
+                                minHeight: 2.5,
+                                backgroundColor: skin.fg.withValues(alpha: 0.16),
+                                color: skin.ctaStyle == 'contrast' ? skin.fg : accent,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            '已观看 ${(playProgress * 100).round()}%',
+                            style: TextStyle(
+                              color: skin.fg2,
+                              fontSize: 11.5,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ),
-                if (playProgress > 0.02)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 6),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        SizedBox(
-                          width: 64,
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(2),
-                            child: LinearProgressIndicator(
-                              value: playProgress.clamp(0.04, 1.0),
-                              minHeight: 3,
-                              backgroundColor: skin.fg.withValues(alpha: 0.16),
-                              color: skin.ctaStyle == 'contrast' ? skin.fg : accent,
+                    ],
+                    const SizedBox(height: 12),
+                  ],
+                  Row(
+                    children: [
+                      for (var i = 0; i < actions.length; i++) ...[
+                        if (i > 0) const SizedBox(width: 8),
+                        Expanded(
+                          key: actions[i].key,
+                          child: PressableScale(
+                            onTap: actions[i].onTap,
+                            hoverScale: 1.03,
+                            pressScale: 0.93,
+                            child: Container(
+                              height: 54,
+                              decoration: BoxDecoration(
+                                color: actions[i].active
+                                    ? actions[i].color.withValues(alpha: 0.18)
+                                    : skin.subtleChipBg,
+                                borderRadius:
+                                    BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
+                                border: skin.frameStyle == 'borderless'
+                                    ? null
+                                    : Border.all(color: skin.border, width: 0.7),
+                              ),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(actions[i].icon, size: 19, color: actions[i].color),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    actions[i].label,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: actions[i].active ? actions[i].color : skin.fg2,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        Text(
-                          '已看 ${(playProgress * 100).round()}%',
-                          style: TextStyle(
-                            color: skin.fg2,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            fontFeatures: const [FontFeature.tabularFigures()],
-                          ),
-                        ),
                       ],
-                    ),
-                  ),
-              ],
-            );
-          }
-
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (hasPrimaryPlay) ...[
-                _ProgressPlayPill(
-                  label: playLabel,
-                  progress: playProgress,
-                  accent: accent,
-                  fullWidth: true,
-                  onTap: onPrimaryPlay,
-                ),
-                if (playProgress > 0.02) ...[
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(2),
-                          child: LinearProgressIndicator(
-                            value: playProgress.clamp(0.04, 1.0),
-                            minHeight: 2.5,
-                            backgroundColor: skin.fg.withValues(alpha: 0.16),
-                            color: skin.ctaStyle == 'contrast' ? skin.fg : accent,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        '已观看 ${(playProgress * 100).round()}%',
-                        style: TextStyle(
-                          color: skin.fg2,
-                          fontSize: 11.5,
-                          fontFeatures: const [FontFeature.tabularFigures()],
-                        ),
-                      ),
                     ],
                   ),
                 ],
-                const SizedBox(height: 12),
-              ],
-              Row(
-                children: [
-                  for (var i = 0; i < actions.length; i++) ...[
-                    if (i > 0) const SizedBox(width: 8),
-                    Expanded(
-                      key: actions[i].key,
-                      child: PressableScale(
-                        onTap: actions[i].onTap,
-                        hoverScale: 1.03,
-                        pressScale: 0.93,
-                        child: Container(
-                          height: 54,
-                          decoration: BoxDecoration(
-                            color: actions[i].active
-                                ? actions[i].color.withValues(alpha: 0.18)
-                                : skin.subtleChipBg,
-                            borderRadius: BorderRadius.circular(skin.cardRadius.clamp(8.0, 14.0)),
-                            border: skin.frameStyle == 'borderless'
-                                ? null
-                                : Border.all(color: skin.border, width: 0.7),
-                          ),
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(actions[i].icon, size: 19, color: actions[i].color),
-                              const SizedBox(height: 3),
-                              Text(
-                                actions[i].label,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  color: actions[i].active ? actions[i].color : skin.fg2,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ],
+              );
+            },
           );
         },
       );
@@ -1528,10 +1563,13 @@ class _DetailScreenState extends State<DetailScreen> {
 
     for (final g in _item.genres.take(4)) {
       addDotFact(
-        GestureDetector(
+        PressableScale(
           onTap: widget.onGenreTap == null ? null : () => widget.onGenreTap!(g),
-          child: MouseRegion(
-            cursor: widget.onGenreTap != null ? SystemMouseCursors.click : MouseCursor.defer,
+          borderRadius: BorderRadius.circular(6),
+          hoverScale: 1.04,
+          pressScale: 0.96,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
             child: Text(
               g,
               style: TextStyle(
@@ -1579,31 +1617,31 @@ class _DetailScreenState extends State<DetailScreen> {
     ];
 
     final posterRadius = widget.appState.prefs.effectiveCardRadius(skin);
-    Widget coverCard = GestureDetector(
+    Widget coverCard = PressableScale(
       onTap: _openPosterLightbox,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: Container(
-          key: const ValueKey('detail-poster-cover'),
-          width: coverW,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(posterRadius),
-            color: skin.surface2,
-            boxShadow: skin.posterShadow(hovered: true),
-          ),
-          foregroundDecoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(posterRadius),
-            border: skin.cardBorder(hovered: false),
-          ),
-          clipBehavior: Clip.antiAlias,
-          child: AspectRatio(
-            aspectRatio: coverAspect,
-            child: VedroArtwork(
-              item: _item,
-              appState: widget.appState,
-              landscape: isEpisodeWithStill,
-              width: 600,
-            ),
+      borderRadius: BorderRadius.circular(posterRadius),
+      hoverScale: 1.02,
+      pressScale: 0.97,
+      child: Container(
+        key: const ValueKey('detail-poster-cover'),
+        width: coverW,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(posterRadius),
+          color: skin.surface2,
+          boxShadow: skin.posterShadow(hovered: true),
+        ),
+        foregroundDecoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(posterRadius),
+          border: skin.cardBorder(hovered: false),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: AspectRatio(
+          aspectRatio: coverAspect,
+          child: VedroArtwork(
+            item: _item,
+            appState: widget.appState,
+            landscape: isEpisodeWithStill,
+            width: 600,
           ),
         ),
       ),
@@ -1965,28 +2003,6 @@ class _DetailScreenState extends State<DetailScreen> {
                         child: RepaintBoundary(
                           child: ClipRect(
                             key: const ValueKey('detail-backdrop-banner'),
-                            child: ShaderMask(
-                            blendMode: skin.backdropMode != 'solid'
-                                ? BlendMode.dstIn
-                                : BlendMode.dst,
-                            shaderCallback: (bounds) => LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              stops: const [0.0, 0.46, 0.82, 1.0],
-                              colors: skin.backdropMode != 'solid'
-                                  ? const [
-                                      Colors.white,
-                                      Colors.white,
-                                      Color(0x55FFFFFF),
-                                      Colors.transparent,
-                                    ]
-                                  : const [
-                                      Colors.white,
-                                      Colors.white,
-                                      Colors.white,
-                                      Colors.white,
-                                    ],
-                            ).createShader(bounds),
                             child: Stack(
                               fit: StackFit.expand,
                               children: [
@@ -2025,10 +2041,9 @@ class _DetailScreenState extends State<DetailScreen> {
                               ],
                             ),
                           ),
-                          ),
                         ),
                       ),
-                      if (skin.backdropMode == 'solid')
+                      if (skin.backdropMode == 'solid_clean')
                         Positioned(
                           left: 0,
                           right: 0,
@@ -2054,6 +2069,39 @@ class _DetailScreenState extends State<DetailScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      if (_loadError != null && !_loading)
+                        Padding(
+                          padding: EdgeInsets.fromLTRB(padX, 0, padX, 18),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: VedroTheme.danger.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: VedroTheme.danger.withValues(alpha: 0.30),
+                                width: 0.8,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.error_outline_rounded,
+                                    size: 18, color: VedroTheme.danger),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    '加载详情失败：$_loadError',
+                                    style: TextStyle(color: skin.fg, fontSize: 13),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                TextButton(
+                                  onPressed: _loadDetails,
+                                  child: const Text('重试'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                       if (_item.isPlayable || _item.isSeries) ...[
                         Padding(
                           padding: EdgeInsets.symmetric(horizontal: padX),
@@ -2239,17 +2287,17 @@ class _DetailScreenState extends State<DetailScreen> {
                                             border: skin.cardBorder(),
                                           ),
                                           clipBehavior: Clip.antiAlias,
-                                          child: Stack(
-                                            fit: StackFit.expand,
-                                            children: [
-                                              GeneratedArt(seed: p.id, label: p.name),
-                                              if (avatarUrl.isNotEmpty)
-                                                FadeNetworkImage(
+                                          child: avatarUrl.isNotEmpty
+                                              ? FadeNetworkImage(
                                                   url: avatarUrl,
+                                                  cacheWidth: 260,
                                                   alignment: const Alignment(0, -0.3),
-                                                ),
-                                            ],
-                                          ),
+                                                  placeholder: GeneratedArt(
+                                                    seed: p.id,
+                                                    label: p.name,
+                                                  ),
+                                                )
+                                              : GeneratedArt(seed: p.id, label: p.name),
                                         ),
                                       ),
                                       const SizedBox(height: 7),
@@ -2298,14 +2346,16 @@ class _DetailScreenState extends State<DetailScreen> {
                                           color: skin.surface2,
                                         ),
                                         clipBehavior: Clip.antiAlias,
-                                        child: Stack(
-                                          fit: StackFit.expand,
-                                          children: [
-                                            GeneratedArt(seed: p.id, label: p.name),
-                                            if (avatarUrl.isNotEmpty)
-                                              FadeNetworkImage(url: avatarUrl),
-                                          ],
-                                        ),
+                                        child: avatarUrl.isNotEmpty
+                                            ? FadeNetworkImage(
+                                                url: avatarUrl,
+                                                cacheWidth: 120,
+                                                placeholder: GeneratedArt(
+                                                  seed: p.id,
+                                                  label: p.name,
+                                                ),
+                                              )
+                                            : GeneratedArt(seed: p.id, label: p.name),
                                       ),
                                       const SizedBox(width: 10),
                                       ConstrainedBox(
@@ -2356,17 +2406,17 @@ class _DetailScreenState extends State<DetailScreen> {
                                         boxShadow: skin.posterShadow(),
                                       ),
                                       clipBehavior: Clip.antiAlias,
-                                      child: Stack(
-                                        fit: StackFit.expand,
-                                        children: [
-                                          GeneratedArt(seed: p.id, label: p.name),
-                                          if (avatarUrl.isNotEmpty)
-                                            FadeNetworkImage(
+                                      child: avatarUrl.isNotEmpty
+                                          ? FadeNetworkImage(
                                               url: avatarUrl,
+                                              cacheWidth: 220,
                                               alignment: const Alignment(0, -0.35),
-                                            ),
-                                        ],
-                                      ),
+                                              placeholder: GeneratedArt(
+                                                seed: p.id,
+                                                label: p.name,
+                                              ),
+                                            )
+                                          : GeneratedArt(seed: p.id, label: p.name),
                                     ),
                                     const SizedBox(height: 8),
                                     Text(
@@ -2879,7 +2929,7 @@ class _DetailScreenState extends State<DetailScreen> {
                               ),
                             ),
                             const SizedBox(width: 10),
-                            GestureDetector(
+                            PressableScale(
                               onTap: () {
                                 _episodeJumpCtrl.clear();
                                 _episodeSearchFocus.unfocus();
@@ -2888,12 +2938,16 @@ class _DetailScreenState extends State<DetailScreen> {
                                   _episodeSearchOpen = false;
                                 });
                               },
-                              child: Text(
-                                '取消',
-                                style: TextStyle(
-                                  color: skin.accent,
-                                  fontSize: 13.5,
-                                  fontWeight: FontWeight.w600,
+                              borderRadius: BorderRadius.circular(8),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                child: Text(
+                                  '取消',
+                                  style: TextStyle(
+                                    color: skin.accent,
+                                    fontSize: 13.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
                               ),
                             ),
@@ -2941,27 +2995,25 @@ class _DetailScreenState extends State<DetailScreen> {
                   final firstNum = filtered[rStart].indexNumber ?? (rStart + 1);
                   final lastNum = filtered[rEnd - 1].indexNumber ?? rEnd;
                   final active = rIdx == safeRangeIdx;
-                  return GestureDetector(
+                  return PressableScale(
                     onTap: () => setState(() => _episodeRangeIndex = rIdx),
-                    child: MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 160),
-                        padding: const EdgeInsets.symmetric(horizontal: 14),
-                        decoration: BoxDecoration(
-                          color: active ? skin.activePillBg : pillBg,
-                          borderRadius: BorderRadius.circular(999),
-                          border: active ? null : pillBorder,
-                        ),
-                        alignment: Alignment.center,
-                        child: Text(
-                          '$firstNum-$lastNum',
-                          style: TextStyle(
-                            color: active ? skin.activePillFg : skin.fg2,
-                            fontSize: 12,
-                            fontWeight: active ? FontWeight.w700 : FontWeight.w500,
-                            fontFeatures: const [FontFeature.tabularFigures()],
-                          ),
+                    borderRadius: BorderRadius.circular(999),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 160),
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      decoration: BoxDecoration(
+                        color: active ? skin.activePillBg : pillBg,
+                        borderRadius: BorderRadius.circular(999),
+                        border: active ? null : pillBorder,
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        '$firstNum-$lastNum',
+                        style: TextStyle(
+                          color: active ? skin.activePillFg : skin.fg2,
+                          fontSize: 12,
+                          fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                          fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                       ),
                     ),
@@ -3383,10 +3435,11 @@ class _ExpandableOverviewState extends State<_ExpandableOverview> {
                 spacing: 14,
                 children: [
                   if (overflows)
-                    GestureDetector(
+                    PressableScale(
                       onTap: () => setState(() => _expanded = !_expanded),
-                      child: MouseRegion(
-                        cursor: SystemMouseCursors.click,
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                         child: Text(
                           _expanded ? '收起简介' : '展开全部',
                           style: TextStyle(
@@ -3398,10 +3451,11 @@ class _ExpandableOverviewState extends State<_ExpandableOverview> {
                       ),
                     ),
                   if (widget.aiReady)
-                    GestureDetector(
+                    PressableScale(
                       onTap: widget.onTranslateToggle,
-                      child: MouseRegion(
-                        cursor: SystemMouseCursors.click,
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -4586,8 +4640,9 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                   itemBuilder: (_, idx) {
                     final s = widget.seasons[idx];
                     final active = s.id == _seasonId;
-                    return GestureDetector(
+                    return PressableScale(
                       onTap: () => _selectSeason(s.id),
+                      borderRadius: BorderRadius.circular(skin.radiusForPill(36)),
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 14),
                         alignment: Alignment.center,
@@ -4626,8 +4681,9 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                       runSpacing: 6,
                       children: [
                         for (var i = 0; i < versions.length; i++)
-                          GestureDetector(
+                          PressableScale(
                             onTap: () => setState(() => _versionIndex = i),
+                            borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
                             child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6.5),
                               decoration: BoxDecoration(
@@ -4670,8 +4726,9 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                             final firstNum = _episodes[rStart].indexNumber ?? (rStart + 1);
                             final lastNum = _episodes[rEnd - 1].indexNumber ?? rEnd;
                             final active = rIdx == safeRangeIdx;
-                            return GestureDetector(
+                            return PressableScale(
                               onTap: () => setState(() => _rangeIdx = rIdx),
+                              borderRadius: BorderRadius.circular(skin.radiusForPill(28)),
                               child: Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 4),
                                 alignment: Alignment.center,

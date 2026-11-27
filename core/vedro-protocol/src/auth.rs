@@ -32,10 +32,22 @@ fn default_device_name() -> String {
 }
 
 fn sanitize_header_value(input: &str) -> String {
-    input
-        .chars()
-        .filter(|c| !matches!(c, '"' | '\r' | '\n' | '\\'))
-        .collect()
+    let mut out = String::with_capacity(input.len());
+    for b in input.as_bytes() {
+        let ch = *b as char;
+        if *b >= 0x20 && *b <= 0x7E && !matches!(ch, '"' | '\\') {
+            out.push(ch);
+        } else if *b >= 0x80 {
+            // Percent-encode non-ASCII UTF-8 bytes (e.g. Chinese device names) so HTTP
+            // HeaderValue::from_str NEVER fails and silently drops auth headers!
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    if out.trim().is_empty() {
+        "Vedro".to_string()
+    } else {
+        out
+    }
 }
 
 impl ClientIdentity {

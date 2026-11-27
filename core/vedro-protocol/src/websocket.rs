@@ -81,8 +81,47 @@ impl WebSocketSession {
                 };
 
                 debug!(url = %ws_url.host_str().unwrap_or("server"), "connecting websocket");
-                match tokio_tungstenite::connect_async(ws_url.as_str()).await {
-                    Ok((ws_stream, _)) => {
+                let connect_req = {
+                    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+                    match ws_url.as_str().into_client_request() {
+                        Ok(mut req) => {
+                            let hdrs = client.auth_headers();
+                            for name in [
+                                "X-Emby-Authorization",
+                                "Authorization",
+                                "X-Emby-Token",
+                                "User-Agent",
+                            ] {
+                                if let (Ok(hn), Some(hv)) = (
+                                    tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(
+                                        name.as_bytes(),
+                                    ),
+                                    hdrs.get(name).and_then(|v| v.to_str().ok()),
+                                ) {
+                                    if let Ok(val) =
+                                        tokio_tungstenite::tungstenite::http::HeaderValue::from_str(
+                                            hv,
+                                        )
+                                    {
+                                        req.headers_mut().insert(hn, val);
+                                    }
+                                }
+                            }
+                            Ok(req)
+                        }
+                        Err(e) => Err(e),
+                    }
+                };
+                let connect_attempt = async {
+                    let req = connect_req?;
+                    tokio_tungstenite::connect_async(req).await
+                };
+                let connect_res = tokio::select! {
+                    _ = shutdown_rx.recv() => return,
+                    res = tokio::time::timeout(Duration::from_secs(12), connect_attempt) => res,
+                };
+                match connect_res {
+                    Ok(Ok((ws_stream, _))) => {
                         backoff = Duration::from_secs(1);
                         info!("emby websocket connected");
                         let _ = event_tx.send(ServerPushEvent::Connected).await;
@@ -107,12 +146,22 @@ impl WebSocketSession {
                                     match msg {
                                         Some(Ok(Message::Text(txt))) => {
                                             if let Some(ev) = parse_ws_message(&txt) {
+                                                if let ServerPushEvent::ForceKeepAlive { interval_secs } = &ev {
+                                                    let secs = (*interval_secs).clamp(10, 300);
+                                                    ping_interval = tokio::time::interval(Duration::from_secs(secs));
+                                                    ping_interval.tick().await;
+                                                }
                                                 let _ = event_tx.send(ev).await;
                                             }
                                         }
                                         Some(Ok(Message::Binary(bin))) => {
                                             if let Ok(txt) = std::str::from_utf8(&bin) {
                                                 if let Some(ev) = parse_ws_message(txt) {
+                                                    if let ServerPushEvent::ForceKeepAlive { interval_secs } = &ev {
+                                                        let secs = (*interval_secs).clamp(10, 300);
+                                                        ping_interval = tokio::time::interval(Duration::from_secs(secs));
+                                                        ping_interval.tick().await;
+                                                    }
                                                     let _ = event_tx.send(ev).await;
                                                 }
                                             }
@@ -137,11 +186,19 @@ impl WebSocketSession {
                             })
                             .await;
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         warn!(error = %e, "websocket connect failed; retrying");
                         let _ = event_tx
                             .send(ServerPushEvent::Disconnected {
                                 reason: e.to_string(),
+                            })
+                            .await;
+                    }
+                    Err(_) => {
+                        warn!("websocket connect timed out; retrying");
+                        let _ = event_tx
+                            .send(ServerPushEvent::Disconnected {
+                                reason: "connect timeout".into(),
                             })
                             .await;
                     }
@@ -180,7 +237,12 @@ pub fn parse_ws_message(raw: &str) -> Option<ServerPushEvent> {
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|x| x.as_str().map(ToString::to_string))
+                        .filter_map(|x| {
+                            x.as_str()
+                                .map(ToString::to_string)
+                                .or_else(|| x.as_i64().map(|n| n.to_string()))
+                                .or_else(|| x.as_u64().map(|n| n.to_string()))
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -249,9 +311,13 @@ pub fn parse_ws_message(raw: &str) -> Option<ServerPushEvent> {
             let user_id = env
                 .data
                 .get("UserId")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                .and_then(|v| {
+                    v.as_str()
+                        .map(ToString::to_string)
+                        .or_else(|| v.as_i64().map(|n| n.to_string()))
+                        .or_else(|| v.as_u64().map(|n| n.to_string()))
+                })
+                .unwrap_or_default();
             let items = env
                 .data
                 .get("UserDataList")

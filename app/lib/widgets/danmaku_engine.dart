@@ -75,6 +75,11 @@ class _CachedBulletPainters {
   _CachedBulletPainters(this.stroke, this.fill);
   final TextPainter stroke;
   final TextPainter fill;
+
+  void dispose() {
+    stroke.dispose();
+    fill.dispose();
+  }
 }
 
 class _DanmakuLayoutCache {
@@ -83,10 +88,17 @@ class _DanmakuLayoutCache {
   double _cachedFontSize = -1;
   double _cachedOpacity = -1;
 
+  void clear() {
+    for (final entry in _cache.values) {
+      entry.dispose();
+    }
+    _cache.clear();
+  }
+
   void syncParams(double fontSize, double opacity) {
     if ((fontSize - _cachedFontSize).abs() > 0.05 ||
         (opacity - _cachedOpacity).abs() > 0.02) {
-      _cache.clear();
+      clear();
       _cachedFontSize = fontSize;
       _cachedOpacity = opacity;
     }
@@ -131,7 +143,8 @@ class _DanmakuLayoutCache {
 
     final entry = _CachedBulletPainters(strokeTp, fillTp);
     if (_cache.length >= _maxEntries) {
-      _cache.remove(_cache.keys.first);
+      final oldest = _cache.remove(_cache.keys.first);
+      oldest?.dispose();
     }
     _cache[key] = entry;
     return entry;
@@ -140,8 +153,8 @@ class _DanmakuLayoutCache {
 
 /// Real GPU-friendly Danmaku Canvas Layer:
 /// renders scrolling, top-fixed, and bottom-fixed bullet comments with cached
-/// `TextPainter` layouts, baked opacity (zero offscreen `Opacity` `saveLayer`),
-/// and `RepaintBoundary` isolation.
+/// `TextPainter` layouts (properly disposed to prevent Skia/Impeller paragraph leaks),
+/// baked opacity (zero offscreen `Opacity` `saveLayer`), and `RepaintBoundary` isolation.
 class DanmakuLayer extends StatefulWidget {
   const DanmakuLayer({
     super.key,
@@ -170,6 +183,12 @@ class DanmakuLayer extends StatefulWidget {
 
 class _DanmakuLayerState extends State<DanmakuLayer> {
   final _DanmakuLayoutCache _layoutCache = _DanmakuLayoutCache();
+
+  @override
+  void dispose() {
+    _layoutCache.clear();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

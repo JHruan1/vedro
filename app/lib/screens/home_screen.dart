@@ -27,6 +27,7 @@ class HomeScreen extends StatefulWidget {
     this.onGenreTap,
     this.onOpenFavorites,
     this.onOpenLocalMedia,
+    this.onOpenNetworkUrl,
     required this.onOpenServerHub,
     required this.onOpenAddServer,
     required this.onOpenSettings,
@@ -41,6 +42,7 @@ class HomeScreen extends StatefulWidget {
   final ValueChanged<String>? onGenreTap;
   final VoidCallback? onOpenFavorites;
   final VoidCallback? onOpenLocalMedia;
+  final VoidCallback? onOpenNetworkUrl;
   final VoidCallback onOpenServerHub;
   final void Function([String? initialUrl]) onOpenAddServer;
   final VoidCallback onOpenSettings;
@@ -95,13 +97,9 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final i in app.favorites) {
       pool.add((item: i, eyebrow: '我的收藏'));
     }
-    for (final entry in app.latestByLibrary) {
-      final lib = MediaItemModel.fromJson(entry['library'] as Map<String, dynamic>);
-      final items = ((entry['items'] as List<dynamic>?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(MediaItemModel.fromJson);
-      for (final i in items) {
-        pool.add((item: i, eyebrow: '最新加入 · ${lib.name}'));
+    for (final entry in app.parsedLatestByLibrary) {
+      for (final i in entry.items) {
+        pool.add((item: i, eyebrow: '最新加入 · ${entry.library.name}'));
       }
     }
 
@@ -131,6 +129,7 @@ class _HomeScreenState extends State<HomeScreen> {
         wide: wide,
         onOpenAddServer: widget.onOpenAddServer,
         onOpenLocalMedia: widget.onOpenLocalMedia,
+        onOpenNetworkUrl: widget.onOpenNetworkUrl,
         onOpenServerHub: widget.onOpenServerHub,
         onOpenSettings: widget.onOpenSettings,
       );
@@ -181,6 +180,45 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
+    if (!app.isLoadingHome && !app.hasAnyHomeContent && app.homeError == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.video_library_outlined, size: 38, color: skin.fg3),
+              const SizedBox(height: 14),
+              Text(
+                '当前服务器媒体库为空',
+                style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '请确认服务器已完成媒体库扫描，或切换其他服务器。',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: skin.fg3, fontSize: 13),
+              ),
+              const SizedBox(height: 18),
+              Wrap(
+                spacing: 10,
+                children: [
+                  FilledButton(
+                    onPressed: app.refreshHome,
+                    child: const Text('刷新首页'),
+                  ),
+                  OutlinedButton(
+                    onPressed: widget.onOpenServerHub,
+                    child: const Text('切换服务器'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     final showHero = app.showHomeHero && skin.heroStyle != 'compact_minimal';
     final featured = showHero
         ? _pickFeatured()
@@ -189,15 +227,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final resumeIds = app.resume.map((e) => e.id).toSet();
     final nextItems = app.nextUp.where((e) => !resumeIds.contains(e.id)).toList();
 
-    final latestMap = <String, List<MediaItemModel>>{};
-    for (final entry in app.latestByLibrary) {
-      final lib = MediaItemModel.fromJson(entry['library'] as Map<String, dynamic>);
-      final items = ((entry['items'] as List<dynamic>?) ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(MediaItemModel.fromJson)
-          .toList();
-      latestMap[lib.id] = items;
-    }
+    final latestMap = <String, List<MediaItemModel>>{
+      for (final entry in app.parsedLatestByLibrary) entry.library.id: entry.items,
+    };
 
     final profile = DisplayMetricsProfile.of(context);
     final textScaler = MediaQuery.textScalerOf(context);
@@ -305,12 +337,9 @@ class _HomeScreenState extends State<HomeScreen> {
           }
           break;
         case 'latest':
-          for (final entry in app.latestByLibrary) {
-            final lib = MediaItemModel.fromJson(entry['library'] as Map<String, dynamic>);
-            final items = ((entry['items'] as List<dynamic>?) ?? const [])
-                .whereType<Map<String, dynamic>>()
-                .map(MediaItemModel.fromJson)
-                .toList();
+          for (final entry in app.parsedLatestByLibrary) {
+            final lib = entry.library;
+            final items = entry.items;
             if (items.isEmpty) continue;
             dynamicSectionSlivers.add(
               SliverToBoxAdapter(
@@ -383,7 +412,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 padding: EdgeInsets.fromLTRB(padX, 12, padX, 0),
                 child: GlassSurface(
                   borderRadius: 12,
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                   child: Row(
                     children: [
                       Icon(Icons.cast_connected_rounded, size: 16, color: skin.fg2),
@@ -393,6 +422,12 @@ class _HomeScreenState extends State<HomeScreen> {
                           app.remoteBannerMessage!,
                           style: TextStyle(color: skin.fg, fontSize: 13),
                         ),
+                      ),
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: '关闭提示',
+                        icon: Icon(Icons.close_rounded, size: 16, color: skin.fg3),
+                        onPressed: app.dismissRemoteBanner,
                       ),
                     ],
                   ),
@@ -494,6 +529,7 @@ class _ServerWelcomeHub extends StatelessWidget {
     required this.wide,
     required this.onOpenAddServer,
     this.onOpenLocalMedia,
+    this.onOpenNetworkUrl,
     required this.onOpenServerHub,
     required this.onOpenSettings,
   });
@@ -502,6 +538,7 @@ class _ServerWelcomeHub extends StatelessWidget {
   final bool wide;
   final void Function([String? initialUrl]) onOpenAddServer;
   final VoidCallback? onOpenLocalMedia;
+  final VoidCallback? onOpenNetworkUrl;
   final VoidCallback onOpenServerHub;
   final VoidCallback onOpenSettings;
 
@@ -594,6 +631,35 @@ class _ServerWelcomeHub extends StatelessWidget {
                               const SizedBox(width: 7),
                               Text(
                                 '本地播放',
+                                style: TextStyle(
+                                  color: skin.fg,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    if (onOpenNetworkUrl != null)
+                      PressableScale(
+                        onTap: onOpenNetworkUrl,
+                        borderRadius: BorderRadius.circular(btnR),
+                        child: Container(
+                          height: 44,
+                          padding: const EdgeInsets.symmetric(horizontal: 18),
+                          decoration: BoxDecoration(
+                            color: skin.surface2,
+                            borderRadius: BorderRadius.circular(btnR),
+                            border: Border.all(color: skin.border, width: 0.8),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.link_rounded, size: 17, color: skin.fg2),
+                              const SizedBox(width: 7),
+                              Text(
+                                '网络链接',
                                 style: TextStyle(
                                   color: skin.fg,
                                   fontSize: 14,
@@ -902,17 +968,21 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
       mainAxisAlignment: MainAxisAlignment.center,
       children: List.generate(widget.featured.length, (i) {
         final active = i == _active;
-        return GestureDetector(
+        return PressableScale(
           onTap: () => _select(i),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
-            curve: VedroTheme.easeOut,
-            margin: const EdgeInsets.symmetric(horizontal: 3),
-            width: active ? 22 : 6,
-            height: 6,
-            decoration: BoxDecoration(
-              color: active ? activeColor : inactiveColor,
-              borderRadius: BorderRadius.circular(3),
+          borderRadius: BorderRadius.circular(6),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              curve: VedroTheme.easeOut,
+              margin: const EdgeInsets.symmetric(horizontal: 3),
+              width: active ? 22 : 6,
+              height: 6,
+              decoration: BoxDecoration(
+                color: active ? activeColor : inactiveColor,
+                borderRadius: BorderRadius.circular(3),
+              ),
             ),
           ),
         );
@@ -1110,12 +1180,11 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                     ),
                   ),
                 for (final g in item.genres.take(4))
-                  GestureDetector(
+                  PressableScale(
                     onTap: widget.onGenreTap == null ? null : () => widget.onGenreTap!(g),
-                    child: MouseRegion(
-                      cursor: widget.onGenreTap != null
-                          ? SystemMouseCursors.click
-                          : MouseCursor.defer,
+                    borderRadius: BorderRadius.circular(6),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
                       child: Text(
                         g,
                         style: TextStyle(
@@ -1516,7 +1585,19 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
         : (size.height * 0.49).clamp(328.0, 420.0);
     final canvasColor = skin.canvas;
 
-    return MouseRegion(
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onFocusChange: (focused) {
+        if (focused) {
+          _paused = true;
+          _autoTimer?.cancel();
+        } else if (!_hovered) {
+          _paused = false;
+          _armTimer();
+        }
+      },
+      child: MouseRegion(
       onEnter: (_) {
         setState(() => _hovered = true);
         _paused = true;
@@ -1559,85 +1640,70 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        // Dissolve Hero artwork + legibility scrim smoothly to 0.0 alpha BEFORE bottom edge!
-                        // Static inside RepaintBoundary (no per-scroll Transform inside ShaderMask!)
-                        // so scrolling Home NEVER re-rasterizes a full-screen offscreen saveLayer!
+                        // Direct zero-saveLayer gradient dissolve into `skin.canvas` (no offscreen ShaderMask!)
                         RepaintBoundary(
-                          child: ShaderMask(
+                          child: ClipRect(
                             key: ValueKey('hero-alpha-mask-$idx'),
-                            blendMode: BlendMode.dstIn,
-                            shaderCallback: (rect) => const LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              stops: [0.0, 0.50, 0.80, 0.965, 1.0],
-                              colors: [
-                                Color(0xFFFFFFFF),
-                                Color(0xFFFFFFFF),
-                                Color(0xAAFFFFFF),
-                                Color(0x00FFFFFF),
-                                Color(0x00FFFFFF),
-                              ],
-                            ).createShader(rect),
-                            child: ClipRect(
-                              child: Stack(
-                                fit: StackFit.expand,
-                                children: [
-                                  Positioned.fill(
-                                    child: VedroArtwork(
-                                      item: slide.item,
-                                      appState: widget.appState,
-                                      isHero: true,
-                                      alignment: const Alignment(0, -0.46),
-                                      showInitials: false,
-                                    ),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                Positioned.fill(
+                                  child: VedroArtwork(
+                                    item: slide.item,
+                                    appState: widget.appState,
+                                    isHero: true,
+                                    alignment: const Alignment(0, -0.46),
+                                    showInitials: false,
                                   ),
-                                  if (wide)
-                                    DecoratedBox(
-                                      decoration: BoxDecoration(
-                                        gradient: LinearGradient(
-                                          begin: Alignment.centerLeft,
-                                          end: Alignment.centerRight,
-                                          stops: const [0.0, 0.48, 0.82, 1.0],
-                                          colors: skin.isLight
-                                              ? [
-                                                  canvasColor.withValues(alpha: 0.88),
-                                                  canvasColor.withValues(alpha: 0.52),
-                                                  canvasColor.withValues(alpha: 0.12),
-                                                  Colors.transparent,
-                                                ]
-                                              : const [
-                                                  Color(0xD408090D),
-                                                  Color(0x7008090D),
-                                                  Color(0x1408090D),
-                                                  Colors.transparent,
-                                                ],
-                                        ),
-                                      ),
-                                    ),
+                                ),
+                                if (wide)
                                   DecoratedBox(
                                     decoration: BoxDecoration(
                                       gradient: LinearGradient(
-                                        begin: Alignment.topCenter,
-                                        end: Alignment.bottomCenter,
-                                        stops: const [0.0, 0.28, 0.62, 1.0],
+                                        begin: Alignment.centerLeft,
+                                        end: Alignment.centerRight,
+                                        stops: const [0.0, 0.48, 0.82, 1.0],
                                         colors: skin.isLight
                                             ? [
-                                                canvasColor.withValues(alpha: 0.36),
+                                                canvasColor.withValues(alpha: 0.88),
+                                                canvasColor.withValues(alpha: 0.52),
+                                                canvasColor.withValues(alpha: 0.12),
                                                 Colors.transparent,
-                                                canvasColor.withValues(alpha: 0.38),
-                                                canvasColor.withValues(alpha: 0.82),
                                               ]
-                                            : const [
-                                                Color(0x5808090D),
+                                            : [
+                                                canvasColor.withValues(alpha: 0.84),
+                                                canvasColor.withValues(alpha: 0.44),
+                                                canvasColor.withValues(alpha: 0.08),
                                                 Colors.transparent,
-                                                Color(0x5208090D),
-                                                Color(0xCC08090D),
                                               ],
                                       ),
                                     ),
                                   ),
-                                ],
-                              ),
+                                DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topCenter,
+                                      end: Alignment.bottomCenter,
+                                      stops: const [0.0, 0.28, 0.62, 0.90, 1.0],
+                                      colors: skin.isLight
+                                          ? [
+                                              canvasColor.withValues(alpha: 0.36),
+                                              Colors.transparent,
+                                              canvasColor.withValues(alpha: 0.46),
+                                              canvasColor.withValues(alpha: 0.94),
+                                              canvasColor,
+                                            ]
+                                          : [
+                                              canvasColor.withValues(alpha: 0.36),
+                                              Colors.transparent,
+                                              canvasColor.withValues(alpha: 0.42),
+                                              canvasColor.withValues(alpha: 0.94),
+                                              canvasColor,
+                                            ],
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ),
@@ -1737,6 +1803,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               ),
           ],
         ),
+      ),
       ),
     );
   }

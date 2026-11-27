@@ -37,6 +37,11 @@ char* vedro_invoke(VedroRuntime* rt, const char* method_utf8, const char* params
 char* vedro_poll_events(VedroRuntime* rt);
 
 /**
+ * Fast lock-free readout of current local proxy download speed in bytes/sec (0 JSON, 0 allocations).
+ */
+uint64_t vedro_proxy_speed_bps(VedroRuntime* rt);
+
+/**
  * Return the Vedro Core version string (static, do NOT free).
  */
 const char* vedro_version(void);

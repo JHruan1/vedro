@@ -192,11 +192,13 @@ class _AddServerFormState extends State<_AddServerForm> {
                 onSubmitted: (_) => _submit(),
               ),
               const SizedBox(height: 8),
-              GestureDetector(
+              PressableScale(
                 onTap: () => setState(() => _showAdvanced = !_showAdvanced),
-                behavior: HitTestBehavior.opaque,
+                hoverScale: 1.0,
+                pressScale: 0.99,
+                borderRadius: BorderRadius.circular(8),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
                   child: Row(
                     children: [
                       Text(

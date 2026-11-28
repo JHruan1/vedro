@@ -89,6 +89,10 @@ vec3 gradeLiquidCrystalFast(vec3 rgb, float chromaMul, float whitePoint, float c
   return clamp(graded, 0.0, 1.0);
 }
 
+vec3 unpremul(vec4 c) {
+  return c.a > 1e-4 ? clamp(c.rgb / c.a, 0.0, 1.0) : vec3(0.0);
+}
+
 void main() {
   vec2 safeSize = max(u_size, vec2(1.0));
   vec2 invSize = 1.0 / safeSize;
@@ -112,81 +116,86 @@ void main() {
   float sd = sdRoundedRect(p, halfSize, r);
   float distFromEdge = max(0.0, -sd);
 
-  // Full 360° QmDeve / iOS 26 curved bezel optics locked pixel-accurately to u_rect.
-  // Because u_texture is the full-screen backdrop, curved-lens refraction can bend
-  // deeply around ALL 4 edges and 4 corners without hitting a cropped edge stripe!
-  float refrHeight = clamp(u_refractionHeightPx, 8.0 * dpr, minHalf * 0.78);
-  float safeRefrAmount = clamp(u_refractionAmountPx, 0.0, minHalf * 1.48);
-  float edgeT = clamp(1.0 - (distFromEdge / max(refrHeight, 1.0)), 0.0, 1.0);
-  float smoothEdge = edgeT * edgeT * (3.0 - 2.0 * edgeT);
-  float lensProfile = mix(smoothEdge, circleMap(edgeT), 0.72) * smoothEdge;
+  // Full-surface C2-continuous 3D liquid-glass lens (ZERO interior/bezel branch or seam!):
+  // On capsules/pills (height <= ~64dp), refrSpan spans 98% of minHalf so the ENTIRE bar
+  // acts as one continuous curved liquid-glass dome from center spine to 360° outer rim.
+  // On larger panels/menus, quintic C2 falloff blends invisibly into the convex crystal body.
+  float refrSpan = clamp(u_refractionHeightPx, 10.0 * dpr, minHalf * 0.98);
+  float safeRefrAmount = clamp(u_refractionAmountPx, 0.0, minHalf * 1.42);
+  float t = clamp(1.0 - (distFromEdge / max(refrSpan, 1.0)), 0.0, 1.0);
+  // C2 quintic smoothstep: value, 1st derivative, AND 2nd derivative all vanish smoothly at t=0.
+  float q = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+  float lensProfile = mix(q, circleMap(t) * q, 0.52);
 
-  float chromaMul = mix(1.22, 1.14, u_isLight);
-  float whitePoint = mix(0.03, 0.07, u_isLight);
-  float contrast = mix(0.06, 0.04, u_isLight);
+  // Continuous outward surface normal across the entire glass (zero spine crease at p.y = 0).
+  float smoothRadius = max(r * 1.15, 14.0 * dpr);
+  float gradRadius = min(smoothRadius, minHalf);
+  vec2 shapeGrad = gradSdRoundedRect(p, halfSize, gradRadius);
+  vec2 normP = p / max(halfSize, vec2(1.0));
+  vec2 radialGrad = safeNormalize(normP, shapeGrad);
+  // Blend smoothly from radial dome near center to exact rounded-rect SDF normal near rim.
+  float rimAlign = smoothstep(0.0, 0.55, t);
+  vec2 grad = safeNormalize(
+    mix(radialGrad, shapeGrad, rimAlign) + (u_depthEffect * 0.42) * radialGrad,
+    shapeGrad
+  );
 
-  vec3 rgb;
-  float alpha;
+  // Continuous whole-body convex magnification + seamless curved bevel refraction.
+  vec2 domeDisp = -normP * (minHalf * 0.11 * (0.55 + 0.45 * u_depthEffect));
+  vec2 bevelDisp = -grad * (lensProfile * safeRefrAmount);
+  vec2 totalDisp = domeDisp + bevelDisp;
+  vec2 refractedPos = posPx + totalDisp;
 
-  if (edgeT <= 0.001) {
-    // Fast single-pass interior path: subtle convex crystal magnification +
-    // 4-tap diagonal bilinear crystal frost (replaces expensive multi-pass
-    // ImageFilter.blur compose -> 3.5x faster locked 120Hz on mobile GPUs!).
-    vec2 centerPos = posPx - (p / max(halfSize, vec2(1.0))) * (minHalf * 0.075);
-    float frostOff = 2.6 * dpr;
-    vec4 s0 = texture(u_texture, toSampleUV(centerPos + vec2(-frostOff, -frostOff), invSize));
-    vec4 s1 = texture(u_texture, toSampleUV(centerPos + vec2( frostOff, -frostOff), invSize));
-    vec4 s2 = texture(u_texture, toSampleUV(centerPos + vec2(-frostOff,  frostOff), invSize));
-    vec4 s3 = texture(u_texture, toSampleUV(centerPos + vec2( frostOff,  frostOff), invSize));
-    vec4 base = (s0 + s1 + s2 + s3) * 0.25;
-    alpha = base.a;
-    rgb = alpha > 1e-4 ? clamp(base.rgb / alpha, 0.0, 1.0) : vec3(0.0);
-    rgb = gradeLiquidCrystalFast(rgb, chromaMul, whitePoint, contrast);
-  } else {
-    float smoothRadius = max(r * 1.15, 14.0 * dpr);
-    float gradRadius = min(smoothRadius, minHalf);
-    vec2 shapeGrad = gradSdRoundedRect(p, halfSize, gradRadius);
-    vec2 depthGrad = safeNormalize(p, shapeGrad);
-    vec2 grad = safeNormalize(shapeGrad + (u_depthEffect * 0.55) * depthGrad, shapeGrad);
+  // Unified single-pass 4-tap diagonal crystal frost everywhere (ZERO sharp-vs-blurry cliff!).
+  // Softly frosted through the body, slightly glossier toward the outer curved lip.
+  float frostOff = mix(2.35, 1.45, lensProfile) * dpr;
+  vec4 s0 = texture(u_texture, toSampleUV(refractedPos + vec2(-frostOff, -frostOff), invSize));
+  vec4 s1 = texture(u_texture, toSampleUV(refractedPos + vec2( frostOff, -frostOff), invSize));
+  vec4 s2 = texture(u_texture, toSampleUV(refractedPos + vec2(-frostOff,  frostOff), invSize));
+  vec4 s3 = texture(u_texture, toSampleUV(refractedPos + vec2( frostOff,  frostOff), invSize));
+  vec4 base = (s0 + s1 + s2 + s3) * 0.25;
+  float alpha = base.a;
+  vec3 rgb = unpremul(base);
 
-    // Pull live screen backdrop smoothly inward along -grad all 360° around the widget.
-    float d = -lensProfile * safeRefrAmount;
-    vec2 refractedPos = posPx + d * grad;
-
-    // 3-tap prismatic RGB chromatic dispersion along the curved outer bezel.
-    vec2 dispVec = d * grad * (u_dispersion * 0.34);
-    vec4 sG = texture(u_texture, toSampleUV(refractedPos, invSize));
-    alpha = sG.a;
-    if (dot(dispVec, dispVec) > 0.16) {
-      vec4 sR = texture(u_texture, toSampleUV(refractedPos + dispVec, invSize));
-      vec4 sB = texture(u_texture, toSampleUV(refractedPos - dispVec, invSize));
-      rgb = vec3(sR.r, sG.g, sB.b);
-    } else {
-      rgb = sG.rgb;
-    }
-    rgb = alpha > 1e-4 ? clamp(rgb / alpha, 0.0, 1.0) : vec3(0.0);
-    rgb = gradeLiquidCrystalFast(rgb, chromaMul + 0.10 * smoothEdge, whitePoint, contrast);
-
-    // Continuous 360° Apple iOS 26 Fresnel glass rim + thick bezel highlight.
-    float rim360 = smoothstep(3.2 * dpr, 0.0, distFromEdge);
-    float softBevel360 = smoothstep(refrHeight * 0.72, 0.0, distFromEdge);
-    float fresnel = smoothEdge * smoothEdge;
-
-    float topWeight = 0.5 + 0.5 * clamp(-shapeGrad.y, -1.0, 1.0);
-    float sideWeight = 0.35 + 0.65 * abs(shapeGrad.x);
-    float specScale = clamp(u_specIntensity, 0.45, 1.6);
-
-    float rimLight = mix(0.20, 0.36, topWeight) * rim360 +
-        mix(0.05, 0.11, topWeight) * softBevel360 +
-        0.07 * sideWeight * rim360 +
-        mix(0.05, 0.09, u_isLight) * fresnel;
-    vec3 rimGlow = vec3(1.0) * (rimLight * mix(0.88, 1.08, u_isLight) * specScale);
-
-    float botWeight = 1.0 - topWeight;
-    vec3 causticGlow = mix(vec3(1.0), u_accent, 0.38) * (botWeight * 0.11 * rim360 * specScale);
-
-    rgb = clamp(rgb + rimGlow + causticGlow, 0.0, 1.0);
+  // Continuous prismatic RGB chromatic dispersion blended smoothly into the crystal frost.
+  vec2 dispVec = totalDisp * (u_dispersion * 0.26);
+  float dispLen = length(dispVec);
+  if (dispLen > 0.35) {
+    vec3 rSample = unpremul(texture(u_texture, toSampleUV(refractedPos + dispVec, invSize)));
+    vec3 bSample = unpremul(texture(u_texture, toSampleUV(refractedPos - dispVec, invSize)));
+    float dispMix = clamp(dispLen / (4.2 * dpr), 0.0, 0.68) * (0.28 + 0.72 * q);
+    rgb.r = mix(rgb.r, rSample.r, dispMix);
+    rgb.b = mix(rgb.b, bSample.b, dispMix);
   }
 
+  float chromaMul = mix(1.22, 1.14, u_isLight) + 0.10 * q;
+  float whitePoint = mix(0.03, 0.07, u_isLight);
+  float contrast = mix(0.06, 0.04, u_isLight);
+  rgb = gradeLiquidCrystalFast(rgb, chromaMul, whitePoint, contrast);
+
+  // Continuous 360° Apple iOS 26 Fresnel glass rim + smooth full-dome specular sheen.
+  float rim360 = smoothstep(3.0 * dpr, 0.0, distFromEdge);
+  float softBevel360 = smoothstep(refrSpan, 0.0, distFromEdge);
+  float fresnel = q * q;
+
+  float verticalSlope = mix(-normP.y, -shapeGrad.y, rimAlign);
+  float horizSlope = mix(abs(normP.x), abs(shapeGrad.x), rimAlign);
+  float topWeight = 0.5 + 0.5 * clamp(verticalSlope, -1.0, 1.0);
+  float sideWeight = 0.35 + 0.65 * clamp(horizSlope, 0.0, 1.0);
+  float specScale = clamp(u_specIntensity, 0.45, 1.6);
+
+  float bodyGlow = mix(0.015, 0.045, topWeight) * (1.0 - softBevel360 * 0.5);
+  float rimLight = mix(0.20, 0.35, topWeight) * rim360 +
+      mix(0.04, 0.10, topWeight) * softBevel360 +
+      0.065 * sideWeight * rim360 +
+      mix(0.04, 0.08, u_isLight) * fresnel +
+      bodyGlow;
+  vec3 rimGlow = vec3(1.0) * (rimLight * mix(0.88, 1.08, u_isLight) * specScale);
+
+  float botWeight = 1.0 - topWeight;
+  vec3 causticGlow = mix(vec3(1.0), u_accent, 0.38) *
+      ((botWeight * 0.10 * rim360 + botWeight * 0.025 * softBevel360) * specScale);
+
+  rgb = clamp(rgb + rimGlow + causticGlow, 0.0, 1.0);
   fragColor = vec4(rgb * alpha, alpha);
 }

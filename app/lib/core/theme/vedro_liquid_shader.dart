@@ -135,10 +135,10 @@ class VedroLiquidGlassShader {
     required double borderRadius,
     required bool enableRefraction,
     String liquidSpecular = 'standard',
-    double refractionHeightDp = 19.0,
-    double refractionAmountDp = 48.0,
-    double dispersion = 0.54,
-    double depthEffect = 0.30,
+    double refractionHeightDp = 32.0,
+    double refractionAmountDp = 42.0,
+    double dispersion = 0.48,
+    double depthEffect = 0.32,
     double? intensityOverride,
   }) {
     final hasBlur = blurSigma > 0.15;
@@ -191,8 +191,8 @@ class VedroLiquidGlassShader {
       shader.setFloat(6, (borderRadius * dpr).clamp(0.0, 260.0));
       // Uniform 7: u_dpr
       shader.setFloat(7, dpr);
-      // Uniform 8: u_refractionHeightPx
-      shader.setFloat(8, (refractionHeightDp * dpr).clamp(8.0, 120.0));
+      // Uniform 8: u_refractionHeightPx (wide span so capsules refract seamlessly full-body)
+      shader.setFloat(8, (refractionHeightDp * dpr).clamp(10.0, 240.0));
       // Uniform 9: u_refractionAmountPx
       shader.setFloat(9, (refractionAmountDp * refractScale * dpr).clamp(0.0, 260.0));
       // Uniform 10: u_dispersion
@@ -277,33 +277,33 @@ class VedroLiquidGlassBackdrop extends StatefulWidget {
   double get _effRefractionHeight =>
       refractionHeightDp ??
       switch (density) {
-        VedroGlassDensity.chrome => 19.0,
-        VedroGlassDensity.menu => 22.0,
-        VedroGlassDensity.panel => 20.0,
+        VedroGlassDensity.chrome => 32.0,
+        VedroGlassDensity.menu => 34.0,
+        VedroGlassDensity.panel => 32.0,
       };
 
   double get _effRefractionAmount =>
       refractionAmountDp ??
       switch (density) {
-        VedroGlassDensity.chrome => 48.0,
-        VedroGlassDensity.menu => 54.0,
-        VedroGlassDensity.panel => 50.0,
+        VedroGlassDensity.chrome => 42.0,
+        VedroGlassDensity.menu => 48.0,
+        VedroGlassDensity.panel => 44.0,
       };
 
   double get _effDispersion =>
       dispersion ??
       switch (density) {
-        VedroGlassDensity.chrome => 0.54,
-        VedroGlassDensity.menu => 0.56,
-        VedroGlassDensity.panel => 0.52,
+        VedroGlassDensity.chrome => 0.48,
+        VedroGlassDensity.menu => 0.50,
+        VedroGlassDensity.panel => 0.46,
       };
 
   double get _effDepthEffect =>
       depthEffect ??
       switch (density) {
-        VedroGlassDensity.chrome => 0.30,
-        VedroGlassDensity.menu => 0.28,
-        VedroGlassDensity.panel => 0.28,
+        VedroGlassDensity.chrome => 0.32,
+        VedroGlassDensity.menu => 0.30,
+        VedroGlassDensity.panel => 0.30,
       };
 
   @override

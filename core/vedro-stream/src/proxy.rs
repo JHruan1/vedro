@@ -29,7 +29,11 @@ use crate::cache::{CacheStats, ChunkCache, DEFAULT_CHUNK_SIZE};
 type ProxyBody = BoxBody<Bytes, std::io::Error>;
 
 const MAX_IMAGE_BYTES: usize = 12 * 1024 * 1024;
-const MAX_RAM_IMAGE_CACHE_BYTES: usize = if cfg!(any(target_os = "android", target_os = "ios")) {
+const MAX_RAM_IMAGE_CACHE_BYTES: usize = if cfg!(any(
+    target_os = "android",
+    target_os = "ios",
+    target_os = "tvos"
+)) {
     24 * 1024 * 1024
 } else {
     64 * 1024 * 1024
@@ -55,7 +59,11 @@ pub struct StreamProxyConfig {
 impl Default for StreamProxyConfig {
     fn default() -> Self {
         Self {
-            cache_bytes: if cfg!(any(target_os = "android", target_os = "ios")) {
+            cache_bytes: if cfg!(any(
+                target_os = "android",
+                target_os = "ios",
+                target_os = "tvos"
+            )) {
                 32 * 1024 * 1024
             } else {
                 64 * 1024 * 1024

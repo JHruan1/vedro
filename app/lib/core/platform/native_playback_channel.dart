@@ -15,6 +15,7 @@ class NativePlaybackChannel {
   static final ValueNotifier<bool> maximizedNotifier = ValueNotifier<bool>(false);
   static final ValueNotifier<bool> playerHudAutoHideNotifier = ValueNotifier<bool>(false);
   static final ValueNotifier<bool> pipModeNotifier = ValueNotifier<bool>(false);
+  static final ValueNotifier<int> pipEnteringNotifier = ValueNotifier<int>(0);
   static final ValueNotifier<int> audioInterruptCountNotifier = ValueNotifier<int>(0);
   static final ValueNotifier<Map<String, dynamic>?> mediaActionNotifier =
       ValueNotifier<Map<String, dynamic>?>(null);
@@ -165,6 +166,8 @@ class NativePlaybackChannel {
         if (pipModeNotifier.value != inPip) {
           pipModeNotifier.value = inPip;
         }
+      } else if (call.method == 'pipEntering') {
+        pipEnteringNotifier.value = pipEnteringNotifier.value + 1;
       } else if (call.method == 'audioInterrupted') {
         audioInterruptCountNotifier.value = audioInterruptCountNotifier.value + 1;
       } else if (call.method == 'mediaAction' && call.arguments is Map) {
@@ -294,12 +297,18 @@ class NativePlaybackChannel {
     }
   }
 
-  static Future<void> setAutoPipEnabled(bool enabled, {int aspectW = 16, int aspectH = 9}) async {
+  static Future<void> setAutoPipEnabled(
+    bool enabled, {
+    bool? playing,
+    int aspectW = 16,
+    int aspectH = 9,
+  }) async {
     if (kIsWeb || !Platform.isAndroid) return;
     ensureWindowListener();
     try {
       await _channel.invokeMethod<void>('setAutoPipEnabled', {
         'enabled': enabled,
+        if (playing != null) 'playing': playing,
         'aspect_w': aspectW,
         'aspect_h': aspectH,
       });

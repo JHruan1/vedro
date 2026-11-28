@@ -57,6 +57,8 @@ class VedroHardwarePlugin(
         const val CHANNEL_NAME = "com.vedro.player/hardware"
         private const val REQ_PICK_FILES = 9401
         private const val ACTION_PIP_TOGGLE_PLAY = "com.vedro.player.PIP_TOGGLE_PLAY"
+        private const val ACTION_PIP_SEEK_BACK = "com.vedro.player.PIP_SEEK_BACK"
+        private const val ACTION_PIP_SEEK_FWD = "com.vedro.player.PIP_SEEK_FWD"
         private const val MAX_CACHE_COPY_BYTES = 32L * 1024L * 1024L
 
         private val VIDEO_EXTS = setOf(
@@ -131,8 +133,10 @@ class VedroHardwarePlugin(
 
     private val pipActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == ACTION_PIP_TOGGLE_PLAY) {
-                emitMediaAction("toggle_play")
+            when (intent?.action) {
+                ACTION_PIP_TOGGLE_PLAY -> emitMediaAction("toggle_play")
+                ACTION_PIP_SEEK_BACK -> emitMediaAction("seek_back")
+                ACTION_PIP_SEEK_FWD -> emitMediaAction("seek_fwd")
             }
         }
     }
@@ -174,9 +178,18 @@ class VedroHardwarePlugin(
 
     fun onUserLeaveHint() {
         if (!autoPipEnabled || !nowPlayingActive) return
-        if (Build.VERSION.SDK_INT in Build.VERSION_CODES.O until Build.VERSION_CODES.S &&
-            activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE) &&
+            !activity.isInPictureInPictureMode
         ) {
+            // Notify Flutter before entering PiP so lifecycle pause never interrupts playback.
+            activity.runOnUiThread {
+                try {
+                    channel.invokeMethod("pipEntering", null)
+                } catch (_: Throwable) {}
+            }
+            // Explicit fallback handles Android 8-11 AND OEM ROMs (MIUI/HyperOS/ColorOS/OneUI)
+            // where gesture-home may skip API 31+ setAutoEnterEnabled.
             enterPipInternal(pipAspectW, pipAspectH, playing = true)
         }
     }
@@ -263,7 +276,11 @@ class VedroHardwarePlugin(
     private fun ensurePipReceiver() {
         if (pipReceiverRegistered) return
         try {
-            val filter = IntentFilter(ACTION_PIP_TOGGLE_PLAY)
+            val filter = IntentFilter().apply {
+                addAction(ACTION_PIP_TOGGLE_PLAY)
+                addAction(ACTION_PIP_SEEK_BACK)
+                addAction(ACTION_PIP_SEEK_FWD)
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 activity.registerReceiver(pipActionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
             } else {
@@ -286,18 +303,30 @@ class VedroHardwarePlugin(
         val ratio = (aw.coerceAtLeast(1).toDouble() / ah.coerceAtLeast(1).toDouble()).coerceIn(0.45, 2.35)
         val rational = Rational((ratio * 100).toInt().coerceAtLeast(45), 100)
         ensurePipReceiver()
-        val intent = Intent(ACTION_PIP_TOGGLE_PLAY).setPackage(activity.packageName)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
-        val pending = PendingIntent.getBroadcast(activity, 1, intent, flags)
+        val backPending = PendingIntent.getBroadcast(
+            activity, 2, Intent(ACTION_PIP_SEEK_BACK).setPackage(activity.packageName), flags
+        )
+        val playPending = PendingIntent.getBroadcast(
+            activity, 1, Intent(ACTION_PIP_TOGGLE_PLAY).setPackage(activity.packageName), flags
+        )
+        val fwdPending = PendingIntent.getBroadcast(
+            activity, 3, Intent(ACTION_PIP_SEEK_FWD).setPackage(activity.packageName), flags
+        )
         val iconRes = if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
         val label = if (playing) "暂停" else "播放"
-        val action = RemoteAction(Icon.createWithResource(activity, iconRes), label, label, pending)
+        val actions = listOf(
+            RemoteAction(Icon.createWithResource(activity, android.R.drawable.ic_media_rew), "后退", "后退", backPending),
+            RemoteAction(Icon.createWithResource(activity, iconRes), label, label, playPending),
+            RemoteAction(Icon.createWithResource(activity, android.R.drawable.ic_media_ff), "快进", "快进", fwdPending),
+        )
         val builder = PictureInPictureParams.Builder()
             .setAspectRatio(rational)
-            .setActions(listOf(action))
+            .setActions(actions)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setAutoEnterEnabled(autoPipEnabled && playing)
+            builder.setSeamlessResizeEnabled(true)
         }
         return builder.build()
     }
@@ -421,6 +450,7 @@ class VedroHardwarePlugin(
             }
             "setAutoPipEnabled" -> {
                 autoPipEnabled = call.argument<Boolean>("enabled") ?: false
+                call.argument<Boolean>("playing")?.let { nowPlayingActive = it }
                 pipAspectW = (call.argument<Number>("aspect_w")?.toInt() ?: pipAspectW).coerceAtLeast(1)
                 pipAspectH = (call.argument<Number>("aspect_h")?.toInt() ?: pipAspectH).coerceAtLeast(1)
                 updatePipParamsIfSupported(nowPlayingActive)

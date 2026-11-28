@@ -142,3 +142,21 @@ jobs:
         with:
           name: vedro-ios-unsigned
           path: dist/vedro-v*-ios-unsigned.ipa
+
+  build-tvos:
+    name: tvOS Unsigned IPA (Apple TV arm64 — SwiftUI + Rust Core)
+    needs: verify
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build tvOS unsigned IPA
+        run: bash scripts/build-tvos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vedro-tvos-unsigned
+          path: dist/vedro-v*-tvos-unsigned.ipa

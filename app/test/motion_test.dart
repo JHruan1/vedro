@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vedro/core/models/media_models.dart';
+import 'package:vedro/core/models/preferences.dart';
 import 'package:vedro/core/theme/vedro_liquid_shader.dart';
 import 'package:vedro/core/theme/vedro_motion.dart';
 import 'package:vedro/core/theme/vedro_skin.dart';
@@ -422,5 +423,15 @@ void main() {
     );
     await tester.tap(find.text('可见液态选项'));
     expect(tapped, isTrue);
+  });
+
+  test('VedroPreferences: autoPipOnBackground defaults true and roundtrips JSON cleanly', () {
+    const def = VedroPreferences();
+    expect(def.enablePip, isTrue);
+    expect(def.autoPipOnBackground, isTrue);
+    final off = def.copyWith(autoPipOnBackground: false);
+    final roundtrip = VedroPreferences.fromJson(off.toJson());
+    expect(roundtrip.autoPipOnBackground, isFalse);
+    expect(roundtrip.enablePip, isTrue);
   });
 }

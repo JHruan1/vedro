@@ -18,7 +18,7 @@ impl TargetPlatform {
     pub fn current() -> Self {
         match std::env::consts::OS {
             "android" => Self::Android,
-            "ios" => Self::Ios,
+            "ios" | "tvos" => Self::Ios,
             "macos" => Self::MacOs,
             "windows" => Self::Windows,
             _ => Self::Linux,

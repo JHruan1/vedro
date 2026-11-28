@@ -106,6 +106,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   bool _inPipMode = false;
   bool _enteringPip = false;
   Timer? _enteringPipResetTimer;
+  Timer? _backgroundPauseTimer;
   bool _sheetOpen = false;
   int _lastAudioInterruptCount = 0;
   bool _usingNativeBrightness = false;
@@ -433,9 +434,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _lastAudioInterruptCount = NativePlaybackChannel.audioInterruptCountNotifier.value;
     NativePlaybackChannel.audioInterruptCountNotifier.addListener(_onAudioInterrupted);
     NativePlaybackChannel.pipModeNotifier.addListener(_onPipModeChanged);
+    NativePlaybackChannel.pipEnteringNotifier.addListener(_onPipEntering);
     NativePlaybackChannel.mediaActionNotifier.addListener(_onNativeMediaAction);
     unawaited(NativePlaybackChannel.setAudioPlaybackActive(true));
-    unawaited(NativePlaybackChannel.setAutoPipEnabled(p.enablePip));
+    unawaited(NativePlaybackChannel.setAutoPipEnabled(
+      p.enablePip && p.autoPipOnBackground,
+      playing: true,
+      aspectW: _videoWidth,
+      aspectH: _videoHeight,
+    ));
     NativePlaybackChannel.setKeepScreenOn(true);
     NativePlaybackChannel.syncWindowChrome(
       isLight: false,
@@ -485,8 +492,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
             _cancelUpNextCountdown();
           }
         });
+        final prefs = widget.appState.prefs;
         unawaited(NativePlaybackChannel.setAutoPipEnabled(
-          playing && widget.appState.prefs.enablePip && !_disposed,
+          playing && prefs.enablePip && prefs.autoPipOnBackground && !_disposed,
+          playing: playing,
+          aspectW: _videoWidth,
+          aspectH: _videoHeight,
         ));
         _syncNowPlaying(force: true);
         if (playing) {
@@ -783,11 +794,24 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
   }
 
+  void _onPipEntering() {
+    if (!mounted || _disposed) return;
+    _enteringPip = true;
+    _backgroundPauseTimer?.cancel();
+    _enteringPipResetTimer?.cancel();
+    _enteringPipResetTimer = Timer(const Duration(milliseconds: 1600), () {
+      _enteringPip = false;
+    });
+  }
+
   void _onPipModeChanged() {
     if (!mounted) return;
     final inPip = NativePlaybackChannel.pipModeNotifier.value;
     _enteringPip = false;
     _enteringPipResetTimer?.cancel();
+    if (inPip) {
+      _backgroundPauseTimer?.cancel();
+    }
     if (_inPipMode != inPip) {
       setState(() {
         _inPipMode = inPip;
@@ -818,22 +842,46 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!mounted) return;
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+    final prefs = widget.appState.prefs;
+    final autoPipArmed = prefs.enablePip &&
+        prefs.autoPipOnBackground &&
+        NativePlaybackChannel.supportsNativePip &&
+        !_paused;
+    if (state == AppLifecycleState.inactive) {
       unawaited(_flushCurrentProgress());
-      if (!widget.appState.prefs.backgroundAudio && !_inPipMode && !_enteringPip) {
-        if (!_paused) {
-          unawaited(_player.pause());
+      // NEVER pause on `inactive` when auto-PiP is armed: Android fires `inactive`
+      // BEFORE `onPictureInPictureModeChanged(true)` when swiping Home!
+      if (!prefs.backgroundAudio && !_inPipMode && !_enteringPip && !autoPipArmed && !_paused) {
+        unawaited(_player.pause());
+      }
+    } else if (state == AppLifecycleState.paused) {
+      unawaited(_flushCurrentProgress());
+      if (!prefs.backgroundAudio && !_inPipMode && !_enteringPip) {
+        void pauseAndSuspendPrefetch() {
+          if (!mounted || _disposed || _inPipMode || _enteringPip) return;
+          if (!_paused) {
+            unawaited(_player.pause());
+          }
+          // Android blocks sockets for backgrounded apps; suspending demuxer readahead
+          // prevents mpv from burning retries & marking the stream EOF on resume!
+          if (!kIsWeb && Platform.isAndroid && !_androidPrefetchSuspended) {
+            _androidPrefetchSuspended = true;
+            unawaited(_applyMpvProperty('cache-secs', '0'));
+            unawaited(_applyMpvProperty('demuxer-readahead-secs', '0'));
+          }
         }
-        // Android blocks sockets for backgrounded apps; suspending demuxer readahead
-        // prevents mpv from burning retries & marking the stream EOF on resume!
-        if (!kIsWeb && Platform.isAndroid && !_androidPrefetchSuspended) {
-          _androidPrefetchSuspended = true;
-          unawaited(_applyMpvProperty('cache-secs', '0'));
-          unawaited(_applyMpvProperty('demuxer-readahead-secs', '0'));
+        _backgroundPauseTimer?.cancel();
+        if (autoPipArmed) {
+          // Give Android up to 240ms to finish PiP transition; if it shrinks into PiP,
+          // `_inPipMode` flips true and playback continues smoothly in the mini-window!
+          _backgroundPauseTimer = Timer(const Duration(milliseconds: 240), pauseAndSuspendPrefetch);
+        } else {
+          pauseAndSuspendPrefetch();
         }
       }
     } else if (state == AppLifecycleState.resumed) {
       _enteringPip = false;
+      _backgroundPauseTimer?.cancel();
       if (_androidPrefetchSuspended) {
         _androidPrefetchSuspended = false;
         unawaited(_applyMpvProperty('cache-secs', '60'));
@@ -1583,7 +1631,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     WidgetsBinding.instance.removeObserver(this);
     NativePlaybackChannel.audioInterruptCountNotifier.removeListener(_onAudioInterrupted);
     NativePlaybackChannel.pipModeNotifier.removeListener(_onPipModeChanged);
+    NativePlaybackChannel.pipEnteringNotifier.removeListener(_onPipEntering);
     NativePlaybackChannel.mediaActionNotifier.removeListener(_onNativeMediaAction);
+    _backgroundPauseTimer?.cancel();
     unawaited(NativePlaybackChannel.updateNowPlaying(title: '', playing: false, active: false));
     unawaited(NativePlaybackChannel.setAutoPipEnabled(false));
     unawaited(NativePlaybackChannel.setAudioPlaybackActive(false));

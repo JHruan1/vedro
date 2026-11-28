@@ -1,0 +1,59 @@
+name: VedroTV
+options:
+  bundleIdPrefix: com.vedro
+  deploymentTarget:
+    tvOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "3"
+    ENABLE_BITCODE: "NO"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: ""
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "NO"
+
+targets:
+  VedroTV:
+    type: application
+    platform: tvOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: VedroTV
+        excludes:
+          - Vendor/**
+          - Info.plist
+    settings:
+      base:
+        PRODUCT_NAME: VedroTV
+        PRODUCT_BUNDLE_IDENTIFIER: com.vedro.player.tv
+        INFOPLIST_FILE: VedroTV/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: VedroTV/Bridging/VedroTV-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/VedroTV/Vendor"
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/VedroTV/Vendor"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-force_load"
+          - "$(PROJECT_DIR)/VedroTV/Vendor/libvedro_ffi.a"
+          - "-lz"
+          - "-lc++"
+          - "-framework"
+          - "Security"
+          - "-framework"
+          - "CFNetwork"
+          - "-framework"
+          - "AVFoundation"
+          - "-framework"
+          - "AVKit"
+        DEAD_CODE_STRIPPING: "NO"
+schemes:
+  VedroTV:
+    build:
+      targets:
+        VedroTV: all

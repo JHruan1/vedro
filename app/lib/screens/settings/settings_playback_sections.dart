@@ -185,13 +185,23 @@ extension _SettingsPlaybackSectionsExt on _SettingsDetailPaneState {
               value: p.rememberAspect,
               onChanged: (v) => _updatePrefs(p.copyWith(rememberAspect: v)),
             ),
-            if (supportsPip)
+            if (supportsPip) ...[
               _SwitchRow(
-                title: '启用画中画 (PiP)',
-                subtitle: '在播放器顶栏显示画中画入口',
+                key: const ValueKey('pref-enable-pip'),
+                title: '启用画中画小窗 (PiP)',
+                subtitle: '在播放器顶栏和更多工具中显示小窗画中画按钮',
                 value: p.enablePip,
                 onChanged: (v) => _updatePrefs(p.copyWith(enablePip: v)),
               ),
+              if (p.enablePip)
+                _SwitchRow(
+                  key: const ValueKey('pref-auto-pip-background'),
+                  title: '切到后台自动小窗播放',
+                  subtitle: '播放时返回桌面或切换其他应用，自动缩小为悬浮小窗继续播放',
+                  value: p.autoPipOnBackground,
+                  onChanged: (v) => _updatePrefs(p.copyWith(autoPipOnBackground: v)),
+                ),
+            ],
             _SwitchRow(
               title: '后台继续播放音频',
               value: p.backgroundAudio,

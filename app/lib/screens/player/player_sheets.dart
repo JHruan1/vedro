@@ -903,6 +903,53 @@ extension _PlayerSheetsExt on _PlayerScreenState {
             ),
             const SizedBox(height: 8),
 
+            // Floating Mini-Window / Background PiP quick controls
+            if (NativePlaybackChannel.supportsNativePip) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('小窗画中画 (PiP)', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5, fontWeight: FontWeight.w500)),
+                          SizedBox(height: 2),
+                          Text('悬浮小窗播放，支持切后台自动收起为小窗', style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5)),
+                        ],
+                      ),
+                    ),
+                    _DeckPillButton(
+                      label: '进入小窗',
+                      active: true,
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        unawaited(_enterPipSafely());
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              SwitchListTile(
+                dense: true,
+                title: const Text('切到后台自动小窗播放', style: TextStyle(color: VedroTheme.fg, fontSize: 13.5)),
+                value: widget.appState.prefs.autoPipOnBackground,
+                onChanged: (v) {
+                  unawaited(widget.appState.updatePrefs(
+                    widget.appState.prefs.copyWith(enablePip: v ? true : widget.appState.prefs.enablePip, autoPipOnBackground: v),
+                  ));
+                  unawaited(NativePlaybackChannel.setAutoPipEnabled(
+                    v && !_paused && !_disposed,
+                    playing: !_paused,
+                    aspectW: _videoWidth,
+                    aspectH: _videoHeight,
+                  ));
+                  setModal(() {});
+                },
+              ),
+              const Divider(height: 18),
+            ],
+
             // Sleep Timer
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),

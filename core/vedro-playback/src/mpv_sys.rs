@@ -76,7 +76,7 @@ impl LibMpv {
     pub fn load() -> Result<Self, String> {
         let candidates: &[&str] = match std::env::consts::OS {
             "windows" => &["libmpv-2.dll", "mpv-2.dll", "mpv-1.dll"],
-            "macos" | "ios" => &[
+            "macos" | "ios" | "tvos" => &[
                 "libmpv.2.dylib",
                 "libmpv.dylib",
                 "@rpath/Libmpv.framework/Libmpv",

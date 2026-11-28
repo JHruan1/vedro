@@ -452,6 +452,7 @@ class VedroPreferences {
     this.seekStepSecs = 10,
     this.pinchToZoom = true,
     this.enablePip = true,
+    this.autoPipOnBackground = true,
     this.backgroundAudio = false,
     this.externalPlayer = 'builtin', // builtin | iina | infuse | mpv | vlc | potplayer
     // 视频设置
@@ -586,6 +587,7 @@ class VedroPreferences {
   final int seekStepSecs;
   final bool pinchToZoom;
   final bool enablePip;
+  final bool autoPipOnBackground;
   final bool backgroundAudio;
   final String externalPlayer;
 
@@ -870,6 +872,7 @@ class VedroPreferences {
     int? seekStepSecs,
     bool? pinchToZoom,
     bool? enablePip,
+    bool? autoPipOnBackground,
     bool? backgroundAudio,
     String? externalPlayer,
     String? defaultAspect,
@@ -991,6 +994,7 @@ class VedroPreferences {
         seekStepSecs: seekStepSecs ?? this.seekStepSecs,
         pinchToZoom: pinchToZoom ?? this.pinchToZoom,
         enablePip: enablePip ?? this.enablePip,
+        autoPipOnBackground: autoPipOnBackground ?? this.autoPipOnBackground,
         backgroundAudio: backgroundAudio ?? this.backgroundAudio,
         externalPlayer: externalPlayer ?? this.externalPlayer,
         defaultAspect: defaultAspect ?? this.defaultAspect,
@@ -1113,6 +1117,7 @@ class VedroPreferences {
         'seek_step_secs': seekStepSecs,
         'pinch_to_zoom': pinchToZoom,
         'enable_pip': enablePip,
+        'auto_pip_on_background': autoPipOnBackground,
         'background_audio': backgroundAudio,
         'external_player': externalPlayer,
         'default_aspect': defaultAspect,
@@ -1245,6 +1250,7 @@ class VedroPreferences {
         seekStepSecs: _clampedInt(j['seek_step_secs'], 10, 3, 120),
         pinchToZoom: j['pinch_to_zoom'] != false,
         enablePip: j['enable_pip'] != false,
+        autoPipOnBackground: j['auto_pip_on_background'] != false,
         backgroundAudio: j['background_audio'] == true,
         externalPlayer: (j['external_player'] ?? 'builtin').toString(),
         defaultAspect: (j['default_aspect'] ?? 'fit').toString(),

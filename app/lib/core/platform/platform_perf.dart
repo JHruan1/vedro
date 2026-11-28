@@ -77,8 +77,10 @@ class PlatformPerfProfile {
   /// interactive edge swipe-back with zero double-fullscreen alpha `saveLayer`).
   static bool get preferCupertinoRoute => isMobile;
 
-  /// Compute an optimal physical-pixel `cacheWidth` for `Image.network` so
-  /// Flutter never decodes full 1080p/4K RGBA textures for compact poster cards.
+  /// Compute an optimal physical-pixel `cacheWidth` for `Image.network` quantized
+  /// into shared resolution buckets so cards (`MediaCard`) and `DetailScreen` covers
+  /// share the exact same `ResizeImage` cache entry (instant zero-flash Hero flights!)
+  /// while never decoding full 4K RGBA textures for compact thumbnails.
   static int? imageCacheWidthFor(double? logicalWidth, double devicePixelRatio) {
     if (logicalWidth == null || !logicalWidth.isFinite || logicalWidth <= 0) {
       return null;
@@ -89,7 +91,14 @@ class PlatformPerfProfile {
     final effDpr = isMobile
         ? devicePixelRatio.clamp(1.0, 2.25)
         : devicePixelRatio.clamp(1.0, 2.0);
-    return (logicalWidth * effDpr).round().clamp(96, isMobile ? 1280 : 1920);
+    final raw = (logicalWidth * effDpr).round().clamp(96, isMobile ? 1280 : 1920);
+    if (raw <= 120) return 128;
+    if (raw <= 288) return 288;
+    if (raw <= 420) return 420;
+    if (raw <= 680) return 680;
+    if (raw <= 960) return 960;
+    if (raw <= 1280 || isMobile) return 1280;
+    return 1920;
   }
 
   /// Tune Flutter's global decoded `ImageCache` per platform to prevent both

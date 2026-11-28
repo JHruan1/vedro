@@ -1,13 +1,33 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:vedro/core/ffi/vedro_bridge.dart';
 import 'package:vedro/core/models/media_models.dart';
 import 'package:vedro/core/models/preferences.dart';
+import 'package:vedro/core/platform/platform_perf.dart';
 import 'package:vedro/core/theme/vedro_liquid_shader.dart';
 import 'package:vedro/core/theme/vedro_motion.dart';
 import 'package:vedro/core/theme/vedro_skin.dart';
 import 'package:vedro/core/theme/vedro_theme.dart';
+import 'package:vedro/state/app_state.dart';
 import 'package:vedro/widgets/vedro_ui.dart';
+
+class _NoopCoreClient implements VedroCoreClient {
+  @override
+  String get coreVersion => '0.0.0-test';
+
+  @override
+  int get proxySpeedBps => 0;
+
+  @override
+  void dispose() {}
+
+  @override
+  Future<dynamic> invoke(String method, [Map<String, dynamic> params = const {}]) async => null;
+
+  @override
+  List<Map<String, dynamic>> pollEvents() => const [];
+}
 
 void main() {
   test('VedroSpringCurve: exact endpoints, critically damped never overshoots, bouncy does', () {
@@ -584,5 +604,112 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('row-mid')));
       await tester.pumpAndSettle();
     }
+  });
+
+  testWidgets(
+      'vedroRoundedHeroShuttleBuilder flies already-loaded source poster (never empty target box) & cacheWidth buckets match',
+      (tester) async {
+    // 1. Home MediaCard and DetailScreen poster MUST share the exact same ImageCache bucket
+    // across mobile (106 vs 112 dp) and desktop (152 vs 188 dp) so Frame 0 hits synchronously.
+    expect(
+      PlatformPerfProfile.imageCacheWidthFor(106, 2.25),
+      equals(PlatformPerfProfile.imageCacheWidthFor(112, 2.25)),
+    );
+    expect(
+      PlatformPerfProfile.imageCacheWidthFor(152, 2.0),
+      equals(PlatformPerfProfile.imageCacheWidthFor(188, 2.0)),
+    );
+    expect(
+      PlatformPerfProfile.imageCacheWidthFor(152, 1.0),
+      equals(PlatformPerfProfile.imageCacheWidthFor(188, 1.0)),
+    );
+
+    // 2. Push flight must display the source (fromHero) child, and pop flight must display
+    // the departing Detail (fromHero) child — never an unhydrated destination placeholder.
+    const r = 14.0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: GestureDetector(
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => Scaffold(
+                        body: SizedBox(
+                          width: 188,
+                          height: 282,
+                          child: Hero(
+                            tag: 'poster-flight-test',
+                            flightShuttleBuilder: vedroRoundedHeroShuttleBuilder(r),
+                            child: const ColoredBox(
+                              key: ValueKey('detail-hero-child'),
+                              color: Colors.amber,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+                child: SizedBox(
+                  width: 152,
+                  height: 228,
+                  child: Hero(
+                    tag: 'poster-flight-test',
+                    flightShuttleBuilder: vedroRoundedHeroShuttleBuilder(r),
+                    child: const ColoredBox(
+                      key: ValueKey('home-card-hero-child'),
+                      color: Colors.teal,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byType(GestureDetector));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(find.byKey(const ValueKey('home-card-hero-child')), findsOneWidget);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('detail-hero-child')), findsOneWidget);
+
+    tester.state<NavigatorState>(find.byType(Navigator)).pop();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(find.byKey(const ValueKey('detail-hero-child')), findsOneWidget);
+    await tester.pumpAndSettle();
+  });
+
+  test('updateDynamicSeedFromItem is a zero-notify no-op when dynamicMonet is disabled', () {
+    final state = VedroAppState(_NoopCoreClient());
+    state.prefs = const VedroPreferences(dynamicMonet: false);
+    var notifyCount = 0;
+    state.addListener(() => notifyCount++);
+
+    state.updateDynamicSeedFromItem(
+      MediaItemModel(id: 'm1', name: 'Dune', type: 'Movie'),
+    );
+    expect(notifyCount, 0);
+    expect(state.dynamicPageSeedColor, isNull);
+
+    // When dynamicMonet is enabled, same item idempotently notifies once (not twice).
+    state.prefs = const VedroPreferences(dynamicMonet: true);
+    state.updateDynamicSeedFromItem(
+      MediaItemModel(id: 'm1', name: 'Dune', type: 'Movie'),
+    );
+    expect(notifyCount, 1);
+    expect(state.dynamicPageSeedColor, isNotNull);
+
+    state.updateDynamicSeedFromItem(
+      MediaItemModel(id: 'm1', name: 'Dune', type: 'Movie'),
+    );
+    expect(notifyCount, 1);
+    state.dispose();
   });
 }

@@ -132,12 +132,32 @@ class BeautyFilterPreset {
     BeautyFilterPreset(
       id: 'natural',
       label: '综合美颜',
-      subtitle: '美颜相机黄金配比：保边磨皮 + 自然美白 + 柔和粉嫩 + 亮眼清晰',
+      subtitle: '黄金配比：保边磨皮 + 匀净美白 + 柔和粉嫩 + 亮眼清晰',
       icon: Icons.face_retouching_natural_rounded,
       smooth: 0.58,
       whiten: 0.42,
       rosy: 0.30,
       clarity: 0.40,
+    ),
+    BeautyFilterPreset(
+      id: 'douyin_cream',
+      label: '奶油水光',
+      subtitle: '抖音风匀肤柔焦 + 奶油水光柔光 + 祛油光 + 清澈亮眼',
+      icon: Icons.auto_fix_high_rounded,
+      smooth: 0.78,
+      whiten: 0.68,
+      rosy: 0.36,
+      clarity: 0.48,
+    ),
+    BeautyFilterPreset(
+      id: 'cool_white',
+      label: '冷白网感',
+      subtitle: '强效去暗黄冷白皮 + 肤色匀净祛油光 + 眉眼立体清晰',
+      icon: Icons.flare_rounded,
+      smooth: 0.66,
+      whiten: 0.88,
+      rosy: 0.22,
+      clarity: 0.54,
     ),
     BeautyFilterPreset(
       id: 'bright',
@@ -391,31 +411,41 @@ ${vLoop.toString()}
     float rosyAmt = $rosyAmt;
     float clarityAmt = $clarityAmt;
 
-    // 1. Frequency-separation skin smoothing (removes pores/blemishes while keeping crisp edges & micro-grain)
+    // 1. Chroma-first frequency-separation smoothing + oil-shine control (creamy foundation look)
     if (smoothAmt > 0.001) {
         vec3 sBlurC = clamp(surfaceBlur, 0.0, 1.0);
         float edgeDiff = length(cc - sBlurC);
-        float edgeProtect = 1.0 - smoothstep(0.055, 0.20, edgeDiff);
-        float grainKeep = 0.16 + 0.14 * clarityAmt;
-        vec3 smoothSkin = clamp(sBlurC + clamp(highPass, -0.04, 0.04) * grainKeep, 0.0, 1.0);
-        float blendW = clamp(smoothAmt * skinMask * (0.28 + 0.72 * edgeProtect), 0.0, 0.94);
+        float edgeProtect = 1.0 - smoothstep(0.055, 0.21, edgeDiff);
+        float grainKeep = 0.14 + 0.14 * clarityAmt;
+        // Even out blotchy skin chroma stronger than luma so 3D face contours stay natural
+        float sBlurY = dot(sBlurC, vec3(0.299, 0.587, 0.114));
+        vec3 chromaEven = clamp(vec3(cy) + (sBlurC - vec3(sBlurY)), 0.0, 1.0);
+        vec3 smoothSkin = clamp(mix(chromaEven, sBlurC, 0.74) + clamp(highPass, -0.036, 0.036) * grainKeep, 0.0, 1.0);
+        float blendW = clamp(smoothAmt * skinMask * (0.30 + 0.70 * edgeProtect), 0.0, 0.95);
         res = mix(res, smoothSkin, blendW);
 
-        // Gentle skin-only under-eye & nasolabial shadow softening
+        // Suppress greasy T-zone specular hot-spots toward soft velvety surfaceBlur
+        float oilGate = smoothstep(0.70, 0.90, cy) * skinMask * smoothAmt;
+        res = mix(res, min(res, sBlurC + vec3(0.035)), oilGate * 0.42);
+        // Gentle under-eye & nasolabial shadow softening strictly on skin
         float shadowGate = smoothstep(0.10, 0.26, cy) * (1.0 - smoothstep(0.42, 0.68, cy));
-        res = res + vec3(0.042, 0.039, 0.036) * (smoothAmt * skinMask * shadowGate);
+        res = res + vec3(0.048, 0.044, 0.042) * (smoothAmt * skinMask * shadowGate);
     }
 
-    // 2. Skin-only non-linear Log whitening + sallow yellow reduction (zero background tint!)
+    // 2. Skin-only cool-porcelain Log whitening + sallow yellow removal + dewy soft-light glow
     if (whitenAmt > 0.001) {
-        float beta = 1.0 + whitenAmt * 2.85;
+        float beta = 1.0 + whitenAmt * 3.15;
         vec3 safeRes = max(res, vec3(0.0, 0.0, 0.0));
         vec3 logWhite = log(vec3(1.0, 1.0, 1.0) + safeRes * (beta - 1.0)) / log(beta);
-        // Subtle cool-clean de-yellowing strictly inside skin tones
-        float yellowCast = clamp((res.r + res.g) * 0.5 - res.b, 0.0, 0.45);
-        vec3 deYellow = logWhite + vec3(-0.010, 0.004, 0.052) * (yellowCast * whitenAmt);
-        float whiteWeight = clamp(skinMask * (0.62 + 0.34 * whitenAmt), 0.0, 0.92);
-        res = mix(res, clamp(deYellow, 0.0, 1.0), whiteWeight);
+        float yellowCast = clamp((res.r + res.g) * 0.5 - res.b, 0.0, 0.48);
+        vec3 deYellow = logWhite + vec3(-0.012, 0.006, 0.068) * (yellowCast * whitenAmt);
+        // Subtle Douyin dewy soft-focus screen bloom strictly inside luminous skin tones
+        vec3 sBlurGlow = clamp(surfaceBlur, 0.0, 1.0);
+        vec3 dewyGlow = vec3(1.0) - (vec3(1.0) - clamp(deYellow, 0.0, 1.0)) * (vec3(1.0) - sBlurGlow * 0.28);
+        float glowMix = clamp(whitenAmt * (0.22 + 0.28 * smoothAmt) * smoothstep(0.28, 0.78, cy), 0.0, 0.46);
+        vec3 brightSkin = mix(clamp(deYellow, 0.0, 1.0), dewyGlow, glowMix);
+        float whiteWeight = clamp(skinMask * (0.64 + 0.32 * whitenAmt), 0.0, 0.94);
+        res = mix(res, clamp(brightSkin, 0.0, 1.0), whiteWeight);
     }
 
     // 3. Skin-only healthy rosy peach complexion + natural lip vitality
@@ -503,7 +533,7 @@ ${vLoop.toString()}
     } catch (_) {
       return null;
     }
-    final dir = Directory('${support.path}/vedro_shaders_v3');
+    final dir = Directory('${support.path}/vedro_shaders_v4');
     if (!dir.existsSync()) {
       await dir.create(recursive: true);
     } else {
@@ -525,7 +555,7 @@ ${vLoop.toString()}
       } catch (_) {}
     }
     final file = File(
-      '${dir.path}/beauty_v3_${tier}_${bSmooth}_${bWhiten}_${bRosy}_$bClarity.glsl',
+      '${dir.path}/beauty_v4_${tier}_${bSmooth}_${bWhiten}_${bRosy}_$bClarity.glsl',
     );
     await file.writeAsString(src);
     return file.path;

@@ -69,8 +69,14 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
     final posRatio = (widget.positionSecs / dur).clamp(0.0, 1.0);
     final bufRatio = (widget.bufferedSecs / dur).clamp(0.0, 1.0);
     final active = _hovering || _dragging || _focused;
-    final trackH = active ? 6.5 : 4.0;
-    final accent = Theme.of(context).colorScheme.secondary;
+    final trackH = active ? 6.0 : 3.6;
+    final skin = VedroSkin.of(context);
+    final accent = skin.accent;
+    final playedColor = skin.ctaStyle == 'contrast' ? skin.fg : skin.accent;
+    final primaryInk = skin.fg;
+    final secondaryInk = skin.fg2;
+    final baseTrack = skin.fg.withValues(alpha: skin.isLight ? 0.16 : 0.22);
+    final bufTrack = skin.fg.withValues(alpha: skin.isLight ? 0.28 : 0.34);
 
     final compactTime = MediaQuery.sizeOf(context).width < 480;
     final rightTimeText = widget.showRemaining && widget.durationSecs > 0
@@ -80,19 +86,19 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
     return Row(
       children: [
         SizedBox(
-          width: compactTime ? 48 : 60,
+          width: compactTime ? 46 : 56,
           child: Text(
             widget.fmtTime(widget.positionSecs),
             maxLines: 1,
             style: TextStyle(
-              color: const Color(0xE0FFFFFF),
-              fontSize: compactTime ? 11.5 : 12,
+              color: primaryInk.withValues(alpha: 0.90),
+              fontSize: compactTime ? 11 : 11.5,
               fontWeight: FontWeight.w500,
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
         ),
-        const SizedBox(width: 8),
+        const SizedBox(width: 6),
         Expanded(
           child: Focus(
             onFocusChange: (hasFocus) {
@@ -124,7 +130,7 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(10),
                 border: _focused
-                    ? Border.all(color: Colors.white.withValues(alpha: 0.92), width: 1.8)
+                    ? Border.all(color: primaryInk.withValues(alpha: 0.85), width: 1.8)
                     : null,
               ),
               child: LayoutBuilder(
@@ -168,7 +174,7 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
                         widget.onScrubEnd(ratio * dur);
                       },
                       child: SizedBox(
-                        height: 24,
+                        height: 20,
                         child: Stack(
                           clipBehavior: Clip.none,
                           alignment: Alignment.centerLeft,
@@ -178,7 +184,7 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
                               duration: const Duration(milliseconds: 140),
                               height: trackH,
                               decoration: BoxDecoration(
-                                color: const Color(0x30FFFFFF),
+                                color: baseTrack,
                                 borderRadius: BorderRadius.circular(trackH / 2),
                               ),
                             ),
@@ -189,7 +195,7 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
                                 height: trackH,
                                 width: w * bufRatio,
                                 decoration: BoxDecoration(
-                                  color: const Color(0x38FFFFFF),
+                                  color: bufTrack,
                                   borderRadius: BorderRadius.circular(trackH / 2),
                                 ),
                               ),
@@ -214,7 +220,7 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
                               height: trackH,
                               width: w * posRatio,
                               decoration: BoxDecoration(
-                                color: Colors.white,
+                                color: playedColor,
                                 borderRadius: BorderRadius.circular(trackH / 2),
                               ),
                             ),
@@ -227,24 +233,29 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
                                     child: Container(
                                       width: 2,
                                       height: trackH + 2,
-                                      color: const Color(0xAA0B0B0D),
+                                      color: skin.canvas.withValues(alpha: 0.75),
                                     ),
                                   ),
                             // Hover / TV-focus revealed sleek thumb
                             Positioned(
-                              left: (w * posRatio - 6).clamp(0.0, (w - 12).clamp(0.0, w)),
+                              left: (w * posRatio - 5.5).clamp(0.0, (w - 11).clamp(0.0, w)),
                               child: AnimatedScale(
                                 scale: active ? 1.0 : 0.0,
                                 duration: const Duration(milliseconds: 140),
                                 curve: VedroTheme.easeOut,
                                 child: Container(
-                                  width: 12,
-                                  height: 12,
-                                  decoration: const BoxDecoration(
-                                    color: Colors.white,
+                                  width: 11,
+                                  height: 11,
+                                  decoration: BoxDecoration(
+                                    color: playedColor,
                                     shape: BoxShape.circle,
                                     boxShadow: [
-                                      BoxShadow(color: Color(0x99000000), blurRadius: 8),
+                                      BoxShadow(
+                                        color: Colors.black.withValues(
+                                          alpha: skin.isLight ? 0.25 : 0.6,
+                                        ),
+                                        blurRadius: 6,
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -261,19 +272,19 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
                                   child: Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xE8141417),
+                                      color: skin.surface2.withValues(alpha: 0.94),
                                       borderRadius: BorderRadius.circular(6),
-                                      border: Border.all(color: const Color(0x28FFFFFF), width: 0.6),
+                                      border: Border.all(color: skin.borderStrong, width: 0.6),
                                     ),
                                     child: Text(
                                       tooltipText,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white,
+                                      style: TextStyle(
+                                        color: primaryInk,
                                         fontSize: 11,
                                         fontWeight: FontWeight.w500,
-                                        fontFeatures: [FontFeature.tabularFigures()],
+                                        fontFeatures: const [FontFeature.tabularFigures()],
                                       ),
                                     ),
                                   ),
@@ -289,21 +300,21 @@ class _CinemaScrubBarState extends State<_CinemaScrubBar> {
             ),
           ),
         ),
-        const SizedBox(width: 8),
+        const SizedBox(width: 6),
         PressableScale(
           onTap: widget.onToggleRemaining,
           hoverScale: 1.02,
           pressScale: 0.96,
           borderRadius: BorderRadius.circular(6),
           child: SizedBox(
-            width: compactTime ? 54 : 64,
+            width: compactTime ? 50 : 60,
             child: Text(
               rightTimeText,
               maxLines: 1,
               textAlign: TextAlign.right,
               style: TextStyle(
-                color: const Color(0xA6FFFFFF),
-                fontSize: compactTime ? 11.5 : 12,
+                color: secondaryInk,
+                fontSize: compactTime ? 11 : 11.5,
                 fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
@@ -328,6 +339,8 @@ class _MiniVolumeBarState extends State<_MiniVolumeBar> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
+    final fillCol = skin.ctaStyle == 'contrast' ? skin.fg : skin.accent;
     return Focus(
       onFocusChange: (hasFocus) {
         if (_focused != hasFocus) setState(() => _focused = hasFocus);
@@ -357,7 +370,7 @@ class _MiniVolumeBarState extends State<_MiniVolumeBar> {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(8),
           border: _focused
-              ? Border.all(color: Colors.white.withValues(alpha: 0.92), width: 1.6)
+              ? Border.all(color: skin.fg.withValues(alpha: 0.85), width: 1.6)
               : null,
         ),
         child: LayoutBuilder(
@@ -382,7 +395,7 @@ class _MiniVolumeBarState extends State<_MiniVolumeBar> {
                       Container(
                         height: 3.5,
                         decoration: BoxDecoration(
-                          color: const Color(0x32FFFFFF),
+                          color: skin.fg.withValues(alpha: skin.isLight ? 0.16 : 0.22),
                           borderRadius: BorderRadius.circular(2),
                         ),
                       ),
@@ -390,7 +403,7 @@ class _MiniVolumeBarState extends State<_MiniVolumeBar> {
                         height: 3.5,
                         width: w * widget.value.clamp(0.0, 1.0),
                         decoration: BoxDecoration(
-                          color: Colors.white,
+                          color: fillCol,
                           borderRadius: BorderRadius.circular(2),
                         ),
                       ),
@@ -400,8 +413,8 @@ class _MiniVolumeBarState extends State<_MiniVolumeBar> {
                         child: Container(
                           width: 10,
                           height: 10,
-                          decoration: const BoxDecoration(
-                            color: Colors.white,
+                          decoration: BoxDecoration(
+                            color: fillCol,
                             shape: BoxShape.circle,
                           ),
                         ),
@@ -496,6 +509,7 @@ class _DeckIconButtonState extends State<_DeckIconButton> {
 
   @override
   Widget build(BuildContext context) {
+    final skin = VedroSkin.of(context);
     final btn = PressableScale(
       onTap: widget.onTap,
       onHoverChanged: (v) => setState(() => _hovered = v),
@@ -504,13 +518,15 @@ class _DeckIconButtonState extends State<_DeckIconButton> {
       borderRadius: BorderRadius.circular(999),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 140),
-        width: 34,
-        height: 34,
+        width: 32,
+        height: 32,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: _hovered ? const Color(0x22FFFFFF) : Colors.transparent,
+          color: _hovered
+              ? skin.fg.withValues(alpha: skin.isLight ? 0.10 : 0.14)
+              : Colors.transparent,
         ),
-        child: Icon(widget.icon, size: 21, color: Colors.white),
+        child: Icon(widget.icon, size: 19.5, color: skin.fg),
       ),
     );
     return widget.tooltip != null ? Tooltip(message: widget.tooltip!, child: btn) : btn;
@@ -524,12 +540,16 @@ class _DeckPillButton extends StatefulWidget {
     required this.onTap,
     this.active = false,
     this.focusNode,
+    this.themed = false,
+    this.compact = false,
   });
 
   final String label;
   final VoidCallback onTap;
   final bool active;
   final FocusNode? focusNode;
+  final bool themed;
+  final bool compact;
 
   @override
   State<_DeckPillButton> createState() => _DeckPillButtonState();
@@ -540,27 +560,34 @@ class _DeckPillButtonState extends State<_DeckPillButton> {
 
   @override
   Widget build(BuildContext context) {
-    final accent = Theme.of(context).colorScheme.secondary;
+    final skin = VedroSkin.of(context);
+    final accent = widget.themed ? skin.accent : Theme.of(context).colorScheme.secondary;
+    final idleBg = widget.themed
+        ? skin.fg.withValues(alpha: _hovered ? (skin.isLight ? 0.13 : 0.18) : (skin.isLight ? 0.07 : 0.10))
+        : (_hovered ? const Color(0x2AFFFFFF) : const Color(0x18FFFFFF));
+    final idleBorder = widget.themed ? skin.border : const Color(0x20FFFFFF);
+    final idleFg = widget.themed ? skin.fg : const Color(0xF0FFFFFF);
+    final pillRadius = widget.themed ? skin.pillRadius.clamp(7.0, 14.0) : 9.0;
     return PressableScale(
       focusNode: widget.focusNode,
       onTap: widget.onTap,
       onHoverChanged: (v) => setState(() => _hovered = v),
       hoverScale: 1.04,
       pressScale: 0.94,
-      borderRadius: BorderRadius.circular(9),
+      borderRadius: BorderRadius.circular(pillRadius),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
         curve: VedroTheme.easeOut,
-        height: 31,
-        padding: const EdgeInsets.symmetric(horizontal: 10.5),
+        height: widget.compact ? 28 : 31,
+        padding: EdgeInsets.symmetric(horizontal: widget.compact ? 9 : 10.5),
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: widget.active
-              ? accent.withValues(alpha: 0.24)
-              : (_hovered ? const Color(0x2AFFFFFF) : const Color(0x18FFFFFF)),
-          borderRadius: BorderRadius.circular(9),
+              ? accent.withValues(alpha: widget.themed && skin.isLight ? 0.16 : 0.24)
+              : idleBg,
+          borderRadius: BorderRadius.circular(pillRadius),
           border: Border.all(
-            color: widget.active ? accent.withValues(alpha: 0.68) : const Color(0x20FFFFFF),
+            color: widget.active ? accent.withValues(alpha: 0.68) : idleBorder,
             width: 0.75,
           ),
         ),
@@ -569,8 +596,8 @@ class _DeckPillButtonState extends State<_DeckPillButton> {
           maxLines: 1,
           softWrap: false,
           style: TextStyle(
-            color: widget.active ? accent : const Color(0xF0FFFFFF),
-            fontSize: 12,
+            color: widget.active ? accent : idleFg,
+            fontSize: widget.compact ? 11.5 : 12,
             fontWeight: widget.active ? FontWeight.w600 : FontWeight.w500,
             fontFeatures: const [FontFeature.tabularFigures()],
           ),

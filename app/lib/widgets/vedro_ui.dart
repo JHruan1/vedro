@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -307,7 +308,9 @@ Rect? vedroGlobalRectOfKey(BuildContext context, GlobalKey key) {
 
 /// Hero flight shuttle that keeps poster artwork strictly rounded (and framed)
 /// during BOTH push (entering DetailScreen) AND pop (flying back to the card),
-/// preventing Flutter's default Hero shuttle from snapping to square corners on exit.
+/// always flying the ALREADY-DECODED source (`fromHeroContext`) poster inside a
+/// tight `SizedBox.expand` so the image NEVER vanishes into an empty bordered box
+/// while the destination route hydrates.
 HeroFlightShuttleBuilder vedroRoundedHeroShuttleBuilder(
   double borderRadius, {
   BoxBorder? border,
@@ -320,7 +323,7 @@ HeroFlightShuttleBuilder vedroRoundedHeroShuttleBuilder(
     BuildContext fromHeroContext,
     BuildContext toHeroContext,
   ) {
-    final targetHero = toHeroContext.widget as Hero;
+    final sourceHero = fromHeroContext.widget as Hero;
     return DecoratedBox(
       position: DecorationPosition.foreground,
       decoration: BoxDecoration(borderRadius: radius, border: border),
@@ -329,7 +332,7 @@ HeroFlightShuttleBuilder vedroRoundedHeroShuttleBuilder(
         clipBehavior: Clip.antiAlias,
         child: Material(
           type: MaterialType.transparency,
-          child: targetHero.child,
+          child: SizedBox.expand(child: sourceHero.child),
         ),
       ),
     );
@@ -882,6 +885,7 @@ class VedroPrecisionSlider extends StatefulWidget {
     required this.max,
     required this.valueText,
     required this.onChanged,
+    this.onDragStateChanged,
     this.defaultValue,
     this.step,
     this.snapValues = const [],
@@ -895,6 +899,7 @@ class VedroPrecisionSlider extends StatefulWidget {
   final double max;
   final String valueText;
   final ValueChanged<double> onChanged;
+  final ValueChanged<bool>? onDragStateChanged;
   final double? defaultValue;
   final double? step;
   final List<double> snapValues;
@@ -909,6 +914,25 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
   bool _hovering = false;
   bool _dragging = false;
   bool _focused = false;
+
+  void _setDragging(bool active) {
+    if (_dragging == active) return;
+    if (mounted) {
+      setState(() => _dragging = active);
+    } else {
+      _dragging = active;
+    }
+    widget.onDragStateChanged?.call(active);
+  }
+
+  @override
+  void dispose() {
+    if (_dragging) {
+      _dragging = false;
+      widget.onDragStateChanged?.call(false);
+    }
+    super.dispose();
+  }
 
   double _quantize(double raw) {
     var v = raw.clamp(widget.min, widget.max);
@@ -1095,12 +1119,12 @@ class _VedroPrecisionSliderState extends State<VedroPrecisionSlider> {
                       behavior: HitTestBehavior.opaque,
                       onTapDown: (d) => _handleDx(d.localPosition.dx, w),
                       onHorizontalDragStart: (d) {
-                        setState(() => _dragging = true);
+                        _setDragging(true);
                         _handleDx(d.localPosition.dx, w);
                       },
                       onHorizontalDragUpdate: (d) => _handleDx(d.localPosition.dx, w),
-                      onHorizontalDragEnd: (_) => setState(() => _dragging = false),
-                      onHorizontalDragCancel: () => setState(() => _dragging = false),
+                      onHorizontalDragEnd: (_) => _setDragging(false),
+                      onHorizontalDragCancel: () => _setDragging(false),
                       child: SizedBox(
                         height: 26,
                         child: Stack(
@@ -1222,6 +1246,8 @@ Future<T?> showGlassSheet<T>({
   required WidgetBuilder builder,
   double maxWidth = 480,
   bool forceDark = false,
+  ValueListenable<bool>? peekVideoNotifier,
+  ValueListenable<String?>? peekLabelNotifier,
 }) {
   final size = MediaQuery.sizeOf(context);
   final wide = size.width >= 720;
@@ -1233,6 +1259,70 @@ Future<T?> showGlassSheet<T>({
       forceDark && parentSkin.isLight ? VedroTheme.fromSkin(effectiveSkin) : parentTheme;
 
   Widget wrapTheme(Widget child) => Theme(data: effectiveTheme, child: child);
+
+  Widget wrapPeekSurface(BuildContext ctx, Widget surfaceChild, {required double barrierAlpha}) {
+    if (peekVideoNotifier == null) return surfaceChild;
+    return ValueListenableBuilder<bool>(
+      valueListenable: peekVideoNotifier,
+      builder: (_, peeking, child) => Stack(
+        fit: StackFit.expand,
+        children: [
+          // Custom dismissible scrim that smoothly disappears while peeking video!
+          GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTap: peeking ? null : () => Navigator.of(ctx).maybePop(),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 140),
+              curve: VedroTheme.easeOut,
+              color: Colors.black.withValues(alpha: peeking ? 0.0 : barrierAlpha),
+            ),
+          ),
+          // Keep slider GestureDetector alive at opacity 0.0 so continuous dragging never drops!
+          AnimatedOpacity(
+            opacity: peeking ? 0.0 : 1.0,
+            duration: const Duration(milliseconds: 140),
+            curve: VedroTheme.easeOut,
+            child: child,
+          ),
+          if (peeking && peekLabelNotifier != null)
+            Positioned(
+              top: MediaQuery.paddingOf(ctx).top + 16,
+              left: 0,
+              right: 0,
+              child: IgnorePointer(
+                child: Center(
+                  child: ValueListenableBuilder<String?>(
+                    valueListenable: peekLabelNotifier,
+                    builder: (_, label, __) {
+                      if (label == null || label.isEmpty) return const SizedBox.shrink();
+                      return Container(
+                        key: const ValueKey('sheet-peek-live-pill'),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                        decoration: BoxDecoration(
+                          color: const Color(0xCC101218),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(color: const Color(0x38FFFFFF), width: 0.7),
+                        ),
+                        child: Text(
+                          label,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+      child: surfaceChild,
+    );
+  }
 
   Widget buildSheetSurface({
     required VedroSkin skin,
@@ -1340,11 +1430,14 @@ Future<T?> showGlassSheet<T>({
   }
 
   if (wide) {
+    final barrierAlpha = effectiveSkin.isLight ? 0.36 : 0.62;
     return showGeneralDialog<T>(
       context: context,
-      barrierDismissible: true,
+      barrierDismissible: peekVideoNotifier == null,
       barrierLabel: 'Dismiss',
-      barrierColor: Colors.black.withValues(alpha: effectiveSkin.isLight ? 0.36 : 0.62),
+      barrierColor: peekVideoNotifier != null
+          ? Colors.transparent
+          : Colors.black.withValues(alpha: barrierAlpha),
       transitionDuration: const Duration(milliseconds: 240),
       // ZERO outer FadeTransition/Opacity SaveLayer around BackdropFilter so macOS/Windows
       // sheets blur & refract pixel-accurately from Frame 0 with zero flash or offset!
@@ -1364,42 +1457,104 @@ Future<T?> showGlassSheet<T>({
         final s = MediaQuery.sizeOf(ctx);
         final skin = effectiveSkin;
         final r = skin.cardRadius.clamp(12.0, 22.0);
-        return wrapTheme(
-          Dialog(
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            insetPadding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                maxWidth: maxWidth,
-                maxHeight: s.height * 0.86,
+        final dialogWidget = Dialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          insetPadding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: maxWidth,
+              maxHeight: s.height * 0.86,
+            ),
+            child: AnimatedBuilder(
+              animation: animation,
+              builder: (_, child) {
+                final t = animation.value.clamp(0.0, 1.0);
+                final shellOp = (t / 0.35).clamp(0.0, 1.0);
+                final contentOp = ((t - 0.06) / 0.48).clamp(0.0, 1.0);
+                return buildSheetSurface(
+                  skin: skin,
+                  radius: r,
+                  blurFactor: 0.45 + 0.55 * t,
+                  shellOpacity: shellOp,
+                  child: Opacity(opacity: contentOp, child: child!),
+                );
+              },
+              child: Builder(
+                builder: (innerCtx) => Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(child: builder(innerCtx)),
+                  ],
+                ),
               ),
-              child: AnimatedBuilder(
-                animation: animation,
-                builder: (_, child) {
-                  final t = animation.value.clamp(0.0, 1.0);
-                  final shellOp = (t / 0.35).clamp(0.0, 1.0);
-                  final contentOp = ((t - 0.06) / 0.48).clamp(0.0, 1.0);
-                  return buildSheetSurface(
+            ),
+          ),
+        );
+        return wrapTheme(wrapPeekSurface(ctx, dialogWidget, barrierAlpha: barrierAlpha));
+      },
+    );
+  }
+
+  final mobileBarrierAlpha = effectiveSkin.isLight ? 0.36 : 0.65;
+  if (peekVideoNotifier != null) {
+    return showGeneralDialog<T>(
+      context: context,
+      barrierDismissible: false,
+      barrierLabel: 'Dismiss',
+      barrierColor: Colors.transparent,
+      transitionDuration: const Duration(milliseconds: 240),
+      pageBuilder: (ctx, animation, __) {
+        final s = MediaQuery.sizeOf(ctx);
+        final skin = effectiveSkin;
+        final r = skin.cardRadius.clamp(12.0, 22.0);
+        final slideAnim = CurvedAnimation(
+          parent: animation,
+          curve: const Cubic(0.22, 1.0, 0.36, 1.0),
+          reverseCurve: Curves.easeInCubic,
+        );
+        final sheetCard = Align(
+          alignment: Alignment.bottomCenter,
+          child: SlideTransition(
+            position: Tween<Offset>(begin: const Offset(0, 0.16), end: Offset.zero)
+                .animate(slideAnim),
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxWidth: 540,
+                    maxHeight: s.height * 0.84,
+                  ),
+                  child: buildSheetSurface(
                     skin: skin,
                     radius: r,
-                    blurFactor: 0.45 + 0.55 * t,
-                    shellOpacity: shellOp,
-                    child: Opacity(opacity: contentOp, child: child!),
-                  );
-                },
-                child: Builder(
-                  builder: (innerCtx) => Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Flexible(child: builder(innerCtx)),
-                    ],
+                    blurFactor: 1.0,
+                    child: Builder(
+                      builder: (innerCtx) => Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(height: 10),
+                          Container(
+                            width: 36,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: skin.fg3.withValues(alpha: 0.45),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
+                          Flexible(child: builder(innerCtx)),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
           ),
         );
+        return wrapTheme(wrapPeekSurface(ctx, sheetCard, barrierAlpha: mobileBarrierAlpha));
       },
     );
   }
@@ -1407,7 +1562,7 @@ Future<T?> showGlassSheet<T>({
   return showModalBottomSheet<T>(
     context: context,
     backgroundColor: Colors.transparent,
-    barrierColor: Colors.black.withValues(alpha: effectiveSkin.isLight ? 0.36 : 0.65),
+    barrierColor: Colors.black.withValues(alpha: mobileBarrierAlpha),
     isScrollControlled: true,
     isDismissible: true,
     enableDrag: true,

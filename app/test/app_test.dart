@@ -2964,8 +2964,10 @@ void main() {
     expect(subCtrl.activeCueNotifier.value?.original, equals('おはようございます'));
     expect(subCtrl.activeCueNotifier.value?.translated, equals('[简体中文] おはようございます'));
 
-    // 3. 2-Pass Portrait Beauty Camera GPU shader generator (stackable smooth/whiten/rosy/clarity)
-    expect(BeautyFilterPreset.all.length, equals(6));
+    // 3. 2-Pass Portrait Beauty Camera GPU shader generator (stackable smooth/whiten/rosy/clarity + Douyin presets)
+    expect(BeautyFilterPreset.all.length, equals(8));
+    expect(BeautyFilterPreset.byId('douyin_cream').label, equals('奶油水光'));
+    expect(BeautyFilterPreset.byId('cool_white').label, equals('冷白网感'));
     expect(BeautyFilterEngine.buildGlslSource('off', 0.55), isNull);
     expect(BeautyFilterEngine.buildGlslSourceFromParams(BeautyFilterParams.off), isNull);
     for (final preset in BeautyFilterPreset.all.where((p) => p.id != 'off')) {
@@ -2979,6 +2981,8 @@ void main() {
         expect(glsl, isNot(contains('--')), reason: '${preset.id} must never emit -- operator');
         expect(glsl, contains('vedro_skin_mask'));
         expect(glsl, contains('skinMask'));
+        expect(glsl, contains('chromaEven'));
+        expect(glsl, contains('dewyGlow'));
       }
     }
     // Stackable custom portrait combination + mobile lean 7-tap shader

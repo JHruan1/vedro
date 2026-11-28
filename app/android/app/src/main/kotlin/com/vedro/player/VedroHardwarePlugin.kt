@@ -83,6 +83,24 @@ class VedroHardwarePlugin(
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
             activity.runOnUiThread {
                 try {
+                    val lp = activity.window.attributes
+                    // fps <= 0f restores system-managed VRR / LTPO refresh rate (modeId = 0)
+                    // instead of pinning the OLED panel at 120Hz/144Hz while idle!
+                    if (fps <= 0f) {
+                        var changed = false
+                        if (lp.preferredDisplayModeId != 0) {
+                            lp.preferredDisplayModeId = 0
+                            changed = true
+                        }
+                        if (lp.preferredRefreshRate != 0f) {
+                            lp.preferredRefreshRate = 0f
+                            changed = true
+                        }
+                        if (changed) {
+                            activity.window.attributes = lp
+                        }
+                        return@runOnUiThread
+                    }
                     val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         activity.display
                     } else {
@@ -94,15 +112,11 @@ class VedroHardwarePlugin(
                             it.physicalHeight == current.physicalHeight
                     }
                     if (sameResModes.isEmpty()) return@runOnUiThread
-                    val chosen = if (fps <= 0f) {
-                        sameResModes.maxByOrNull { it.refreshRate }
-                    } else {
-                        sameResModes
-                            .filter { it.refreshRate >= fps - 1f }
-                            .minByOrNull { it.refreshRate }
-                            ?: sameResModes.minByOrNull { kotlin.math.abs(it.refreshRate - fps) }
-                    } ?: return@runOnUiThread
-                    val lp = activity.window.attributes
+                    val chosen = sameResModes
+                        .filter { it.refreshRate >= fps - 1f }
+                        .minByOrNull { it.refreshRate }
+                        ?: sameResModes.minByOrNull { kotlin.math.abs(it.refreshRate - fps) }
+                        ?: return@runOnUiThread
                     if (lp.preferredDisplayModeId != chosen.modeId) {
                         lp.preferredDisplayModeId = chosen.modeId
                         activity.window.attributes = lp

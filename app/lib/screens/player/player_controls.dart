@@ -31,15 +31,41 @@ extension _PlayerControlsExt on _PlayerScreenState {
     });
   }
 
-  Future<T?> _openPlayerSheet<T>({required WidgetBuilder builder}) {
+  void _onVisualSliderDrag(bool dragging, {String? label}) {
+    if (_disposed) return;
+    if (dragging) {
+      if (label != null) _sheetPeekLabelNotifier.value = label;
+      if (!_sheetPeekNotifier.value) _sheetPeekNotifier.value = true;
+    } else {
+      if (_sheetPeekNotifier.value) _sheetPeekNotifier.value = false;
+      _sheetPeekLabelNotifier.value = null;
+    }
+  }
+
+  void _updateVisualPeekLabel(String label) {
+    if (!_disposed && _sheetPeekNotifier.value) {
+      _sheetPeekLabelNotifier.value = label;
+    }
+  }
+
+  Future<T?> _openPlayerSheet<T>({
+    required WidgetBuilder builder,
+    bool enablePeekWhileDragging = false,
+  }) {
     _hideControlsTimer?.cancel();
     _sheetOpen = true;
+    _sheetPeekNotifier.value = false;
+    _sheetPeekLabelNotifier.value = null;
     return showGlassSheet<T>(
       context: context,
       forceDark: true,
+      peekVideoNotifier: enablePeekWhileDragging ? _sheetPeekNotifier : null,
+      peekLabelNotifier: enablePeekWhileDragging ? _sheetPeekLabelNotifier : null,
       builder: builder,
     ).whenComplete(() {
       _sheetOpen = false;
+      _sheetPeekNotifier.value = false;
+      _sheetPeekLabelNotifier.value = null;
       if (!mounted || _disposed) return;
       _scheduleHideControls();
       if (_isTv && _controlsVisible && !_showEpisodeDrawer && !_screenLocked) {
@@ -562,5 +588,49 @@ extension _PlayerControlsExt on _PlayerScreenState {
   String _fmtDelta(double delta) {
     final sign = delta >= 0 ? '+' : '-';
     return '$sign${_fmtTime(delta.abs())}';
+  }
+
+  void _onPlayerStreamError(String err) {
+    if (!mounted || _disposed) return;
+    final action = PlayerStreamErrorPolicy.classify(
+      err,
+      isLocalFile: _isLocalFile,
+      hwDecodeEnabled: _hwDecodeEnabled,
+      hwFallbackAttempted: _hwFallbackAttempted,
+    );
+    if (action == PlayerStreamErrorAction.ignore) return;
+    if (action == PlayerStreamErrorAction.hwFallback && !_retryInFlight) {
+      _hwFallbackAttempted = true;
+      _hwDecodeEnabled = false;
+      _flashGestureHud('seek_feedback', text: '硬件解码异常，已自动切换软件解码重试…');
+      unawaited(_startPlayback(_prepared?.mediaSourceId, resumeFromSecs: _positionSecs));
+      return;
+    }
+    if (action == PlayerStreamErrorAction.transientNetwork ||
+        action == PlayerStreamErrorAction.hardOpenFailure) {
+      if (_retryInFlight) return;
+      if (_autoRetryCount < PlayerStreamErrorPolicy.maxAutoRetries) {
+        _retryInFlight = true;
+        final retryGen = _playbackGen;
+        final anchorPos = _positionSecs;
+        final hadDuration = _durationSecs > 0;
+        _retryGraceTimer?.cancel();
+        _retryGraceTimer = Timer(
+          Duration(milliseconds: PlayerStreamErrorPolicy.graceWindowMs(action)),
+          () => _executeCoalescedReconnect(action, retryGen, anchorPos, hadDuration),
+        );
+        return;
+      }
+    }
+    _setPlayerState(() {
+      _error = err;
+      _loading = false;
+      _controlsVisible = true;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _error != null && _errorRetryFocusNode.canRequestFocus) {
+        _errorRetryFocusNode.requestFocus();
+      }
+    });
   }
 }

@@ -33,7 +33,21 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
   bool _paused = false;
   bool _userDragging = false;
   bool _hovered = false;
+  bool _pendingUserPageSync = false;
+  int _autoAdvanceCount = 0;
   Timer? _autoTimer;
+
+  static bool _sameFeatured(
+    List<({MediaItemModel item, String eyebrow})> a,
+    List<({MediaItemModel item, String eyebrow})> b,
+  ) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].item.id != b[i].item.id) return false;
+    }
+    return true;
+  }
 
   @override
   void initState() {
@@ -51,13 +65,15 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
         _pageCtrl.jumpToPage(0);
       }
     }
-    if (oldWidget.featured != widget.featured) {
+    if (!_sameFeatured(oldWidget.featured, widget.featured)) {
+      _autoAdvanceCount = 0;
       _syncDynamicHeroColor();
+      _armTimer();
     }
   }
 
   void _syncDynamicHeroColor() {
-    if (widget.featured.isEmpty) return;
+    if (widget.featured.isEmpty || !widget.appState.prefs.dynamicMonet) return;
     final safeIdx = _active.clamp(0, widget.featured.length - 1);
     final target = widget.featured[safeIdx].item;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -77,20 +93,34 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
   void _armTimer() {
     _autoTimer?.cancel();
     if (widget.featured.length < 2 || _paused || _userDragging) return;
-    _autoTimer = Timer(const Duration(seconds: 8), () {
+    // Cap unattended background rotations to 1 pass through the featured list so
+    // an idle Home screen settles to true 0% GPU / 0fps / LTPO 1Hz power-save.
+    // Any user swipe, tap, or hover resets `_autoAdvanceCount` and resumes smoothly.
+    if (_autoAdvanceCount >= widget.featured.length) return;
+    _autoTimer = Timer(const Duration(seconds: 14), () {
       if (!mounted || _userDragging) return;
+      if (!widget.appState.isAppResumed ||
+          PlatformPerfProfile.shouldReduceMotion(context)) {
+        _armTimer();
+        return;
+      }
       // Skip invisible background Hero advances when scrolled past or on another tab/route!
       if (!TickerMode.of(context) || widget.scrollOffsetListenable.value > 380) {
         _armTimer();
         return;
       }
+      _autoAdvanceCount++;
       final next = (_active + 1) % widget.featured.length;
-      _select(next);
+      _select(next, fromUser: false);
     });
   }
 
-  void _select(int index) {
+  void _select(int index, {bool fromUser = true}) {
     if (widget.featured.isEmpty) return;
+    if (fromUser) {
+      _autoAdvanceCount = 0;
+      _pendingUserPageSync = true;
+    }
     final target = index.clamp(0, widget.featured.length - 1);
     if (_pageCtrl.hasClients && widget.featured.length > 1) {
       _pageCtrl.animateToPage(
@@ -100,15 +130,24 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
       );
     } else {
       setState(() => _active = target);
-      _syncDynamicHeroColor();
+      if (fromUser) _syncDynamicHeroColor();
+      _pendingUserPageSync = false;
     }
     _armTimer();
   }
 
   void _onPageChanged(int index) {
     if (_active == index) return;
+    final userDriven = _userDragging || _pendingUserPageSync;
+    _pendingUserPageSync = false;
+    if (userDriven) _autoAdvanceCount = 0;
     setState(() => _active = index);
-    _syncDynamicHeroColor();
+    // Only re-tint the root MaterialApp theme on explicit user interaction —
+    // unattended background carousel ticks must NEVER trigger a 24-frame full-app
+    // `AnimatedTheme` + Liquid Glass shader recompile storm!
+    if (userDriven) {
+      _syncDynamicHeroColor();
+    }
     _armTimer();
   }
 
@@ -449,20 +488,21 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                   hoverScale: 1.06,
                   pressScale: 0.9,
                   child: onPhoto
-                      ? GlassSurface(
-                          borderRadius: 999,
-                          blur: 24,
-                          enableBlur: !PlatformPerfProfile.isMobile,
-                          color: const Color(0x40FFFFFF),
-                          borderColor: Colors.transparent,
-                          child: SizedBox(
-                            width: wide ? 44 : 38,
-                            height: wide ? 44 : 38,
-                            child: Icon(
-                              Icons.info_outline_rounded,
-                              size: wide ? 21 : 19,
-                              color: Colors.white,
+                      ? Container(
+                          width: wide ? 44 : 38,
+                          height: wide ? 44 : 38,
+                          decoration: BoxDecoration(
+                            color: const Color(0x3DFFFFFF),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: const Color(0x38FFFFFF),
+                              width: 0.8,
                             ),
+                          ),
+                          child: Icon(
+                            Icons.info_outline_rounded,
+                            size: wide ? 21 : 19,
+                            color: Colors.white,
                           ),
                         )
                       : Container(
@@ -579,22 +619,19 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                               border: skin.cardBorder(),
                             ),
                             clipBehavior: Clip.antiAlias,
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                for (var i = 0; i < widget.featured.length; i++)
-                                  AnimatedOpacity(
-                                    opacity: i == _active ? 1.0 : 0.0,
-                                    duration: const Duration(milliseconds: 480),
-                                    curve: VedroTheme.easeOut,
-                                    child: VedroArtwork(
-                                      item: widget.featured[i].item,
-                                      appState: widget.appState,
-                                      isHero: true,
-                                      showInitials: false,
-                                    ),
-                                  ),
-                              ],
+                            child: AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 460),
+                              switchInCurve: VedroTheme.easeOut,
+                              switchOutCurve: Curves.easeInCubic,
+                              child: SizedBox.expand(
+                                key: ValueKey('split-hero-${item.id}'),
+                                child: VedroArtwork(
+                                  item: item,
+                                  appState: widget.appState,
+                                  isHero: true,
+                                  showInitials: false,
+                                ),
+                              ),
                             ),
                           ),
                         ),
@@ -926,35 +963,29 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
               ),
             ),
 
-            if (wide && widget.featured.length > 1) ...[
+            if (wide && _hovered && widget.featured.length > 1) ...[
               Positioned(
                 left: 14,
                 top: 0,
                 bottom: 0,
                 child: Center(
-                  child: ExcludeFocus(
-                    excluding: !_hovered,
-                    child: IgnorePointer(
-                      ignoring: !_hovered,
-                      child: AnimatedOpacity(
-                        opacity: _hovered ? 1.0 : 0.0,
-                        duration: const Duration(milliseconds: 180),
-                        child: PressableScale(
-                          onTap: () => _select(
-                              (_active - 1 + widget.featured.length) % widget.featured.length),
-                          child: GlassSurface(
-                            borderRadius: 20,
-                            blur: 18,
-                            color: skin.isLight ? const Color(0xCCFFFFFF) : const Color(0x66141418),
-                            borderColor: skin.isLight ? skin.border : Colors.transparent,
-                            padding: const EdgeInsets.all(8),
-                            child: Icon(
-                              Icons.chevron_left_rounded,
-                              size: 22,
-                              color: skin.isLight ? skin.fg : Colors.white,
-                            ),
-                          ),
+                  child: PressableScale(
+                    onTap: () => _select(
+                        (_active - 1 + widget.featured.length) % widget.featured.length),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: skin.isLight ? const Color(0xD8FFFFFF) : const Color(0x8A141418),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: skin.isLight ? skin.border : const Color(0x30FFFFFF),
+                          width: 0.8,
                         ),
+                      ),
+                      child: Icon(
+                        Icons.chevron_left_rounded,
+                        size: 22,
+                        color: skin.isLight ? skin.fg : Colors.white,
                       ),
                     ),
                   ),
@@ -965,28 +996,22 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                 top: 0,
                 bottom: 0,
                 child: Center(
-                  child: ExcludeFocus(
-                    excluding: !_hovered,
-                    child: IgnorePointer(
-                      ignoring: !_hovered,
-                      child: AnimatedOpacity(
-                        opacity: _hovered ? 1.0 : 0.0,
-                        duration: const Duration(milliseconds: 180),
-                        child: PressableScale(
-                          onTap: () => _select((_active + 1) % widget.featured.length),
-                          child: GlassSurface(
-                            borderRadius: 20,
-                            blur: 18,
-                            color: skin.isLight ? const Color(0xCCFFFFFF) : const Color(0x66141418),
-                            borderColor: skin.isLight ? skin.border : Colors.transparent,
-                            padding: const EdgeInsets.all(8),
-                            child: Icon(
-                              Icons.chevron_right_rounded,
-                              size: 22,
-                              color: skin.isLight ? skin.fg : Colors.white,
-                            ),
-                          ),
+                  child: PressableScale(
+                    onTap: () => _select((_active + 1) % widget.featured.length),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: skin.isLight ? const Color(0xD8FFFFFF) : const Color(0x8A141418),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: skin.isLight ? skin.border : const Color(0x30FFFFFF),
+                          width: 0.8,
                         ),
+                      ),
+                      child: Icon(
+                        Icons.chevron_right_rounded,
+                        size: 22,
+                        color: skin.isLight ? skin.fg : Colors.white,
                       ),
                     ),
                   ),

@@ -158,6 +158,9 @@ pub extern "C" fn vedro_poll_events(rt: *mut VedroRuntime) -> *mut c_char {
             return to_c_string("[]");
         };
         let events = runtime.poll_events();
+        if events.is_empty() {
+            return to_c_string("[]");
+        }
         to_c_string(&serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_string()))
     }));
     res.unwrap_or_else(|_| to_c_string("[]"))

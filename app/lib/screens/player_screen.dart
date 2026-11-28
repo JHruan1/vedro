@@ -14,7 +14,10 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
 import '../core/platform/platform_perf.dart';
+import '../core/theme/vedro_liquid_shader.dart';
+import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
+import '../core/utils/stream_error_policy.dart';
 import '../state/app_state.dart';
 import '../widgets/ai_bilingual_subtitle.dart';
 import '../widgets/beauty_filter.dart';
@@ -102,12 +105,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   int _danmakuGen = 0;
   int _autoRetryCount = 0;
   double _retryAnchorSecs = -1.0;
+  bool _retryInFlight = false;
+  Timer? _retryGraceTimer;
   bool _hwFallbackAttempted = false;
   bool _inPipMode = false;
   bool _enteringPip = false;
   Timer? _enteringPipResetTimer;
   Timer? _backgroundPauseTimer;
   bool _sheetOpen = false;
+  final ValueNotifier<bool> _sheetPeekNotifier = ValueNotifier<bool>(false);
+  final ValueNotifier<String?> _sheetPeekLabelNotifier = ValueNotifier<String?>(null);
+  bool _gesturePeekingVideo = false;
   int _lastAudioInterruptCount = 0;
   bool _usingNativeBrightness = false;
   int _videoWidth = 16;
@@ -524,7 +532,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (!mounted || _scrubbing) return;
       final secs = pos.inMilliseconds / 1000.0;
       _positionSecs = secs;
-      // Reset reconnect counter ONLY once playback actually makes real forward progress (>= 2s)
+      // Reset reconnect counter ONLY once playback actually makes real forward progress (>= 2s),
+      // and cancel any pending silent grace-window retry as soon as playback clearly advances!
+      if (_retryInFlight && _retryGraceTimer != null && secs > 0.35 && !_buffering) {
+        _retryGraceTimer?.cancel();
+        _retryGraceTimer = null;
+        _retryInFlight = false;
+      }
       if (_autoRetryCount > 0 && _retryAnchorSecs >= 0 && (secs - _retryAnchorSecs) >= 2.0) {
         _autoRetryCount = 0;
         _retryAnchorSecs = -1.0;
@@ -933,66 +947,57 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     } catch (_) {}
   }
 
-  void _onPlayerStreamError(String err) {
-    if (!mounted || err.isEmpty) return;
-    final lower = err.toLowerCase();
-    // Ignore non-fatal subtitle/metadata probing noise
-    if (lower.contains('subtitle') && !lower.contains('fatal')) return;
-
-    // 1. Automatic 1x HW -> SW fallback on decoder failures
-    if (_hwDecodeEnabled &&
-        !_hwFallbackAttempted &&
-        (lower.contains('hwdec') ||
-            lower.contains('codec') ||
-            lower.contains('videotoolbox') ||
-            lower.contains('mediacodec') ||
-            lower.contains('d3d11') ||
-            lower.contains('vaapi'))) {
-      _hwFallbackAttempted = true;
-      _hwDecodeEnabled = false;
-      _flashGestureHud('seek_feedback', text: '硬件解码异常，已自动切换软件解码重试…');
-      unawaited(_startPlayback(_prepared?.mediaSourceId, resumeFromSecs: _positionSecs));
+  void _executeCoalescedReconnect(
+    PlayerStreamErrorAction action,
+    int retryGen,
+    double anchorPos,
+    bool hadDuration,
+  ) {
+    _retryGraceTimer = null;
+    if (!mounted || _disposed || retryGen != _playbackGen) {
+      _retryInFlight = false;
       return;
     }
-
-    // 2. Automatic transient network / stream-ticket retry (up to 2x, bounded until real 2s progress!)
-    if (!_isLocalFile &&
-        _autoRetryCount < 2 &&
-        (lower.contains('http') ||
-            lower.contains('tcp') ||
-            lower.contains('eof') ||
-            lower.contains('timeout') ||
-            lower.contains('network') ||
-            lower.contains('connection') ||
-            lower.contains('failed to open'))) {
-      _autoRetryCount += 1;
-      _retryAnchorSecs = _positionSecs;
-      final attempt = _autoRetryCount;
-      final retryGen = _playbackGen;
-      _flashGestureHud('seek_feedback', text: '网络波动，正在自动重连（第 $attempt/2 次）…');
-      unawaited(() async {
-        try {
-          if (_isServerStream && _prepared?.usesStreamTicket == true) {
-            await widget.appState.core.invoke('refresh_stream_ticket');
-          }
-        } catch (_) {}
-        await Future<void>.delayed(Duration(milliseconds: 800 * attempt));
+    if (PlayerStreamErrorPolicy.hasSelfRecovered(
+      action: action,
+      anchorPosSecs: anchorPos,
+      currentPosSecs: _positionSecs,
+      hadDuration: hadDuration,
+      currentDurationSecs: _durationSecs,
+      paused: _paused,
+    )) {
+      _retryInFlight = false;
+      return;
+    }
+    final attempt = ++_autoRetryCount;
+    _retryAnchorSecs = _positionSecs;
+    _flashGestureHud(
+      'seek_feedback',
+      text: '网络波动，正在自动重连（第 $attempt/${PlayerStreamErrorPolicy.maxAutoRetries} 次）…',
+    );
+    unawaited(() async {
+      try {
+        await Future<void>.delayed(Duration(milliseconds: 500 * attempt));
         if (!mounted || _disposed || retryGen != _playbackGen) return;
+        final prep = _prepared;
+        if (_isServerStream && prep != null && prep.usesStreamTicket && attempt == 1) {
+          try {
+            await widget.appState.core.invoke('refresh_stream_ticket');
+            if (!mounted || _disposed || retryGen != _playbackGen) return;
+            final startDur = _positionSecs > 1.0
+                ? Duration(milliseconds: (_positionSecs * 1000).round())
+                : null;
+            await _player.open(Media(prep.proxyUrl, start: startDur), play: true);
+            return;
+          } catch (_) {
+            if (!mounted || _disposed || retryGen != _playbackGen) return;
+          }
+        }
         await _startPlayback(_prepared?.mediaSourceId, resumeFromSecs: _positionSecs);
-      }());
-      return;
-    }
-
-    setState(() {
-      _error = err;
-      _loading = false;
-      _controlsVisible = true;
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _error != null && _errorRetryFocusNode.canRequestFocus) {
-        _errorRetryFocusNode.requestFocus();
+      } finally {
+        if (retryGen == _playbackGen) _retryInFlight = false;
       }
-    });
+    }());
   }
 
   void _startUpNextCountdown() {
@@ -1654,6 +1659,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _statusBarTimer?.cancel();
     _keySeekFlushTimer?.cancel();
     _enteringPipResetTimer?.cancel();
+    _retryGraceTimer?.cancel();
     _beautyShaderDebounce?.cancel();
     _focusNode.dispose();
     _playPauseFocusNode.dispose();
@@ -1675,6 +1681,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _statsNotifier.dispose();
     _gestureHudNotifier.dispose();
     _statusBarNotifier.dispose();
+    _sheetPeekNotifier.dispose();
+    _sheetPeekLabelNotifier.dispose();
     _aiSubCtrl.dispose();
     unawaited(LocalAsrManager.instance.unloadEngine());
     _persistRememberedPlayerPrefs(notify: false);

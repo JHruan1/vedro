@@ -559,11 +559,14 @@ extension _DetailBodyExt on _DetailScreenState {
     ];
 
     final posterRadius = widget.appState.prefs.effectiveCardRadius(skin);
+    // Request the exact same artwork tier as MediaCard (`420` portrait / `640` landscape)
+    // so DetailScreen's cover & Hero flight hit Flutter's decoded `ImageCache` synchronously
+    // on Frame 0 (zero blank-box flight & zero duplicate poster download!).
     Widget coverArt = VedroArtwork(
       item: _item,
       appState: widget.appState,
       landscape: isEpisodeWithStill,
-      width: 600,
+      width: isEpisodeWithStill ? 640 : 420,
       displayWidth: coverW,
     );
     if (widget.heroTag != null) {

@@ -138,7 +138,17 @@ class VedroAppState extends ChangeNotifier {
   String? _dynamicSeedSourceKey;
 
   /// Update the global Monet page-adaptive seed color from the currently featured media item.
+  /// Strictly gated on [VedroPreferences.dynamicMonet] and coalesced to at most ONE theme
+  /// notification per item (avoiding back-to-back full-app `AnimatedTheme` rebuild storms).
   void updateDynamicSeedFromItem(MediaItemModel? item) {
+    if (!prefs.dynamicMonet) {
+      if (dynamicPageSeedColor != null || _dynamicSeedSourceKey != null) {
+        dynamicPageSeedColor = null;
+        _dynamicSeedSourceKey = null;
+        notifyListeners();
+      }
+      return;
+    }
     if (item == null) {
       if (dynamicPageSeedColor != null) {
         dynamicPageSeedColor = null;
@@ -153,12 +163,24 @@ class VedroAppState extends ChangeNotifier {
 
     final artUrl = backdropArt(item, width: 320)?.url ?? posterArtUrl(item, width: 320);
     final cached = DynamicColorEngine.cachedForUrl(artUrl);
-    dynamicPageSeedColor = cached ?? DynamicColorEngine.seedForIdentity(item.id, item.name);
-    notifyListeners();
-
-    if (cached == null && artUrl != null && artUrl.isNotEmpty) {
+    if (cached != null) {
+      if (dynamicPageSeedColor != cached) {
+        dynamicPageSeedColor = cached;
+        notifyListeners();
+      }
+      return;
+    }
+    if (dynamicPageSeedColor == null) {
+      dynamicPageSeedColor = DynamicColorEngine.seedForIdentity(item.id, item.name);
+      notifyListeners();
+    }
+    if (artUrl != null && artUrl.isNotEmpty) {
       DynamicColorEngine.extractFromImageUrl(artUrl).then((extracted) {
-        if (extracted != null && _dynamicSeedSourceKey == key) {
+        if (!_disposed &&
+            prefs.dynamicMonet &&
+            extracted != null &&
+            _dynamicSeedSourceKey == key &&
+            dynamicPageSeedColor != extracted) {
           dynamicPageSeedColor = extracted;
           notifyListeners();
         }
@@ -772,7 +794,7 @@ class VedroAppState extends ChangeNotifier {
           remoteBannerMessage = '${payload['header'] ?? ''}: ${payload['text'] ?? ''}'.trim();
           changed = true;
         } else if (kind == 'user_data_changed') {
-          refreshHome();
+          _scheduleDebouncedHomeRefresh();
         }
       }
     }
@@ -782,7 +804,19 @@ class VedroAppState extends ChangeNotifier {
     if (changed) notifyListeners();
   }
 
+  Timer? _wsRefreshDebounceTimer;
+
+  void _scheduleDebouncedHomeRefresh() {
+    if (_disposed || !isSignedIn) return;
+    _wsRefreshDebounceTimer?.cancel();
+    _wsRefreshDebounceTimer = Timer(const Duration(milliseconds: 900), () {
+      _wsRefreshDebounceTimer = null;
+      if (!_disposed && isSignedIn) unawaited(refreshHome());
+    });
+  }
+
   bool _appResumed = true;
+  bool get isAppResumed => _appResumed;
 
   void setAppResumed(bool resumed) {
     if (_disposed || _appResumed == resumed) return;
@@ -799,7 +833,7 @@ class VedroAppState extends ChangeNotifier {
   void _startEventPolling() {
     _wsPollTimer?.cancel();
     if (_disposed || !_appResumed) return;
-    final pollSecs = PlatformPerfProfile.isMobileOs ? 4 : 3;
+    final pollSecs = PlatformPerfProfile.isMobileOs ? 6 : 5;
     _wsPollTimer = Timer.periodic(Duration(seconds: pollSecs), (_) => _consumeCoreEvents());
   }
 
@@ -818,6 +852,7 @@ class VedroAppState extends ChangeNotifier {
     ++_sessionEpoch;
     ++_speedTestGen;
     _wsPollTimer?.cancel();
+    _wsRefreshDebounceTimer?.cancel();
     _speedTestPollTimer?.cancel();
     _prefsDebounceTimer?.cancel();
     _quotaRefreshTimer?.cancel();

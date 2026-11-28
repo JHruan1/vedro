@@ -628,21 +628,8 @@ impl VedroRuntime {
                 if !has_embedded_av {
                     if let Some(dsu) = chosen.direct_stream_url.clone() {
                         if let Ok(upstream_url) = client.resolve_media_url(&dsu) {
-                            let uses_ticket =
-                                vedro_protocol::auth::url_has_stream_ticket(upstream_url.as_str());
-                            let headers = if !uses_ticket
-                                && same_origin_as_client(&client, upstream_url.as_str())
-                            {
-                                client.auth_headers()
-                            } else {
-                                let mut h = reqwest::header::HeaderMap::new();
-                                if let Ok(ua) = reqwest::header::HeaderValue::from_str(
-                                    &client.identity().user_agent(),
-                                ) {
-                                    h.insert(reqwest::header::USER_AGENT, ua);
-                                }
-                                h
-                            };
+                            let headers =
+                                build_media_stream_headers(&client, upstream_url.as_str());
                             let (temp_id, _) = self.proxy.register_stream(
                                 upstream_url.to_string(),
                                 headers,
@@ -774,20 +761,9 @@ impl VedroRuntime {
                 let uses_ticket =
                     vedro_protocol::auth::url_has_stream_ticket(upstream_url.as_str());
 
-                // Security: ONLY attach Emby auth headers when upstream matches the connected
-                // server origin AND does not already carry a StreamTicket!
-                let headers =
-                    if !uses_ticket && same_origin_as_client(&client, upstream_url.as_str()) {
-                        client.auth_headers()
-                    } else {
-                        let mut h = reqwest::header::HeaderMap::new();
-                        if let Ok(ua) =
-                            reqwest::header::HeaderValue::from_str(&client.identity().user_agent())
-                        {
-                            h.insert(reqwest::header::USER_AGENT, ua);
-                        }
-                        h
-                    };
+                // Security & cloud-drive compatibility: attach Emby auth headers ONLY on same-origin
+                // non-ticket URLs, ALWAYS preserve User-Agent, and use `Accept: */*` (never JSON!).
+                let headers = build_media_stream_headers(&client, upstream_url.as_str());
 
                 let (stream_id, proxy_url) = if is_transcode_hls {
                     // HLS m3u8 transcode playlists must be read directly by libmpv (not byte-chunked)
@@ -1152,13 +1128,7 @@ impl VedroRuntime {
                 let resolved = client
                     .resolve_media_url(new_url)
                     .map_err(|e| e.to_string())?;
-                let new_hdrs = if same_origin_as_client(&client, resolved.as_str())
-                    && !vedro_protocol::auth::url_has_stream_ticket(resolved.as_str())
-                {
-                    client.auth_headers()
-                } else {
-                    reqwest::header::HeaderMap::new()
-                };
+                let new_hdrs = build_media_stream_headers(&client, resolved.as_str());
                 let swapped =
                     self.proxy
                         .update_upstream_url(&active.2, resolved.to_string(), Some(new_hdrs));
@@ -1593,4 +1563,29 @@ pub(crate) fn apply_learned_streams(ms: &mut MediaSourceInfo, learned: Vec<Media
         merged.push(st);
     }
     ms.media_streams = merged;
+}
+
+/// Build HTTP headers for media streaming endpoints:
+/// - Always preserves `User-Agent` (required by 115 / Quark / Aliyun / Alist 302 link signing).
+/// - Uses `Accept: */*` instead of `application/json` (avoids WAF/proxy rejection on media URLs).
+/// - Attaches Emby auth headers ONLY when same-origin and not already carrying a `StreamTicket`.
+fn build_media_stream_headers(
+    client: &vedro_protocol::EmbyClient,
+    upstream_url: &str,
+) -> reqwest::header::HeaderMap {
+    let uses_ticket = vedro_protocol::auth::url_has_stream_ticket(upstream_url);
+    let mut headers = if !uses_ticket && same_origin_as_client(client, upstream_url) {
+        client.auth_headers()
+    } else {
+        let mut h = reqwest::header::HeaderMap::new();
+        if let Ok(ua) = reqwest::header::HeaderValue::from_str(&client.identity().user_agent()) {
+            h.insert(reqwest::header::USER_AGENT, ua);
+        }
+        h
+    };
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("*/*"),
+    );
+    headers
 }

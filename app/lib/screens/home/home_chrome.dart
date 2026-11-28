@@ -173,29 +173,27 @@ class _PullRefreshIndicator extends StatelessWidget {
           final busy = refreshing.value;
           final p = progress.value;
           final visible = busy || p > 0.04;
-          return AnimatedOpacity(
-            opacity: visible ? 1.0 : 0.0,
-            duration: const Duration(milliseconds: 220),
-            curve: VedroTheme.easeOut,
-            child: AnimatedScale(
-              scale: busy ? 1.0 : (0.55 + 0.45 * p),
-              duration: Duration(milliseconds: busy ? 420 : 60),
-              curve: busy ? VedroSpringCurve.playful : Curves.linear,
-              child: GlassSurface(
-                borderRadius: 20,
-                blur: 18,
-                padding: const EdgeInsets.all(9),
-                child: SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: busy
-                      ? CupertinoActivityIndicator(radius: 10, color: skin.fg)
-                      : CupertinoActivityIndicator.partiallyRevealed(
-                          radius: 10,
-                          progress: p,
-                          color: skin.fg,
-                        ),
-                ),
+          // Unmount the live GlassSurface / BackdropFilter completely while idle on Home
+          // so zero extra GPU backdrop layers sit in the overlay at opacity 0.
+          if (!visible) return const SizedBox.shrink();
+          return AnimatedScale(
+            scale: busy ? 1.0 : (0.55 + 0.45 * p),
+            duration: Duration(milliseconds: busy ? 420 : 60),
+            curve: busy ? VedroSpringCurve.playful : Curves.linear,
+            child: GlassSurface(
+              borderRadius: 20,
+              blur: 18,
+              padding: const EdgeInsets.all(9),
+              child: SizedBox(
+                width: 22,
+                height: 22,
+                child: busy
+                    ? CupertinoActivityIndicator(radius: 10, color: skin.fg)
+                    : CupertinoActivityIndicator.partiallyRevealed(
+                        radius: 10,
+                        progress: p,
+                        color: skin.fg,
+                      ),
               ),
             ),
           );

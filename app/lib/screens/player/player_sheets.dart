@@ -14,6 +14,7 @@ extension _PlayerSheetsExt on _PlayerScreenState {
     };
     const angles = [0, 90, 180, 270];
     _openPlayerSheet<void>(
+      enablePeekWhileDragging: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
           shrinkWrap: true,
@@ -67,8 +68,10 @@ extension _PlayerSheetsExt on _PlayerScreenState {
               snapValues: const [0.0, 0.25, 0.5, 1.0],
               ticks: const [(-0.5, '71%'), (0.0, '100%'), (0.5, '141%'), (1.0, '200%'), (1.5, '283%')],
               valueText: '${(100 * math.pow(2.0, _videoZoom)).round()}%',
+              onDragStateChanged: (d) => _onVisualSliderDrag(d, label: '画面缩放 ${(100 * math.pow(2.0, _videoZoom)).round()}%'),
               onChanged: (next) {
                 setModal(() => _videoZoom = next);
+                _updateVisualPeekLabel('画面缩放 ${(100 * math.pow(2.0, next)).round()}%');
                 _setVideoZoom(next, showHud: false);
               },
             ),
@@ -354,9 +357,12 @@ extension _PlayerSheetsExt on _PlayerScreenState {
               step: 0.05,
               defaultValue: 0.82,
               valueText: '${(_danmakuOpacity * 100).round()}%',
+              onDragStateChanged: (d) =>
+                  _onVisualSliderDrag(d, label: '弹幕不透明度 ${(_danmakuOpacity * 100).round()}%'),
               onChanged: (v) {
                 setModal(() => _danmakuOpacity = v);
                 _setPlayerState(() => _danmakuOpacity = v);
+                _updateVisualPeekLabel('弹幕不透明度 ${(v * 100).round()}%');
                 widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuOpacity: v));
               },
             ),
@@ -368,9 +374,12 @@ extension _PlayerSheetsExt on _PlayerScreenState {
               step: 1.0,
               defaultValue: 18.0,
               valueText: '${_danmakuFontSize.round()} pt',
+              onDragStateChanged: (d) =>
+                  _onVisualSliderDrag(d, label: '弹幕字号 ${_danmakuFontSize.round()} pt'),
               onChanged: (v) {
                 setModal(() => _danmakuFontSize = v);
                 _setPlayerState(() => _danmakuFontSize = v);
+                _updateVisualPeekLabel('弹幕字号 ${v.round()} pt');
                 widget.appState.updatePrefs(widget.appState.prefs.copyWith(danmakuFontSize: v));
               },
             ),
@@ -434,6 +443,7 @@ extension _PlayerSheetsExt on _PlayerScreenState {
 
   void _openSpeedSheet() {
     _openPlayerSheet<void>(
+      enablePeekWhileDragging: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => Padding(
           key: const ValueKey('player-speed-sheet'),
@@ -506,6 +516,7 @@ extension _PlayerSheetsExt on _PlayerScreenState {
     };
     final currentNormalized = _PlayerScreenState._normalizeToneMapping(_toneMapping);
     _openPlayerSheet<void>(
+      enablePeekWhileDragging: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
           shrinkWrap: true,
@@ -571,6 +582,7 @@ extension _PlayerSheetsExt on _PlayerScreenState {
         .toList();
 
     _openPlayerSheet<void>(
+      enablePeekWhileDragging: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
           shrinkWrap: true,
@@ -785,11 +797,15 @@ extension _PlayerSheetsExt on _PlayerScreenState {
         defaultValue: 0.58,
         snapValues: const [0.0, 0.35, 0.60, 0.85],
         valueText: '${(_beautyParams.smooth * 100).round()}%',
-        onChanged: (v) => updateChannel(_beautyParams.copyWith(smooth: v)),
+        onDragStateChanged: (d) => _onVisualSliderDrag(d, label: '磨皮 ${(_beautyParams.smooth * 100).round()}%'),
+        onChanged: (v) {
+          _updateVisualPeekLabel('磨皮 ${(v * 100).round()}%');
+          updateChannel(_beautyParams.copyWith(smooth: v));
+        },
       ),
-      const SizedBox(height: 8),
+      const SizedBox(height: 6),
       VedroPrecisionSlider(
-        label: '美白（仅提亮肤色）',
+        label: '美白（去黄水光）',
         value: _beautyParams.whiten,
         min: 0.0,
         max: 1.0,
@@ -797,9 +813,13 @@ extension _PlayerSheetsExt on _PlayerScreenState {
         defaultValue: 0.42,
         snapValues: const [0.0, 0.35, 0.60, 0.85],
         valueText: '${(_beautyParams.whiten * 100).round()}%',
-        onChanged: (v) => updateChannel(_beautyParams.copyWith(whiten: v)),
+        onDragStateChanged: (d) => _onVisualSliderDrag(d, label: '美白 ${(_beautyParams.whiten * 100).round()}%'),
+        onChanged: (v) {
+          _updateVisualPeekLabel('美白 ${(v * 100).round()}%');
+          updateChannel(_beautyParams.copyWith(whiten: v));
+        },
       ),
-      const SizedBox(height: 8),
+      const SizedBox(height: 6),
       VedroPrecisionSlider(
         label: '粉嫩（气色与润唇）',
         value: _beautyParams.rosy,
@@ -809,9 +829,13 @@ extension _PlayerSheetsExt on _PlayerScreenState {
         defaultValue: 0.30,
         snapValues: const [0.0, 0.30, 0.55, 0.80],
         valueText: '${(_beautyParams.rosy * 100).round()}%',
-        onChanged: (v) => updateChannel(_beautyParams.copyWith(rosy: v)),
+        onDragStateChanged: (d) => _onVisualSliderDrag(d, label: '粉嫩 ${(_beautyParams.rosy * 100).round()}%'),
+        onChanged: (v) {
+          _updateVisualPeekLabel('粉嫩 ${(v * 100).round()}%');
+          updateChannel(_beautyParams.copyWith(rosy: v));
+        },
       ),
-      const SizedBox(height: 8),
+      const SizedBox(height: 6),
       VedroPrecisionSlider(
         label: '亮眼清晰（五官立体）',
         value: _beautyParams.clarity,
@@ -821,7 +845,11 @@ extension _PlayerSheetsExt on _PlayerScreenState {
         defaultValue: 0.40,
         snapValues: const [0.0, 0.35, 0.60, 0.85],
         valueText: '${(_beautyParams.clarity * 100).round()}%',
-        onChanged: (v) => updateChannel(_beautyParams.copyWith(clarity: v)),
+        onDragStateChanged: (d) => _onVisualSliderDrag(d, label: '亮眼 ${(_beautyParams.clarity * 100).round()}%'),
+        onChanged: (v) {
+          _updateVisualPeekLabel('亮眼 ${(v * 100).round()}%');
+          updateChannel(_beautyParams.copyWith(clarity: v));
+        },
       ),
       const SizedBox(height: 12),
       Container(
@@ -850,6 +878,7 @@ extension _PlayerSheetsExt on _PlayerScreenState {
 
   void _openBeautyFilterSheet() {
     _openPlayerSheet<void>(
+      enablePeekWhileDragging: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
           shrinkWrap: true,
@@ -892,6 +921,7 @@ extension _PlayerSheetsExt on _PlayerScreenState {
 
   void _openMoreToolsSheet() {
     _openPlayerSheet<void>(
+      enablePeekWhileDragging: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModal) => ListView(
           shrinkWrap: true,
@@ -902,6 +932,50 @@ extension _PlayerSheetsExt on _PlayerScreenState {
               child: Text('播放工具与画面均衡器', style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600)),
             ),
             const SizedBox(height: 8),
+
+            // Secondary playback controls tucked cleanly out of the bottom island
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DeckPillButton(
+                    label: '画面比例 / 缩放',
+                    active: _aspectMode != 'fit' || _videoRotate != 0 || _videoZoom.abs() > 0.01,
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _openAspectSheet();
+                    },
+                  ),
+                  _DeckPillButton(
+                    label: 'HDR / 画面',
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _openHdrSheet();
+                    },
+                  ),
+                  _DeckPillButton(
+                    label: _showStats ? '隐藏硬件参数' : '硬件参数 (HUD)',
+                    active: _showStats,
+                    onTap: () {
+                      _setPlayerState(() => _showStats = !_showStats);
+                      _syncStatsTimer();
+                      setModal(() {});
+                    },
+                  ),
+                  if (_chapters.isNotEmpty)
+                    _DeckPillButton(
+                      label: '章节 (${_chapters.length})',
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _openChaptersSheet();
+                      },
+                    ),
+                ],
+              ),
+            ),
+            const Divider(height: 18),
 
             // Floating Mini-Window / Background PiP quick controls
             if (NativePlaybackChannel.supportsNativePip) ...[
@@ -1134,70 +1208,31 @@ extension _PlayerSheetsExt on _PlayerScreenState {
                 ],
               ),
             ),
-            VedroPrecisionSlider(
-              label: '亮度',
-              value: _eqBrightness.toDouble(),
-              min: -50,
-              max: 50,
-              step: 1,
-              defaultValue: 0,
-              centeredOrigin: true,
-              snapValues: const [0],
-              valueText: '${_eqBrightness >= 0 ? '+' : ''}$_eqBrightness',
-              onChanged: (val) async {
-                final v = val.round();
-                setModal(() => _eqBrightness = v);
-                await _applyMpvProperty('brightness', '$v');
-              },
-            ),
-            VedroPrecisionSlider(
-              label: '对比度',
-              value: _eqContrast.toDouble(),
-              min: -50,
-              max: 50,
-              step: 1,
-              defaultValue: 0,
-              centeredOrigin: true,
-              snapValues: const [0],
-              valueText: '${_eqContrast >= 0 ? '+' : ''}$_eqContrast',
-              onChanged: (val) async {
-                final v = val.round();
-                setModal(() => _eqContrast = v);
-                await _applyMpvProperty('contrast', '$v');
-              },
-            ),
-            VedroPrecisionSlider(
-              label: '饱和度',
-              value: _eqSaturation.toDouble(),
-              min: -50,
-              max: 50,
-              step: 1,
-              defaultValue: 0,
-              centeredOrigin: true,
-              snapValues: const [0],
-              valueText: '${_eqSaturation >= 0 ? '+' : ''}$_eqSaturation',
-              onChanged: (val) async {
-                final v = val.round();
-                setModal(() => _eqSaturation = v);
-                await _applyMpvProperty('saturation', '$v');
-              },
-            ),
-            VedroPrecisionSlider(
-              label: '伽马值',
-              value: _eqGamma.toDouble(),
-              min: -50,
-              max: 50,
-              step: 1,
-              defaultValue: 0,
-              centeredOrigin: true,
-              snapValues: const [0],
-              valueText: '${_eqGamma >= 0 ? '+' : ''}$_eqGamma',
-              onChanged: (val) async {
-                final v = val.round();
-                setModal(() => _eqGamma = v);
-                await _applyMpvProperty('gamma', '$v');
-              },
-            ),
+            for (final eq in <(String, String, int, ValueChanged<int>)>[
+              ('亮度', 'brightness', _eqBrightness, (v) => _eqBrightness = v),
+              ('对比度', 'contrast', _eqContrast, (v) => _eqContrast = v),
+              ('饱和度', 'saturation', _eqSaturation, (v) => _eqSaturation = v),
+              ('伽马值', 'gamma', _eqGamma, (v) => _eqGamma = v),
+            ])
+              VedroPrecisionSlider(
+                label: eq.$1,
+                value: eq.$3.toDouble(),
+                min: -50,
+                max: 50,
+                step: 1,
+                defaultValue: 0,
+                centeredOrigin: true,
+                snapValues: const [0],
+                valueText: '${eq.$3 >= 0 ? '+' : ''}${eq.$3}',
+                onDragStateChanged: (d) =>
+                    _onVisualSliderDrag(d, label: '${eq.$1} ${eq.$3 >= 0 ? '+' : ''}${eq.$3}'),
+                onChanged: (val) async {
+                  final v = val.round();
+                  setModal(() => eq.$4(v));
+                  _updateVisualPeekLabel('${eq.$1} ${v >= 0 ? '+' : ''}$v');
+                  await _applyMpvProperty(eq.$2, '$v');
+                },
+              ),
 
             if (_isDesktop) ...[
               const Divider(height: 20),

@@ -56,14 +56,13 @@ extension _PlayerEngineExt on _PlayerScreenState {
     _quickSkipEligibleNotifier.value = false;
     _autoRetryCount = 0;
     _retryAnchorSecs = -1.0;
+    _retryInFlight = false;
+    _retryGraceTimer?.cancel();
+    _retryGraceTimer = null;
     _hwFallbackAttempted = false;
     _isInitialEpisode = false;
     _aiSubCtrl.resetForNewMedia(mediaTitle: ep.displayName);
-    _activeSubLocalPath = null;
-    _activeSubUrl = null;
-    _activeSubFormat = null;
-    _activeSubLabel = null;
-    _secondarySubTrackId = null;
+    _activeSubLocalPath = _activeSubUrl = _activeSubFormat = _activeSubLabel = _secondarySubTrackId = null;
     unawaited(_applyMpvProperty('secondary-sid', 'no'));
     unawaited(_applyMpvProperty('sub-visibility', 'yes'));
     final localNext = _localPathById[ep.id];
@@ -130,9 +129,9 @@ extension _PlayerEngineExt on _PlayerScreenState {
     props['cache-pause-initial'] = 'no';
     props['cache-pause-wait'] = '1.0';
     props['force-seekable'] = 'yes';
-    props['network-timeout'] = '25';
-    props['demuxer-lavf-probesize'] = '1048576';
-    props['demuxer-lavf-analyzeduration'] = '1.5';
+    props['network-timeout'] = '45';
+    props['demuxer-lavf-probesize'] = '4194304';
+    props['demuxer-lavf-analyzeduration'] = '3';
     props['demuxer-readahead-secs'] = _isMobile ? '15' : '30';
     props['stream-buffer-size'] = _isMobile ? '512KiB' : '1MiB';
     final effBufMb = _isMobile ? p.bufferSizeMb.clamp(24, 64) : p.bufferSizeMb.clamp(32, 192);
@@ -391,7 +390,7 @@ extension _PlayerEngineExt on _PlayerScreenState {
 
     _beautyShaderDebounce?.cancel();
     if (debounceShader && params.isActive) {
-      _beautyShaderDebounce = Timer(const Duration(milliseconds: 140), () {
+      _beautyShaderDebounce = Timer(const Duration(milliseconds: 90), () {
         unawaited(applyGpuShader());
       });
     } else {
@@ -751,6 +750,9 @@ extension _PlayerEngineExt on _PlayerScreenState {
   Future<void> _startPlayback(String? sourceId, {double? resumeFromSecs}) async {
     if (!mounted || _disposed) return;
     final gen = ++_playbackGen;
+    _retryGraceTimer?.cancel();
+    _retryGraceTimer = null;
+    _retryInFlight = false;
     final isReconnectOrSwitch = resumeFromSecs != null;
     final savedAudioId = isReconnectOrSwitch ? _player.state.track.audio.id : null;
     final savedSubId = isReconnectOrSwitch ? _player.state.track.subtitle.id : null;
@@ -758,7 +760,6 @@ extension _PlayerEngineExt on _PlayerScreenState {
     final savedExtSubUrl = isReconnectOrSwitch ? _activeSubUrl : null;
     final savedExtSubLabel = isReconnectOrSwitch ? _activeSubLabel : null;
     final savedSecondarySub = isReconnectOrSwitch ? _secondarySubTrackId : null;
-
     _setPlayerState(() {
       _loading = true;
       _error = null;

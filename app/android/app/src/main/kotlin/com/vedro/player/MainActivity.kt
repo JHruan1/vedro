@@ -37,7 +37,8 @@ class MainActivity : FlutterActivity() {
             window.isNavigationBarContrastEnforced = false
             window.isStatusBarContrastEnforced = false
         }
-        VedroHardwarePlugin.applyPreferredFrameRate(this, 0f)
+        // Leave preferredDisplayModeId at system default (0) so LTPO / VRR OLED panels
+        // scale smoothly to 120Hz during touch/scroll and drop to 1Hz-60Hz when idle.
     }
 
     override fun onUserLeaveHint() {

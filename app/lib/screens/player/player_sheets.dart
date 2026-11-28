@@ -745,176 +745,58 @@ extension _PlayerSheetsExt on _PlayerScreenState {
     );
   }
 
-  List<Widget> _buildBeautyStackControls(BuildContext ctx, StateSetter setModal) {
-    Future<void> updateChannel(BeautyFilterParams next) async {
-      final preset = next.isActive ? 'custom' : 'off';
-      if (ctx.mounted) {
-        setModal(() {
-          _beautyPreset = preset;
-          _beautyParams = next;
-        });
-      }
-      await _applyBeautyParams(
-        preset,
-        next,
-        showHud: false,
-        debounceShader: true,
-      );
-    }
-
-    return [
-      Text(
-        _beautyParams.isActive
-            ? '${BeautyFilterPreset.displayLabelFor(_beautyPreset, _beautyParams)} · ${_beautyParams.summaryLabel()}'
-            : BeautyFilterPreset.byId('off').subtitle,
-        style: const TextStyle(color: VedroTheme.fg2, fontSize: 12.5),
-      ),
-      const SizedBox(height: 10),
-      Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: BeautyFilterPreset.all.map((preset) {
-          final isSelected = preset.id == 'off'
-              ? !_beautyParams.isActive
-              : (_beautyPreset == preset.id && _beautyParams.isActive);
-          return _DeckPillButton(
-            label: preset.label,
-            active: isSelected,
-            onTap: () async {
-              await _applyBeautyPreset(preset.id);
-              if (ctx.mounted) setModal(() {});
-            },
-          );
-        }).toList(),
-      ),
-      const SizedBox(height: 12),
-      VedroPrecisionSlider(
-        label: '磨皮（肤质保边）',
-        value: _beautyParams.smooth,
-        min: 0.0,
-        max: 1.0,
-        step: 0.05,
-        defaultValue: 0.58,
-        snapValues: const [0.0, 0.35, 0.60, 0.85],
-        valueText: '${(_beautyParams.smooth * 100).round()}%',
-        onDragStateChanged: (d) => _onVisualSliderDrag(d, label: '磨皮 ${(_beautyParams.smooth * 100).round()}%'),
-        onChanged: (v) {
-          _updateVisualPeekLabel('磨皮 ${(v * 100).round()}%');
-          updateChannel(_beautyParams.copyWith(smooth: v));
-        },
-      ),
-      const SizedBox(height: 6),
-      VedroPrecisionSlider(
-        label: '美白（去黄水光）',
-        value: _beautyParams.whiten,
-        min: 0.0,
-        max: 1.0,
-        step: 0.05,
-        defaultValue: 0.42,
-        snapValues: const [0.0, 0.35, 0.60, 0.85],
-        valueText: '${(_beautyParams.whiten * 100).round()}%',
-        onDragStateChanged: (d) => _onVisualSliderDrag(d, label: '美白 ${(_beautyParams.whiten * 100).round()}%'),
-        onChanged: (v) {
-          _updateVisualPeekLabel('美白 ${(v * 100).round()}%');
-          updateChannel(_beautyParams.copyWith(whiten: v));
-        },
-      ),
-      const SizedBox(height: 6),
-      VedroPrecisionSlider(
-        label: '粉嫩（气色与润唇）',
-        value: _beautyParams.rosy,
-        min: 0.0,
-        max: 1.0,
-        step: 0.05,
-        defaultValue: 0.30,
-        snapValues: const [0.0, 0.30, 0.55, 0.80],
-        valueText: '${(_beautyParams.rosy * 100).round()}%',
-        onDragStateChanged: (d) => _onVisualSliderDrag(d, label: '粉嫩 ${(_beautyParams.rosy * 100).round()}%'),
-        onChanged: (v) {
-          _updateVisualPeekLabel('粉嫩 ${(v * 100).round()}%');
-          updateChannel(_beautyParams.copyWith(rosy: v));
-        },
-      ),
-      const SizedBox(height: 6),
-      VedroPrecisionSlider(
-        label: '亮眼清晰（五官立体）',
-        value: _beautyParams.clarity,
-        min: 0.0,
-        max: 1.0,
-        step: 0.05,
-        defaultValue: 0.40,
-        snapValues: const [0.0, 0.35, 0.60, 0.85],
-        valueText: '${(_beautyParams.clarity * 100).round()}%',
-        onDragStateChanged: (d) => _onVisualSliderDrag(d, label: '亮眼 ${(_beautyParams.clarity * 100).round()}%'),
-        onChanged: (v) {
-          _updateVisualPeekLabel('亮眼 ${(v * 100).round()}%');
-          updateChannel(_beautyParams.copyWith(clarity: v));
-        },
-      ),
-      const SizedBox(height: 12),
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0x1CF59E0B),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: const Color(0x40F59E0B), width: 0.7),
-        ),
-        child: const Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(Icons.local_fire_department_outlined, size: 15, color: Color(0xFFFBBF24)),
-            SizedBox(width: 7),
-            Expanded(
-              child: Text(
-                BeautyFilterEngine.thermalNotice,
-                style: TextStyle(color: Color(0xFFFDE68A), fontSize: 11.5, height: 1.4),
-              ),
-            ),
-          ],
-        ),
-      ),
-    ];
-  }
-
   void _openBeautyFilterSheet() {
     _openPlayerSheet<void>(
       enablePeekWhileDragging: true,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setModal) => ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 22),
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      '人像美颜相机（可叠加）',
-                      style: TextStyle(color: VedroTheme.fg, fontSize: 16, fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                  if (_beautyParams.isActive)
-                    TextButton(
-                      onPressed: () async {
-                        await _applyBeautyPreset('off');
-                        if (ctx.mounted) setModal(() {});
-                      },
-                      child: const Text('全部归零', style: TextStyle(fontSize: 12.5)),
-                    ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 4),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: _buildBeautyStackControls(ctx, setModal),
-              ),
-            ),
-          ],
+      builder: (ctx) => BeautyControlPanel(
+        gpuPreset: _beautyPreset,
+        gpuParams: _beautyParams,
+        aiEnabled: _aiFaceEnabled,
+        aiMorph: _aiFaceMorph,
+        useChinaMirror: widget.appState.prefs.aiFaceUseChinaMirror,
+        telemetryNotifier: _aiFaceTelemetryNotifier,
+        onSelectGpuPreset: (id) => _applyBeautyPreset(id, showHud: false),
+        onChangeGpuParams: (next) => _applyBeautyParams(
+          next.isActive ? 'custom' : 'off',
+          next,
+          showHud: false,
+          debounceShader: true,
         ),
+        onToggleAiEnabled: (enabled) async {
+          _setPlayerState(() => _aiFaceEnabled = enabled);
+          if (!AiFaceBeautyShader.isAvailable) {
+            if (!enabled) _aiFaceMpvFaces = const [];
+            unawaited(_syncCombinedMpvShaders());
+          }
+          await widget.appState.updatePrefs(
+            widget.appState.prefs.copyWith(aiFaceBeautyEnabled: enabled),
+          );
+        },
+        onChangeAiMorph: (next) async {
+          _setPlayerState(() => _aiFaceMorph = next);
+          if (!AiFaceBeautyShader.isAvailable) {
+            if (!next.isActive) _aiFaceMpvFaces = const [];
+            _aiFaceMpvDebounce?.cancel();
+            _aiFaceMpvDebounce = Timer(const Duration(milliseconds: 90), () {
+              unawaited(_syncCombinedMpvShaders());
+            });
+          }
+          await widget.appState.updatePrefs(
+            widget.appState.prefs.copyWith(
+              aiFaceSlim: next.slimFace,
+              aiFaceBigEyes: next.bigEyes,
+              aiFaceVChin: next.vChin,
+              aiFaceLipTint: next.lipTint,
+            ),
+          );
+        },
+        onChangeChinaMirror: (mirror) => unawaited(
+          widget.appState.updatePrefs(
+            widget.appState.prefs.copyWith(aiFaceUseChinaMirror: mirror),
+          ),
+        ),
+        onSliderDragState: (d, {label}) => _onVisualSliderDrag(d, label: label),
+        onUpdatePeekLabel: _updateVisualPeekLabel,
       ),
     );
   }
@@ -940,6 +822,14 @@ extension _PlayerSheetsExt on _PlayerScreenState {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
+                  _DeckPillButton(
+                    label: '美颜 / AI 五官',
+                    active: _beautyParams.isActive || (_aiFaceEnabled && _aiFaceMorph.isActive),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _openBeautyFilterSheet();
+                    },
+                  ),
                   _DeckPillButton(
                     label: '画面比例 / 缩放',
                     active: _aspectMode != 'fit' || _videoRotate != 0 || _videoZoom.abs() > 0.01,
@@ -1138,44 +1028,6 @@ extension _PlayerSheetsExt on _PlayerScreenState {
                         ),
                     ],
                   ),
-                ],
-              ),
-            ),
-
-            const Divider(height: 20),
-
-            // 2-Pass Portrait Beauty Camera (stackable smooth / whiten / rosy / clarity)
-            Padding(
-              key: const ValueKey('player-beauty-filter-section'),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Text(
-                        '人像美颜相机',
-                        style: TextStyle(
-                          color: VedroTheme.fg2,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          _beautyParams.isActive
-                              ? BeautyFilterPreset.displayLabelFor(_beautyPreset, _beautyParams)
-                              : '可自由叠加磨皮/美白/粉嫩/亮眼',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  ..._buildBeautyStackControls(ctx, setModal),
                 ],
               ),
             ),
@@ -1382,4 +1234,90 @@ extension _PlayerSheetsExt on _PlayerScreenState {
       ),
     );
   }
+
+  Future<void> _openContextMenu(Offset globalPos) async {
+    if (_screenLocked) return;
+    _hideControlsTimer?.cancel();
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (overlay == null) return;
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(globalPos.dx, globalPos.dy, 1, 1),
+        Offset.zero & overlay.size,
+      ),
+      color: const Color(0xF0171820),
+      elevation: 18,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Color(0x2AFFFFFF), width: 0.8),
+      ),
+      items: [
+        _ctxItem('play_pause', _paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+            _paused ? '继续播放' : '暂停播放', 'Space'),
+        if (_isDesktop)
+          _ctxItem('fullscreen',
+              _isFullscreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
+              _isFullscreen ? '退出全屏' : '进入全屏', 'F'),
+        if (_isDesktop)
+          _ctxItem('aot', _alwaysOnTop ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+              _alwaysOnTop ? '取消窗口置顶' : '窗口置顶', 'T'),
+        const PopupMenuDivider(height: 8),
+        _ctxItem('speed', Icons.speed_rounded,
+            '播放倍速 (${_speed.toStringAsFixed(_speed == _speed.roundToDouble() ? 1 : 2)}×)', '[ / ]'),
+        _ctxItem('beauty', Icons.face_retouching_natural_rounded, '美颜与 AI 五官', ''),
+        _ctxItem('aspect', Icons.aspect_ratio_rounded, '画面比例 / 旋转 / 缩放', 'R'),
+        _ctxItem('audio', Icons.audiotrack_rounded, '音轨与音频输出', ''),
+        _ctxItem('subtitle', Icons.subtitles_outlined, '字幕轨道与样式', ''),
+        _ctxItem('load_sub', Icons.upload_file_rounded, '加载本地外挂字幕…', ''),
+        _ctxItem('danmaku', Icons.comment_outlined, _danmakuEnabled ? '弹幕设置（已开）' : '弹幕设置（已关）', 'D'),
+        if (_chapters.isNotEmpty)
+          _ctxItem('chapters', Icons.format_list_bulleted_rounded, '章节列表 (${_chapters.length})', 'C'),
+        const PopupMenuDivider(height: 8),
+        _ctxItem('screenshot', Icons.camera_alt_outlined, '高清含字幕截图', 'S'),
+        _ctxItem('stats', Icons.info_outline_rounded, _showStats ? '隐藏硬件信息 HUD' : '显示硬件信息 HUD', 'I'),
+        _ctxItem('tools', Icons.tune_rounded, '定时关闭 / 色彩均衡器 / 更多工具', ''),
+        if (_isDesktop) _ctxItem('shortcuts', Icons.keyboard_rounded, '快捷键一览', 'H'),
+      ],
+    );
+    _scheduleHideControls();
+    if (!mounted || selected == null) return;
+    switch (selected) {
+      case 'play_pause': await _togglePause(); break;
+      case 'fullscreen': await _toggleFullscreen(); break;
+      case 'aot': await _toggleAlwaysOnTop(); break;
+      case 'speed': _openSpeedSheet(); break;
+      case 'beauty': _openBeautyFilterSheet(); break;
+      case 'aspect': _openAspectSheet(); break;
+      case 'audio': _openAudioSheet(); break;
+      case 'subtitle': _openSubtitleSheet(); break;
+      case 'load_sub': await _pickAndLoadLocalSubtitle(); break;
+      case 'danmaku': _openDanmakuSheet(); break;
+      case 'chapters': _openChaptersSheet(); break;
+      case 'screenshot': await _takeScreenshot(); break;
+      case 'stats':
+        _setPlayerState(() => _showStats = !_showStats);
+        _syncStatsTimer();
+        break;
+      case 'tools': _openMoreToolsSheet(); break;
+      case 'shortcuts': _openShortcutsDialog(); break;
+    }
+  }
+
+  PopupMenuItem<String> _ctxItem(String value, IconData icon, String label, String shortcut) =>
+      PopupMenuItem<String>(
+        value: value,
+        height: 36,
+        child: Row(
+          children: [
+            Icon(icon, size: 16, color: const Color(0xFFD0D4DE)),
+            const SizedBox(width: 10),
+            Expanded(child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 13))),
+            if (shortcut.isNotEmpty) ...[
+              const SizedBox(width: 12),
+              Text(shortcut, style: const TextStyle(color: VedroTheme.fg3, fontSize: 11, fontFamily: 'monospace')),
+            ],
+          ],
+        ),
+      );
 }

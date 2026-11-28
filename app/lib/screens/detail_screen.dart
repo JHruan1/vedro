@@ -416,40 +416,12 @@ class _DetailScreenState extends State<DetailScreen> {
     if (ep.mediaSources.length == 1) return ep.mediaSources.first;
     final sampleVers = _resolvedSeriesVersions;
     if (sampleVers.isEmpty) return ep.mediaSources.first;
-    final chosen = sampleVers[_selectedSeriesVersionIndex.clamp(0, sampleVers.length - 1)];
-    final epVers = MediaSourceModel.resolveVersions(ep.mediaSources);
-
-    // 1. Exact directory + release signature match across episodes
-    for (final ev in epVers) {
-      if (ev.seriesMatchSignature == chosen.seriesMatchSignature) {
-        return ev.source;
-      }
-    }
-
-    // 2. Token overlap on disambiguated title + signature
-    final keyTokens = '${chosen.seriesMatchSignature} ${chosen.displayTitle}'
-        .toLowerCase()
-        .split(RegExp(r'[\s._\-·/|:\[\]]+'))
-        .where((t) => t.length >= 2)
-        .toSet();
-    ResolvedMediaVersion? best;
-    var bestScore = 0;
-    for (final ev in epVers) {
-      final sTokens = '${ev.seriesMatchSignature} ${ev.displayTitle}'
-          .toLowerCase()
-          .split(RegExp(r'[\s._\-·/|:\[\]]+'))
-          .where((t) => t.length >= 2)
-          .toSet();
-      final score = keyTokens.intersection(sTokens).length;
-      if (score > bestScore) {
-        bestScore = score;
-        best = ev;
-      }
-    }
-    if (best != null && bestScore > 0) return best.source;
-
-    // 3. Deterministic slot fallback
-    return ep.mediaSources[_selectedSeriesVersionIndex.clamp(0, ep.mediaSources.length - 1)];
+    final safeIdx = _selectedSeriesVersionIndex.clamp(0, sampleVers.length - 1);
+    return MediaSourceModel.matchVersionForEpisode(
+      ep.mediaSources,
+      sampleVers[safeIdx],
+      fallbackIndex: safeIdx,
+    )?.source;
   }
 
   String? _matchingSourceIdForEpisode(MediaItemModel ep) =>

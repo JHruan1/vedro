@@ -703,6 +703,16 @@ extension _SettingsAiPrivacySectionsExt on _SettingsDetailPaneState {
             ],
           ),
         ),
+        const SizedBox(height: 18),
+        const _GroupHeader('AI 人像五官美颜引擎（方案 A · 瘦脸 / 大眼 / 精准唇彩）'),
+        _GroupedCard(
+          children: [
+            AiFaceBeautyModelCard(
+              appState: app,
+              showDefaultSliders: false,
+            ),
+          ],
+        ),
       ],
     );
   }

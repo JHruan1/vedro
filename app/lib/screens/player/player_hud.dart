@@ -195,7 +195,25 @@ extension _PlayerHudExt on _PlayerScreenState {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    RepaintBoundary(
+                    AiFaceBeautyViewport(
+                      core: widget.appState.core,
+                      enabled: _aiFaceEnabled,
+                      morph: _aiFaceMorph,
+                      paused: _paused,
+                      loading: _loading,
+                      inPipMode: _inPipMode,
+                      videoWidth: _videoWidth,
+                      videoHeight: _videoHeight,
+                      videoFit: _aspectMode == 'fill'
+                          ? BoxFit.cover
+                          : (_aspectMode == 'stretch' ? BoxFit.fill : BoxFit.contain),
+                      telemetryNotifier: _aiFaceTelemetryNotifier,
+                      rawBgraFallbackCapture: () => _player.screenshot(
+                        format: null,
+                        includeLibassSubtitles: false,
+                      ),
+                      onFallbackMpvFacesChanged: _onAiFaceMpvFacesChanged,
+                      onCopyBackHwdecRequired: (need) => unawaited(_setAiFaceCopyBackHwdec(need)),
                       child: Video(
                         controller: _videoController,
                         controls: NoVideoControls,
@@ -1014,384 +1032,428 @@ extension _PlayerHudExt on _PlayerScreenState {
                                 ),
                               ),
 
-                              // Bottom Cinema Control Island (follows active skin & Liquid Glass; compact 2-row deck!)
-                              Positioned(
-                                left: (wide ? 24 : 12) + tvPadX,
-                                right: (wide ? 24 : 12) + tvPadX,
-                                bottom: MediaQuery.paddingOf(context).bottom + (wide ? 18 : 10) + tvPadY,
-                                child: AnimatedSlide(
-                                  offset: osdInteractive ? Offset.zero : const Offset(0, 0.22),
-                                  duration: const Duration(milliseconds: 260),
-                                  curve: VedroTheme.easeOut,
-                                  child: MouseRegion(
-                                    onEnter: (_) {
-                                      _hoveringChrome = true;
-                                      _hideControlsTimer?.cancel();
-                                    },
-                                    onExit: (_) {
-                                      _hoveringChrome = false;
-                                      _scheduleHideControls();
-                                    },
-                                    child: Center(
-                                      child: Builder(
-                                        builder: (context) {
-                                          final skin = VedroSkin.of(context);
-                                          final osd = skin.osdStyle;
-                                          final isFullGradient = osd == 'cinema_gradient';
-                                          final isMinimalGlass = osd == 'minimal_glass';
-                                          final useLiquid = osdInteractive && skin.isLiquidGlass;
-                                          final islandBg = skin.isLiquidGlass
-                                              ? VedroLiquidGlassShader.liquidFillColor(
-                                                  isLight: skin.isLight,
-                                                  canvas: skin.canvas,
-                                                  surface: skin.surface,
-                                                  surface2: skin.surface2,
-                                                  density: VedroGlassDensity.chrome,
-                                                )
-                                              : (isFullGradient
-                                                  ? Color.lerp(skin.canvas, skin.surface, 0.22)!
-                                                      .withValues(alpha: skin.isLight ? 0.92 : 0.90)
-                                                  : (isMinimalGlass
-                                                      ? Color.lerp(skin.glass, skin.accent, 0.08)!
-                                                          .withValues(alpha: skin.isLight ? 0.88 : 0.84)
-                                                      : skin.glassStrong.withValues(
-                                                          alpha: skin.isLight ? 0.90 : 0.88,
-                                                        )));
-                                          final islandBorder = isMinimalGlass
-                                              ? skin.accent.withValues(alpha: 0.36)
-                                              : skin.borderStrong;
-                                          final playBg = skin.ctaStyle == 'contrast'
-                                              ? skin.fg
-                                              : skin.accent;
-                                          final playFg = VedroTheme.highContrastOn(playBg);
-                                          final islandRadius = isFullGradient
-                                              ? 14.0
-                                              : (isMinimalGlass
-                                                  ? 24.0
-                                                  : skin.cardRadius.clamp(14.0, 24.0));
-                                          return ConstrainedBox(
-                                            constraints: BoxConstraints(
-                                              maxWidth: isFullGradient
-                                                  ? 1440
-                                                  : (isMinimalGlass ? 880 : 980),
-                                            ),
-                                            child: GlassSurface(
-                                              borderRadius: islandRadius,
-                                              enableBlur: useLiquid,
-                                              color: useLiquid ? null : islandBg,
-                                              borderColor: islandBorder,
-                                              padding: EdgeInsets.fromLTRB(
-                                                wide ? 16 : 12,
-                                                8,
-                                                wide ? 16 : 12,
-                                                8,
+                                // Center-Screen Large Ergonomic Transport Overlay (Play/Pause + Seek Back/Forward + Prev/Next)
+                                // Hidden cleanly whenever loading, buffering, scrubbing, replay, error, or a gesture HUD occupies the center!
+                                Positioned.fill(
+                                  child: ValueListenableBuilder<
+                                      ({String? mode, String text, double value, int seq})>(
+                                    valueListenable: _gestureHudNotifier,
+                                    builder: (context, hud, _) {
+                                      final centerOccupied = _loading ||
+                                          _buffering ||
+                                          _scrubbing ||
+                                          _hasEndedReplay ||
+                                          _error != null ||
+                                          hud.mode != null;
+                                      if (centerOccupied) return const SizedBox.shrink();
+                                      final skin = VedroSkin.of(context);
+                                      final playBg = skin.ctaStyle == 'contrast'
+                                          ? Colors.white
+                                          : skin.accent;
+                                      final playFg = VedroTheme.highContrastOn(playBg);
+                                      final playSize = wide ? 72.0 : 66.0;
+                                      final stepSize = wide ? 56.0 : 52.0;
+                                      final epSize = wide ? 48.0 : 44.0;
+                                      final gap = wide ? 26.0 : 20.0;
+                                      return Center(
+                                        child: MouseRegion(
+                                          onEnter: (_) {
+                                            _hoveringChrome = true;
+                                            _hideControlsTimer?.cancel();
+                                          },
+                                          onExit: (_) {
+                                            _hoveringChrome = false;
+                                            _scheduleHideControls();
+                                          },
+                                          child: Row(
+                                            key: const ValueKey('player-center-transport'),
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              if (_prevEpisode != null) ...[
+                                                _CenterTransportButton(
+                                                  icon: Icons.skip_previous_rounded,
+                                                  size: epSize,
+                                                  iconSize: wide ? 26 : 24,
+                                                  tooltip: '上一集 (P)',
+                                                  onTap: () => _switchEpisode(_prevEpisode!),
+                                                ),
+                                                SizedBox(width: gap * 0.72),
+                                              ],
+                                              _CenterTransportButton(
+                                                key: const ValueKey('player-center-seek-back'),
+                                                icon: _seekBackIcon(step),
+                                                size: stepSize,
+                                                iconSize: wide ? 30 : 28,
+                                                tooltip: '后退 ${step}s',
+                                                onTap: () => _seekBy(-step.toDouble(), showHud: true),
                                               ),
-                                              child: LayoutBuilder(
-                                                builder: (context, deckConstraints) {
-                                                  final deckW = deckConstraints.maxWidth;
-                                                  final showDesktopVol = _isDesktop && deckW >= 740;
-                                                  final showStepIcons = deckW >= 430;
-                                                  final playSize = wide ? 38.0 : 35.0;
-
-                                                  final playBtn = PressableScale(
-                                                    focusNode: _playPauseFocusNode,
-                                                    onTap: _togglePause,
-                                                    hoverScale: 1.07,
-                                                    pressScale: 0.9,
-                                                    borderRadius: BorderRadius.circular(999),
-                                                    child: Container(
-                                                      width: playSize,
-                                                      height: playSize,
-                                                      decoration: BoxDecoration(
-                                                        color: playBg,
-                                                        shape: BoxShape.circle,
-                                                        boxShadow: [
-                                                          BoxShadow(
-                                                            color: Colors.black.withValues(
-                                                              alpha: skin.isLight ? 0.16 : 0.38,
-                                                            ),
-                                                            blurRadius: 10,
-                                                            offset: const Offset(0, 3),
-                                                          ),
-                                                        ],
+                                              SizedBox(width: gap),
+                                              PressableScale(
+                                                key: const ValueKey('player-center-play-pause'),
+                                                focusNode: _playPauseFocusNode,
+                                                onTap: _togglePause,
+                                                hoverScale: 1.07,
+                                                pressScale: 0.9,
+                                                borderRadius: BorderRadius.circular(999),
+                                                child: Container(
+                                                  width: playSize,
+                                                  height: playSize,
+                                                  decoration: BoxDecoration(
+                                                    color: playBg.withValues(alpha: 0.94),
+                                                    shape: BoxShape.circle,
+                                                    border: Border.all(
+                                                      color: Colors.white.withValues(alpha: 0.28),
+                                                      width: 1.0,
+                                                    ),
+                                                    boxShadow: const [
+                                                      BoxShadow(
+                                                        color: Color(0x78000000),
+                                                        blurRadius: 22,
+                                                        offset: Offset(0, 6),
                                                       ),
-                                                      child: AnimatedSwitcher(
-                                                        duration:
-                                                            const Duration(milliseconds: 180),
-                                                        switchInCurve: VedroTheme.springCurve,
-                                                        transitionBuilder: (child, anim) =>
-                                                            ScaleTransition(
-                                                          scale: Tween<double>(
-                                                            begin: 0.72,
-                                                            end: 1.0,
-                                                          ).animate(anim),
-                                                          child: FadeTransition(
-                                                            opacity: anim,
-                                                            child: child,
-                                                          ),
-                                                        ),
-                                                        child: Icon(
-                                                          _paused
-                                                              ? Icons.play_arrow_rounded
-                                                              : Icons.pause_rounded,
-                                                          key: ValueKey<bool>(_paused),
-                                                          size: wide ? 23 : 21,
-                                                          color: playFg,
-                                                        ),
+                                                    ],
+                                                  ),
+                                                  child: AnimatedSwitcher(
+                                                    duration: const Duration(milliseconds: 180),
+                                                    switchInCurve: VedroTheme.springCurve,
+                                                    transitionBuilder: (child, anim) =>
+                                                        ScaleTransition(
+                                                      scale: Tween<double>(
+                                                        begin: 0.72,
+                                                        end: 1.0,
+                                                      ).animate(anim),
+                                                      child: FadeTransition(
+                                                        opacity: anim,
+                                                        child: child,
                                                       ),
                                                     ),
-                                                  );
-
-                                                  final transportCluster = Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      if (_prevEpisode != null) ...[
-                                                        _DeckIconButton(
-                                                          icon: Icons.skip_previous_rounded,
-                                                          tooltip: '上一集 (P)',
-                                                          onTap: () => _switchEpisode(_prevEpisode!),
-                                                        ),
-                                                        const SizedBox(width: 2),
-                                                      ],
-                                                      if (showStepIcons) ...[
-                                                        _DeckIconButton(
-                                                          icon: _seekBackIcon(step),
-                                                          tooltip: '后退 ${step}s',
-                                                          onTap: () =>
-                                                              _seekBy(-step.toDouble(), showHud: true),
-                                                        ),
-                                                        const SizedBox(width: 4),
-                                                      ],
-                                                      playBtn,
-                                                      if (showStepIcons) ...[
-                                                        const SizedBox(width: 4),
-                                                        _DeckIconButton(
-                                                          icon: _seekFwdIcon(step),
-                                                          tooltip: '前进 ${step}s',
-                                                          onTap: () =>
-                                                              _seekBy(step.toDouble(), showHud: true),
-                                                        ),
-                                                      ],
-                                                      if (_nextEpisode != null) ...[
-                                                        const SizedBox(width: 2),
-                                                        _DeckIconButton(
-                                                          icon: Icons.skip_next_rounded,
-                                                          tooltip: '下一集 (N)',
-                                                          onTap: () => _switchEpisode(_nextEpisode!),
-                                                        ),
-                                                      ],
-                                                    ],
-                                                  );
-
-                                                  final screenToggleBtn = _isDesktop
-                                                      ? _DeckIconButton(
-                                                          icon: _isFullscreen
-                                                              ? Icons.fullscreen_exit_rounded
-                                                              : Icons.fullscreen_rounded,
-                                                          tooltip: _isFullscreen
-                                                              ? '退出全屏 (F / Esc)'
-                                                              : '进入全屏 (F / 双击画面)',
-                                                          onTap: _toggleFullscreen,
-                                                        )
-                                                      : (_isMobile
-                                                          ? _DeckIconButton(
-                                                              icon: Icons.screen_rotation_rounded,
-                                                              tooltip: _isLandscapeOrientation
-                                                                  ? '切换竖屏'
-                                                                  : '切换横屏',
-                                                              onTap: _toggleMobileOrientation,
-                                                            )
-                                                          : const SizedBox.shrink());
-
-                                                  final quickPills = Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      _DeckPillButton(
-                                                        key: const ValueKey('player-speed-pill'),
-                                                        label: _fmtSpeed(_speed),
-                                                        active: (_speed - 1.0).abs() > 0.01,
-                                                        themed: true,
-                                                        compact: true,
-                                                        onTap: _openSpeedSheet,
-                                                      ),
-                                                      if (_episodes.length > 1) ...[
-                                                        const SizedBox(width: 5),
-                                                        _DeckPillButton(
-                                                          label: '选集',
-                                                          themed: true,
-                                                          compact: true,
-                                                          onTap: () {
-                                                            _setPlayerState(
-                                                                () => _showEpisodeDrawer = true);
-                                                            WidgetsBinding.instance
-                                                                .addPostFrameCallback((_) {
-                                                              if (mounted && _showEpisodeDrawer) {
-                                                                if (_drawerActiveEpFocusNode
-                                                                    .canRequestFocus) {
-                                                                  _drawerActiveEpFocusNode
-                                                                      .requestFocus();
-                                                                } else {
-                                                                  _drawerCloseFocusNode
-                                                                      .requestFocus();
-                                                                }
-                                                              }
-                                                            });
-                                                          },
-                                                        ),
-                                                      ],
-                                                      const SizedBox(width: 5),
-                                                      _DeckPillButton(
-                                                        label: _danmakuEnabled &&
-                                                                _danmakuComments.isNotEmpty
-                                                            ? '弹幕 ${_danmakuComments.length}'
-                                                            : '弹幕',
-                                                        active: _danmakuEnabled,
-                                                        themed: true,
-                                                        compact: true,
-                                                        onTap: _openDanmakuSheet,
-                                                      ),
-                                                      const SizedBox(width: 5),
-                                                      _DeckPillButton(
-                                                        label: '字幕',
-                                                        themed: true,
-                                                        compact: true,
-                                                        onTap: _openSubtitleSheet,
-                                                      ),
-                                                      const SizedBox(width: 5),
-                                                      _DeckPillButton(
-                                                        label: '音轨',
-                                                        themed: true,
-                                                        compact: true,
-                                                        onTap: _openAudioSheet,
-                                                      ),
-                                                      const SizedBox(width: 5),
-                                                      _DeckPillButton(
-                                                        key: const ValueKey('player-beauty-pill'),
-                                                        label: !_beautyParams.isActive
-                                                            ? '美颜'
-                                                            : '美颜·${BeautyFilterPreset.displayLabelFor(_beautyPreset, _beautyParams)}',
-                                                        active: _beautyParams.isActive,
-                                                        themed: true,
-                                                        compact: true,
-                                                        onTap: _openBeautyFilterSheet,
-                                                      ),
-                                                      if ((_prepared?.allSources.length ?? 0) > 1) ...[
-                                                        const SizedBox(width: 5),
-                                                        _DeckPillButton(
-                                                          label: '版本',
-                                                          themed: true,
-                                                          compact: true,
-                                                          onTap: _openVersionSheet,
-                                                        ),
-                                                      ],
-                                                    ],
-                                                  );
-
-                                                  return Column(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      // Row 1: Sleek Cinema Scrub Bar (isolated RepaintBoundary + ValueNotifier)
-                                                      RepaintBoundary(
-                                                        child: ListenableBuilder(
-                                                          listenable: Listenable.merge([
-                                                            _positionNotifier,
-                                                            _bufferedNotifier,
-                                                            _scrubTargetNotifier,
-                                                          ]),
-                                                          builder: (_, __) => _CinemaScrubBar(
-                                                            positionSecs: _scrubbing
-                                                                ? _scrubTargetNotifier.value
-                                                                : _positionNotifier.value,
-                                                            bufferedSecs: _bufferedNotifier.value,
-                                                            durationSecs: _durationSecs,
-                                                            segments: _segments,
-                                                            chapters: _chapters,
-                                                            showRemaining: _showRemaining,
-                                                            seekStepSecs: step.toDouble(),
-                                                            fmtTime: _fmtTime,
-                                                            onToggleRemaining: () => _setPlayerState(() =>
-                                                                _showRemaining = !_showRemaining),
-                                                            onTogglePlayPause: _togglePause,
-                                                            onScrubStart: () =>
-                                                                _hideControlsTimer?.cancel(),
-                                                            onScrubUpdate: (secs) {
-                                                              _positionSecs = secs;
-                                                              _positionNotifier.value = secs;
-                                                            },
-                                                            onScrubEnd: (secs) {
-                                                              _seekTo(secs);
-                                                              _scheduleHideControls();
-                                                            },
-                                                            onDpadStep: (delta) {
-                                                              _accumulateKeySeek(delta);
-                                                              _scheduleHideControls();
-                                                            },
-                                                          ),
-                                                        ),
-                                                      ),
-                                                      const SizedBox(height: 6),
-                                                      // Row 2: Single compact button row (Transport + optional Volume + Quick Pills + Screen Toggle)
-                                                      Row(
-                                                        children: [
-                                                          transportCluster,
-                                                          if (showDesktopVol) ...[
-                                                            const SizedBox(width: 8),
-                                                            ValueListenableBuilder<double>(
-                                                              valueListenable: _volumeNotifier,
-                                                              builder: (_, liveVol, __) => Row(
-                                                                mainAxisSize: MainAxisSize.min,
-                                                                children: [
-                                                                  _DeckIconButton(
-                                                                    icon: liveVol <= 0.1
-                                                                        ? Icons.volume_off_rounded
-                                                                        : (liveVol < 50
-                                                                            ? Icons.volume_down_rounded
-                                                                            : Icons.volume_up_rounded),
-                                                                    tooltip: '静音 (M)',
-                                                                    onTap: _toggleMute,
-                                                                  ),
-                                                                  const SizedBox(width: 2),
-                                                                  SizedBox(
-                                                                    width: 68,
-                                                                    child: _MiniVolumeBar(
-                                                                      value: (liveVol / _maxVolume)
-                                                                          .clamp(0.0, 1.0),
-                                                                      onChanged: (ratio) =>
-                                                                          _setVolume(ratio * _maxVolume),
-                                                                    ),
-                                                                  ),
-                                                                ],
-                                                              ),
-                                                            ),
-                                                          ],
-                                                          const SizedBox(width: 8),
-                                                          Expanded(
-                                                            child: Align(
-                                                              alignment: Alignment.centerRight,
-                                                              child: SingleChildScrollView(
-                                                                scrollDirection: Axis.horizontal,
-                                                                child: quickPills,
-                                                              ),
-                                                            ),
-                                                          ),
-                                                          if (_isDesktop || _isMobile) ...[
-                                                            const SizedBox(width: 4),
-                                                            screenToggleBtn,
-                                                          ],
-                                                        ],
-                                                      ),
-                                                    ],
-                                                  );
-                                                },
+                                                    child: Icon(
+                                                      _paused
+                                                          ? Icons.play_arrow_rounded
+                                                          : Icons.pause_rounded,
+                                                      key: ValueKey<bool>(_paused),
+                                                      size: wide ? 40 : 38,
+                                                      color: playFg,
+                                                    ),
+                                                  ),
+                                                ),
                                               ),
-                                            ),
-                                          );
-                                        },
+                                              SizedBox(width: gap),
+                                              _CenterTransportButton(
+                                                key: const ValueKey('player-center-seek-fwd'),
+                                                icon: _seekFwdIcon(step),
+                                                size: stepSize,
+                                                iconSize: wide ? 30 : 28,
+                                                tooltip: '前进 ${step}s',
+                                                onTap: () => _seekBy(step.toDouble(), showHud: true),
+                                              ),
+                                              if (_nextEpisode != null) ...[
+                                                SizedBox(width: gap * 0.72),
+                                                _CenterTransportButton(
+                                                  icon: Icons.skip_next_rounded,
+                                                  size: epSize,
+                                                  iconSize: wide ? 26 : 24,
+                                                  tooltip: '下一集 (N)',
+                                                  onTap: () => _switchEpisode(_nextEpisode!),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+
+                                // Bottom Cinema Control Island (follows active skin & Liquid Glass; compact 2-row deck!)
+                                Positioned(
+                                  left: (wide ? 24 : 12) + tvPadX,
+                                  right: (wide ? 24 : 12) + tvPadX,
+                                  bottom: MediaQuery.paddingOf(context).bottom + (wide ? 18 : 10) + tvPadY,
+                                  child: AnimatedSlide(
+                                    offset: osdInteractive ? Offset.zero : const Offset(0, 0.22),
+                                    duration: const Duration(milliseconds: 260),
+                                    curve: VedroTheme.easeOut,
+                                    child: MouseRegion(
+                                      onEnter: (_) {
+                                        _hoveringChrome = true;
+                                        _hideControlsTimer?.cancel();
+                                      },
+                                      onExit: (_) {
+                                        _hoveringChrome = false;
+                                        _scheduleHideControls();
+                                      },
+                                      child: Center(
+                                        child: Builder(
+                                          builder: (context) {
+                                            final skin = VedroSkin.of(context);
+                                            final osd = skin.osdStyle;
+                                            final isFullGradient = osd == 'cinema_gradient';
+                                            final isMinimalGlass = osd == 'minimal_glass';
+                                            final useLiquid = osdInteractive && skin.isLiquidGlass;
+                                            final islandBg = skin.isLiquidGlass
+                                                ? VedroLiquidGlassShader.liquidFillColor(
+                                                    isLight: skin.isLight,
+                                                    canvas: skin.canvas,
+                                                    surface: skin.surface,
+                                                    surface2: skin.surface2,
+                                                    density: VedroGlassDensity.chrome,
+                                                  )
+                                                : (isFullGradient
+                                                    ? Color.lerp(skin.canvas, skin.surface, 0.22)!
+                                                        .withValues(alpha: skin.isLight ? 0.92 : 0.90)
+                                                    : (isMinimalGlass
+                                                        ? Color.lerp(skin.glass, skin.accent, 0.08)!
+                                                            .withValues(alpha: skin.isLight ? 0.88 : 0.84)
+                                                        : skin.glassStrong.withValues(
+                                                            alpha: skin.isLight ? 0.90 : 0.88,
+                                                          )));
+                                            final islandBorder = isMinimalGlass
+                                                ? skin.accent.withValues(alpha: 0.36)
+                                                : skin.borderStrong;
+                                            final islandRadius = isFullGradient
+                                                ? 14.0
+                                                : (isMinimalGlass
+                                                    ? 24.0
+                                                    : skin.cardRadius.clamp(14.0, 24.0));
+                                            final anyBeautyActive = _beautyParams.isActive ||
+                                                (_aiFaceEnabled && _aiFaceMorph.isActive);
+                                            final beautyPillLabel = !anyBeautyActive
+                                                ? '美颜'
+                                                : (_aiFaceEnabled &&
+                                                        _aiFaceMorph.isActive &&
+                                                        !_beautyParams.isActive
+                                                    ? 'AI 五官'
+                                                    : '美颜·${BeautyFilterPreset.displayLabelFor(_beautyPreset, _beautyParams)}');
+                                            return ConstrainedBox(
+                                              constraints: BoxConstraints(
+                                                maxWidth: isFullGradient
+                                                    ? 1440
+                                                    : (isMinimalGlass ? 880 : 980),
+                                              ),
+                                              child: GlassSurface(
+                                                borderRadius: islandRadius,
+                                                enableBlur: useLiquid,
+                                                color: useLiquid ? null : islandBg,
+                                                borderColor: islandBorder,
+                                                padding: EdgeInsets.fromLTRB(
+                                                  wide ? 16 : 12,
+                                                  8,
+                                                  wide ? 16 : 12,
+                                                  8,
+                                                ),
+                                                child: LayoutBuilder(
+                                                  builder: (context, deckConstraints) {
+                                                    final deckW = deckConstraints.maxWidth;
+                                                    final showDesktopVol = _isDesktop && deckW >= 620;
+
+                                                    final screenToggleBtn = _isDesktop
+                                                        ? _DeckIconButton(
+                                                            icon: _isFullscreen
+                                                                ? Icons.fullscreen_exit_rounded
+                                                                : Icons.fullscreen_rounded,
+                                                            tooltip: _isFullscreen
+                                                                ? '退出全屏 (F / Esc)'
+                                                                : '进入全屏 (F / 双击画面)',
+                                                            onTap: _toggleFullscreen,
+                                                          )
+                                                        : (_isMobile
+                                                            ? _DeckIconButton(
+                                                                icon: Icons.screen_rotation_rounded,
+                                                                tooltip: _isLandscapeOrientation
+                                                                    ? '切换竖屏'
+                                                                    : '切换横屏',
+                                                                onTap: _toggleMobileOrientation,
+                                                              )
+                                                            : const SizedBox.shrink());
+
+                                                    final quickPills = Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        _DeckPillButton(
+                                                          key: const ValueKey('player-speed-pill'),
+                                                          label: _fmtSpeed(_speed),
+                                                          active: (_speed - 1.0).abs() > 0.01,
+                                                          themed: true,
+                                                          compact: true,
+                                                          onTap: _openSpeedSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          key: const ValueKey('player-beauty-pill'),
+                                                          label: beautyPillLabel,
+                                                          active: anyBeautyActive,
+                                                          themed: true,
+                                                          compact: true,
+                                                          onTap: _openBeautyFilterSheet,
+                                                        ),
+                                                        if (_episodes.length > 1) ...[
+                                                          const SizedBox(width: 6),
+                                                          _DeckPillButton(
+                                                            label: '选集',
+                                                            themed: true,
+                                                            compact: true,
+                                                            onTap: () {
+                                                              _setPlayerState(
+                                                                  () => _showEpisodeDrawer = true);
+                                                              WidgetsBinding.instance
+                                                                  .addPostFrameCallback((_) {
+                                                                if (mounted && _showEpisodeDrawer) {
+                                                                  if (_drawerActiveEpFocusNode
+                                                                      .canRequestFocus) {
+                                                                    _drawerActiveEpFocusNode
+                                                                        .requestFocus();
+                                                                  } else {
+                                                                    _drawerCloseFocusNode
+                                                                        .requestFocus();
+                                                                  }
+                                                                }
+                                                              });
+                                                            },
+                                                          ),
+                                                        ],
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: '字幕',
+                                                          themed: true,
+                                                          compact: true,
+                                                          onTap: _openSubtitleSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: '音轨',
+                                                          themed: true,
+                                                          compact: true,
+                                                          onTap: _openAudioSheet,
+                                                        ),
+                                                        const SizedBox(width: 6),
+                                                        _DeckPillButton(
+                                                          label: _danmakuEnabled &&
+                                                                  _danmakuComments.isNotEmpty
+                                                              ? '弹幕 ${_danmakuComments.length}'
+                                                              : '弹幕',
+                                                          active: _danmakuEnabled,
+                                                          themed: true,
+                                                          compact: true,
+                                                          onTap: _openDanmakuSheet,
+                                                        ),
+                                                        if ((_prepared?.allSources.length ?? 0) > 1) ...[
+                                                          const SizedBox(width: 6),
+                                                          _DeckPillButton(
+                                                            label: '版本',
+                                                            themed: true,
+                                                            compact: true,
+                                                            onTap: _openVersionSheet,
+                                                          ),
+                                                        ],
+                                                      ],
+                                                    );
+
+                                                    return Column(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        // Row 1: Sleek Cinema Scrub Bar (isolated RepaintBoundary + ValueNotifier)
+                                                        RepaintBoundary(
+                                                          child: ListenableBuilder(
+                                                            listenable: Listenable.merge([
+                                                              _positionNotifier,
+                                                              _bufferedNotifier,
+                                                              _scrubTargetNotifier,
+                                                            ]),
+                                                            builder: (_, __) => _CinemaScrubBar(
+                                                              positionSecs: _scrubbing
+                                                                  ? _scrubTargetNotifier.value
+                                                                  : _positionNotifier.value,
+                                                              bufferedSecs: _bufferedNotifier.value,
+                                                              durationSecs: _durationSecs,
+                                                              segments: _segments,
+                                                              chapters: _chapters,
+                                                              showRemaining: _showRemaining,
+                                                              seekStepSecs: step.toDouble(),
+                                                              fmtTime: _fmtTime,
+                                                              onToggleRemaining: () => _setPlayerState(() =>
+                                                                  _showRemaining = !_showRemaining),
+                                                              onTogglePlayPause: _togglePause,
+                                                              onScrubStart: () =>
+                                                                  _hideControlsTimer?.cancel(),
+                                                              onScrubUpdate: (secs) {
+                                                                _positionSecs = secs;
+                                                                _positionNotifier.value = secs;
+                                                              },
+                                                              onScrubEnd: (secs) {
+                                                                _seekTo(secs);
+                                                                _scheduleHideControls();
+                                                              },
+                                                              onDpadStep: (delta) {
+                                                                _accumulateKeySeek(delta);
+                                                                _scheduleHideControls();
+                                                              },
+                                                            ),
+                                                          ),
+                                                        ),
+                                                        const SizedBox(height: 6),
+                                                        // Row 2: Balanced quick action strip (optional Desktop Volume + Centered Quick Pills + Screen Toggle)
+                                                        Row(
+                                                          children: [
+                                                            if (showDesktopVol) ...[
+                                                              ValueListenableBuilder<double>(
+                                                                valueListenable: _volumeNotifier,
+                                                                builder: (_, liveVol, __) => Row(
+                                                                  mainAxisSize: MainAxisSize.min,
+                                                                  children: [
+                                                                    _DeckIconButton(
+                                                                      icon: liveVol <= 0.1
+                                                                          ? Icons.volume_off_rounded
+                                                                          : (liveVol < 50
+                                                                              ? Icons.volume_down_rounded
+                                                                              : Icons.volume_up_rounded),
+                                                                      tooltip: '静音 (M)',
+                                                                      onTap: _toggleMute,
+                                                                    ),
+                                                                    const SizedBox(width: 2),
+                                                                    SizedBox(
+                                                                      width: 72,
+                                                                      child: _MiniVolumeBar(
+                                                                        value: (liveVol / _maxVolume)
+                                                                            .clamp(0.0, 1.0),
+                                                                        onChanged: (ratio) =>
+                                                                            _setVolume(ratio * _maxVolume),
+                                                                      ),
+                                                                    ),
+                                                                  ],
+                                                                ),
+                                                              ),
+                                                              const SizedBox(width: 8),
+                                                            ],
+                                                            Expanded(
+                                                              child: Align(
+                                                                alignment: showDesktopVol
+                                                                    ? Alignment.centerRight
+                                                                    : Alignment.center,
+                                                                child: SingleChildScrollView(
+                                                                  scrollDirection: Axis.horizontal,
+                                                                  child: quickPills,
+                                                                ),
+                                                              ),
+                                                            ),
+                                                            if (_isDesktop || _isMobile) ...[
+                                                              const SizedBox(width: 6),
+                                                              screenToggleBtn,
+                                                            ],
+                                                          ],
+                                                        ),
+                                                      ],
+                                                    );
+                                                  },
+                                                ),
+                                              ),
+                                            );
+                                          },
+                                        ),
                                       ),
                                     ),
                                   ),
                                 ),
-                              ),
                             ],
                           ),
                         ),

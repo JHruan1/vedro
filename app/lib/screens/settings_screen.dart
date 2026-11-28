@@ -14,6 +14,7 @@ import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_scroll.dart';
 import '../core/theme/vedro_theme.dart';
 import '../state/app_state.dart';
+import '../widgets/ai_face_beauty_card.dart';
 import '../widgets/admin_console_pane.dart';
 import '../widgets/app_lock_gate.dart' show PinLockoutController;
 import '../widgets/beauty_filter.dart';
@@ -223,7 +224,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       tintTop: Color(0xFFFB923C),
       tintBottom: Color(0xFFEA580C),
       group: '播放与视听',
-      keywords: 'hdr dolby vision anime4k mpv.conf beauty 硬解 杜比视界 美颜 磨皮 滤镜',
+      keywords: 'hdr dolby vision anime4k mpv.conf beauty ai face yunet 硬解 杜比视界 美颜 磨皮 滤镜 瘦脸 大眼 奶油水光',
     ),
     _NavItemMeta(
       section: _SettingsSection.audio,
@@ -260,7 +261,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       tintTop: Color(0xFFC084FC),
       tintBottom: Color(0xFF9333EA),
       group: '智能与安全',
-      keywords: 'openai deepseek bilibili translate 翻译 模型',
+      keywords: 'openai deepseek bilibili translate asr yunet beauty 翻译 模型 语音 瘦脸 大眼 美颜',
     ),
     _NavItemMeta(
       section: _SettingsSection.privacy,

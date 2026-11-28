@@ -342,41 +342,37 @@ class MediaSourceModel {
                       ? fileStem
                       : (s.container?.toUpperCase() ?? '版本 ${idx + 1}'))));
 
-      // Episode-agnostic signature for matching the SAME version across all episodes of a Series
-      final strippedStem = fileStem
+      // Episode-agnostic normalization for matching the SAME version across all episodes of a Series
+      // (strips S01E01, E01, EP01, 第01集, [01], - 01 anywhere in stem or source name while preserving 1080p/2160p/x265!).
+      String stripEpisodeTokens(String input) => input
           .toLowerCase()
           .replaceAll(RegExp(r's\d{1,2}e\d{1,4}(-\d{1,4})?'), '')
+          .replaceAll(RegExp(r'第\s*\d{1,4}\s*[集话篇]'), '')
           .replaceAll(RegExp(r'\bep?\s*\d{1,4}\b'), '')
           .replaceAll(RegExp(r'[\[\(]\d{1,4}[\]\)]'), '')
           .replaceAll(RegExp(r'-\s*\d{1,4}\b'), '')
-          .replaceAll(RegExp(r'\s+'), ' ')
+          .replaceAll(RegExp(r'[\s._\-]+'), ' ')
           .trim();
+
+      final strippedStem = stripEpisodeTokens(fileStem);
+      final strippedSeriesName = stripEpisodeTokens(cleanedSeriesRaw);
       final sigParts = <String>[
         if (parentDirKey.isNotEmpty) 'dir:$parentDirKey',
-        if (cleanedSeriesRaw.isNotEmpty && !bareEpRe.hasMatch(cleanedSeriesRaw))
-          'name:${cleanedSeriesRaw.toLowerCase()}',
-        if (strippedStem.isNotEmpty && parentDirKey.isEmpty) 'stem:$strippedStem',
+        if (strippedSeriesName.isNotEmpty && !bareEpRe.hasMatch(strippedSeriesName))
+          'name:$strippedSeriesName',
+        if (strippedStem.isNotEmpty && strippedStem != strippedSeriesName) 'stem:$strippedStem',
         if (s.videoStreams.isNotEmpty && s.videoStreams.first.height != null)
           'h:${s.videoStreams.first.height}',
-        if (s.container != null && s.container!.isNotEmpty)
-          'c:${s.container!.toLowerCase()}',
+        if (s.container != null && s.container!.isNotEmpty) 'c:${s.container!.toLowerCase()}',
       ];
       final seriesSig = sigParts.isNotEmpty ? sigParts.join('|') : 'idx:$idx|id:${s.id}';
-
-      return (
-        idx: idx,
-        source: s,
-        primary: primaryCandidate,
-        folder: meaningfulFolder,
-        fileStem: fileStem,
-        extractedTags: extractedTags,
-        seriesSig: seriesSig,
-      );
+      return (idx: idx, source: s, primary: primaryCandidate, folder: meaningfulFolder, fileStem: fileStem, extractedTags: extractedTags, seriesSig: seriesSig);
     });
 
-    // Count collisions on primary title so 4+ versions with identical short `Name`s get disambiguated!
+    final sigCounts = <String, int>{};
     final counts = <String, int>{};
     for (final info in rawInfos) {
+      sigCounts[info.seriesSig] = (sigCounts[info.seriesSig] ?? 0) + 1;
       final k = info.primary.toLowerCase();
       counts[k] = (counts[k] ?? 0) + 1;
     }
@@ -413,15 +409,90 @@ class MediaSourceModel {
         title = '$title · 版本 ${info.idx + 1}';
       }
 
+      final uniqueSeriesSig = (sigCounts[info.seriesSig] ?? 0) > 1
+          ? '${info.seriesSig}|slot:${info.idx}'
+          : info.seriesSig;
+
       return ResolvedMediaVersion(
         index: info.idx,
         source: info.source,
         selectionKey: 'v${info.idx}::${info.source.id}::${info.source.path ?? title}',
-        seriesMatchSignature: info.seriesSig,
+        seriesMatchSignature: uniqueSeriesSig,
         displayTitle: title,
         folderBadge: folderBadge,
       );
     }).toList();
+  }
+
+  /// Match a chosen series-level [ResolvedMediaVersion] against an episode's [sources].
+  /// When [strict] is true (batch download filtering), returns `null` if a single-source
+  /// episode belongs to a different version so switching versions filters episodes accurately.
+  static ResolvedMediaVersion? matchVersionForEpisode(
+    List<MediaSourceModel> sources,
+    ResolvedMediaVersion chosen, {
+    required int fallbackIndex,
+    bool strict = false,
+  }) {
+    if (sources.isEmpty) return null;
+    final epVers = resolveVersions(sources, stripEpisodePrefix: true);
+    if (epVers.isEmpty) return null;
+
+    // 1. Exact episode-agnostic signature match (handles same-folder & cross-folder cleanly)
+    for (final ev in epVers) {
+      if (ev.seriesMatchSignature == chosen.seriesMatchSignature) return ev;
+    }
+
+    // 2. Strip trailing `|slot:N` tie-breaker when episode has fewer sources than representative
+    final slotRe = RegExp(r'\|slot:\d+$');
+    final chosenBase = chosen.seriesMatchSignature.replaceFirst(slotRe, '');
+    final baseMatches = epVers
+        .where((ev) => ev.seriesMatchSignature.replaceFirst(slotRe, '') == chosenBase)
+        .toList();
+    if (baseMatches.length == 1) return baseMatches.first;
+    if (baseMatches.length > 1) return baseMatches[fallbackIndex.clamp(0, baseMatches.length - 1)];
+
+    // 3. Token overlap on signature + displayTitle (handles slight per-episode naming drift)
+    Set<String> tokensOf(ResolvedMediaVersion v) => '${v.seriesMatchSignature} ${v.displayTitle}'
+        .toLowerCase()
+        .split(RegExp(r'[\s._\-·/|:\[\]]+'))
+        .where((t) => t.length >= 2 && t != 'dir' && t != 'name' && t != 'stem')
+        .toSet();
+    final keyTokens = tokensOf(chosen);
+    ResolvedMediaVersion? best;
+    var bestScore = 0;
+    for (final ev in epVers) {
+      final score = keyTokens.intersection(tokensOf(ev)).length;
+      if (score > bestScore) {
+        bestScore = score;
+        best = ev;
+      }
+    }
+    if (epVers.length == 1) {
+      if (!strict) return epVers.first;
+      final dirRe = RegExp(r'dir:([^|]+)');
+      final chosenDir = dirRe.firstMatch(chosen.seriesMatchSignature)?.group(1);
+      final epDir = dirRe.firstMatch(epVers.first.seriesMatchSignature)?.group(1);
+      if (chosenDir != null && epDir != null && chosenDir != epDir) return null;
+      // Compare non-directory release tokens (excluding shared folder names & container extensions)
+      Set<String> releaseTokens(ResolvedMediaVersion v) => v.seriesMatchSignature
+          .split('|')
+          .where((p) => !p.startsWith('dir:') && !p.startsWith('c:') && !p.startsWith('slot:'))
+          .join(' ')
+          .split(RegExp(r'[\s._\-·/|:\[\]]+'))
+          .where((t) => t.length >= 2 && t != 'name' && t != 'stem')
+          .toSet();
+      final ct = releaseTokens(chosen);
+      final et = releaseTokens(epVers.first);
+      if (ct.isNotEmpty && et.isNotEmpty) {
+        final inter = ct.intersection(et).length;
+        final union = ct.union(et).length;
+        return union > 0 && (inter / union) >= 0.65 ? epVers.first : null;
+      }
+      return bestScore >= (keyTokens.length >= 3 ? 2 : 1) ? epVers.first : null;
+    }
+
+    if (best != null && bestScore > 0) return best;
+    return strict ? null : epVers[fallbackIndex.clamp(0, epVers.length - 1)];
   }
 
   static String _extractReleaseSummary({

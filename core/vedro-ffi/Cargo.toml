@@ -30,3 +30,7 @@ bytes.workspace = true
 http.workspace = true
 flate2 = "1.0"
 ring = "0.17"
+base64 = "0.22"
+
+[target.'cfg(not(target_os = "tvos"))'.dependencies]
+tract-onnx = "0.21"

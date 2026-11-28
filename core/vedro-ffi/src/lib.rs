@@ -2,6 +2,7 @@
 
 mod c_abi;
 mod danmaku;
+mod face_detector;
 mod rpc_admin;
 mod rpc_ai;
 mod rpc_media;
@@ -78,6 +79,7 @@ pub struct VedroRuntime {
     pub(crate) update_download: Arc<Mutex<UpdateDownloadState>>,
     pub(crate) update_cancel: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) update_epoch: std::sync::atomic::AtomicU64,
+    pub(crate) face_detector: Arc<Mutex<face_detector::FaceDetectorEngine>>,
     pub(crate) rt: Option<Runtime>,
 }
 
@@ -341,6 +343,7 @@ impl VedroRuntime {
             })),
             update_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             update_epoch: std::sync::atomic::AtomicU64::new(0),
+            face_detector: Arc::new(Mutex::new(face_detector::FaceDetectorEngine::new())),
             rt: Some(rt),
         })
     }

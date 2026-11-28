@@ -19,10 +19,14 @@ import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
 import '../core/utils/stream_error_policy.dart';
 import '../state/app_state.dart';
+import '../core/services/ai_face_beauty_manager.dart';
+import '../core/services/local_asr_engine.dart';
 import '../widgets/ai_bilingual_subtitle.dart';
+import '../widgets/ai_face_beauty_overlay.dart';
+import '../widgets/ai_face_mpv_shader.dart';
+import '../widgets/beauty_control_panel.dart';
 import '../widgets/beauty_filter.dart';
 import '../widgets/danmaku_engine.dart';
-import '../core/services/local_asr_engine.dart';
 import '../widgets/nerd_stats_hud.dart';
 import '../widgets/vedro_artwork.dart';
 import '../widgets/vedro_ui.dart';
@@ -204,6 +208,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   String _beautyPreset = 'off';
   double _beautyStrength = 0.55;
   BeautyFilterParams _beautyParams = BeautyFilterParams.off;
+  bool _aiFaceEnabled = false;
+  AiFaceMorphParams _aiFaceMorph = AiFaceMorphParams.off;
+  List<AiTrackedFace> _aiFaceMpvFaces = const [];
+  int _aiFaceMpvPingPong = 0;
+  bool _aiFaceCopyBackForced = false;
+  Timer? _aiFaceMpvDebounce;
+  final ValueNotifier<AiFaceTrackTelemetry> _aiFaceTelemetryNotifier =
+      ValueNotifier<AiFaceTrackTelemetry>(const AiFaceTrackTelemetry());
   double _audioDelaySecs = 0.0;
 
   // AI bilingual subtitle + ASR lookahead controller
@@ -432,6 +444,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       rosy: p.beautyRosy,
       clarity: p.beautyClarity,
     );
+    _aiFaceEnabled = p.aiFaceBeautyEnabled;
+    _aiFaceMorph = AiFaceMorphParams(
+      slimFace: p.aiFaceSlim,
+      bigEyes: p.aiFaceBigEyes,
+      vChin: p.aiFaceVChin,
+      lipTint: p.aiFaceLipTint,
+    );
+    unawaited(AiFaceBeautyManager.instance.refreshStatus());
     _aiSubFontScale = p.aiSubtitleFontScale;
     _aiSubCtrl = AiSubtitleTranslatorController(
       appState: widget.appState,
@@ -1329,122 +1349,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
   }
 
-  Future<void> _openContextMenu(Offset globalPos) async {
-    if (_screenLocked) return;
-    _hideControlsTimer?.cancel();
-    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
-    if (overlay == null) return;
-    final selected = await showMenu<String>(
-      context: context,
-      position: RelativeRect.fromRect(
-        Rect.fromLTWH(globalPos.dx, globalPos.dy, 1, 1),
-        Offset.zero & overlay.size,
-      ),
-      color: const Color(0xF0171820),
-      elevation: 18,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: Color(0x2AFFFFFF), width: 0.8),
-      ),
-      items: [
-        _ctxItem('play_pause', _paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
-            _paused ? '继续播放' : '暂停播放', 'Space'),
-        if (_isDesktop)
-          _ctxItem('fullscreen',
-              _isFullscreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
-              _isFullscreen ? '退出全屏' : '进入全屏', 'F'),
-        if (_isDesktop)
-          _ctxItem('aot', _alwaysOnTop ? Icons.push_pin_rounded : Icons.push_pin_outlined,
-              _alwaysOnTop ? '取消窗口置顶' : '窗口置顶', 'T'),
-        const PopupMenuDivider(height: 8),
-        _ctxItem('speed', Icons.speed_rounded,
-            '播放倍速 (${_speed.toStringAsFixed(_speed == _speed.roundToDouble() ? 1 : 2)}×)', '[ / ]'),
-        _ctxItem('aspect', Icons.aspect_ratio_rounded, '画面比例 / 旋转 / 缩放', 'R'),
-        _ctxItem('audio', Icons.audiotrack_rounded, '音轨与音频输出', ''),
-        _ctxItem('subtitle', Icons.subtitles_outlined, '字幕轨道与样式', ''),
-        _ctxItem('load_sub', Icons.upload_file_rounded, '加载本地外挂字幕…', ''),
-        _ctxItem('danmaku', Icons.comment_outlined, _danmakuEnabled ? '弹幕设置（已开）' : '弹幕设置（已关）', 'D'),
-        if (_chapters.isNotEmpty)
-          _ctxItem('chapters', Icons.format_list_bulleted_rounded, '章节列表 (${_chapters.length})', 'C'),
-        const PopupMenuDivider(height: 8),
-        _ctxItem('screenshot', Icons.camera_alt_outlined, '高清含字幕截图', 'S'),
-        _ctxItem('stats', Icons.info_outline_rounded, _showStats ? '隐藏硬件信息 HUD' : '显示硬件信息 HUD', 'I'),
-        _ctxItem('tools', Icons.tune_rounded, '美颜滤镜 / 定时关闭 / 色彩均衡器', ''),
-        if (_isDesktop) _ctxItem('shortcuts', Icons.keyboard_rounded, '快捷键一览', 'H'),
-      ],
-    );
-    _scheduleHideControls();
-    if (!mounted || selected == null) return;
-    switch (selected) {
-      case 'play_pause':
-        await _togglePause();
-        break;
-      case 'fullscreen':
-        await _toggleFullscreen();
-        break;
-      case 'aot':
-        await _toggleAlwaysOnTop();
-        break;
-      case 'speed':
-        _openSpeedSheet();
-        break;
-      case 'aspect':
-        _openAspectSheet();
-        break;
-      case 'audio':
-        _openAudioSheet();
-        break;
-      case 'subtitle':
-        _openSubtitleSheet();
-        break;
-      case 'load_sub':
-        await _pickAndLoadLocalSubtitle();
-        break;
-      case 'danmaku':
-        _openDanmakuSheet();
-        break;
-      case 'chapters':
-        _openChaptersSheet();
-        break;
-      case 'screenshot':
-        await _takeScreenshot();
-        break;
-      case 'stats':
-        setState(() => _showStats = !_showStats);
-        _syncStatsTimer();
-        break;
-      case 'tools':
-        _openMoreToolsSheet();
-        break;
-      case 'shortcuts':
-        _openShortcutsDialog();
-        break;
-    }
-  }
-
-  PopupMenuItem<String> _ctxItem(String value, IconData icon, String label, String shortcut) {
-    return PopupMenuItem<String>(
-      value: value,
-      height: 36,
-      child: Row(
-        children: [
-          Icon(icon, size: 16, color: const Color(0xFFD0D4DE)),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
-          ),
-          if (shortcut.isNotEmpty) ...[
-            const SizedBox(width: 12),
-            Text(
-              shortcut,
-              style: const TextStyle(color: VedroTheme.fg3, fontSize: 11, fontFamily: 'monospace'),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
   void _onNativeFullscreenChanged() {
     if (!mounted) return;
     final fs = NativePlaybackChannel.fullscreenNotifier.value;
@@ -1661,6 +1565,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _enteringPipResetTimer?.cancel();
     _retryGraceTimer?.cancel();
     _beautyShaderDebounce?.cancel();
+    _aiFaceMpvDebounce?.cancel();
     _focusNode.dispose();
     _playPauseFocusNode.dispose();
     _unlockFocusNode.dispose();
@@ -1683,6 +1588,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _statusBarNotifier.dispose();
     _sheetPeekNotifier.dispose();
     _sheetPeekLabelNotifier.dispose();
+    _aiFaceTelemetryNotifier.dispose();
     _aiSubCtrl.dispose();
     unawaited(LocalAsrManager.instance.unloadEngine());
     _persistRememberedPlayerPrefs(notify: false);

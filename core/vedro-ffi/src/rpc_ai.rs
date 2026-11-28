@@ -840,6 +840,58 @@ impl VedroRuntime {
                     "direct_ip": direct_ip,
                 }))
             }
+            "ai_face_load_model" => {
+                let model_path = str_param(params, "model_path")?;
+                let infer_w = params.get("infer_w").and_then(Value::as_u64).unwrap_or(256) as usize;
+                let infer_h = params.get("infer_h").and_then(Value::as_u64).unwrap_or(160) as usize;
+                let detector = std::sync::Arc::clone(&self.face_detector);
+                let out = tokio::task::spawn_blocking(move || {
+                    detector.lock().load_model(&model_path, infer_w, infer_h)
+                })
+                .await
+                .map_err(|e| crate::RpcErr::from(format!("face model worker failed: {e}")))??;
+                Ok(serde_json::to_value(out).unwrap_or_else(|_| json!({"ready": true})))
+            }
+            "ai_face_detect" => {
+                let model_path = str_param(params, "model_path")?;
+                let data_b64 = str_param(params, "data_b64")?;
+                let width = params.get("width").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let height = params.get("height").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let is_bgra = params
+                    .get("pixel_format")
+                    .and_then(Value::as_str)
+                    .map(|s| s.eq_ignore_ascii_case("bgra"))
+                    .unwrap_or(false);
+                let infer_w = params.get("infer_w").and_then(Value::as_u64).unwrap_or(256) as usize;
+                let infer_h = params.get("infer_h").and_then(Value::as_u64).unwrap_or(160) as usize;
+                let score_threshold = params
+                    .get("score_threshold")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.62) as f32;
+                let max_faces =
+                    params.get("max_faces").and_then(Value::as_u64).unwrap_or(2) as usize;
+                let detector = std::sync::Arc::clone(&self.face_detector);
+                let out = tokio::task::spawn_blocking(move || {
+                    detector.lock().detect_b64(
+                        &model_path,
+                        width,
+                        height,
+                        &data_b64,
+                        is_bgra,
+                        infer_w,
+                        infer_h,
+                        score_threshold,
+                        max_faces,
+                    )
+                })
+                .await
+                .map_err(|e| crate::RpcErr::from(format!("face detect worker failed: {e}")))??;
+                Ok(serde_json::to_value(out).unwrap_or_else(|_| json!({"faces": []})))
+            }
+            "ai_face_unload_model" => {
+                self.face_detector.lock().unload();
+                Ok(json!({"unloaded": true}))
+            }
             _ => Err(crate::RpcErr::Unhandled),
         }
     }

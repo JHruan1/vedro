@@ -509,13 +509,20 @@ class VedroPreferences {
     this.asrModel = 'whisper-large-v3-turbo',
     this.asrSourceLang = 'auto', // auto | ja | en | zh | ko
     this.asrDirectClientIp = false,
-    // 2-Pass 人像肤色 GPU 美颜相机（可自由叠加：磨皮 / 美白 / 粉嫩 / 亮眼清晰）
-    this.beautyFilterPreset = 'off', // off | natural | bright | rosy | soft_glow | vivid | custom
+    // 2-Pass 人像肤色 GPU 美颜相机（方案 B · 可自由叠加：磨皮 / 美白 / 粉嫩 / 亮眼清晰）
+    this.beautyFilterPreset = 'off', // off | douyin_cream | cool_white | natural | bright | rosy | soft_glow | vivid | custom
     this.beautyFilterStrength = 0.55,
     this.beautySmooth = 0.0,
     this.beautyWhiten = 0.0,
     this.beautyRosy = 0.0,
     this.beautyClarity = 0.0,
+    // 本地 AI 人像五官塑形引擎（方案 A · YuNet ONNX 可选下载：瘦脸 / 大眼 / V脸 / 精准唇彩）
+    this.aiFaceBeautyEnabled = false,
+    this.aiFaceUseChinaMirror = true,
+    this.aiFaceSlim = 0.30,
+    this.aiFaceBigEyes = 0.22,
+    this.aiFaceVChin = 0.18,
+    this.aiFaceLipTint = 0.16,
     // 隐私保护
     this.passcodeEnabled = false,
     this.passcodeHash = '',
@@ -651,6 +658,13 @@ class VedroPreferences {
   final double beautyWhiten;
   final double beautyRosy;
   final double beautyClarity;
+
+  final bool aiFaceBeautyEnabled;
+  final bool aiFaceUseChinaMirror;
+  final double aiFaceSlim;
+  final double aiFaceBigEyes;
+  final double aiFaceVChin;
+  final double aiFaceLipTint;
 
   final bool passcodeEnabled;
   final String passcodeHash;
@@ -929,6 +943,12 @@ class VedroPreferences {
     double? beautyWhiten,
     double? beautyRosy,
     double? beautyClarity,
+    bool? aiFaceBeautyEnabled,
+    bool? aiFaceUseChinaMirror,
+    double? aiFaceSlim,
+    double? aiFaceBigEyes,
+    double? aiFaceVChin,
+    double? aiFaceLipTint,
     bool? passcodeEnabled,
     String? passcodeHash,
     int? lockTimeoutSecs,
@@ -1051,6 +1071,12 @@ class VedroPreferences {
         beautyWhiten: beautyWhiten ?? this.beautyWhiten,
         beautyRosy: beautyRosy ?? this.beautyRosy,
         beautyClarity: beautyClarity ?? this.beautyClarity,
+        aiFaceBeautyEnabled: aiFaceBeautyEnabled ?? this.aiFaceBeautyEnabled,
+        aiFaceUseChinaMirror: aiFaceUseChinaMirror ?? this.aiFaceUseChinaMirror,
+        aiFaceSlim: (aiFaceSlim ?? this.aiFaceSlim).clamp(0.0, 1.0),
+        aiFaceBigEyes: (aiFaceBigEyes ?? this.aiFaceBigEyes).clamp(0.0, 1.0),
+        aiFaceVChin: (aiFaceVChin ?? this.aiFaceVChin).clamp(0.0, 1.0),
+        aiFaceLipTint: (aiFaceLipTint ?? this.aiFaceLipTint).clamp(0.0, 1.0),
         passcodeEnabled: passcodeEnabled ?? this.passcodeEnabled,
         passcodeHash: passcodeHash ?? this.passcodeHash,
         lockTimeoutSecs: lockTimeoutSecs ?? this.lockTimeoutSecs,
@@ -1174,6 +1200,12 @@ class VedroPreferences {
         'beauty_whiten': beautyWhiten,
         'beauty_rosy': beautyRosy,
         'beauty_clarity': beautyClarity,
+        'ai_face_beauty_enabled': aiFaceBeautyEnabled,
+        'ai_face_use_china_mirror': aiFaceUseChinaMirror,
+        'ai_face_slim': aiFaceSlim,
+        'ai_face_big_eyes': aiFaceBigEyes,
+        'ai_face_v_chin': aiFaceVChin,
+        'ai_face_lip_tint': aiFaceLipTint,
         'passcode_enabled': passcodeEnabled,
         'passcode_hash': passcodeHash,
         'lock_timeout_secs': lockTimeoutSecs,
@@ -1310,6 +1342,12 @@ class VedroPreferences {
         beautyWhiten: _finiteDouble(j['beauty_whiten'], 0.0, 0.0, 1.0),
         beautyRosy: _finiteDouble(j['beauty_rosy'], 0.0, 0.0, 1.0),
         beautyClarity: _finiteDouble(j['beauty_clarity'], 0.0, 0.0, 1.0),
+        aiFaceBeautyEnabled: j['ai_face_beauty_enabled'] == true,
+        aiFaceUseChinaMirror: j['ai_face_use_china_mirror'] != false,
+        aiFaceSlim: _finiteDouble(j['ai_face_slim'], 0.30, 0.0, 1.0),
+        aiFaceBigEyes: _finiteDouble(j['ai_face_big_eyes'], 0.22, 0.0, 1.0),
+        aiFaceVChin: _finiteDouble(j['ai_face_v_chin'], 0.18, 0.0, 1.0),
+        aiFaceLipTint: _finiteDouble(j['ai_face_lip_tint'], 0.16, 0.0, 1.0),
         passcodeEnabled: j['passcode_enabled'] == true,
         passcodeHash: (j['passcode_hash'] ?? '').toString(),
         lockTimeoutSecs: _clampedInt(j['lock_timeout_secs'], 60, 0, 3600),

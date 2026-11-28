@@ -368,33 +368,13 @@ extension _PlayerEngineExt on _PlayerScreenState {
       _beautyParams = params;
     }
 
-    Future<void> applyGpuShader() async {
-      if (_disposed) return;
-      if (!params.isActive) {
-        await _applyMpvProperty('glsl-shaders', '');
-        return;
-      }
-      try {
-        final shaderPath = await BeautyFilterEngine.prepareShaderFileForParams(
-          params,
-          label: effectivePreset,
-          mobileLean: _isMobile,
-        );
-        if (!_disposed && shaderPath != null && shaderPath.isNotEmpty) {
-          await _applyMpvProperty('glsl-shaders', shaderPath.replaceAll('\\', '/'));
-        }
-      } catch (_) {
-        if (!_disposed) await _applyMpvProperty('glsl-shaders', '');
-      }
-    }
-
     _beautyShaderDebounce?.cancel();
     if (debounceShader && params.isActive) {
       _beautyShaderDebounce = Timer(const Duration(milliseconds: 90), () {
-        unawaited(applyGpuShader());
+        unawaited(_syncCombinedMpvShaders());
       });
     } else {
-      await applyGpuShader();
+      await _syncCombinedMpvShaders();
     }
 
     if (persist) {
@@ -417,6 +397,58 @@ extension _PlayerEngineExt on _PlayerScreenState {
             : '美颜：${BeautyFilterPreset.displayLabelFor(effectivePreset, params)}（${params.summaryLabel()}）',
       );
     }
+  }
+
+  /// Synchronize `libmpv` `glsl-shaders` stacking Plan B beauty + Plan A AI Face Morph
+  /// (when running on Windows D3D11/ANGLE, Linux OpenGL, or Skia fallback).
+  Future<void> _syncCombinedMpvShaders() async {
+    if (_disposed) return;
+    final useMpvForAi =
+        !AiFaceBeautyShader.isAvailable && _aiFaceEnabled && _aiFaceMorph.isActive && _aiFaceMpvFaces.isNotEmpty;
+    if (!_beautyParams.isActive && !useMpvForAi) {
+      await _applyMpvProperty('glsl-shaders', '');
+      return;
+    }
+    try {
+      final path = await AiFaceMpvShaderBuilder.prepareCombinedShaderFile(
+        beautyParams: _beautyParams,
+        beautyLabel: _beautyPreset,
+        mobileLean: _isMobile,
+        useMpvForAiFace: useMpvForAi,
+        aiMorph: _aiFaceMorph,
+        aiFaces: _aiFaceMpvFaces,
+        pingPongSlot: _aiFaceMpvPingPong++,
+      );
+      if (!_disposed) {
+        await _applyMpvProperty('glsl-shaders', path != null ? path.replaceAll('\\', '/') : '');
+      }
+    } catch (_) {
+      if (!_disposed) await _applyMpvProperty('glsl-shaders', '');
+    }
+  }
+
+  void _onAiFaceMpvFacesChanged(List<AiTrackedFace> faces) {
+    if (_disposed) return;
+    _aiFaceMpvFaces = faces;
+    _aiFaceMpvDebounce?.cancel();
+    if (faces.isEmpty) {
+      unawaited(_syncCombinedMpvShaders());
+    } else {
+      _aiFaceMpvDebounce = Timer(const Duration(milliseconds: 20), () {
+        unawaited(_syncCombinedMpvShaders());
+      });
+    }
+  }
+
+  Future<void> _setAiFaceCopyBackHwdec(bool needCopyBack) async {
+    if (_disposed || !_hwDecodeEnabled) return;
+    if (needCopyBack == _aiFaceCopyBackForced) return;
+    _aiFaceCopyBackForced = needCopyBack;
+    final hwPref = (widget.appState.settings['hwdec'] ?? 'auto_zero_copy').toString();
+    final target = needCopyBack
+        ? 'auto-copy-safe'
+        : (hwPref == 'auto_copy' ? 'auto-copy-safe' : 'auto-safe');
+    await _applyMpvProperty('hwdec', target);
   }
 
   ({String? localPath, String? url, String? format, String? label})
@@ -539,67 +571,21 @@ extension _PlayerEngineExt on _PlayerScreenState {
     if (raw.trim().isEmpty) return;
     // Strict allowlist of safe video/audio/subtitle/demuxer tuning keys (blocks IPC/script/file/dump injection)
     const allowed = {
-      'interpolation',
-      'tscale',
-      'tscale-window',
-      'tscale-clamp',
-      'tscale-radius',
-      'tscale-antiring',
-      'scale',
-      'cscale',
-      'dscale',
-      'scale-antiring',
-      'cscale-antiring',
-      'correct-downscaling',
-      'linear-downscaling',
-      'sigmoid-upscaling',
-      'deband',
-      'deband-iterations',
-      'deband-threshold',
-      'deband-range',
-      'deband-grain',
-      'dither',
-      'dither-depth',
-      'dither-size-fruit',
-      'temporal-dither',
-      'sharpen',
-      'tone-mapping',
-      'tone-mapping-param',
-      'tone-mapping-max-boost',
-      'hdr-compute-peak',
-      'hdr-peak-percentile',
-      'gamut-mapping-mode',
-      'target-peak',
-      'target-trc',
-      'target-prim',
-      'target-contrast',
-      'video-sync',
-      'video-sync-max-video-change',
-      'video-sync-max-factor',
-      'audio-pitch-correction',
-      'audio-normalize-downmix',
-      'audio-channels',
-      'sub-fix-timing',
-      'sub-gauss',
-      'sub-gray',
-      'sub-margin-y',
-      'sub-margin-x',
-      'sub-bold',
-      'sub-italic',
-      'sub-shadow-offset',
-      'sub-shadow-color',
-      'sub-spacing',
-      'sub-line-height',
-      'sub-ass-force-margins',
-      'blend-subtitles',
-      'demuxer-readahead-secs',
-      'demuxer-max-back-bytes',
-      'cache-secs',
-      'hr-seek',
-      'hr-seek-framedrop',
-      'framedrop',
-      'vd-lavc-threads',
-      'ad-lavc-downmix',
+      'interpolation', 'tscale', 'tscale-window', 'tscale-clamp', 'tscale-radius', 'tscale-antiring',
+      'scale', 'cscale', 'dscale', 'scale-antiring', 'cscale-antiring',
+      'correct-downscaling', 'linear-downscaling', 'sigmoid-upscaling',
+      'deband', 'deband-iterations', 'deband-threshold', 'deband-range', 'deband-grain',
+      'dither', 'dither-depth', 'dither-size-fruit', 'temporal-dither', 'sharpen',
+      'tone-mapping', 'tone-mapping-param', 'tone-mapping-max-boost',
+      'hdr-compute-peak', 'hdr-peak-percentile', 'gamut-mapping-mode',
+      'target-peak', 'target-trc', 'target-prim', 'target-contrast',
+      'video-sync', 'video-sync-max-video-change', 'video-sync-max-factor',
+      'audio-pitch-correction', 'audio-normalize-downmix', 'audio-channels',
+      'sub-fix-timing', 'sub-gauss', 'sub-gray', 'sub-margin-y', 'sub-margin-x',
+      'sub-bold', 'sub-italic', 'sub-shadow-offset', 'sub-shadow-color',
+      'sub-spacing', 'sub-line-height', 'sub-ass-force-margins', 'blend-subtitles',
+      'demuxer-readahead-secs', 'demuxer-max-back-bytes', 'cache-secs',
+      'hr-seek', 'hr-seek-framedrop', 'framedrop', 'vd-lavc-threads', 'ad-lavc-downmix',
     };
     for (final rawLine in raw.split('\n')) {
       final line = rawLine.split('#').first.trim();

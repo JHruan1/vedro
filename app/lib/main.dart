@@ -16,7 +16,9 @@ import 'core/theme/vedro_theme.dart';
 import 'screens/shell_screen.dart';
 import 'state/app_state.dart';
 import 'widgets/app_lock_gate.dart';
+import 'core/services/ai_face_beauty_manager.dart';
 import 'core/services/local_asr_engine.dart';
+import 'widgets/ai_face_beauty_overlay.dart';
 import 'widgets/vedro_ui.dart';
 import 'widgets/windows_immersive_frame.dart';
 
@@ -25,6 +27,8 @@ Future<void> main(List<String> args) async {
     () async {
       WidgetsFlutterBinding.ensureInitialized();
       unawaited(VedroLiquidGlassShader.preload());
+      unawaited(AiFaceBeautyShader.preload());
+      unawaited(AiFaceBeautyManager.instance.refreshStatus());
       PlatformPerfProfile.configureImageCache();
       if (args.isNotEmpty) {
         final startupPaths = args

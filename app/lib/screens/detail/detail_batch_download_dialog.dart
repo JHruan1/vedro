@@ -45,13 +45,32 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
   }
 
   List<ResolvedMediaVersion> get _availableVersions {
-    List<MediaSourceModel> best = const [];
+    // Collect versions starting from the episode with the most sources, then merge any
+    // additional distinct versions that only appear on other episodes in this season.
+    MediaItemModel? richest;
     for (final ep in _episodes) {
-      if (ep.mediaSources.length > best.length) {
-        best = ep.mediaSources;
+      if (richest == null || ep.mediaSources.length > richest.mediaSources.length) {
+        richest = ep;
       }
     }
-    return MediaSourceModel.resolveVersions(best, stripEpisodePrefix: true);
+    final merged = <ResolvedMediaVersion>[];
+    final seenSigs = <String>{};
+    if (richest != null && richest.mediaSources.isNotEmpty) {
+      for (final v in MediaSourceModel.resolveVersions(richest.mediaSources, stripEpisodePrefix: true)) {
+        if (seenSigs.add(v.seriesMatchSignature)) {
+          merged.add(v);
+        }
+      }
+    }
+    for (final ep in _episodes) {
+      if (identical(ep, richest) || ep.mediaSources.isEmpty) continue;
+      for (final v in MediaSourceModel.resolveVersions(ep.mediaSources, stripEpisodePrefix: true)) {
+        if (seenSigs.add(v.seriesMatchSignature)) {
+          merged.add(v);
+        }
+      }
+    }
+    return merged;
   }
 
   void _ensureDefaultVersion() {
@@ -65,17 +84,81 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
     }
   }
 
-  MediaSourceModel? _resolveSourceFor(MediaItemModel ep) {
+  ResolvedMediaVersion? _resolveVersionFor(MediaItemModel ep, {bool strict = false}) {
     if (ep.mediaSources.isEmpty) return null;
-    if (ep.mediaSources.length == 1) return ep.mediaSources.first;
     final vers = _availableVersions;
-    if (vers.isEmpty) return ep.mediaSources.first;
-    final chosen = vers[_versionIndex.clamp(0, vers.length - 1)];
-    final epVers = MediaSourceModel.resolveVersions(ep.mediaSources);
-    for (final ev in epVers) {
-      if (ev.seriesMatchSignature == chosen.seriesMatchSignature) return ev.source;
+    if (vers.isEmpty) {
+      final resolved = MediaSourceModel.resolveVersions(ep.mediaSources, stripEpisodePrefix: true);
+      return resolved.isNotEmpty ? resolved.first : null;
     }
-    return ep.mediaSources[_versionIndex.clamp(0, ep.mediaSources.length - 1)];
+    final safeIdx = _versionIndex.clamp(0, vers.length - 1);
+    return MediaSourceModel.matchVersionForEpisode(
+      ep.mediaSources,
+      vers[safeIdx],
+      fallbackIndex: safeIdx,
+      strict: strict,
+    );
+  }
+
+  MediaSourceModel? _resolveSourceFor(MediaItemModel ep, {bool strict = false}) =>
+      _resolveVersionFor(ep, strict: strict)?.source;
+
+  /// Episodes belonging to the currently chosen version, paired with their exact matched source.
+  /// When a version only covers a subset of episodes (e.g. 4K has 12 eps while 1080p has 24),
+  /// switching versions immediately filters & updates the list below!
+  List<({MediaItemModel ep, ResolvedMediaVersion? ver})> get _episodesForSelectedVersion {
+    final vers = _availableVersions;
+    if (vers.length <= 1) {
+      return _episodes
+          .map((ep) => (ep: ep, ver: _resolveVersionFor(ep, strict: false)))
+          .toList();
+    }
+    final strictMatched = <({MediaItemModel ep, ResolvedMediaVersion? ver})>[];
+    for (final ep in _episodes) {
+      if (ep.mediaSources.isEmpty) {
+        // Some servers omit MediaSources on secondary episodes in list payloads; keep them selectable.
+        strictMatched.add((ep: ep, ver: null));
+        continue;
+      }
+      final matched = _resolveVersionFor(ep, strict: true);
+      if (matched != null) {
+        strictMatched.add((ep: ep, ver: matched));
+      }
+    }
+    if (strictMatched.isNotEmpty) return strictMatched;
+    return _episodes
+        .map((ep) => (ep: ep, ver: _resolveVersionFor(ep, strict: false)))
+        .toList();
+  }
+
+  void _selectVersion(int index) {
+    if (index == _versionIndex) return;
+    setState(() {
+      _versionIndex = index;
+      _rangeIdx = 0;
+      // Drop selections that don't belong to the newly chosen version or are already downloaded for it
+      final validIds = <String>{};
+      for (final row in _episodesForSelectedVersion) {
+        final src = row.ver?.source;
+        final existing = widget.appState.findDownloadForItem(row.ep.id, mediaSourceId: src?.id);
+        final unavailable = existing != null && (existing.status == 'completed' || existing.isActive);
+        if (!unavailable) validIds.add(row.ep.id);
+      }
+      _selectedById.removeWhere((id, _) => !validIds.contains(id));
+    });
+  }
+
+  static String _sourceSubtitleFor(ResolvedMediaVersion? ver) {
+    if (ver == null) return '';
+    final s = ver.source;
+    final pathNorm = (s.path ?? '').replaceAll('\\', '/').trim();
+    final fileName = pathNorm.isNotEmpty ? pathNorm.split('/').last : '';
+    final parts = <String>[
+      if (ver.displayTitle.isNotEmpty) ver.displayTitle,
+      if (fileName.isNotEmpty && !ver.displayTitle.toLowerCase().contains(fileName.toLowerCase()))
+        fileName,
+    ];
+    return parts.join(' · ');
   }
 
   Future<void> _selectSeason(String seasonId) async {
@@ -195,13 +278,14 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
     final versions = _availableVersions;
     final safeVerIdx = versions.isEmpty ? 0 : _versionIndex.clamp(0, versions.length - 1);
     final totalBytes = _selectedTotalBytes;
+    final versionRows = _episodesForSelectedVersion;
 
-    final chunkSize = _episodes.length >= 400 ? 100 : 50;
-    final rangeCount = _episodes.isEmpty ? 0 : ((_episodes.length - 1) ~/ chunkSize) + 1;
+    final chunkSize = versionRows.length >= 400 ? 100 : 50;
+    final rangeCount = versionRows.isEmpty ? 0 : ((versionRows.length - 1) ~/ chunkSize) + 1;
     final safeRangeIdx = rangeCount == 0 ? 0 : _rangeIdx.clamp(0, rangeCount - 1);
     final start = safeRangeIdx * chunkSize;
-    final end = (start + chunkSize).clamp(0, _episodes.length);
-    final visibleEps = rangeCount > 1 ? _episodes.sublist(start, end) : _episodes;
+    final end = (start + chunkSize).clamp(0, versionRows.length);
+    final visibleRows = rangeCount > 1 ? versionRows.sublist(start, end) : versionRows;
 
     return Dialog(
       key: const ValueKey('detail-batch-download-dialog'),
@@ -292,9 +376,18 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              '下载版本 (${versions.length})',
-                              style: TextStyle(color: skin.fg3, fontSize: 11.5, fontWeight: FontWeight.w500),
+                            Row(
+                              children: [
+                                Text(
+                                  '下载版本 (${versions.length})',
+                                  style: TextStyle(color: skin.fg3, fontSize: 11.5, fontWeight: FontWeight.w500),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  '· 当前版本共 ${versionRows.length} 集',
+                                  style: TextStyle(color: skin.fg3, fontSize: 11.5),
+                                ),
+                              ],
                             ),
                             const SizedBox(height: 6),
                             Wrap(
@@ -303,7 +396,8 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                               children: [
                                 for (var i = 0; i < versions.length; i++)
                                   PressableScale(
-                                    onTap: () => setState(() => _versionIndex = i),
+                                    key: ValueKey('batch-dl-version-$i'),
+                                    onTap: () => _selectVersion(i),
                                     borderRadius: BorderRadius.circular(skin.radiusForPill(30)),
                                     child: Container(
                                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6.5),
@@ -343,9 +437,9 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                                   separatorBuilder: (_, __) => const SizedBox(width: 6),
                                   itemBuilder: (_, rIdx) {
                                     final rStart = rIdx * chunkSize;
-                                    final rEnd = (rStart + chunkSize).clamp(0, _episodes.length);
-                                    final firstNum = _episodes[rStart].indexNumber ?? (rStart + 1);
-                                    final lastNum = _episodes[rEnd - 1].indexNumber ?? rEnd;
+                                    final rEnd = (rStart + chunkSize).clamp(0, versionRows.length);
+                                    final firstNum = versionRows[rStart].ep.indexNumber ?? (rStart + 1);
+                                    final lastNum = versionRows[rEnd - 1].ep.indexNumber ?? rEnd;
                                     final active = rIdx == safeRangeIdx;
                                     return PressableScale(
                                       onTap: () => setState(() => _rangeIdx = rIdx),
@@ -383,9 +477,9 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                             ),
                             onPressed: () {
                               setState(() {
-                                for (final ep in visibleEps) {
-                                  if (!_isAlreadyQueuedOrDone(ep)) {
-                                    _selectedById[ep.id] = ep;
+                                for (final row in visibleRows) {
+                                  if (!_isAlreadyQueuedOrDone(row.ep)) {
+                                    _selectedById[row.ep.id] = row.ep;
                                   }
                                 }
                               });
@@ -400,9 +494,9 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                             ),
                             onPressed: () {
                               setState(() {
-                                for (final ep in visibleEps) {
-                                  if (!ep.played && !_isAlreadyQueuedOrDone(ep)) {
-                                    _selectedById[ep.id] = ep;
+                                for (final row in visibleRows) {
+                                  if (!row.ep.played && !_isAlreadyQueuedOrDone(row.ep)) {
+                                    _selectedById[row.ep.id] = row.ep;
                                   }
                                 }
                               });
@@ -435,11 +529,13 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                     SliverPadding(
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                       sliver: SliverList.separated(
-                        itemCount: visibleEps.length,
+                        itemCount: visibleRows.length,
                         separatorBuilder: (_, __) => const SizedBox(height: 6),
                         itemBuilder: (_, idx) {
-                          final ep = visibleEps[idx];
-                          final src = _resolveSourceFor(ep);
+                          final row = visibleRows[idx];
+                          final ep = row.ep;
+                          final ver = row.ver;
+                          final src = ver?.source;
                           final existing =
                               widget.appState.findDownloadForItem(ep.id, mediaSourceId: src?.id);
                           final done = existing != null && existing.status == 'completed';
@@ -447,8 +543,10 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                           final disabled = done || active;
                           final checked = _selectedById.containsKey(ep.id);
                           final sizeText = fmtFileSize(src?.size);
+                          final subtitle = _sourceSubtitleFor(ver);
 
                           return InkWell(
+                            key: ValueKey('batch-dl-ep-${ep.id}-${src?.id ?? idx}'),
                             borderRadius: BorderRadius.circular(12),
                             onTap: disabled
                                 ? null
@@ -495,9 +593,9 @@ class _BatchDownloadDialogState extends State<_BatchDownloadDialog> {
                                             fontWeight: FontWeight.w500,
                                           ),
                                         ),
-                                        if (src != null && (src.name?.isNotEmpty == true))
+                                        if (subtitle.isNotEmpty)
                                           Text(
-                                            src.name!,
+                                            subtitle,
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
                                             style: TextStyle(color: skin.fg3, fontSize: 11),

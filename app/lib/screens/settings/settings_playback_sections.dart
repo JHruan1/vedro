@@ -298,7 +298,7 @@ extension _SettingsPlaybackSectionsExt on _SettingsDetailPaneState {
           ],
         ),
         const SizedBox(height: 16),
-        const _GroupHeader('人像美颜相机（可叠加 GPU）'),
+        const _GroupHeader('人像美颜相机（方案 B · 抖音风 GPU 画质美颜）'),
         KeyedSubtree(
           key: const ValueKey('settings-beauty-filter-card'),
           child: _GroupedCard(
@@ -437,6 +437,19 @@ extension _SettingsPlaybackSectionsExt on _SettingsDetailPaneState {
                     ),
                   );
                 },
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        const _GroupHeader('AI 人像五官塑形（方案 A · 本地离线模型可选下载）'),
+        KeyedSubtree(
+          key: const ValueKey('settings-ai-face-beauty-card'),
+          child: _GroupedCard(
+            children: [
+              AiFaceBeautyModelCard(
+                appState: widget.appState,
+                showDefaultSliders: true,
               ),
             ],
           ),

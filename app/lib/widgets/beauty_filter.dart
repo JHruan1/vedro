@@ -130,16 +130,6 @@ class BeautyFilterPreset {
       clarity: 0.0,
     ),
     BeautyFilterPreset(
-      id: 'natural',
-      label: '综合美颜',
-      subtitle: '黄金配比：保边磨皮 + 匀净美白 + 柔和粉嫩 + 亮眼清晰',
-      icon: Icons.face_retouching_natural_rounded,
-      smooth: 0.58,
-      whiten: 0.42,
-      rosy: 0.30,
-      clarity: 0.40,
-    ),
-    BeautyFilterPreset(
       id: 'douyin_cream',
       label: '奶油水光',
       subtitle: '抖音风匀肤柔焦 + 奶油水光柔光 + 祛油光 + 清澈亮眼',
@@ -158,6 +148,16 @@ class BeautyFilterPreset {
       whiten: 0.88,
       rosy: 0.22,
       clarity: 0.54,
+    ),
+    BeautyFilterPreset(
+      id: 'natural',
+      label: '综合美颜',
+      subtitle: '黄金配比：保边磨皮 + 匀净美白 + 柔和粉嫩 + 亮眼清晰',
+      icon: Icons.face_retouching_natural_rounded,
+      smooth: 0.58,
+      whiten: 0.42,
+      rosy: 0.30,
+      clarity: 0.40,
     ),
     BeautyFilterPreset(
       id: 'bright',

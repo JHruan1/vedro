@@ -489,6 +489,46 @@ class _CircleHudButtonState extends State<_CircleHudButton> {
   }
 }
 
+class _CenterTransportButton extends StatefulWidget {
+  const _CenterTransportButton({super.key, required this.icon, required this.onTap, this.size = 52, this.iconSize = 28, this.tooltip});
+  final IconData icon;
+  final VoidCallback onTap;
+  final double size;
+  final double iconSize;
+  final String? tooltip;
+
+  @override
+  State<_CenterTransportButton> createState() => _CenterTransportButtonState();
+}
+
+class _CenterTransportButtonState extends State<_CenterTransportButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final btn = PressableScale(
+      onTap: widget.onTap,
+      onHoverChanged: (v) => setState(() => _hovered = v),
+      hoverScale: 1.08,
+      pressScale: 0.9,
+      borderRadius: BorderRadius.circular(999),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        width: widget.size,
+        height: widget.size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: _hovered ? const Color(0x9E161820) : const Color(0x78101218),
+          border: Border.all(color: Colors.white.withValues(alpha: _hovered ? 0.36 : 0.20), width: 0.9),
+          boxShadow: const [BoxShadow(color: Color(0x55000000), blurRadius: 16, offset: Offset(0, 4))],
+        ),
+        child: Icon(widget.icon, size: widget.iconSize, color: Colors.white),
+      ),
+    );
+    return widget.tooltip != null ? Tooltip(message: widget.tooltip!, child: btn) : btn;
+  }
+}
+
 class _DeckIconButton extends StatefulWidget {
   const _DeckIconButton({
     required this.icon,

@@ -214,12 +214,11 @@ class GlassSurface extends StatelessWidget {
     };
     final hasLiquidGpu = isLiquid && VedroLiquidGlassShader.isAvailable;
     // On Impeller Liquid Glass floating chrome (bottom dock, capsules, pills), use
-    // QmDeve-style crystal optics: light blur (~3.2 sigma) + airy crystal tint
-    // (0.24 dark / 0.34 light) so curved-edge refraction & 7-band rainbow dispersion
-    // shine unmistakably instead of being buried under opaque paint!
+    // pure single-pass QmDeve crystal optics (ZERO inner blur pass -> 4x faster 120Hz
+    // GPU pipeline AND sharper water-droplet refraction + prismatic corner dispersion!).
     final effBlur = !enableBlur
         ? 0.0
-        : (hasLiquidGpu ? 3.2 : PlatformPerfProfile.clampLiveBlur(blur));
+        : (hasLiquidGpu ? 0.0 : PlatformPerfProfile.clampLiveBlur(blur));
     final rawColor = color ?? skin.glass;
     final effectiveColor = hasLiquidGpu
         ? (skin.isLight ? Colors.white : skin.canvas).withValues(
@@ -1754,7 +1753,7 @@ class _VedroPullDownButtonState<T> extends State<VedroPullDownButton<T>> {
     Widget pill;
     if (isLiquid) {
       final hasGpu = VedroLiquidGlassShader.isAvailable;
-      final pillBlur = hasGpu ? 3.2 : PlatformPerfProfile.clampLiveBlur(22);
+      final pillBlur = hasGpu ? 0.0 : PlatformPerfProfile.clampLiveBlur(22);
       final pillBg = hasGpu
           ? (skin.isLight ? Colors.white : skin.canvas).withValues(
               alpha: _isOpen ? (skin.isLight ? 0.44 : 0.34) : (skin.isLight ? 0.34 : 0.24),

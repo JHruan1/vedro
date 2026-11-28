@@ -131,9 +131,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   );
   Timer? _statusBarTimer;
 
-  // Gesture HUD isolated ValueNotifier (zero full-screen setState on drag/key ticks)
-  final ValueNotifier<({String? mode, String text})> _gestureHudNotifier =
-      ValueNotifier<({String? mode, String text})>((mode: null, text: ''));
+  // Gesture HUD isolated ValueNotifier (zero full-screen setState on drag/key ticks;
+  // carries live `value` + monotonic `seq` so every single 120Hz drag frame updates immediately!)
+  final ValueNotifier<({String? mode, String text, double value, int seq})> _gestureHudNotifier =
+      ValueNotifier<({String? mode, String text, double value, int seq})>(
+    (mode: null, text: '', value: 0.0, seq: 0),
+  );
+  int _gestureHudSeq = 0;
+  bool _brightnessUserAdjusted = false;
 
   // Rapid D-Pad seek accumulator
   double _accumulatedKeySeekDelta = 0.0;
@@ -389,8 +394,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _danmakuArea = p.danmakuArea;
     _danmakuHideTop = p.danmakuHideTop;
     _danmakuHideBottom = p.danmakuHideBottom;
-    if (p.rememberBrightness) {
-      _brightness = p.savedBrightness.clamp(0.15, 1.0);
+    if (p.rememberBrightness && p.savedBrightness < 0.995) {
+      _brightness = p.savedBrightness.clamp(0.03, 1.0);
     }
     if (p.rememberVolume) {
       _volume = p.savedVolume.clamp(0.0, _maxVolume);
@@ -643,10 +648,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (!mounted) return;
       if (cur != null) {
         _usingNativeBrightness = true;
-        if (widget.appState.prefs.rememberBrightness) {
+        final p = widget.appState.prefs;
+        // Always prioritize matching current OS screen brightness on entry; only
+        // apply a remembered override if the user explicitly enabled `rememberBrightness`
+        // and previously dimmed/adjusted it (never blasting 100% max brightness on open!).
+        if (p.rememberBrightness && p.savedBrightness < 0.995) {
+          _brightness = p.savedBrightness.clamp(0.03, 1.0);
           await NativePlaybackChannel.setScreenBrightness(_brightness);
         } else {
-          setState(() => _brightness = cur.clamp(0.15, 1.0));
+          _brightness = cur.clamp(0.03, 1.0);
         }
       }
     } catch (_) {}
@@ -1511,7 +1521,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   void _persistRememberedPlayerPrefs({bool notify = true}) {
     final p = widget.appState.prefs;
-    final nextBrightness = p.rememberBrightness ? _brightness.clamp(0.15, 1.0) : p.savedBrightness;
+    final nextBrightness = (p.rememberBrightness && _brightnessUserAdjusted)
+        ? _brightness.clamp(0.03, 1.0)
+        : p.savedBrightness;
     final nextVolume = p.rememberVolume ? (_muted ? 0.0 : _volume).clamp(0.0, _maxVolume) : p.savedVolume;
     final nextSpeed = (p.rememberSpeed && !_isSpeedBoost) ? _speed.clamp(0.25, 4.0) : p.defaultSpeed;
     final nextAspect = p.rememberAspect ? _aspectMode : p.defaultAspect;

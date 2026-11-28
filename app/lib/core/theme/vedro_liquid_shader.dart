@@ -116,9 +116,11 @@ class VedroLiquidGlassShader {
       shader.setFloat(11, accent.g);
       shader.setFloat(12, accent.b);
 
+      // FilterQuality.low uses pure hardware bilinear sampling with ZERO per-frame
+      // mipmap pyramid generation on Impeller — critical for locked 120Hz mobile scrolling!
       final shaderFilter = ui.ImageFilter.shader(
         shader,
-        filterQuality: FilterQuality.medium,
+        filterQuality: FilterQuality.low,
       );
       if (!hasBlur) return shaderFilter;
       return ui.ImageFilter.compose(

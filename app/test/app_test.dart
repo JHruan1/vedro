@@ -2795,7 +2795,7 @@ void main() {
     // 1. VedroPreferences defaults & JSON round-trip for v0.3.10 features
     const defaults = VedroPreferences();
     expect(defaults.showNetworkSpeed, isTrue);
-    expect(defaults.rememberBrightness, isTrue);
+    expect(defaults.rememberBrightness, isFalse);
     expect(defaults.rememberVolume, isTrue);
     expect(defaults.savedVolume, equals(100.0));
     expect(defaults.rememberSpeed, isTrue);

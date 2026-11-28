@@ -706,9 +706,9 @@ extension _PlayerHudExt on _PlayerScreenState {
                         ),
                       ),
 
-                    // Isolated Gesture HUD (zero full-screen setState!)
+                    // Isolated Gesture HUD (instant 120Hz updates with zero full-screen setState!)
                     if (!_scrubbing && !_inPipMode)
-                      ValueListenableBuilder<({String? mode, String text})>(
+                      ValueListenableBuilder<({String? mode, String text, double value, int seq})>(
                         valueListenable: _gestureHudNotifier,
                         builder: (_, hud, __) {
                           if (hud.mode == null) return const SizedBox.shrink();
@@ -718,7 +718,7 @@ extension _PlayerHudExt on _PlayerScreenState {
                               enableBlur: false,
                               color: const Color(0xDC12141C),
                               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                              child: _buildGestureHudContent(hud.mode!, hud.text),
+                              child: _buildGestureHudContent(hud.mode!, hud.text, hud.value),
                             ),
                           );
                         },
@@ -1777,7 +1777,7 @@ extension _PlayerHudExt on _PlayerScreenState {
     );
   }
 
-  Widget _buildGestureHudContent(String mode, String feedbackText) {
+  Widget _buildGestureHudContent(String mode, String feedbackText, double liveValue) {
     if (mode == 'seek_feedback') {
       return Text(
         feedbackText,
@@ -1790,14 +1790,16 @@ extension _PlayerHudExt on _PlayerScreenState {
       );
     }
     final isBrightness = mode == 'brightness';
-    final progress = isBrightness ? _brightness : (_volume / _maxVolume).clamp(0.0, 1.0);
+    final progress = isBrightness
+        ? liveValue.clamp(0.0, 1.0)
+        : (liveValue / _maxVolume).clamp(0.0, 1.0);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Icon(
           isBrightness
               ? Icons.brightness_6_rounded
-              : (_volume <= 0 ? Icons.volume_off_rounded : Icons.volume_up_rounded),
+              : (liveValue <= 0.1 ? Icons.volume_off_rounded : Icons.volume_up_rounded),
           size: 18,
           color: VedroTheme.fg,
         ),
@@ -1818,7 +1820,7 @@ extension _PlayerHudExt on _PlayerScreenState {
         SizedBox(
           width: 38,
           child: Text(
-            isBrightness ? '${(_brightness * 100).round()}%' : '${_volume.round()}%',
+            isBrightness ? '${(liveValue.clamp(0.0, 1.0) * 100).round()}%' : '${liveValue.round()}%',
             textAlign: TextAlign.right,
             style: const TextStyle(
               color: VedroTheme.fg2,

@@ -68,16 +68,22 @@ extension _PlayerControlsExt on _PlayerScreenState {
     _scheduleHideControls();
   }
 
-  void _flashGestureHud(String mode, {String text = ''}) {
+  void _flashGestureHud(String mode, {String text = '', double? value}) {
     if (_disposed) return;
     _gestureHudTimer?.cancel();
+    final liveVal = value ??
+        (mode == 'brightness'
+            ? _brightness
+            : (mode == 'volume' ? _volume : _gestureHudNotifier.value.value));
     _gestureHudNotifier.value = (
       mode: mode,
       text: text.isNotEmpty ? text : _gestureHudNotifier.value.text,
+      value: liveVal,
+      seq: ++_gestureHudSeq,
     );
     _gestureHudTimer = Timer(const Duration(milliseconds: 950), () {
       if (!_disposed && mounted) {
-        _gestureHudNotifier.value = (mode: null, text: '');
+        _gestureHudNotifier.value = (mode: null, text: '', value: 0.0, seq: ++_gestureHudSeq);
       }
     });
   }
@@ -137,7 +143,8 @@ extension _PlayerControlsExt on _PlayerScreenState {
   }
 
   void _setBrightness(double v) {
-    final clamped = v.clamp(0.15, 1.0);
+    final clamped = v.clamp(0.03, 1.0);
+    _brightnessUserAdjusted = true;
     if (_usingNativeBrightness) {
       _brightness = clamped;
       unawaited(NativePlaybackChannel.setScreenBrightness(clamped));

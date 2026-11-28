@@ -2,19 +2,17 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
-/// Real-time Impeller GPU Liquid Glass optical backdrop pipeline.
+/// Real-time Impeller GPU Liquid Glass optical backdrop pipeline
+/// grounded in `QmDeve/AndroidLiquidGlassView` & `Kyant0/AndroidLiquidGlass`.
 ///
-/// Combines a Gaussian inner backdrop blur (ensuring underlying text is always
-/// smoothly diffused and never sharply legible through menus/sheets) with a
-/// custom GLSL fragment shader (`shaders/liquid_glass.frag`) that computes:
-/// - Rounded-rectangle SDF & analytical surface normals
-/// - Convex curved-bezel lens refraction (inspired by Kyant0/AndroidLiquidGlass)
-/// - Physical Cauchy RGB chromatic dispersion along the curved rim
-/// - Apple-style vibrancy saturation lift & sub-surface Fresnel/caustic rim glow
+/// Renders authentic thick-crystal lens refraction (`refractionHeight` ~20–24dp,
+/// `refractionAmount` ~54–68dp), 3D convex dome depth (`depthEffect` ~0.30),
+/// 7-band diagonal-quadrant spectral chromatic dispersion (`dispersion` ~0.52),
+/// linear-sRGB crystal grading, and Fresnel specular/caustic rim highlights.
 ///
 /// Runs natively via Impeller on Android (Vulkan/GLES), iOS (Metal), and macOS
-/// (Metal), and automatically falls back to standard `ui.ImageFilter.blur` on
-/// Skia backends (Windows/Linux) or headless widget tests.
+/// (Metal), and gracefully falls back to `ui.ImageFilter.blur` on Skia backends
+/// (Windows/Linux) or headless widget tests.
 class VedroLiquidGlassShader {
   VedroLiquidGlassShader._();
 
@@ -40,17 +38,18 @@ class VedroLiquidGlassShader {
     try {
       _program = await ui.FragmentProgram.fromAsset(_assetPath);
     } catch (_) {
-      // Silently fall back to standard Gaussian blur if shader asset is unavailable.
       _program = null;
     }
   }
 
   /// Build the optimal backdrop [ui.ImageFilter] for a glass surface.
   ///
-  /// When [enableRefraction] is true (for `ios_liquid_glass`) and Impeller
-  /// shader filters are active, returns `ImageFilter.compose(outer: shader,
-  /// inner: blur)` so the shader refracts & disperses an already-blurred live
-  /// backdrop. Otherwise returns a crisp Gaussian `ImageFilter.blur`.
+  /// - For floating chrome (`GlassSurface`, `VedroPullDownButton`) pass a light
+  ///   [blurSigma] (`2.5–4.5`) so underlying edges stay crisp enough to visibly
+  ///   bend & split into chromatic rainbows like `QmDeve/AndroidLiquidGlassView`.
+  /// - For text-dense menus & sheets pass a moderate [blurSigma] (`10–14`) so
+  ///   underlying text is fully diffused while the curved outer `22dp` bezel
+  ///   refracts and disperses surrounding ambient light.
   static ui.ImageFilter buildBackdropFilter({
     required BuildContext context,
     required bool isLight,
@@ -58,14 +57,17 @@ class VedroLiquidGlassShader {
     required double blurSigma,
     required double borderRadius,
     required bool enableRefraction,
-    String liquidSpecular = 'balanced',
-    double refractionDp = 12.5,
-    double dispersionDp = 2.2,
+    String liquidSpecular = 'standard',
+    double refractionHeightDp = 22.0,
+    double refractionAmountDp = 62.0,
+    double dispersion = 0.52,
+    double depthEffect = 0.30,
     double? intensityOverride,
   }) {
+    final hasBlur = blurSigma > 0.15;
     final blurFilter = ui.ImageFilter.blur(
-      sigmaX: blurSigma,
-      sigmaY: blurSigma,
+      sigmaX: hasBlur ? blurSigma : 0.0,
+      sigmaY: hasBlur ? blurSigma : 0.0,
       tileMode: ui.TileMode.clamp,
     );
     if (!enableRefraction || !isAvailable) {
@@ -79,13 +81,13 @@ class VedroLiquidGlassShader {
       final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
       final specMul = intensityOverride ??
           switch (liquidSpecular) {
-            'subtle' => 0.65,
-            'vivid' => 1.35,
+            'subtle' => 0.72,
+            'vivid' => 1.32,
             _ => 1.0,
           };
       final refractScale = switch (liquidSpecular) {
         'subtle' => 0.78,
-        'vivid' => 1.24,
+        'vivid' => 1.18,
         _ => 1.0,
       };
 
@@ -94,26 +96,31 @@ class VedroLiquidGlassShader {
       shader.setFloat(0, 0.0);
       shader.setFloat(1, 0.0);
       // Uniform 2: u_radiusPx
-      shader.setFloat(2, (borderRadius * dpr).clamp(0.0, 240.0));
+      shader.setFloat(2, (borderRadius * dpr).clamp(0.0, 260.0));
       // Uniform 3: u_dpr
       shader.setFloat(3, dpr.clamp(1.0, 4.0));
-      // Uniform 4: u_refractionPx
-      shader.setFloat(4, (refractionDp * refractScale * dpr).clamp(0.0, 84.0));
-      // Uniform 5: u_dispersionPx
-      shader.setFloat(5, (dispersionDp * refractScale * dpr).clamp(0.0, 18.0));
-      // Uniform 6: u_specIntensity
-      shader.setFloat(6, specMul.clamp(0.4, 1.6));
-      // Uniform 7: u_isLight
-      shader.setFloat(7, isLight ? 1.0 : 0.0);
-      // Uniforms 8, 9, 10: u_accent (r, g, b in 0..1)
-      shader.setFloat(8, accent.r);
-      shader.setFloat(9, accent.g);
-      shader.setFloat(10, accent.b);
+      // Uniform 4: u_refractionHeightPx
+      shader.setFloat(4, (refractionHeightDp * dpr).clamp(8.0, 120.0));
+      // Uniform 5: u_refractionAmountPx
+      shader.setFloat(5, (refractionAmountDp * refractScale * dpr).clamp(0.0, 260.0));
+      // Uniform 6: u_dispersion (0..1 ratio of refraction amount)
+      shader.setFloat(6, (dispersion * refractScale).clamp(0.0, 0.95));
+      // Uniform 7: u_depthEffect
+      shader.setFloat(7, depthEffect.clamp(0.0, 0.6));
+      // Uniform 8: u_specIntensity
+      shader.setFloat(8, specMul.clamp(0.4, 1.6));
+      // Uniform 9: u_isLight
+      shader.setFloat(9, isLight ? 1.0 : 0.0);
+      // Uniforms 10, 11, 12: u_accent (r, g, b in 0..1)
+      shader.setFloat(10, accent.r);
+      shader.setFloat(11, accent.g);
+      shader.setFloat(12, accent.b);
 
       final shaderFilter = ui.ImageFilter.shader(
         shader,
         filterQuality: FilterQuality.medium,
       );
+      if (!hasBlur) return shaderFilter;
       return ui.ImageFilter.compose(
         outer: shaderFilter,
         inner: blurFilter,

@@ -208,12 +208,24 @@ class GlassSurface extends StatelessWidget {
     final skin = VedroSkin.of(context);
     final isLiquid = skin.isLiquidGlass;
     final specMul = switch (skin.liquidSpecular) {
-      'subtle' => 0.65,
-      'vivid' => 1.35,
+      'subtle' => 0.72,
+      'vivid' => 1.32,
       _ => 1.0,
     };
-    final effBlur = enableBlur ? PlatformPerfProfile.clampLiveBlur(blur) : 0.0;
-    final effectiveColor = PlatformPerfProfile.adaptGlassFill(color ?? skin.glass);
+    final hasLiquidGpu = isLiquid && VedroLiquidGlassShader.isAvailable;
+    // On Impeller Liquid Glass floating chrome (bottom dock, capsules, pills), use
+    // QmDeve-style crystal optics: light blur (~3.2 sigma) + airy crystal tint
+    // (0.24 dark / 0.34 light) so curved-edge refraction & 7-band rainbow dispersion
+    // shine unmistakably instead of being buried under opaque paint!
+    final effBlur = !enableBlur
+        ? 0.0
+        : (hasLiquidGpu ? 3.2 : PlatformPerfProfile.clampLiveBlur(blur));
+    final rawColor = color ?? skin.glass;
+    final effectiveColor = hasLiquidGpu
+        ? (skin.isLight ? Colors.white : skin.canvas).withValues(
+            alpha: skin.isLight ? 0.34 : 0.24,
+          )
+        : PlatformPerfProfile.adaptGlassFill(rawColor);
     final effectiveBorder = borderColor ?? skin.borderStrong;
     final radius = BorderRadius.circular(borderRadius);
     final inner = DecoratedBox(
@@ -223,13 +235,13 @@ class GlassSurface extends StatelessWidget {
             ? LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                stops: const [0.0, 0.42, 1.0],
+                stops: const [0.0, 0.38, 1.0],
                 colors: [
                   Colors.white.withValues(
-                    alpha: ((skin.isLight ? 0.48 : 0.16) * specMul).clamp(0.04, 0.72),
+                    alpha: ((skin.isLight ? 0.38 : 0.14) * specMul).clamp(0.04, 0.56),
                   ),
                   Colors.transparent,
-                  skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.07),
+                  skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.06),
                 ],
               )
             : null,
@@ -247,8 +259,8 @@ class GlassSurface extends StatelessWidget {
                 borderRadius: radius,
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: skin.isLight ? 0.08 : 0.30),
-                    blurRadius: 22,
+                    color: Colors.black.withValues(alpha: skin.isLight ? 0.10 : 0.34),
+                    blurRadius: 24,
                     offset: const Offset(0, 8),
                   ),
                 ],
@@ -271,7 +283,7 @@ class GlassSurface extends StatelessWidget {
               : null,
           child: ClipRRect(
             borderRadius: radius,
-            child: effBlur > 0.1
+            child: (effBlur > 0.1 || (enableBlur && hasLiquidGpu))
                 ? BackdropFilter(
                     filter: VedroLiquidGlassShader.buildBackdropFilter(
                       context: context,
@@ -281,8 +293,10 @@ class GlassSurface extends StatelessWidget {
                       borderRadius: borderRadius,
                       enableRefraction: isLiquid,
                       liquidSpecular: skin.liquidSpecular,
-                      refractionDp: 14.0,
-                      dispersionDp: 2.6,
+                      refractionHeightDp: 22.0,
+                      refractionAmountDp: 64.0,
+                      dispersion: 0.54,
+                      depthEffect: 0.30,
                     ),
                     child: inner,
                   )
@@ -1250,7 +1264,11 @@ Future<T?> showGlassSheet<T>({
         ? (isGlassTheme ? Colors.white : skin.surface)
         : Color.lerp(skin.surface2, skin.surface, 0.36)!;
     final fillColor = isLiquid
-        ? baseColor.withValues(alpha: skin.isLight ? 0.87 : 0.86)
+        ? baseColor.withValues(
+            alpha: VedroLiquidGlassShader.isAvailable
+                ? (skin.isLight ? 0.72 : 0.66)
+                : (skin.isLight ? 0.87 : 0.86),
+          )
         : (isFrosted
             ? baseColor.withValues(alpha: skin.isLight ? 0.89 : 0.87)
             : skin.surface);
@@ -1321,8 +1339,10 @@ Future<T?> showGlassSheet<T>({
                       borderRadius: radius,
                       enableRefraction: isLiquid,
                       liquidSpecular: skin.liquidSpecular,
-                      refractionDp: 12.0,
-                      dispersionDp: 2.2,
+                      refractionHeightDp: 24.0,
+                      refractionAmountDp: 58.0,
+                      dispersion: 0.52,
+                      depthEffect: 0.28,
                       intensityOverride: isLiquid ? 1.15 : null,
                     ),
                     child: body,
@@ -1733,17 +1753,23 @@ class _VedroPullDownButtonState<T> extends State<VedroPullDownButton<T>> {
 
     Widget pill;
     if (isLiquid) {
-      final pillBlur = PlatformPerfProfile.clampLiveBlur(22);
+      final hasGpu = VedroLiquidGlassShader.isAvailable;
+      final pillBlur = hasGpu ? 3.2 : PlatformPerfProfile.clampLiveBlur(22);
+      final pillBg = hasGpu
+          ? (skin.isLight ? Colors.white : skin.canvas).withValues(
+              alpha: _isOpen ? (skin.isLight ? 0.44 : 0.34) : (skin.isLight ? 0.34 : 0.24),
+            )
+          : bg;
       final pillInner = Container(
         height: widget.height,
         padding: const EdgeInsets.symmetric(horizontal: 13),
         decoration: BoxDecoration(
-          color: bg,
+          color: pillBg,
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [
-              Colors.white.withValues(alpha: skin.isLight ? 0.42 : 0.12),
+              Colors.white.withValues(alpha: skin.isLight ? 0.36 : 0.12),
               Colors.transparent,
             ],
           ),
@@ -1759,7 +1785,7 @@ class _VedroPullDownButtonState<T> extends State<VedroPullDownButton<T>> {
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(r),
-          child: pillBlur > 0.1
+          child: (pillBlur > 0.1 || hasGpu)
               ? BackdropFilter(
                   filter: VedroLiquidGlassShader.buildBackdropFilter(
                     context: context,
@@ -1769,8 +1795,10 @@ class _VedroPullDownButtonState<T> extends State<VedroPullDownButton<T>> {
                     borderRadius: r,
                     enableRefraction: true,
                     liquidSpecular: skin.liquidSpecular,
-                    refractionDp: 13.5,
-                    dispersionDp: 2.5,
+                    refractionHeightDp: 18.0,
+                    refractionAmountDp: 56.0,
+                    dispersion: 0.52,
+                    depthEffect: 0.30,
                   ),
                   child: pillInner,
                 )
@@ -1894,13 +1922,20 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
     final isLiquid = skin.isLiquidGlass;
     final isFrosted = skin.usesGlassPanels && !isLiquid;
     final isGlassTheme = isLiquid || isFrosted;
-    final liveSigma = isGlassTheme ? PlatformPerfProfile.clampLiveBlur(20.0) : 0.0;
+    final liveSigma = isLiquid
+        ? (VedroLiquidGlassShader.isAvailable ? 10.5 : PlatformPerfProfile.clampLiveBlur(20.0))
+        : (isFrosted ? PlatformPerfProfile.clampLiveBlur(20.0) : 0.0);
     final baseSurface = skin.isLight
         ? (isGlassTheme ? Colors.white : skin.surface)
         : Color.lerp(skin.surface2, skin.surface, 0.32)!;
-    // High-density frosted tint with simultaneous live blur from frame 0.
+    // Readable frosted interior (diffuses underlying text completely) while letting
+    // QmDeve's curved 22dp liquid bevel refract & disperse ambient light cleanly!
     final menuFill = isLiquid
-        ? baseSurface.withValues(alpha: skin.isLight ? 0.86 : 0.85)
+        ? baseSurface.withValues(
+            alpha: VedroLiquidGlassShader.isAvailable
+                ? (skin.isLight ? 0.72 : 0.66)
+                : (skin.isLight ? 0.86 : 0.85),
+          )
         : (isFrosted
             ? baseSurface.withValues(alpha: skin.isLight ? 0.88 : 0.86)
             : baseSurface.withValues(alpha: 0.98));
@@ -2089,8 +2124,10 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
                         borderRadius: curRadius,
                         enableRefraction: isLiquid,
                         liquidSpecular: skin.liquidSpecular,
-                        refractionDp: 12.0,
-                        dispersionDp: 2.2,
+                        refractionHeightDp: 22.0,
+                        refractionAmountDp: 60.0,
+                        dispersion: 0.54,
+                        depthEffect: 0.28,
                         intensityOverride: isLiquid ? 1.15 : null,
                       ),
                       child: body,

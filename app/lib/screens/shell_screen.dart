@@ -882,7 +882,7 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
               key: ValueKey('mobile-nav-$mobileNav'),
               borderRadius: dockR,
               blur: skin.backdropBlur.clamp(24.0, 44.0),
-              color: skin.glass,
+              color: skin.isLiquidGlass ? null : skin.glass,
               borderColor: skin.borderStrong,
               padding: EdgeInsets.symmetric(
                 horizontal: compactIcons ? 8 : 6,

@@ -1524,14 +1524,15 @@ Future<void> showVedroActionMenu({
   required BuildContext context,
   required Rect anchorRect,
   required List<VedroDropdownItem<String>> items,
-  double minWidth = 232,
-  double maxWidth = 320,
+  ThemeData? theme,
+  double minWidth = 224,
+  double maxWidth = 300,
 }) {
   HapticFeedback.selectionClick();
   return Navigator.of(context).push(
     _VedroPullDownRoute<void>(
       triggerRect: anchorRect,
-      theme: Theme.of(context),
+      theme: theme ?? Theme.of(context),
       minWidth: minWidth,
       maxWidth: maxWidth,
       items: items,
@@ -1888,26 +1889,10 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
 
     final spaceBelow = safeBottom - triggerRect.bottom - 6.0;
     final spaceAbove = triggerRect.top - safeTop - 6.0;
-    final estHeight = 14.0 +
-        items.fold<double>(
-          0.0,
-          (sum, e) => sum + ((e.subtitle != null && e.subtitle!.trim().isNotEmpty) ? 58.0 : 44.0),
-        );
-    final openUpward = spaceBelow < math.min(estHeight, 220.0) && spaceAbove > spaceBelow;
+    final openUpward = spaceBelow < 180.0 && spaceAbove > spaceBelow;
     final maxMenuH = (openUpward ? spaceAbove : spaceBelow).clamp(140.0, 380.0);
-    final targetH = estHeight.clamp(56.0, maxMenuH);
-    final targetTop = (openUpward
-            ? (triggerRect.top - 6.0 - targetH).clamp(safeTop, math.max(safeTop, screen.height - targetH - 12.0))
-            : (triggerRect.bottom + 6.0).clamp(safeTop, math.max(safeTop, safeBottom - targetH)))
-        .toDouble();
-    final targetRect = Rect.fromLTWH(left, targetTop, menuW, targetH);
-    final startRect = Rect.fromLTWH(
-      triggerRect.left.clamp(12.0, math.max(12.0, screen.width - 44.0)).toDouble(),
-      triggerRect.top.clamp(12.0, math.max(12.0, screen.height - 44.0)).toDouble(),
-      triggerRect.width.clamp(36.0, menuW).toDouble(),
-      triggerRect.height.clamp(32.0, targetH).toDouble(),
-    );
-    final startR = math.min(startRect.width, startRect.height) * 0.5;
+    final startWFrac = (triggerRect.width / menuW).clamp(0.22, 1.0);
+    final startR = math.min(triggerRect.width, triggerRect.height) * 0.5;
     final contentAlign = Alignment(alignRight ? 1.0 : -1.0, openUpward ? 1.0 : -1.0);
 
     // Glasmio-inspired smooth linear-decelerate button-to-menu morph curve (zero wobble).
@@ -1969,9 +1954,7 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
             final shouldAutofocus = selectedIdx >= 0 && selectedIdx < 6
                 ? idx == selectedIdx
                 : idx == 0;
-            final textColor = entry.isDestructive
-                ? VedroTheme.danger
-                : (isSelected ? skin.fg : skin.fg.withValues(alpha: 0.90));
+            final textColor = entry.isDestructive ? VedroTheme.danger : skin.fg;
             return PressableScale(
               key: entry.itemKey,
               autofocus: shouldAutofocus,
@@ -2001,8 +1984,8 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
                           : (entry.onTapOverride != null && entry.icon != null
                               ? Icon(
                                   entry.icon,
-                                  size: 16,
-                                  color: entry.isDestructive ? VedroTheme.danger : skin.accent,
+                                  size: 16.5,
+                                  color: entry.isDestructive ? VedroTheme.danger : skin.fg2,
                                 )
                               : null),
                     ),
@@ -2146,43 +2129,33 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
             animation: morphCurve,
             builder: (_, __) {
               final t = morphCurve.value.clamp(0.0, 1.0);
-              final settled = animation.status == AnimationStatus.completed;
-              // Simultaneous blur from frame 0 — never flashes clear before blurring.
+              // Single unified layout tree from t=0..1 using true intrinsic menuList size:
+              // ZERO height estimation, ZERO oversized bloom, ZERO snap-shrink at completion!
               final curSigma = liveSigma * (0.45 + 0.55 * t);
-              if (settled) {
-                return Positioned(
-                  left: left,
-                  top: openUpward ? null : targetTop,
-                  bottom: openUpward ? (screen.height - (triggerRect.top - 6.0)) : null,
-                  child: buildMenuCard(
-                    curRadius: r,
-                    curSigma: liveSigma,
-                    child: menuList,
-                  ),
-                );
-              }
-              final curRect = Rect.lerp(startRect, targetRect, t)!;
-              final curR = (startR + (r - startR) * t)
-                  .clamp(6.0, math.min(curRect.width, curRect.height) * 0.5)
-                  .toDouble();
-              final shellOpacity = (t / 0.28).clamp(0.0, 1.0);
-              final contentOpacity = ((t - 0.10) / 0.52).clamp(0.0, 1.0);
-              return Positioned.fromRect(
-                rect: curRect,
+              final curR = (startR + (r - startR) * t).clamp(8.0, 26.0).toDouble();
+              final wFactor = (startWFrac + (1.0 - startWFrac) * t).clamp(0.22, 1.0).toDouble();
+              final hFactor = (0.20 + 0.80 * t).clamp(0.20, 1.0).toDouble();
+              final shellOpacity = (t / 0.26).clamp(0.0, 1.0);
+              final contentOpacity = ((t - 0.08) / 0.48).clamp(0.0, 1.0);
+              return Positioned(
+                left: alignRight ? null : left,
+                right: alignRight ? (screen.width - (left + menuW)).clamp(12.0, screen.width - 12.0).toDouble() : null,
+                top: openUpward ? null : (triggerRect.bottom + 6.0).clamp(safeTop, safeBottom - 60.0).toDouble(),
+                bottom: openUpward ? (screen.height - (triggerRect.top - 6.0)).clamp(12.0, screen.height - safeTop - 60.0).toDouble() : null,
                 child: Opacity(
                   opacity: shellOpacity,
                   child: buildMenuCard(
                     curRadius: curR,
                     curSigma: curSigma,
-                    child: OverflowBox(
-                      minWidth: menuW,
-                      maxWidth: menuW,
-                      minHeight: targetH,
-                      maxHeight: targetH,
-                      alignment: contentAlign,
-                      child: Opacity(
-                        opacity: contentOpacity,
-                        child: menuList,
+                    child: ClipRect(
+                      child: Align(
+                        alignment: contentAlign,
+                        widthFactor: wFactor,
+                        heightFactor: hFactor,
+                        child: Opacity(
+                          opacity: contentOpacity,
+                          child: menuList,
+                        ),
                       ),
                     ),
                   ),

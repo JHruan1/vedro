@@ -6,19 +6,19 @@ uniform vec2 u_size;
 uniform float u_radiusPx;
 // Device pixel ratio (keeps bevel width & refraction resolution-independent).
 uniform float u_dpr;
-// Curved glass bezel width in physical pixels (QmDeve default ~20-24 dp).
+// Curved glass bezel width in physical pixels.
 uniform float u_refractionHeightPx;
-// Peak inward lens refraction displacement in physical pixels (QmDeve default ~56-64 dp).
+// Peak inward lens refraction displacement in physical pixels (auto-clamped to shape thickness).
 uniform float u_refractionAmountPx;
-// Chromatic dispersion ratio (QmDeve default ~0.50-0.54).
+// Chromatic dispersion ratio (0..1).
 uniform float u_dispersion;
-// 3D convex dome depth curvature (QmDeve default ~0.30).
+// 3D convex dome depth curvature.
 uniform float u_depthEffect;
 // Specular & caustic optical intensity multiplier (0.72 subtle, 1.0 standard, 1.32 vivid).
 uniform float u_specIntensity;
 // 1.0 for light theme polarity, 0.0 for dark theme polarity.
 uniform float u_isLight;
-// Active theme accent color (RGB in 0..1) for subtle bottom-right caustic bounce.
+// Active theme accent color (RGB in 0..1) for subtle ambient bounce.
 uniform vec3 u_accent;
 
 // Impeller ImageFilter.shader mandatory first sampler: live backdrop texture.
@@ -59,20 +59,20 @@ vec2 gradSdRoundedRect(vec2 coord, vec2 halfSize, float radius) {
 }
 
 float circleMap(float x) {
-  float cx = clamp(x, 0.0, 0.999);
+  float cx = clamp(x, 0.0, 0.985);
   return 1.0 - sqrt(max(0.0, 1.0 - cx * cx));
 }
 
 vec2 toSampleUV(vec2 posPx) {
   vec2 safeSize = max(u_size, vec2(1.0));
-  vec2 uv = clamp(posPx / safeSize, vec2(0.001), vec2(0.999));
+  vec2 uv = clamp(posPx / safeSize, vec2(0.002), vec2(0.998));
 #ifdef IMPELLER_TARGET_OPENGLES
   uv.y = 1.0 - uv.y;
 #endif
   return uv;
 }
 
-// High-speed mobile-friendly crystal grading (quadratic gamma avoids slow pow() on Adreno/Mali).
+// Fast quadratic-gamma crystal grading (120Hz mobile GPU friendly, zero pow()).
 vec3 gradeLiquidCrystalFast(vec3 rgb, float chromaMul, float whitePoint, float contrast) {
   vec3 lin = rgb * rgb;
   float y = dot(lin, vec3(0.2126, 0.7152, 0.0722));
@@ -96,41 +96,46 @@ void main() {
   float sd = sdRoundedRect(p, halfSize, r);
   float distFromEdge = max(0.0, -sd);
 
-  float refrHeight = clamp(u_refractionHeightPx, 6.0 * dpr, minHalf * 0.92);
-  float chromaMul = mix(1.20, 1.14, u_isLight);
-  float whitePoint = mix(0.02, 0.07, u_isLight);
-  float contrast = mix(0.07, 0.04, u_isLight);
+  // Clamp bezel width & peak refraction safely to shape half-thickness so thin
+  // floating docks (56dp) NEVER shoot past the clipped texture boundary into a
+  // single clamped stripe — refracting organically all 360° around the entire pill!
+  float refrHeight = clamp(u_refractionHeightPx, 6.0 * dpr, minHalf * 0.58);
+  float safeRefrAmount = min(u_refractionAmountPx, refrHeight * 0.88);
+  float edgeT = clamp(1.0 - (distFromEdge / max(refrHeight, 1.0)), 0.0, 1.0);
+  // C1 smooth cubic blend eliminates any visible seam between bezel and flat center.
+  float smoothEdge = edgeT * edgeT * (3.0 - 2.0 * edgeT);
+  float lensProfile = mix(smoothEdge, circleMap(edgeT), 0.55) * smoothEdge;
+
+  float chromaMul = mix(1.18, 1.12, u_isLight);
+  float whitePoint = mix(0.02, 0.06, u_isLight);
+  float contrast = mix(0.05, 0.03, u_isLight);
 
   vec3 rgb;
   float alpha;
 
-  if (distFromEdge >= refrHeight) {
-    // Fast 1-tap interior path: calm crystal glass with gentle optical lens feel.
-    vec2 centerSamplePos = posPx - (p / max(halfSize, vec2(1.0))) * (u_refractionAmountPx * 0.025);
-    vec4 base = texture(u_texture, toSampleUV(centerSamplePos));
+  if (edgeT <= 0.001) {
+    // Fast 1-tap interior path: calm crystal glass with gentle lens magnification.
+    vec2 centerPos = posPx - (p / max(halfSize, vec2(1.0))) * (safeRefrAmount * 0.04);
+    vec4 base = texture(u_texture, toSampleUV(centerPos));
     alpha = base.a;
     rgb = alpha > 1e-4 ? clamp(base.rgb / alpha, 0.0, 1.0) : vec3(0.0);
     rgb = gradeLiquidCrystalFast(rgb, chromaMul, whitePoint, contrast);
   } else {
-    // Curved optical prism wall (QmDeve/Kyant0 geometry with 120Hz-optimized 3-tap RGB dispersion).
-    float edgeT = clamp(1.0 - (distFromEdge / max(refrHeight, 1.0)), 0.0, 1.0);
-    float d = -circleMap(edgeT) * u_refractionAmountPx;
-
-    float smoothRadius = max(r * 1.5, 26.0 * dpr);
+    float smoothRadius = max(r * 1.35, 16.0 * dpr);
     float gradRadius = min(smoothRadius, minHalf);
     vec2 shapeGrad = gradSdRoundedRect(p, halfSize, gradRadius);
     vec2 depthGrad = safeNormalize(p, shapeGrad);
-    vec2 grad = safeNormalize(shapeGrad + u_depthEffect * depthGrad, shapeGrad);
+    vec2 grad = safeNormalize(shapeGrad + (u_depthEffect * 0.65) * depthGrad, shapeGrad);
 
+    // Pull exterior light softly inward along -grad all 360° around the perimeter.
+    float d = -lensProfile * safeRefrAmount;
     vec2 refractedPos = posPx + d * grad;
 
-    // Fast 3-tap diagonal-quadrant RGB prismatic dispersion (57% less texture bandwidth than 7-tap!).
-    float quadFactor = (p.x * p.y) / max(halfSize.x * halfSize.y, 1.0);
-    vec2 dispVec = d * grad * (u_dispersion * 0.72 * quadFactor);
-
+    // Subtle 3-tap RGB prismatic dispersion around the full curved perimeter.
+    vec2 dispVec = d * grad * (u_dispersion * 0.28);
     vec4 sG = texture(u_texture, toSampleUV(refractedPos));
     alpha = sG.a;
-    if (dot(dispVec, dispVec) > 0.25) {
+    if (dot(dispVec, dispVec) > 0.20) {
       vec4 sR = texture(u_texture, toSampleUV(refractedPos + dispVec));
       vec4 sB = texture(u_texture, toSampleUV(refractedPos - dispVec));
       rgb = vec3(sR.r, sG.g, sB.b);
@@ -138,36 +143,28 @@ void main() {
       rgb = sG.rgb;
     }
     rgb = alpha > 1e-4 ? clamp(rgb / alpha, 0.0, 1.0) : vec3(0.0);
-    rgb = gradeLiquidCrystalFast(rgb, chromaMul + 0.07 * edgeT, whitePoint, contrast);
+    rgb = gradeLiquidCrystalFast(rgb, chromaMul + 0.06 * smoothEdge, whitePoint, contrast);
 
-    // Sub-surface Fresnel catchlight & opposite accent caustic (fast algebraic powers).
-    vec2 lightDir = normalize(vec2(-0.72, -0.69));
-    float dotL = dot(shapeGrad, lightDir);
-    float posL = max(0.0, dotL);
-    float negL = max(0.0, -dotL);
-    float topCatch = posL * sqrt(posL);
-    float botCaustic = negL * negL;
-    float dualRim = dotL * dotL;
+    // Natural 360° continuous Apple iOS 26 Fresnel glass rim (top, bottom, left, right).
+    float rim360 = smoothstep(2.6 * dpr, 0.0, distFromEdge);
+    float softBevel360 = smoothstep(refrHeight * 0.62, 0.0, distFromEdge);
+    float fresnel = smoothEdge * smoothEdge;
 
-    float rimBand = smoothstep(3.2 * dpr, 0.0, distFromEdge);
-    float bevelBand = smoothstep(refrHeight * 0.55, 0.0, distFromEdge);
-    float fresnel = edgeT * edgeT * edgeT;
+    // Gentle directional modulation (top edge slightly brighter, bottom softly bounced,
+    // NEVER dropping to zero along any edge!).
+    float topWeight = 0.5 + 0.5 * clamp(-shapeGrad.y, -1.0, 1.0);
+    float sideWeight = 0.35 + 0.65 * abs(shapeGrad.x);
+    float specScale = clamp(u_specIntensity, 0.45, 1.5);
 
-    float specScale = clamp(u_specIntensity, 0.4, 1.6);
-    float topBoost = mix(0.32, 0.40, u_isLight) * specScale;
-    float causticBoost = mix(0.24, 0.16, u_isLight) * specScale;
+    float rimLight = mix(0.16, 0.28, topWeight) * rim360 +
+        mix(0.04, 0.08, topWeight) * softBevel360 +
+        0.05 * sideWeight * rim360 +
+        mix(0.04, 0.07, u_isLight) * fresnel;
+    vec3 rimGlow = vec3(1.0) * (rimLight * mix(0.85, 1.05, u_isLight) * specScale);
 
-    vec3 rimGlow = vec3(1.0) * (
-      topCatch * topBoost * rimBand +
-      topCatch * (topBoost * 0.28) * bevelBand +
-      dualRim * (0.11 * specScale) * rimBand +
-      mix(0.07, 0.11, u_isLight) * specScale * fresnel
-    );
-    vec3 causticColor = mix(vec3(1.0), u_accent, 0.48);
-    vec3 causticGlow = causticColor * (botCaustic * causticBoost * (rimBand * 0.78 + bevelBand * 0.22));
-
-    float trough = smoothstep(0.0, 2.2 * dpr, distFromEdge) * smoothstep(7.0 * dpr, 2.2 * dpr, distFromEdge);
-    rgb *= 1.0 - trough * mix(0.10, 0.04, u_isLight);
+    // Subtle ambient accent tint on the lower curve so the glass feels dimensional, not neon.
+    float botWeight = 1.0 - topWeight;
+    vec3 causticGlow = mix(vec3(1.0), u_accent, 0.35) * (botWeight * 0.08 * rim360 * specScale);
 
     rgb = clamp(rgb + rimGlow + causticGlow, 0.0, 1.0);
   }

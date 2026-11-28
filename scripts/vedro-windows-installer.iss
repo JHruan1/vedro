@@ -2,7 +2,7 @@
 ; Compiled automatically by scripts/build-windows.ps1 -> dist/vedro-v<Version>-windows-x64-setup.exe
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.12"
+  #define MyAppVersion "1.0.13"
 #endif
 #ifndef MyReleaseDir
   #define MyReleaseDir "..\app\build\windows\x64\runner\Release"

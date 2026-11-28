@@ -378,68 +378,69 @@ class LiquidGlassRimPainter extends CustomPainter {
     final rect = Offset.zero & size;
     final safeR = math.min(radius, math.min(size.width, size.height) * 0.5);
 
-    // 1. Hairline outer separation keyline so the luminous glass bevel pops crisply
-    //    against both bright light-mode canvases and pitch-black cinema scenes.
+    // 1. Subtle 360° outer hairline separation so the luminous glass edge reads crisply
+    //    over both light canvases and dark cinema artwork.
     final outerKeyline = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.7
+      ..strokeWidth = 0.65
       ..isAntiAlias = true
       ..color = isLight
-          ? Colors.black.withValues(alpha: 0.10)
-          : Colors.black.withValues(alpha: 0.42);
+          ? Colors.black.withValues(alpha: 0.09)
+          : Colors.black.withValues(alpha: 0.36);
     canvas.drawRRect(
-      RRect.fromRectAndRadius(rect.deflate(0.35), Radius.circular(safeR)),
+      RRect.fromRectAndRadius(rect.deflate(0.32), Radius.circular(safeR)),
       outerKeyline,
     );
 
-    // 2. Soft inner refractive glass thickness bevel (gives authentic curved-lens depth).
-    final innerAlphaTop = ((isLight ? 0.58 : 0.22) * intensity).clamp(0.06, 0.72);
-    final innerAlphaBot = ((selected ? 0.34 : (isLight ? 0.24 : 0.16)) * intensity).clamp(0.04, 0.48);
+    // 2. Continuous 360° soft inner glass thickness glow (wraps evenly around ALL 4 sides
+    //    and curved caps — never leaving the middle of wide pills/docks dead!).
+    final innerAlphaTop = ((isLight ? 0.42 : 0.16) * intensity).clamp(0.05, 0.58);
+    final innerAlphaMid = ((isLight ? 0.24 : 0.09) * intensity).clamp(0.03, 0.36);
+    final innerAlphaBot = ((selected ? 0.28 : (isLight ? 0.30 : 0.14)) * intensity).clamp(0.04, 0.42);
     final innerBevel = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.6
+      ..strokeWidth = 2.0
       ..isAntiAlias = true
       ..shader = LinearGradient(
-        begin: const Alignment(-1.0, -1.0),
-        end: const Alignment(1.0, 1.0),
-        stops: const [0.0, 0.34, 0.66, 1.0],
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        stops: const [0.0, 0.48, 1.0],
         colors: [
           Colors.white.withValues(alpha: innerAlphaTop),
-          Colors.white.withValues(alpha: innerAlphaTop * 0.12),
-          Colors.transparent,
-          Color.lerp(Colors.white, accent, 0.45)!.withValues(alpha: innerAlphaBot),
+          Colors.white.withValues(alpha: innerAlphaMid),
+          Color.lerp(Colors.white, accent, 0.28)!.withValues(alpha: innerAlphaBot),
         ],
       ).createShader(rect);
-    final innerR = math.max(0.0, safeR - 1.5);
+    final innerR = math.max(0.0, safeR - 1.3);
     canvas.drawRRect(
-      RRect.fromRectAndRadius(rect.deflate(1.9), Radius.circular(innerR)),
+      RRect.fromRectAndRadius(rect.deflate(1.65), Radius.circular(innerR)),
       innerBevel,
     );
 
-    // 3. Crisp primary specular rim highlight (top-left bright catch -> mid sheen -> bottom-right caustic).
-    final topAlpha = ((isLight ? 0.98 : 0.84) * intensity).clamp(0.24, 1.0);
-    final midAlpha = ((isLight ? 0.46 : 0.22) * intensity).clamp(0.08, 0.65);
-    final causticAlpha = ((selected ? 0.82 : (isLight ? 0.58 : 0.54)) * intensity).clamp(0.18, 0.95);
+    // 3. Continuous 360° Apple iOS 26 specular perimeter rim (top bright catchlight ->
+    //    even side-cap luminosity -> soft bottom reflection, zero hard diagonal break).
+    final topAlpha = ((isLight ? 0.92 : 0.56) * intensity).clamp(0.20, 0.96);
+    final midAlpha = ((isLight ? 0.62 : 0.30) * intensity).clamp(0.12, 0.72);
+    final botAlpha = ((selected ? 0.68 : (isLight ? 0.72 : 0.38)) * intensity).clamp(0.16, 0.82);
 
     final rimPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = selected ? 1.65 : 1.32
+      ..strokeWidth = selected ? 1.35 : 1.05
       ..isAntiAlias = true
       ..shader = LinearGradient(
-        begin: const Alignment(-0.98, -0.98),
-        end: const Alignment(0.98, 0.98),
-        stops: const [0.0, 0.34, 0.68, 1.0],
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        stops: const [0.0, 0.50, 1.0],
         colors: [
           Colors.white.withValues(alpha: topAlpha),
           Colors.white.withValues(alpha: midAlpha),
-          Colors.white.withValues(alpha: midAlpha * 0.85),
-          Color.lerp(Colors.white, accent, selected ? 0.72 : 0.46)!.withValues(alpha: causticAlpha),
+          Color.lerp(Colors.white, accent, selected ? 0.45 : 0.24)!.withValues(alpha: botAlpha),
         ],
       ).createShader(rect);
 
-    final rimR = math.max(0.0, safeR - 0.3);
+    final rimR = math.max(0.0, safeR - 0.25);
     canvas.drawRRect(
-      RRect.fromRectAndRadius(rect.deflate(0.8), Radius.circular(rimR)),
+      RRect.fromRectAndRadius(rect.deflate(0.75), Radius.circular(rimR)),
       rimPaint,
     );
   }

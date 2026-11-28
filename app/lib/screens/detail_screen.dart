@@ -1091,13 +1091,15 @@ class _DetailScreenState extends State<DetailScreen> {
     if (items.isEmpty) return;
 
     final screen = MediaQuery.sizeOf(context);
+    final anchorCtx = anchorKey?.currentContext ?? context;
     final anchorRect = (anchorKey != null ? vedroGlobalRectOfKey(context, anchorKey) : null) ??
         Rect.fromLTWH(screen.width - 54.0, MediaQuery.paddingOf(context).top + 12.0, 40.0, 40.0);
     showVedroActionMenu(
-      context: context,
+      context: anchorCtx,
+      theme: _cachedDetailTheme ?? Theme.of(anchorCtx),
       anchorRect: anchorRect,
-      minWidth: 236,
-      maxWidth: 300,
+      minWidth: 224,
+      maxWidth: 292,
       items: items,
     );
   }

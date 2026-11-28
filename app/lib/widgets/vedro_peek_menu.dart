@@ -298,26 +298,28 @@ class _VedroPeekMenuStage extends StatelessWidget {
         ],
       ),
       child: CustomPaint(
-        foregroundPainter: isGlassTheme
+        foregroundPainter: isLiquid
             ? LiquidGlassRimPainter(
                 radius: menuRadius,
                 isLight: skin.isLight,
                 accent: skin.accent,
-                intensity: isLiquid ? 1.15 : 0.72,
+                intensity: 1.15,
               )
             : null,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(menuRadius),
           child: DecoratedBox(
             position: DecorationPosition.foreground,
-            decoration: isGlassTheme
+            decoration: isLiquid
                 ? const BoxDecoration()
                 : BoxDecoration(
                     borderRadius: BorderRadius.circular(menuRadius),
                     border: Border.all(
-                      color: skin.isLight
-                          ? Colors.black.withValues(alpha: 0.08)
-                          : Colors.white.withValues(alpha: 0.15),
+                      color: isGlassTheme
+                          ? (skin.isLight
+                              ? Colors.black.withValues(alpha: 0.09)
+                              : Colors.white.withValues(alpha: 0.22))
+                          : skin.borderStrong,
                       width: 0.85,
                     ),
                   ),

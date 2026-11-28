@@ -483,20 +483,6 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
     }
   }
 
-  String? _resolveHomeFanartUrl() {
-    final app = widget.appState;
-    if (!app.isSignedIn) return null;
-    for (final list in [app.popular, app.resume, app.nextUp, app.favorites]) {
-      for (final item in list) {
-        final art = app.backdropArt(item);
-        if (art != null && !art.isPoster && art.url.isNotEmpty) {
-          return art.url;
-        }
-      }
-    }
-    return null;
-  }
-
   @override
   Widget build(BuildContext context) {
     final skin = VedroSkin.of(context);
@@ -579,12 +565,12 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
     }
 
     // Lazy-mounted IndexedStack: preserves Home scroll position & decoded textures
-    // while each tab switch settles in on a critically damped spring (fade + depth).
-    // The wrapper tree is identical for every tab, so switching never remounts a page.
+    // while each tab switch cross-fades smoothly over solid `skin.canvas` with
+    // zero bright-then-dark fanart strobe!
     final reduceMotion = PlatformPerfProfile.shouldReduceMotion(context);
     final tabFade = CurvedAnimation(
       parent: _tabAnimCtrl,
-      curve: const Interval(0.0, 0.55, curve: Curves.easeOut),
+      curve: const Interval(0.0, 0.55, curve: Curves.easeOutCubic),
     );
     const settled = AlwaysStoppedAnimation<double>(1.0);
     final pageSwitcher = IndexedStack(
@@ -593,7 +579,7 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
         for (var i = 0; i < 5; i++)
           FadeTransition(
             opacity: (i == _index && !reduceMotion)
-                ? Tween<double>(begin: 0.6, end: 1.0).animate(tabFade)
+                ? Tween<double>(begin: 0.92, end: 1.0).animate(tabFade)
                 : settled,
             child: buildTab(i),
           ),
@@ -605,14 +591,16 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
       child: pageSwitcher,
     );
 
-    // Never stack a second blurred fanart layer behind HomeScreen when HomeScreen already renders its own Hero banner!
+    // Every tab renders its own `VedroSkinCanvas` (Home renders its own Hero banner;
+    // Search/Playlists/Servers/Settings render their own steady ambient backdrop).
+    // Keeping the shell wrapper free of an extra fanart image eliminates the bright
+    // flash-then-darken strobe when switching to Search / Favorites / Playlists!
     final homeHasHeroBackdrop = _index == 0 &&
         signedIn &&
         widget.appState.hasAnyHomeContent &&
         widget.appState.showHomeHero &&
         skin.heroStyle != 'compact_minimal';
-    final fanartUrl =
-        (skin.usesBlurredFanart && !homeHasHeroBackdrop) ? _resolveHomeFanartUrl() : null;
+    const String? fanartUrl = null;
 
     if (wide) {
       return PopScope(

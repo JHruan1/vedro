@@ -1907,6 +1907,15 @@ class VedroSkinCanvas extends StatelessWidget {
                         filterQuality: FilterQuality.low,
                         color: Colors.white.withValues(alpha: skin.isLight ? 0.24 : 0.34),
                         colorBlendMode: BlendMode.modulate,
+                        frameBuilder: (ctx, img, frame, wasSync) {
+                          if (wasSync) return img;
+                          return AnimatedOpacity(
+                            opacity: frame == null ? 0.0 : 1.0,
+                            duration: const Duration(milliseconds: 260),
+                            curve: Curves.easeOut,
+                            child: img,
+                          );
+                        },
                         errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                       ),
                     ),
@@ -2091,103 +2100,4 @@ class VedroAdaptiveSurface extends StatelessWidget {
       child: child,
     );
   }
-}
-
-/// iOS 26 Optical Liquid Glass Refractive Rim Painter:
-/// Paints a continuous diagonal specular highlight at the top-left curved rim,
-/// soft mid-body falloff, and a subtle colored caustic reflection at bottom-right.
-class LiquidGlassRimPainter extends CustomPainter {
-  const LiquidGlassRimPainter({
-    required this.radius,
-    required this.isLight,
-    required this.accent,
-    this.intensity = 1.0,
-    this.selected = false,
-  });
-
-  final double radius;
-  final bool isLight;
-  final Color accent;
-  final double intensity;
-  final bool selected;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (size.isEmpty) return;
-    final rect = Offset.zero & size;
-    final safeR = math.min(radius, math.min(size.width, size.height) * 0.5);
-
-    // 1. Hairline outer separation keyline so the luminous glass bevel pops crisply
-    //    against both bright light-mode canvases and pitch-black cinema scenes.
-    final outerKeyline = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.7
-      ..isAntiAlias = true
-      ..color = isLight
-          ? Colors.black.withValues(alpha: 0.10)
-          : Colors.black.withValues(alpha: 0.42);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect.deflate(0.35), Radius.circular(safeR)),
-      outerKeyline,
-    );
-
-    // 2. Soft inner refractive glass thickness bevel (gives authentic curved-lens depth).
-    final innerAlphaTop = ((isLight ? 0.58 : 0.22) * intensity).clamp(0.06, 0.72);
-    final innerAlphaBot = ((selected ? 0.34 : (isLight ? 0.24 : 0.16)) * intensity).clamp(0.04, 0.48);
-    final innerBevel = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.6
-      ..isAntiAlias = true
-      ..shader = LinearGradient(
-        begin: const Alignment(-1.0, -1.0),
-        end: const Alignment(1.0, 1.0),
-        stops: const [0.0, 0.34, 0.66, 1.0],
-        colors: [
-          Colors.white.withValues(alpha: innerAlphaTop),
-          Colors.white.withValues(alpha: innerAlphaTop * 0.12),
-          Colors.transparent,
-          Color.lerp(Colors.white, accent, 0.45)!.withValues(alpha: innerAlphaBot),
-        ],
-      ).createShader(rect);
-    final innerR = math.max(0.0, safeR - 1.5);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect.deflate(1.9), Radius.circular(innerR)),
-      innerBevel,
-    );
-
-    // 3. Crisp primary specular rim highlight (top-left bright catch -> mid sheen -> bottom-right caustic).
-    final topAlpha = ((isLight ? 0.98 : 0.84) * intensity).clamp(0.24, 1.0);
-    final midAlpha = ((isLight ? 0.46 : 0.22) * intensity).clamp(0.08, 0.65);
-    final causticAlpha = ((selected ? 0.82 : (isLight ? 0.58 : 0.54)) * intensity).clamp(0.18, 0.95);
-
-    final rimPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = selected ? 1.65 : 1.32
-      ..isAntiAlias = true
-      ..shader = LinearGradient(
-        begin: const Alignment(-0.98, -0.98),
-        end: const Alignment(0.98, 0.98),
-        stops: const [0.0, 0.34, 0.68, 1.0],
-        colors: [
-          Colors.white.withValues(alpha: topAlpha),
-          Colors.white.withValues(alpha: midAlpha),
-          Colors.white.withValues(alpha: midAlpha * 0.85),
-          Color.lerp(Colors.white, accent, selected ? 0.72 : 0.46)!.withValues(alpha: causticAlpha),
-        ],
-      ).createShader(rect);
-
-    final rimR = math.max(0.0, safeR - 0.3);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect.deflate(0.8), Radius.circular(rimR)),
-      rimPaint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant LiquidGlassRimPainter old) =>
-      old.radius != radius ||
-      old.isLight != isLight ||
-      old.accent != accent ||
-      old.intensity != intensity ||
-      old.selected != selected;
 }

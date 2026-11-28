@@ -1086,13 +1086,14 @@ void main() {
     expect(find.text('101-120'), findsOneWidget);
     expect(find.text('第一季 NFO 季度简介测试。'), findsOneWidget);
 
-    // Clicking More sheet on desktop (1280px) & clicking outside MUST dismiss cleanly!
+    // Clicking More button morphs anchored action menu out of the button & clicking outside dismisses cleanly!
     await tester.tap(find.byIcon(Icons.more_horiz_rounded));
     await tester.pumpAndSettle();
-    expect(find.text('更多操作'), findsOneWidget);
+    expect(find.byKey(const ValueKey('vedro-pulldown-menu-list')), findsOneWidget);
+    expect(find.text('挂载外挂字幕'), findsOneWidget);
     await tester.tapAt(const Offset(20, 20));
     await tester.pumpAndSettle();
-    expect(find.text('更多操作'), findsNothing);
+    expect(find.byKey(const ValueKey('vedro-pulldown-menu-list')), findsNothing);
 
     // v0.3.10: redundant NFO metadata, technical specs, and file path footer blocks are removed
     expect(find.text('影片资料与 NFO 信息'), findsNothing);

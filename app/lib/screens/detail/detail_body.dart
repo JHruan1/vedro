@@ -244,13 +244,13 @@ extension _DetailBodyExt on _DetailScreenState {
                     : _startDownload,
               ),
             (
-              key: null,
+              key: _deckMoreBtnKey,
               icon: Icons.more_horiz_rounded,
               label: '更多',
               tooltip: '更多（字幕挂载 / 外部播放器 / 片单 / AI 翻译）',
               active: false,
               color: skin.fg,
-              onTap: _openMoreSheet,
+              onTap: () => _openMoreSheet(_deckMoreBtnKey),
             ),
           ];
 
@@ -1582,7 +1582,8 @@ extension _DetailBodyExt on _DetailScreenState {
                 top: topSafe + 10,
                 right: padX - 4,
                 child: PressableScale(
-                  onTap: _openMoreSheet,
+                  key: _topMoreBtnKey,
+                  onTap: () => _openMoreSheet(_topMoreBtnKey),
                   hoverScale: 1.05,
                   pressScale: 0.92,
                   child: GlassSurface(

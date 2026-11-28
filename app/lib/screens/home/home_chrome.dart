@@ -36,7 +36,15 @@ class _HomeMobileTopBar extends StatelessWidget {
             ? Color.lerp(skin.surface.withValues(alpha: 0.84), skin.fg.withValues(alpha: 0.06), t)!
             : Color.lerp(skin.surface.withValues(alpha: 0.62), Colors.white.withValues(alpha: 0.08), t)!;
         final pillFg = skin.isLight ? skin.fg : Colors.white;
-        final barBlur = PlatformPerfProfile.clampLiveBlur(26) * t;
+        final barBlur = PlatformPerfProfile.clampLiveBlur(22) * t;
+        // Airy translucent top header veil when scrolled — never an opaque "forehead" brick.
+        final veilAlpha = (skin.isLiquidGlass
+                ? (skin.isLight ? 0.52 : 0.42)
+                : (skin.usesGlassPanels
+                    ? (skin.isLight ? 0.58 : 0.48)
+                    : (skin.isLight ? 0.64 : 0.54))) *
+            t;
+        final veilBase = skin.isLight ? skin.surface : skin.canvas;
 
         Widget pill({required Widget child, required EdgeInsets padding}) => GlassSurface(
               borderRadius: 19,
@@ -55,14 +63,25 @@ class _HomeMobileTopBar extends StatelessWidget {
                 child: IgnorePointer(
                   child: ClipRect(
                     child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: barBlur, sigmaY: barBlur),
+                      filter: ImageFilter.blur(
+                        sigmaX: barBlur,
+                        sigmaY: barBlur,
+                        tileMode: TileMode.clamp,
+                      ),
                       child: DecoratedBox(
                         decoration: BoxDecoration(
-                          color: PlatformPerfProfile.adaptGlassFill(skin.glass).withValues(
-                              alpha: PlatformPerfProfile.adaptGlassFill(skin.glass).a * t),
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              veilBase.withValues(alpha: (veilAlpha * 1.15).clamp(0.0, 0.74)),
+                              veilBase.withValues(alpha: veilAlpha.clamp(0.0, 0.66)),
+                            ],
+                          ),
                           border: Border(
                             bottom: BorderSide(
-                              color: skin.border.withValues(alpha: skin.border.a * t),
+                              color: (skin.isLiquidGlass ? skin.borderStrong : skin.border)
+                                  .withValues(alpha: (skin.isLiquidGlass ? 0.28 : 0.16) * t),
                               width: 0.5,
                             ),
                           ),

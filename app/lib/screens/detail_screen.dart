@@ -102,6 +102,8 @@ class _DetailScreenState extends State<DetailScreen> {
   final Map<String, String> _subLangByVer = {};
   final Map<String, String?> _extSubByVer = {};
   Color? _detailMonetSeed;
+  final GlobalKey _topMoreBtnKey = GlobalKey();
+  final GlobalKey _deckMoreBtnKey = GlobalKey();
 
   void _refreshDetailMonetSeed() {
     if (_item.type == 'Person') return;
@@ -1034,86 +1036,69 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
-  void _openMoreSheet() {
+  void _openMoreSheet([GlobalKey? anchorKey]) {
     final playable = _resolveDownloadTarget();
     final canDownload = widget.appState.canDownloadItem(playable);
-    final skin = VedroSkin.of(context);
-    showGlassSheet<void>(
-      context: context,
-      builder: (ctx) => ListView(
-        shrinkWrap: true,
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Text('更多操作', style: TextStyle(color: skin.fg, fontSize: 16, fontWeight: FontWeight.w600)),
+    final items = <VedroDropdownItem<String>>[
+      if (playable != null) ...[
+        VedroDropdownItem<String>(
+          value: 'ext_sub',
+          label: '挂载外挂字幕',
+          subtitle: _localExternalSubPath?.split(Platform.pathSeparator).last,
+          icon: Icons.subtitles_outlined,
+          onTapOverride: _pickExternalSubtitleForDetail,
+        ),
+        VedroDropdownItem<String>(
+          value: 'ext_player',
+          label: '外部播放器打开',
+          icon: Icons.open_in_new_rounded,
+          onTapOverride: () => _launchExternal(
+            playable,
+            sourceId: _resolveDownloadSource(playable)?.id ?? _activeSource?.id,
           ),
-          if (playable != null) ...[
-            ListTile(
-              autofocus: true,
-              leading: Icon(Icons.subtitles_outlined, color: skin.fg2),
-              title: Text('挂载外挂字幕', style: TextStyle(color: skin.fg, fontSize: 14)),
-              subtitle: _localExternalSubPath != null
-                  ? Text(
-                      _localExternalSubPath!.split(Platform.pathSeparator).last,
-                      style: TextStyle(color: skin.fg3, fontSize: 12),
-                    )
-                  : null,
-              onTap: () {
-                Navigator.pop(ctx);
-                _pickExternalSubtitleForDetail();
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.open_in_new_rounded, color: skin.fg2),
-              title: Text('外部播放器打开', style: TextStyle(color: skin.fg, fontSize: 14)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _launchExternal(playable, sourceId: _resolveDownloadSource(playable)?.id ?? _activeSource?.id);
-              },
-            ),
-            if (canDownload)
-              ListTile(
-                leading: Icon(Icons.download_rounded, color: skin.fg2),
-                title: Text(
-                  _item.isSeries
-                      ? '批量下载剧集（选集与版本）'
-                      : (_item.mediaSources.length > 1 ? '离线下载到本地（选择版本）' : '离线下载到本地'),
-                  style: TextStyle(color: skin.fg, fontSize: 14),
-                ),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _startDownload();
-                },
-              ),
-          ],
-          if (_item.type != 'Person')
-            ListTile(
-              leading: Icon(Icons.playlist_add_rounded, color: skin.fg2),
-              title: Text('加入片单', style: TextStyle(color: skin.fg, fontSize: 14)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _openPlaylistSheet();
-              },
-            ),
-          if (widget.appState.prefs.isAiReady && _item.cleanOverview.isNotEmpty)
-            ListTile(
-              leading: Icon(Icons.auto_awesome_rounded, color: skin.fg2),
-              title: Text(
-                _translatedOverview != null ? '还原原始简介' : 'AI 翻译简介',
-                style: TextStyle(color: skin.fg, fontSize: 14),
-              ),
-              onTap: () {
-                Navigator.pop(ctx);
-                if (_translatedOverview != null) {
-                  setState(() => _translatedOverview = null);
-                } else {
-                  _translateOverview();
-                }
-              },
-            ),
-        ],
-      ),
+        ),
+        if (canDownload)
+          VedroDropdownItem<String>(
+            value: 'download',
+            label: _item.isSeries
+                ? '批量下载剧集（选集与版本）'
+                : (_item.mediaSources.length > 1 ? '离线下载到本地（选择版本）' : '离线下载到本地'),
+            icon: Icons.download_rounded,
+            onTapOverride: _startDownload,
+          ),
+      ],
+      if (_item.type != 'Person')
+        VedroDropdownItem<String>(
+          value: 'playlist',
+          label: '加入片单',
+          icon: Icons.playlist_add_rounded,
+          onTapOverride: _openPlaylistSheet,
+        ),
+      if (widget.appState.prefs.isAiReady && _item.cleanOverview.isNotEmpty)
+        VedroDropdownItem<String>(
+          value: 'ai_translate',
+          label: _translatedOverview != null ? '还原原始简介' : 'AI 翻译简介',
+          icon: Icons.auto_awesome_rounded,
+          onTapOverride: () {
+            if (_translatedOverview != null) {
+              setState(() => _translatedOverview = null);
+            } else {
+              _translateOverview();
+            }
+          },
+        ),
+    ];
+    if (items.isEmpty) return;
+
+    final screen = MediaQuery.sizeOf(context);
+    final anchorRect = (anchorKey != null ? vedroGlobalRectOfKey(context, anchorKey) : null) ??
+        Rect.fromLTWH(screen.width - 54.0, MediaQuery.paddingOf(context).top + 12.0, 40.0, 40.0);
+    showVedroActionMenu(
+      context: context,
+      anchorRect: anchorRect,
+      minWidth: 236,
+      maxWidth: 300,
+      items: items,
     );
   }
 

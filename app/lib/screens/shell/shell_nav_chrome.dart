@@ -720,10 +720,14 @@ class _FloatingDesktopHeader extends StatelessWidget {
 
         // Keep one unified header shell across tab switches so toggling `clear`
         // smoothly cross-fades fill without remounting or flashing a hairline border.
-        final headerBlur = clear ? 0.0 : PlatformPerfProfile.clampLiveBlur(26);
-        final headerFill = clear
-            ? Colors.transparent
-            : PlatformPerfProfile.adaptGlassFill(skin.glass);
+        final headerBlur = clear ? 0.0 : PlatformPerfProfile.clampLiveBlur(24);
+        final headerAlpha = skin.isLiquidGlass
+            ? (skin.isLight ? 0.54 : 0.44)
+            : (skin.usesGlassPanels
+                ? (skin.isLight ? 0.60 : 0.50)
+                : (skin.isLight ? 0.66 : 0.56));
+        final headerBase = skin.isLight ? skin.surface : skin.canvas;
+        final headerFill = clear ? Colors.transparent : headerBase.withValues(alpha: headerAlpha);
         final innerHeader = AnimatedContainer(
           duration: const Duration(milliseconds: 220),
           curve: VedroTheme.easeOut,
@@ -736,6 +740,14 @@ class _FloatingDesktopHeader extends StatelessWidget {
                     colors: [Color(0x94000000), Colors.transparent],
                   )
                 : null,
+            border: clear
+                ? null
+                : Border(
+                    bottom: BorderSide(
+                      color: skin.border.withValues(alpha: skin.isLight ? 0.14 : 0.18),
+                      width: 0.5,
+                    ),
+                  ),
           ),
           child: content,
         );
@@ -743,7 +755,11 @@ class _FloatingDesktopHeader extends StatelessWidget {
           child: ClipRect(
             child: headerBlur > 0.1
                 ? BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: headerBlur, sigmaY: headerBlur),
+                    filter: ImageFilter.blur(
+                      sigmaX: headerBlur,
+                      sigmaY: headerBlur,
+                      tileMode: TileMode.clamp,
+                    ),
                     child: innerHeader,
                   )
                 : innerHeader,

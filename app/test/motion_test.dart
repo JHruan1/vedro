@@ -302,4 +302,51 @@ void main() {
     expect(find.textContaining('Liquid Glass'), findsOneWidget);
     expect(find.text('Adaptive Glass Card'), findsOneWidget);
   });
+
+  testWidgets('Button-morph action menu blurs immediately mid-animation & separates Frosted vs Liquid Glass',
+      (tester) async {
+    Future<void> verifySkin(VedroSkin skin, {required bool expectLiquidRim}) async {
+      final btnKey = GlobalKey();
+      await tester.pumpWidget(
+        MaterialApp(
+          key: ValueKey('morph-test-${skin.id}'),
+          theme: VedroTheme.fromSkin(skin),
+          home: Scaffold(
+            body: Center(
+              child: ElevatedButton(
+                key: btnKey,
+                onPressed: () {
+                  final rect = vedroGlobalRectOfKey(btnKey.currentContext!, btnKey)!;
+                  showVedroActionMenu(
+                    context: btnKey.currentContext!,
+                    anchorRect: rect,
+                    items: const [
+                      VedroDropdownItem(value: 'a', label: '选项 A'),
+                      VedroDropdownItem(value: 'b', label: '选项 B'),
+                    ],
+                  );
+                },
+                child: const Text('打开菜单'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('打开菜单'));
+      await tester.pump();
+      // Mid-morph (~80ms): BackdropFilter MUST already be mounted (simultaneous blur, never delayed!)
+      await tester.pump(const Duration(milliseconds: 80));
+      expect(find.byType(BackdropFilter), findsAtLeastNWidgets(1));
+      final customPaints = tester.widgetList<CustomPaint>(find.byType(CustomPaint));
+      final hasLiquidRim = customPaints.any((cp) => cp.foregroundPainter is LiquidGlassRimPainter);
+      expect(hasLiquidRim, equals(expectLiquidRim));
+      await tester.pumpAndSettle();
+      expect(find.text('选项 A'), findsOneWidget);
+      await tester.tap(find.text('选项 A'));
+      await tester.pumpAndSettle();
+    }
+
+    await verifySkin(VedroSkin.iosFrosted, expectLiquidRim: false);
+    await verifySkin(VedroSkin.iosLiquidGlass, expectLiquidRim: true);
+  });
 }

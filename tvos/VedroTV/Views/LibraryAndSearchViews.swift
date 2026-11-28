@@ -16,11 +16,19 @@ struct LibraryView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 18) {
                         ForEach(store.libraries) { lib in
-                            Button(lib.name) {
-                                selectedLibraryId = lib.id
-                                Task { await loadLibrary(lib.id) }
+                            if selectedLibraryId == lib.id {
+                                Button(lib.name) {
+                                    selectedLibraryId = lib.id
+                                    Task { await loadLibrary(lib.id) }
+                                }
+                                .buttonStyle(.borderedProminent)
+                            } else {
+                                Button(lib.name) {
+                                    selectedLibraryId = lib.id
+                                    Task { await loadLibrary(lib.id) }
+                                }
+                                .buttonStyle(.bordered)
                             }
-                            .buttonStyle(selectedLibraryId == lib.id ? .borderedProminent : .bordered)
                         }
                     }
                     .padding(.horizontal, 80)

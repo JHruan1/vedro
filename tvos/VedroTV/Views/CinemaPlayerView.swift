@@ -70,7 +70,6 @@ private struct AVPlayerViewControllerWrapper: UIViewControllerRepresentable {
 
         let controller = AVPlayerViewController()
         controller.showsPlaybackControls = true
-        controller.updatesNowPlayingInfoCenter = true
         controller.appliesPreferredDisplayCriteriaAutomatically = true
 
         let asset = AVURLAsset(url: playback.proxyUrl)
@@ -107,7 +106,7 @@ private struct AVPlayerViewControllerWrapper: UIViewControllerRepresentable {
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo)
+            try session.setCategory(.playback, mode: .moviePlayback)
             if #available(tvOS 15.0, *) {
                 try? session.setSupportsMultichannelContent(true)
             }

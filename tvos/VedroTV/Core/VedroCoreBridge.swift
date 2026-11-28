@@ -68,14 +68,18 @@ final class VedroCoreBridge: @unchecked Sendable {
     }
 
     func invoke(_ method: String, params: [String: Any] = [:]) async throws -> Any {
-        guard let h = handle else {
+        guard handle != nil else {
             throw VedroCoreError.initFailed("runtime destroyed")
         }
         let paramsData = try JSONSerialization.data(withJSONObject: params, options: [])
         let paramsJson = String(data: paramsData, encoding: .utf8) ?? "{}"
 
         return try await withCheckedThrowingContinuation { continuation in
-            queue.async {
+            queue.async { [weak self] in
+                guard let h = self?.handle else {
+                    continuation.resume(throwing: VedroCoreError.initFailed("runtime destroyed"))
+                    return
+                }
                 let rawPtr: UnsafeMutablePointer<CChar>? = method.withCString { cMethod in
                     paramsJson.withCString { cParams in
                         vedro_invoke(h, cMethod, cParams)

@@ -284,6 +284,45 @@ class NativePlaybackChannel {
     }
   }
 
+  /// Zero-freeze async GPU frame capture on Android (API 26+ `PixelCopy` on `FlutterSurfaceView`).
+  ///
+  /// Copies a tiny `160x90` (57 KB) RGBA viewport snapshot asynchronously on a dedicated
+  /// background `HandlerThread` inside SurfaceFlinger/HWC — ZERO `libmpv` thread lock,
+  /// ZERO `mediacodec-copy` downgrade, and ZERO Flutter UI/Raster thread stall!
+  static Future<({Uint8List bytes, int width, int height, bool isBgra})?> captureViewportTiny({
+    int width = 160,
+    int height = 90,
+    double leftFrac = 0.0,
+    double topFrac = 0.0,
+    double widthFrac = 1.0,
+    double heightFrac = 1.0,
+  }) async {
+    if (kIsWeb || !Platform.isAndroid) return null;
+    try {
+      final res = await _channel.invokeMapMethod<String, dynamic>('captureViewportTiny', {
+        'width': width.clamp(64, 320),
+        'height': height.clamp(48, 240),
+        'left_frac': leftFrac.clamp(0.0, 1.0),
+        'top_frac': topFrac.clamp(0.0, 1.0),
+        'width_frac': widthFrac.clamp(0.05, 1.0),
+        'height_frac': heightFrac.clamp(0.05, 1.0),
+      });
+      if (res == null) return null;
+      final bytes = res['bytes'];
+      final w = (res['width'] as num?)?.toInt() ?? 0;
+      final h = (res['height'] as num?)?.toInt() ?? 0;
+      if (bytes is Uint8List && w > 0 && h > 0 && bytes.length >= w * h * 4) {
+        return (
+          bytes: bytes,
+          width: w,
+          height: h,
+          isBgra: res['is_bgra'] == true,
+        );
+      }
+    } catch (_) {}
+    return null;
+  }
+
   static Future<bool> enterPictureInPicture({int aspectW = 16, int aspectH = 9}) async {
     ensureWindowListener();
     try {

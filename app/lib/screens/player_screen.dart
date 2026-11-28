@@ -108,9 +108,25 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   int _danmakuGen = 0;
   int _autoRetryCount = 0;
   double _retryAnchorSecs = -1.0;
+  double _retryGraceAnchorPos = 0.0;
   bool _retryInFlight = false;
   Timer? _retryGraceTimer;
+  double _resumeTargetSecs = 0.0;
+  int _seekOrResumeGraceUntilMs = 0;
   bool _hwFallbackAttempted = false;
+
+  bool get _isInSeekOrResumeGrace =>
+      DateTime.now().millisecondsSinceEpoch < _seekOrResumeGraceUntilMs;
+
+  void _markSeekOrResumeGrace({int durationMs = 10000, double? resumeTargetSecs}) {
+    final until = DateTime.now().millisecondsSinceEpoch + durationMs;
+    if (until > _seekOrResumeGraceUntilMs) {
+      _seekOrResumeGraceUntilMs = until;
+    }
+    if (resumeTargetSecs != null && resumeTargetSecs.isFinite && resumeTargetSecs >= 0.0) {
+      _resumeTargetSecs = resumeTargetSecs;
+    }
+  }
   bool _inPipMode = false;
   bool _enteringPip = false;
   Timer? _enteringPipResetTimer;
@@ -209,8 +225,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   BeautyFilterParams _beautyParams = BeautyFilterParams.off;
   bool _aiFaceEnabled = false;
   AiFaceMorphParams _aiFaceMorph = AiFaceMorphParams.off;
-  bool _aiFaceCopyBackForced = false;
-  Future<void>? _aiFaceActiveMpvFuture;
   final ValueNotifier<AiFaceTrackTelemetry> _aiFaceTelemetryNotifier =
       ValueNotifier<AiFaceTrackTelemetry>(const AiFaceTrackTelemetry());
   double _audioDelaySecs = 0.0;
@@ -549,12 +563,22 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (!mounted || _scrubbing) return;
       final secs = pos.inMilliseconds / 1000.0;
       _positionSecs = secs;
+      // Clear pending resume target once playback genuinely runs past it
+      if (_resumeTargetSecs > 3.0 && secs >= _resumeTargetSecs - 2.0 && !_buffering) {
+        if (secs > _resumeTargetSecs + 1.0) _resumeTargetSecs = 0.0;
+      }
       // Reset reconnect counter ONLY once playback actually makes real forward progress (>= 2s),
       // and cancel any pending silent grace-window retry as soon as playback clearly advances!
-      if (_retryInFlight && _retryGraceTimer != null && secs > 0.35 && !_buffering) {
-        _retryGraceTimer?.cancel();
-        _retryGraceTimer = null;
-        _retryInFlight = false;
+      if (_retryInFlight && _retryGraceTimer != null && !_buffering) {
+        final advanced = secs > _retryGraceAnchorPos + 0.35;
+        final landedResume = _resumeTargetSecs > 3.0 &&
+            secs > 1.0 &&
+            (secs - _resumeTargetSecs).abs() <= 15.0;
+        if (advanced || landedResume) {
+          _retryGraceTimer?.cancel();
+          _retryGraceTimer = null;
+          _retryInFlight = false;
+        }
       }
       if (_autoRetryCount > 0 && _retryAnchorSecs >= 0 && (secs - _retryAnchorSecs) >= 2.0) {
         _autoRetryCount = 0;
@@ -968,13 +992,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     PlayerStreamErrorAction action,
     int retryGen,
     double anchorPos,
-    bool hadDuration,
-  ) {
+    bool hadDuration, {
+    double anchorBuf = 0.0,
+    int deferCount = 0,
+  }) {
     _retryGraceTimer = null;
     if (!mounted || _disposed || retryGen != _playbackGen) {
       _retryInFlight = false;
       return;
     }
+    final liveSpeedBps = _isServerStream ? widget.appState.core.proxySpeedBps : 0;
+    final inGrace = _isInSeekOrResumeGrace;
     if (PlayerStreamErrorPolicy.hasSelfRecovered(
       action: action,
       anchorPosSecs: anchorPos,
@@ -982,12 +1010,40 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       hadDuration: hadDuration,
       currentDurationSecs: _durationSecs,
       paused: _paused,
+      anchorBufferedSecs: anchorBuf,
+      currentBufferedSecs: _bufferedSecs,
+      proxySpeedBps: liveSpeedBps,
+      buffering: _buffering,
+      isResumingOrSeeking: inGrace,
+      resumeTargetSecs: _resumeTargetSecs,
     )) {
       _retryInFlight = false;
       return;
     }
+    if (PlayerStreamErrorPolicy.shouldDeferReconnect(
+      action: action,
+      paused: _paused,
+      proxySpeedBps: liveSpeedBps,
+      buffering: _buffering,
+      isResumingOrSeeking: inGrace,
+      deferCount: deferCount,
+    )) {
+      _retryGraceTimer = Timer(
+        const Duration(milliseconds: 2500),
+        () => _executeCoalescedReconnect(
+          action,
+          retryGen,
+          anchorPos,
+          hadDuration,
+          anchorBuf: _bufferedSecs,
+          deferCount: deferCount + 1,
+        ),
+      );
+      return;
+    }
     final attempt = ++_autoRetryCount;
-    _retryAnchorSecs = _positionSecs;
+    final resumeSecs = _positionSecs > 1.0 ? _positionSecs : _resumeTargetSecs;
+    _retryAnchorSecs = resumeSecs;
     _flashGestureHud(
       'seek_feedback',
       text: '网络波动，正在自动重连（第 $attempt/${PlayerStreamErrorPolicy.maxAutoRetries} 次）…',
@@ -1001,16 +1057,24 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           try {
             await widget.appState.core.invoke('refresh_stream_ticket');
             if (!mounted || _disposed || retryGen != _playbackGen) return;
-            final startDur = _positionSecs > 1.0
-                ? Duration(milliseconds: (_positionSecs * 1000).round())
+            final startDur = resumeSecs > 3.0
+                ? Duration(milliseconds: (resumeSecs * 1000).round())
                 : null;
+            if (startDur != null) {
+              _markSeekOrResumeGrace(durationMs: 12000, resumeTargetSecs: resumeSecs);
+            } else {
+              await _applyMpvProperty('start', 'none');
+            }
             await _player.open(Media(prep.proxyUrl, start: startDur), play: true);
             return;
           } catch (_) {
             if (!mounted || _disposed || retryGen != _playbackGen) return;
           }
         }
-        await _startPlayback(_prepared?.mediaSourceId, resumeFromSecs: _positionSecs);
+        await _startPlayback(
+          _prepared?.mediaSourceId,
+          resumeFromSecs: resumeSecs > 3.0 ? resumeSecs : null,
+        );
       } finally {
         if (retryGen == _playbackGen) _retryInFlight = false;
       }
@@ -1638,12 +1702,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       fgArgb: restoreSkin.fg.toARGB32(),
     );
     _reportStoppedAndCleanup();
-    final inflightMpv = _aiFaceActiveMpvFuture;
-    if (inflightMpv != null) {
-      unawaited(inflightMpv.catchError((_) {}).whenComplete(() => _player.dispose()));
-    } else {
-      _player.dispose();
-    }
+    _player.dispose();
     super.dispose();
   }
 

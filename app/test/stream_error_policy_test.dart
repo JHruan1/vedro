@@ -91,6 +91,88 @@ void main() {
         isFalse,
       );
     });
+
+    test('Continue Watching resume grace window, active throughput recovery, deferral & EOF guard', () {
+      // Resume extends transient grace window so multi-GB byte seeks never false-toast at 1.5s
+      expect(
+        PlayerStreamErrorPolicy.graceWindowMs(
+          PlayerStreamErrorAction.transientNetwork,
+          isResumingOrSeeking: true,
+        ),
+        greaterThanOrEqualTo(4500),
+      );
+
+      // Duration already parsed from header (hadDuration=true) while seeking to 25:30;
+      // Rust StreamProxy actively downloading resume chunk -> stream is healthy, do NOT reconnect!
+      expect(
+        PlayerStreamErrorPolicy.hasSelfRecovered(
+          action: PlayerStreamErrorAction.transientNetwork,
+          anchorPosSecs: 0.0,
+          currentPosSecs: 0.0,
+          hadDuration: true,
+          currentDurationSecs: 3600.0,
+          paused: false,
+          proxySpeedBps: 8 * 1024 * 1024,
+          buffering: true,
+          isResumingOrSeeking: true,
+          resumeTargetSecs: 1530.0,
+        ),
+        isTrue,
+      );
+
+      // Buffer grew during grace window -> self-recovered silently
+      expect(
+        PlayerStreamErrorPolicy.hasSelfRecovered(
+          action: PlayerStreamErrorAction.transientNetwork,
+          anchorPosSecs: 1530.0,
+          currentPosSecs: 1530.0,
+          hadDuration: true,
+          currentDurationSecs: 3600.0,
+          paused: false,
+          anchorBufferedSecs: 1530.0,
+          currentBufferedSecs: 1534.5,
+        ),
+        isTrue,
+      );
+
+      // Quiet deferral while buffering with active proxy speed (capped at 2 defers)
+      expect(
+        PlayerStreamErrorPolicy.shouldDeferReconnect(
+          action: PlayerStreamErrorAction.transientNetwork,
+          paused: false,
+          proxySpeedBps: 512 * 1024,
+          buffering: true,
+          isResumingOrSeeking: false,
+          deferCount: 0,
+        ),
+        isTrue,
+      );
+      expect(
+        PlayerStreamErrorPolicy.shouldDeferReconnect(
+          action: PlayerStreamErrorAction.transientNetwork,
+          paused: false,
+          proxySpeedBps: 512 * 1024,
+          buffering: true,
+          isResumingOrSeeking: false,
+          deferCount: 2,
+        ),
+        isFalse,
+      );
+
+      // EOF-near-end resume guard prevents seeking into the final 8s of an episode
+      expect(
+        PlayerStreamErrorPolicy.sanitizeResumeSecs(resumeSecs: 2.0, totalDurationSecs: 2700.0),
+        isNull,
+      );
+      expect(
+        PlayerStreamErrorPolicy.sanitizeResumeSecs(resumeSecs: 2695.0, totalDurationSecs: 2700.0),
+        isNull,
+      );
+      expect(
+        PlayerStreamErrorPolicy.sanitizeResumeSecs(resumeSecs: 1530.0, totalDurationSecs: 2700.0),
+        closeTo(1530.0, 0.001),
+      );
+    });
   });
 
   testWidgets('showGlassSheet hides foreground UI while dragging VedroPrecisionSlider and restores on release',

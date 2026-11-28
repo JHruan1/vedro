@@ -194,7 +194,7 @@ class _AiFaceBeautyModelCardState extends State<AiFaceBeautyModelCard> {
                         const SizedBox(width: 7),
                         Expanded(
                           child: Text(
-                            '兼容性与画质说明：开启 AI 五官塑形可能导致杜比视界 (Dolby Vision) / HDR10 原生直通失效（画面降级为 SDR 色调映射，部分安卓机型在采帧回退时会临时切换至 Copy-Back 硬解），同时增加 CPU/GPU 功耗与机身发热。关闭开关或参数归零后将立即 100% 恢复原片杜比/HDR 零拷贝硬解。',
+                            '兼容性与画质说明：开启 AI 五官塑形可能导致杜比视界 (Dolby Vision) / HDR10 原生直通失效（画面降级为 SDR 色调映射），同时增加 GPU/CPU 功耗与机身发热。Android 端采用系统底层异步 PixelCopy 零阻塞采帧，不降级零拷贝硬解；关闭开关或参数归零后将立即 100% 恢复原片杜比/HDR 直通。',
                             style: TextStyle(
                               color: skin.isLight ? const Color(0xFF92400E) : const Color(0xFFFDE68A),
                               fontSize: 11.5,

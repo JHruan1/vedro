@@ -200,6 +200,7 @@ extension _PlayerControlsExt on _PlayerScreenState {
 
   Future<void> _seekTo(double secs) async {
     final target = secs.clamp(0.0, _durationSecs > 0 ? _durationSecs : 86400.0);
+    _markSeekOrResumeGrace(durationMs: 7000, resumeTargetSecs: target);
     await _player.seek(Duration(milliseconds: (target * 1000).round()));
     if (!mounted || _disposed) return;
     _positionSecs = target;
@@ -613,11 +614,15 @@ extension _PlayerControlsExt on _PlayerScreenState {
         _retryInFlight = true;
         final retryGen = _playbackGen;
         final anchorPos = _positionSecs;
+        final anchorBuf = _bufferedSecs;
         final hadDuration = _durationSecs > 0;
+        final inGrace = _isInSeekOrResumeGrace;
+        _retryGraceAnchorPos = anchorPos;
         _retryGraceTimer?.cancel();
+        final graceMs = PlayerStreamErrorPolicy.graceWindowMs(action, isResumingOrSeeking: inGrace);
         _retryGraceTimer = Timer(
-          Duration(milliseconds: PlayerStreamErrorPolicy.graceWindowMs(action)),
-          () => _executeCoalescedReconnect(action, retryGen, anchorPos, hadDuration),
+          Duration(milliseconds: graceMs),
+          () => _executeCoalescedReconnect(action, retryGen, anchorPos, hadDuration, anchorBuf: anchorBuf),
         );
         return;
       }

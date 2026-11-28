@@ -19,7 +19,7 @@ class _StubCoreClient implements VedroCoreClient {
   final Future<dynamic> Function(String method, Map<String, dynamic> params)? handler;
 
   @override
-  String get coreVersion => '1.0.23';
+  String get coreVersion => '1.0.24';
 
   @override
   int get proxySpeedBps => 0;

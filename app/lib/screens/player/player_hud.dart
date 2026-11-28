@@ -208,15 +208,6 @@ extension _PlayerHudExt on _PlayerScreenState {
                           ? BoxFit.cover
                           : (_aspectMode == 'stretch' ? BoxFit.fill : BoxFit.contain),
                       telemetryNotifier: _aiFaceTelemetryNotifier,
-                      mpvHandleResolver: () async {
-                        final platform = _player.platform;
-                        if (platform is NativePlayer) {
-                          return platform.handle;
-                        }
-                        return null;
-                      },
-                      onMpvDetectFutureChanged: (f) => _aiFaceActiveMpvFuture = f,
-                      onCopyBackHwdecRequired: (need) => unawaited(_setAiFaceCopyBackHwdec(need)),
                       child: Video(
                         controller: _videoController,
                         controls: NoVideoControls,

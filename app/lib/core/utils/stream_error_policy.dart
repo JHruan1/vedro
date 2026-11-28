@@ -69,12 +69,36 @@ class PlayerStreamErrorPolicy {
     return PlayerStreamErrorAction.fatal;
   }
 
+  /// Sanitize a saved Continue Watching resume timestamp so we never seek to < 3s
+  /// or right into the final 8 seconds (which triggers immediate EOF / false reconnects).
+  static double? sanitizeResumeSecs({
+    required double resumeSecs,
+    required double totalDurationSecs,
+  }) {
+    if (!resumeSecs.isFinite || resumeSecs < 3.0) return null;
+    if (totalDurationSecs.isFinite &&
+        totalDurationSecs > 15.0 &&
+        resumeSecs >= totalDurationSecs - 8.0) {
+      return null;
+    }
+    return resumeSecs;
+  }
+
   /// Grace window before executing a reconnect:
-  /// - `hardOpenFailure`: 350ms to coalesce 2-4 duplicate mpv log lines into 1 clean retry.
-  /// - `transientNetwork`: 1500ms silent verification so self-recovering probe/seek warnings
-  ///   never trigger a user-visible toast or stream teardown.
-  static int graceWindowMs(PlayerStreamErrorAction action) =>
-      action == PlayerStreamErrorAction.hardOpenFailure ? 350 : 1500;
+  /// - `hardOpenFailure`: 500ms (or 1200ms during an active resume/seek) to coalesce
+  ///   duplicate mpv log lines into 1 clean retry.
+  /// - `transientNetwork`: 2500ms normally, extended to 5000ms during Continue Watching
+  ///   resume or scrub seeks so multi-GB cloud-drive byte jumps never false-trigger
+  ///   a user-visible "网络波动，正在自动重连" toast or tear down a healthy seek.
+  static int graceWindowMs(
+    PlayerStreamErrorAction action, {
+    bool isResumingOrSeeking = false,
+  }) {
+    if (action == PlayerStreamErrorAction.hardOpenFailure) {
+      return isResumingOrSeeking ? 1200 : 500;
+    }
+    return isResumingOrSeeking ? 5000 : 2500;
+  }
 
   static bool hasSelfRecovered({
     required PlayerStreamErrorAction action,
@@ -83,14 +107,55 @@ class PlayerStreamErrorPolicy {
     required bool hadDuration,
     required double currentDurationSecs,
     required bool paused,
+    double anchorBufferedSecs = 0.0,
+    double currentBufferedSecs = 0.0,
+    int proxySpeedBps = 0,
+    bool buffering = false,
+    bool isResumingOrSeeking = false,
+    double resumeTargetSecs = 0.0,
   }) {
     if (currentPosSecs > anchorPosSecs + 0.35) return true;
+    // Resume seek landed near the intended timestamp and finished buffering!
+    if (isResumingOrSeeking &&
+        resumeTargetSecs > 3.0 &&
+        currentPosSecs > 1.0 &&
+        (currentPosSecs - resumeTargetSecs).abs() <= 15.0 &&
+        !buffering) {
+      return true;
+    }
     if (action == PlayerStreamErrorAction.transientNetwork &&
         !hadDuration &&
         currentDurationSecs > 0 &&
         !paused) {
       return true;
     }
+    // Demuxer buffer actively grew during the grace window -> data is flowing cleanly!
+    if (action == PlayerStreamErrorAction.transientNetwork &&
+        currentBufferedSecs > anchorBufferedSecs + 0.5) {
+      return true;
+    }
+    // During Continue Watching resume/seek, active StreamProxy throughput proves upstream is healthy.
+    if (action == PlayerStreamErrorAction.transientNetwork &&
+        isResumingOrSeeking &&
+        proxySpeedBps > 0 &&
+        (buffering || currentBufferedSecs > anchorBufferedSecs + 0.1)) {
+      return true;
+    }
     return false;
+  }
+
+  /// Whether a pending transient reconnect should quietly defer another check instead of
+  /// tearing down a stream whose Rust StreamProxy is still actively downloading chunks.
+  static bool shouldDeferReconnect({
+    required PlayerStreamErrorAction action,
+    required bool paused,
+    required int proxySpeedBps,
+    required bool buffering,
+    required bool isResumingOrSeeking,
+    required int deferCount,
+  }) {
+    if (action != PlayerStreamErrorAction.transientNetwork) return false;
+    if (paused || deferCount >= 2) return false;
+    return proxySpeedBps > 0 && (buffering || isResumingOrSeeking);
   }
 }

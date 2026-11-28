@@ -56,9 +56,12 @@ extension _PlayerEngineExt on _PlayerScreenState {
     _quickSkipEligibleNotifier.value = false;
     _autoRetryCount = 0;
     _retryAnchorSecs = -1.0;
+    _retryGraceAnchorPos = 0.0;
     _retryInFlight = false;
     _retryGraceTimer?.cancel();
     _retryGraceTimer = null;
+    _resumeTargetSecs = 0.0;
+    _seekOrResumeGraceUntilMs = 0;
     _hwFallbackAttempted = false;
     _isInitialEpisode = false;
     _aiSubCtrl.resetForNewMedia(mediaTitle: ep.displayName);
@@ -420,17 +423,6 @@ extension _PlayerEngineExt on _PlayerScreenState {
     }
   }
 
-  Future<void> _setAiFaceCopyBackHwdec(bool needCopyBack) async {
-    if (_disposed || !_hwDecodeEnabled) return;
-    if (needCopyBack == _aiFaceCopyBackForced) return;
-    _aiFaceCopyBackForced = needCopyBack;
-    final hwPref = (widget.appState.settings['hwdec'] ?? 'auto_zero_copy').toString();
-    final target = needCopyBack
-        ? 'auto-copy-safe'
-        : (hwPref == 'auto_copy' ? 'auto-copy-safe' : 'auto-safe');
-    await _applyMpvProperty('hwdec', target);
-  }
-
   ({String? localPath, String? url, String? format, String? label})
       _resolveBestSubtitleSourceForAi() {
     if (_activeSubLocalPath != null && _activeSubLocalPath!.isNotEmpty) {
@@ -741,11 +733,23 @@ extension _PlayerEngineExt on _PlayerScreenState {
         final netUrl = _activeNetworkUrl!;
         await _applyInitialPreferencesToMpv(applyInitialOverrides: applyInitialOverrides);
         if (!mounted || _disposed || gen != _playbackGen) return;
-        final startSecs = resumeFromSecs ?? 0.0;
+        final rawStart = resumeFromSecs ?? 0.0;
+        final safeStart = PlayerStreamErrorPolicy.sanitizeResumeSecs(
+          resumeSecs: rawStart,
+          totalDurationSecs: _durationSecs,
+        );
+        if (safeStart != null) {
+          _markSeekOrResumeGrace(durationMs: 12000, resumeTargetSecs: safeStart);
+        } else {
+          _resumeTargetSecs = 0.0;
+          await _applyMpvProperty('start', 'none');
+        }
         await _player.open(
           Media(
             netUrl,
-            start: startSecs > 3.0 ? Duration(milliseconds: (startSecs * 1000).round()) : null,
+            start: safeStart != null
+                ? Duration(milliseconds: (safeStart * 1000).round())
+                : null,
           ),
           play: true,
         );
@@ -755,7 +759,7 @@ extension _PlayerEngineExt on _PlayerScreenState {
             title: _currentItem.displayName,
             target: netUrl,
             isNetworkUrl: true,
-            positionSecs: startSecs,
+            positionSecs: safeStart ?? 0.0,
             durationSecs: _durationSecs,
           ));
         }
@@ -785,15 +789,27 @@ extension _PlayerEngineExt on _PlayerScreenState {
         final localPath = _activeLocalPath!;
         await _applyInitialPreferencesToMpv(applyInitialOverrides: applyInitialOverrides);
         if (!mounted || _disposed || gen != _playbackGen) return;
-        double startSecs = resumeFromSecs ?? 0.0;
+        double rawStart = resumeFromSecs ?? 0.0;
         if (resumeFromSecs == null && p.rememberPosition) {
-          startSecs = await widget.appState.getLocalResumeSecs(localPath);
+          rawStart = await widget.appState.getLocalResumeSecs(localPath);
         }
         if (!mounted || _disposed || gen != _playbackGen) return;
+        final safeStart = PlayerStreamErrorPolicy.sanitizeResumeSecs(
+          resumeSecs: rawStart,
+          totalDurationSecs: _durationSecs,
+        );
+        if (safeStart != null) {
+          _markSeekOrResumeGrace(durationMs: 10000, resumeTargetSecs: safeStart);
+        } else {
+          _resumeTargetSecs = 0.0;
+          await _applyMpvProperty('start', 'none');
+        }
         await _player.open(
           Media(
             localPath,
-            start: startSecs > 3.0 ? Duration(milliseconds: (startSecs * 1000).round()) : null,
+            start: safeStart != null
+                ? Duration(milliseconds: (safeStart * 1000).round())
+                : null,
           ),
           play: true,
         );
@@ -803,7 +819,7 @@ extension _PlayerEngineExt on _PlayerScreenState {
             title: _currentItem.displayName,
             target: localPath,
             isNetworkUrl: false,
-            positionSecs: startSecs,
+            positionSecs: safeStart ?? 0.0,
             durationSecs: _durationSecs,
           ));
         }
@@ -901,13 +917,26 @@ extension _PlayerEngineExt on _PlayerScreenState {
       );
       if (!mounted || _disposed || gen != _playbackGen) return;
 
-      final Duration? startDur;
-      if (resumeFromSecs != null && resumeFromSecs > 1.0) {
-        startDur = Duration(milliseconds: (resumeFromSecs * 1000).round());
-      } else if (p.rememberPosition && _currentItem.playbackPositionTicks > 0) {
-        startDur = Duration(microseconds: _currentItem.playbackPositionTicks ~/ 10);
+      final rawResumeSecs = (resumeFromSecs != null && resumeFromSecs > 1.0)
+          ? resumeFromSecs
+          : (p.rememberPosition && _currentItem.playbackPositionTicks > 0
+              ? _currentItem.playbackPositionTicks / 10000000.0
+              : 0.0);
+      final knownTotalSecs = _currentItem.runTimeTicks != null && _currentItem.runTimeTicks! > 0
+          ? _currentItem.runTimeTicks! / 10000000.0
+          : _durationSecs;
+      final safeResumeSecs = PlayerStreamErrorPolicy.sanitizeResumeSecs(
+        resumeSecs: rawResumeSecs,
+        totalDurationSecs: knownTotalSecs,
+      );
+      final startDur = safeResumeSecs != null
+          ? Duration(milliseconds: (safeResumeSecs * 1000).round())
+          : null;
+      if (safeResumeSecs != null) {
+        _markSeekOrResumeGrace(durationMs: 12000, resumeTargetSecs: safeResumeSecs);
       } else {
-        startDur = null;
+        _resumeTargetSecs = 0.0;
+        await _applyMpvProperty('start', 'none');
       }
 
       await _player.open(

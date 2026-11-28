@@ -12,6 +12,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.Rect
 import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -27,11 +29,17 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.HandlerThread
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Rational
 import android.view.Display
+import android.view.PixelCopy
+import android.view.SurfaceView
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.core.view.WindowCompat
 import io.flutter.plugin.common.BinaryMessenger
@@ -39,6 +47,8 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Native Android & Android TV hardware bridge for Vedro:
@@ -136,6 +146,12 @@ class VedroHardwarePlugin(
     private var pipAspectW = 16
     private var pipAspectH = 9
     private var nowPlayingActive = false
+    private var pixelCopyThread: HandlerThread? = null
+    private var pixelCopyHandler: Handler? = null
+    private var pixelCopyBitmap: Bitmap? = null
+    private var pixelCopyBytes: ByteArray? = null
+    private val pixelCopyInFlight = AtomicBoolean(false)
+    private val pixelCopyLock = Any()
 
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -212,8 +228,158 @@ class VedroHardwarePlugin(
         setAudioPlaybackActive(false)
         releaseMediaSession()
         unregisterPipReceiver()
+        releasePixelCopy()
         pendingPickResult?.success(emptyList<String>())
         pendingPickResult = null
+    }
+
+    private fun releasePixelCopy() {
+        pixelCopyInFlight.set(false)
+        try {
+            pixelCopyThread?.quitSafely()
+        } catch (_: Throwable) {}
+        pixelCopyThread = null
+        pixelCopyHandler = null
+        synchronized(pixelCopyLock) {
+            try {
+                pixelCopyBitmap?.recycle()
+            } catch (_: Throwable) {}
+            pixelCopyBitmap = null
+            pixelCopyBytes = null
+        }
+    }
+
+    private fun findActiveSurfaceView(view: View?): SurfaceView? {
+        if (view == null || view.visibility != View.VISIBLE) return null
+        if (view is SurfaceView && view.width > 0 && view.height > 0 && view.holder.surface?.isValid == true) {
+            return view
+        }
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                val found = findActiveSurfaceView(view.getChildAt(i))
+                if (found != null) return found
+            }
+        }
+        return null
+    }
+
+    private fun captureViewportTiny(
+        reqW: Int,
+        reqH: Int,
+        leftFrac: Double,
+        topFrac: Double,
+        widthFrac: Double,
+        heightFrac: Double,
+        result: MethodChannel.Result
+    ) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || activity.isFinishing || activity.isDestroyed) {
+            result.success(null)
+            return
+        }
+        if (!pixelCopyInFlight.compareAndSet(false, true)) {
+            result.success(null)
+            return
+        }
+        val outW = reqW.coerceIn(64, 320)
+        val outH = reqH.coerceIn(48, 240)
+        val decor = activity.window?.peekDecorView()
+        if (decor == null || decor.width <= 0 || decor.height <= 0) {
+            pixelCopyInFlight.set(false)
+            result.success(null)
+            return
+        }
+        val bgHandler: Handler = run {
+            val existingThread = pixelCopyThread
+            val existingHandler = pixelCopyHandler
+            if (existingThread != null && existingThread.isAlive && existingHandler != null) {
+                existingHandler
+            } else {
+                val createdThread = HandlerThread("vedro-pixelcopy").apply { start() }
+                val createdHandler = Handler(createdThread.looper)
+                pixelCopyThread = createdThread
+                pixelCopyHandler = createdHandler
+                createdHandler
+            }
+        }
+        val byteLen = outW * outH * 4
+        val targetBmp: Bitmap
+        val targetScratch: ByteArray
+        synchronized(pixelCopyLock) {
+            val prevBmp = pixelCopyBitmap
+            targetBmp = if (prevBmp != null && !prevBmp.isRecycled && prevBmp.width == outW && prevBmp.height == outH) {
+                prevBmp
+            } else {
+                try {
+                    prevBmp?.recycle()
+                } catch (_: Throwable) {}
+                Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888).also {
+                    pixelCopyBitmap = it
+                }
+            }
+            val prevBytes = pixelCopyBytes
+            targetScratch = if (prevBytes != null && prevBytes.size == byteLen) {
+                prevBytes
+            } else {
+                ByteArray(byteLen).also { pixelCopyBytes = it }
+            }
+        }
+
+        fun clampSrcRect(srcW: Int, srcH: Int): Rect {
+            val l = (leftFrac * srcW).toInt().coerceIn(0, (srcW - 2).coerceAtLeast(0))
+            val t = (topFrac * srcH).toInt().coerceIn(0, (srcH - 2).coerceAtLeast(0))
+            val r = ((leftFrac + widthFrac) * srcW).toInt().coerceIn(l + 1, srcW)
+            val b = ((topFrac + heightFrac) * srcH).toInt().coerceIn(t + 1, srcH)
+            return if (r - l >= 16 && b - t >= 16) Rect(l, t, r, b) else Rect(0, 0, srcW, srcH)
+        }
+
+        val listener = PixelCopy.OnPixelCopyFinishedListener { copyResult ->
+            var payload: Map<String, Any>? = null
+            try {
+                if (copyResult == PixelCopy.SUCCESS) {
+                    synchronized(pixelCopyLock) {
+                        if (!targetBmp.isRecycled) {
+                            targetBmp.copyPixelsToBuffer(ByteBuffer.wrap(targetScratch))
+                            payload = mapOf(
+                                "bytes" to targetScratch.copyOf(),
+                                "width" to outW,
+                                "height" to outH,
+                                "is_bgra" to false
+                            )
+                        }
+                    }
+                }
+            } catch (_: Throwable) {
+                payload = null
+            } finally {
+                pixelCopyInFlight.set(false)
+            }
+            activity.runOnUiThread {
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    runCatching { result.success(payload) }
+                }
+            }
+        }
+
+        try {
+            val surfaceView = findActiveSurfaceView(decor)
+            if (surfaceView != null) {
+                val frame = surfaceView.holder.surfaceFrame
+                val srcW = if (frame != null && frame.width() > 0) frame.width() else surfaceView.width
+                val srcH = if (frame != null && frame.height() > 0) frame.height() else surfaceView.height
+                if (srcW > 1 && srcH > 1) {
+                    PixelCopy.request(surfaceView, clampSrcRect(srcW, srcH), targetBmp, listener, bgHandler)
+                    return
+                }
+            }
+            val win = activity.window
+            if (win != null && decor.width > 1 && decor.height > 1) {
+                PixelCopy.request(win, clampSrcRect(decor.width, decor.height), targetBmp, listener, bgHandler)
+                return
+            }
+        } catch (_: Throwable) {
+        }
+        pixelCopyInFlight.set(false)
+        result.success(null)
     }
 
     private fun ensureMediaSession() {
@@ -613,6 +779,15 @@ class VedroHardwarePlugin(
                 result.success(false)
             }
             "createVideoSurface" -> result.success(null)
+            "captureViewportTiny" -> {
+                val w = (call.argument<Number>("width")?.toInt()) ?: 160
+                val h = (call.argument<Number>("height")?.toInt()) ?: 90
+                val leftFrac = (call.argument<Number>("left_frac")?.toDouble()) ?: 0.0
+                val topFrac = (call.argument<Number>("top_frac")?.toDouble()) ?: 0.0
+                val widthFrac = (call.argument<Number>("width_frac")?.toDouble()) ?: 1.0
+                val heightFrac = (call.argument<Number>("height_frac")?.toDouble()) ?: 1.0
+                captureViewportTiny(w, h, leftFrac, topFrac, widthFrac, heightFrac, result)
+            }
             else -> result.notImplemented()
         }
     }

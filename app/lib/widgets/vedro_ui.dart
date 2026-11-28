@@ -1244,7 +1244,7 @@ Future<T?> showGlassSheet<T>({
     final isGlassTheme = skin.usesGlassPanels;
     final liveSigma = (isGlassTheme && enableLiveBlur) ? PlatformPerfProfile.clampLiveBlur(20.0) : 0.0;
     final baseColor = skin.isLight
-        ? Colors.white
+        ? (isGlassTheme ? Colors.white : skin.surface)
         : Color.lerp(skin.surface2, skin.surface, 0.36)!;
     final fillColor = isGlassTheme
         ? baseColor.withValues(alpha: liveSigma > 0.5 ? (skin.isLight ? 0.90 : 0.89) : 0.96)
@@ -1867,7 +1867,7 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
     final rimIntensity = isLiquid ? 1.15 : 0.72;
     final liveSigma = isGlassTheme ? PlatformPerfProfile.clampLiveBlur(20.0) : 0.0;
     final baseSurface = skin.isLight
-        ? Colors.white
+        ? (isGlassTheme ? Colors.white : skin.surface)
         : Color.lerp(skin.surface2, skin.surface, 0.32)!;
     // High-density frosted tint: completely obscures underlying sharp text while
     // allowing soft ambient luminosity when live blur engages after spring settle.

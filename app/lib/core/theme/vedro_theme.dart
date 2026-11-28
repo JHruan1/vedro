@@ -79,17 +79,17 @@ class VedroTheme {
         ? ColorScheme.light(
             primary: skin.accent,
             onPrimary: highContrastOn(skin.accent),
-            secondary: skin.accent,
-            onSecondary: highContrastOn(skin.accent),
+            secondary: skin.accentSecondary,
+            onSecondary: highContrastOn(skin.accentSecondary),
             surface: skin.surface,
             onSurface: skin.fg,
             error: const Color(0xFFDC2626),
           )
         : ColorScheme.dark(
-            primary: skin.accentSecondary,
-            onPrimary: highContrastOn(skin.accentSecondary),
-            secondary: skin.accent,
-            onSecondary: highContrastOn(skin.accent),
+            primary: skin.accent,
+            onPrimary: highContrastOn(skin.accent),
+            secondary: skin.accentSecondary,
+            onSecondary: highContrastOn(skin.accentSecondary),
             surface: skin.surface,
             onSurface: skin.fg,
             error: danger,
@@ -251,7 +251,11 @@ class VedroTheme {
         overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
       ),
       switchTheme: SwitchThemeData(
-        thumbColor: WidgetStateProperty.all(Colors.white),
+        thumbColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? highContrastOn(skin.accent)
+              : (isLight ? Colors.white : skin.fg2),
+        ),
         trackColor: WidgetStateProperty.resolveWith(
           (states) => states.contains(WidgetState.selected) ? skin.accent : skin.surface3,
         ),
@@ -263,10 +267,19 @@ class VedroTheme {
         ),
       ),
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: isLight ? const Color(0xFF18181B) : skin.surface2,
-        contentTextStyle: const TextStyle(color: Colors.white, fontSize: 13.5),
+        backgroundColor: skin.surface2,
+        contentTextStyle: TextStyle(
+          color: skin.fg,
+          fontSize: 13.5,
+          fontFamilyFallback: _cjkFallback,
+        ),
+        actionTextColor: skin.accent,
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        elevation: 6,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(skin.cardRadius.clamp(10.0, 16.0)),
+          side: BorderSide(color: skin.borderStrong, width: 0.8),
+        ),
       ),
       dialogTheme: DialogThemeData(
         backgroundColor: skin.surface,

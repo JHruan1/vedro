@@ -1578,11 +1578,19 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    // 1. Verify 4 Master Themes + Legacy share code roundtrip + Monet RGBA pixel extraction
-    expect(VedroSkin.masterThemes.length, equals(4));
+    // 1. Verify 8 Master Themes (4 Platform + 4 Open-Source Palettes) & official Dark/Light polarities
+    expect(VedroSkin.masterThemes.length, equals(8));
     expect(VedroSkin.byId('ios_liquid_glass').isLiquidGlass, isTrue);
     expect(VedroSkin.byId('ios_frosted').effectiveSurfaceMaterial, equals('unified_glass'));
     expect(VedroSkin.byId('material_design').themeFamily, equals('material_design'));
+    expect(VedroSkin.byId('catppuccin').canvas, equals(const Color(0xFF1E1E2E)));
+    expect(VedroSkin.byId('catppuccin').withPolarity(true).canvas, equals(const Color(0xFFEFF1F5)));
+    expect(VedroSkin.byId('rose_pine').canvas, equals(const Color(0xFF191724)));
+    expect(VedroSkin.byId('rose_pine').withPolarity(true).canvas, equals(const Color(0xFFFAF4ED)));
+    expect(VedroSkin.byId('nord_frost').canvas, equals(const Color(0xFF242933)));
+    expect(VedroSkin.byId('nord_frost').withPolarity(true).canvas, equals(const Color(0xFFECEFF4)));
+    expect(VedroSkin.byId('pure_oled').canvas, equals(const Color(0xFF000000)));
+    expect(VedroSkin.byId('pure_oled').withPolarity(true).canvas, equals(const Color(0xFFFFFFFF)));
 
     // Synthetic fiery amber-orange poster pixels -> Monet extractor picks warm orange hue (~20°-40°)
     final amberPixels = List<int>.generate(16 * 16 * 4, (i) {

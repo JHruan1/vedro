@@ -590,14 +590,14 @@ class _SkinStudioPaneState extends State<SkinStudioPane> {
           child: VedroPrecisionSlider(
             label: '透光率',
             value: translucencyPct,
-            min: 12,
-            max: 62,
+            min: 10,
+            max: 58,
             step: 2,
-            defaultValue: activeMasterId == 'ios_liquid_glass' ? 44 : 28,
+            defaultValue: activeMasterId == 'ios_liquid_glass' ? 22 : 16,
             valueText: '${translucencyPct.round()}%',
             onChanged: (pct) => _setOverride(
               'surface_opacity',
-              (1.0 - pct / 100.0).clamp(0.36, 0.90),
+              (1.0 - pct / 100.0).clamp(0.42, 0.92),
               isMobile: isMobile,
             ),
           ),
@@ -1126,11 +1126,22 @@ class _MasterThemeCard extends StatelessWidget {
     final isLiquid = themeSpec.id == 'ios_liquid_glass';
     final isFrosted = themeSpec.id == 'ios_frosted';
     final isMd3 = themeSpec.id == 'material_design';
+    final isOssPalette = themeSpec.id == 'catppuccin' ||
+        themeSpec.id == 'rose_pine' ||
+        themeSpec.id == 'nord_frost' ||
+        themeSpec.id == 'pure_oled';
+    final resolvedPreview = themeSpec.withPolarity(isLightPreview);
+    final swatchAccent = isOssPalette ? resolvedPreview.accent : activeAccent;
+    final swatchCanvas = resolvedPreview.canvas;
 
     final icon = switch (themeSpec.id) {
       'ios_liquid_glass' => Icons.water_drop_outlined,
       'ios_frosted' => Icons.blur_on_rounded,
       'material_design' => Icons.widgets_outlined,
+      'catppuccin' => Icons.palette_outlined,
+      'rose_pine' => Icons.local_florist_outlined,
+      'nord_frost' => Icons.ac_unit_rounded,
+      'pure_oled' => Icons.contrast_rounded,
       _ => Icons.movie_filter_outlined,
     };
 
@@ -1157,18 +1168,29 @@ class _MasterThemeCard extends StatelessWidget {
               height: 44,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(10),
+                border: themeSpec.id == 'pure_oled'
+                    ? Border.all(
+                        color: (isLightPreview ? Colors.black : Colors.white).withValues(alpha: 0.22),
+                        width: 0.8,
+                      )
+                    : null,
                 gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: isLightPreview
+                  colors: isOssPalette
                       ? [
-                          Color.lerp(const Color(0xFFEFF3FA), activeAccent, 0.20)!,
-                          Colors.white,
+                          Color.lerp(swatchCanvas, swatchAccent, themeSpec.id == 'pure_oled' ? 0.08 : 0.26)!,
+                          swatchCanvas,
                         ]
-                      : [
-                          Color.lerp(themeSpec.canvas, activeAccent, isMd3 ? 0.22 : 0.30)!,
-                          themeSpec.canvas,
-                        ],
+                      : (isLightPreview
+                          ? [
+                              Color.lerp(const Color(0xFFEFF3FA), swatchAccent, 0.20)!,
+                              Colors.white,
+                            ]
+                          : [
+                              Color.lerp(themeSpec.canvas, swatchAccent, isMd3 ? 0.22 : 0.30)!,
+                              themeSpec.canvas,
+                            ]),
                 ),
               ),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -1180,30 +1202,34 @@ class _MasterThemeCard extends StatelessWidget {
                           ? LiquidGlassRimPainter(
                               radius: 999,
                               isLight: isLightPreview,
-                              accent: activeAccent,
+                              accent: swatchAccent,
                             )
                           : null,
                       child: Container(
                         height: 26,
                         padding: const EdgeInsets.symmetric(horizontal: 9),
                         decoration: BoxDecoration(
-                          color: isLightPreview
-                              ? Colors.white.withValues(alpha: isLiquid ? 0.55 : (isFrosted ? 0.78 : 0.94))
-                              : Colors.white.withValues(alpha: isLiquid ? 0.14 : (isFrosted ? 0.18 : 0.10)),
-                          borderRadius: BorderRadius.circular(isMd3 ? 8 : 999),
+                          color: isOssPalette
+                              ? resolvedPreview.surface2.withValues(alpha: 0.92)
+                              : (isLightPreview
+                                  ? Colors.white.withValues(alpha: isLiquid ? 0.55 : (isFrosted ? 0.78 : 0.94))
+                                  : Colors.white.withValues(alpha: isLiquid ? 0.14 : (isFrosted ? 0.18 : 0.10))),
+                          borderRadius: BorderRadius.circular(isMd3 || themeSpec.id == 'pure_oled' ? 8 : 999),
                           border: isLiquid
                               ? null
                               : Border.all(
-                                  color: isLightPreview
-                                      ? Colors.black.withValues(alpha: 0.08)
-                                      : Colors.white.withValues(alpha: isFrosted ? 0.24 : 0.08),
+                                  color: isOssPalette
+                                      ? resolvedPreview.borderStrong
+                                      : (isLightPreview
+                                          ? Colors.black.withValues(alpha: 0.08)
+                                          : Colors.white.withValues(alpha: isFrosted ? 0.24 : 0.08)),
                                   width: 0.75,
                                 ),
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(icon, size: 13, color: activeAccent),
+                            Icon(icon, size: 13, color: swatchAccent),
                             const SizedBox(width: 5),
                             Flexible(
                               child: Container(

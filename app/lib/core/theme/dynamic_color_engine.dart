@@ -234,15 +234,22 @@ class DynamicColorEngine {
     final tunedSeed = HSLColor.fromAHSL(1.0, hsl.hue, tunedSat, hsl.lightness.clamp(0.42, 0.64)).toColor();
     final isLight = base.isLight;
 
-    // Material Design 3 / Material You full tonal container synthesis
+    // Material Design 3 Expressive / Material You full tonal container synthesis
+    // Grounded in Flutter's official DynamicSchemeVariant (Fladder + M3 Expressive).
     if (base.themeFamily == 'material_design') {
+      final variant = switch (tonalChroma) {
+        'soft' => DynamicSchemeVariant.tonalSpot,
+        'vivid' => DynamicSchemeVariant.vibrant,
+        _ => DynamicSchemeVariant.expressive,
+      };
       final scheme = ColorScheme.fromSeed(
         seedColor: tunedSeed,
+        dynamicSchemeVariant: variant,
         brightness: isLight ? Brightness.light : Brightness.dark,
       );
       final canvas = isLight
-          ? Color.lerp(const Color(0xFFF6F7FB), scheme.surfaceContainerLowest, 0.65 * chromaMul.clamp(0.5, 1.0))!
-          : Color.lerp(const Color(0xFF0E1015), scheme.surface, 0.78 * chromaMul.clamp(0.5, 1.0))!;
+          ? Color.lerp(const Color(0xFFF6F7FB), scheme.surfaceContainerLowest, 0.72 * chromaMul.clamp(0.5, 1.0))!
+          : Color.lerp(const Color(0xFF0E1015), scheme.surface, 0.84 * chromaMul.clamp(0.5, 1.0))!;
       final surf = isLight ? scheme.surfaceContainerLow : scheme.surfaceContainer;
       final surf2 = isLight ? scheme.surfaceContainer : scheme.surfaceContainerHigh;
       final surf3 = isLight ? scheme.surfaceContainerHigh : scheme.surfaceContainerHighest;
@@ -253,15 +260,15 @@ class DynamicColorEngine {
         surface2: surf2,
         surface3: surf3,
         field: surf2,
-        glass: surf.withValues(alpha: isLight ? 0.88 : 0.84),
+        glass: surf.withValues(alpha: isLight ? 0.88 : 0.86),
         glassStrong: surf2.withValues(alpha: 0.95),
-        border: scheme.outlineVariant.withValues(alpha: isLight ? 0.55 : 0.38),
-        borderStrong: scheme.outline.withValues(alpha: isLight ? 0.65 : 0.55),
+        border: scheme.outlineVariant.withValues(alpha: isLight ? 0.55 : 0.42),
+        borderStrong: scheme.outline.withValues(alpha: isLight ? 0.65 : 0.58),
         fg: scheme.onSurface,
         fg2: scheme.onSurfaceVariant,
         fg3: scheme.onSurfaceVariant.withValues(alpha: 0.68),
         accent: scheme.primary,
-        accentSecondary: scheme.secondary,
+        accentSecondary: scheme.tertiary,
       );
     }
 
@@ -323,11 +330,11 @@ class DynamicColorEngine {
     ).toColor();
 
     final glassAlpha = base.isLiquidGlass
-        ? (isLight ? 0.62 : 0.54)
-        : (isLight ? 0.78 : 0.72);
+        ? (isLight ? 0.84 : 0.78)
+        : (isLight ? 0.86 : 0.82);
     final glassStrongAlpha = base.isLiquidGlass
-        ? (isLight ? 0.78 : 0.72)
-        : (isLight ? 0.92 : 0.88);
+        ? (isLight ? 0.93 : 0.91)
+        : (isLight ? 0.95 : 0.92);
 
     return base.copyWith(
       canvas: canvas,

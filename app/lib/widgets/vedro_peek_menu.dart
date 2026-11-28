@@ -253,7 +253,7 @@ class _VedroPeekMenuStage extends StatelessWidget {
     // Android/iOS rectangular blur bleed outside rounded corners, while a rich
     // frosted fill + multi-layer glass rim preserves crisp legibility & Apple edge optics.
     final menuBg = skin.isLight
-        ? Colors.white.withValues(alpha: isGlassTheme ? 0.93 : 0.96)
+        ? (isGlassTheme ? Colors.white : skin.surface).withValues(alpha: isGlassTheme ? 0.93 : 0.97)
         : Color.lerp(skin.surface2, skin.surface, 0.32)!
             .withValues(alpha: isGlassTheme ? 0.92 : 0.96);
 

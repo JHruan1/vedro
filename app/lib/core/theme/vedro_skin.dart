@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import '../platform/platform_perf.dart';
 import 'vedro_liquid_shader.dart';
 
+part 'vedro_oss_themes.dart';
+
 /// Choose high-contrast ink (near-black or pure white) against any background color.
 Color highContrastOn(Color bg) =>
     bg.computeLuminance() > 0.52 ? const Color(0xFF09090B) : Colors.white;
@@ -1021,12 +1023,17 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     mobileNavStyle: 'floating_dock',
   );
 
-  /// Curated 4 Master Themes surfaced in the streamlined Theme Studio.
+  /// Curated 8 Master Themes surfaced in Theme Studio:
+  /// 4 Platform Design Systems + 4 Iconic Open-Source Community Palettes.
   static const List<VedroSkin> masterThemes = [
     immersiveCinema,
     iosFrosted,
     iosLiquidGlass,
     materialDesign,
+    VedroOssThemes.catppuccinMocha,
+    VedroOssThemes.rosePineDark,
+    VedroOssThemes.nordDark,
+    VedroOssThemes.amoledOledDark,
   ];
 
   /// 2. 纯净昼白 — Apple Music / tvOS Daylight Studio (Light Mode · Framed Sunlit Hero · White Shadow Cards)
@@ -1488,9 +1495,12 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
     );
   }
 
-  /// Convert any Master Theme cleanly between Dark Mode and iOS-refined Light Mode.
+  /// Convert any Master Theme cleanly between Dark Mode and refined Light Mode
+  /// (using official Light palettes for Catppuccin Latte, Rosé Pine Dawn, Nord Snow Storm, OLED White).
   VedroSkin withPolarity(bool wantLight) {
     if (isLight == wantLight) return this;
+    final ossVariant = VedroOssThemes.resolvePolarity(themeFamily, wantLight);
+    if (ossVariant != null) return ossVariant;
     if (!wantLight) {
       return switch (themeFamily) {
         'ios_liquid_glass' => iosLiquidGlass,
@@ -1538,7 +1548,6 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       case 'obsidian':
       case 'criterion_film':
       case 'grand_velvet':
-      case 'pure_oled':
         return 'immersive_cinema';
       case 'ios_frosted':
       case 'ocean_glass':
@@ -1549,8 +1558,16 @@ class VedroSkin extends ThemeExtension<VedroSkin> {
       case 'cyber_neon':
         return 'ios_liquid_glass';
       case 'material_design':
-      case 'nordic_aurora':
         return 'material_design';
+      case 'catppuccin':
+        return 'catppuccin';
+      case 'rose_pine':
+        return 'rose_pine';
+      case 'nord_frost':
+      case 'nordic_aurora':
+        return 'nord_frost';
+      case 'pure_oled':
+        return 'pure_oled';
       default:
         return 'immersive_cinema';
     }

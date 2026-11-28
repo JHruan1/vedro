@@ -33,8 +33,8 @@ class _HomeMobileTopBar extends StatelessWidget {
         final t = (1.0 + (offset - solidAfter) / 48.0).clamp(0.0, 1.0);
         final overArt = t < 0.5;
         final pillBg = skin.isLight
-            ? Color.lerp(const Color(0xCCFFFFFF), skin.fg.withValues(alpha: 0.06), t)!
-            : Color.lerp(const Color(0x58141417), Colors.white.withValues(alpha: 0.08), t)!;
+            ? Color.lerp(skin.surface.withValues(alpha: 0.84), skin.fg.withValues(alpha: 0.06), t)!
+            : Color.lerp(skin.surface.withValues(alpha: 0.62), Colors.white.withValues(alpha: 0.08), t)!;
         final pillFg = skin.isLight ? skin.fg : Colors.white;
         final barBlur = PlatformPerfProfile.clampLiveBlur(26) * t;
 

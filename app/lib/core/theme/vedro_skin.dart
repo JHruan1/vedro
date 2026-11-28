@@ -2014,79 +2014,78 @@ class VedroAdaptiveSurface extends StatelessWidget {
           : fill.withValues(alpha: (fill.a + (skin.isLight ? 0.14 : 0.12)).clamp(0.45, 0.94));
       final surfaceBody = DecoratedBox(
         decoration: BoxDecoration(
-          color: adaptedFill,
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            stops: isLiquid ? const [0.0, 0.36, 1.0] : const [0.0, 1.0],
-            colors: isLiquid
-                ? [
-                    Colors.white.withValues(
-                      alpha: ((skin.isLight ? 0.52 : 0.14) * specMul).clamp(0.04, 0.75),
-                    ),
-                    Colors.white.withValues(alpha: skin.isLight ? 0.16 : 0.02),
-                    skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.06),
-                  ]
-                : [
+          color: isLiquid && useLiveBlur
+              ? VedroLiquidGlassShader.liquidFillColor(
+                  isLight: skin.isLight,
+                  canvas: skin.canvas,
+                  surface: skin.surface,
+                  surface2: skin.surface2,
+                  density: VedroGlassDensity.panel,
+                  highlighted: selected || hovered,
+                )
+              : adaptedFill,
+          gradient: isLiquid
+              ? VedroLiquidGlassShader.liquidSheenGradient(
+                  isLight: skin.isLight,
+                  accent: skin.accent,
+                  intensity: specMul,
+                )
+              : LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
                     Colors.white.withValues(alpha: skin.isLight ? 0.34 : 0.065),
                     Colors.transparent,
                   ],
-          ),
+                ),
         ),
         child: padding != null ? Padding(padding: padding!, child: child) : child,
       );
       return RepaintBoundary(
         child: Container(
-        decoration: isLiquid
-            ? BoxDecoration(
-                borderRadius: radius,
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: skin.isLight ? 0.08 : 0.28),
-                    blurRadius: 20,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-              )
-            : null,
-        foregroundDecoration: isLiquid
-            ? null
-            : BoxDecoration(
-                borderRadius: radius,
-                border: skin.cardBorder(hovered: hovered, selected: selected),
-              ),
-        child: CustomPaint(
-          foregroundPainter: isLiquid
-              ? LiquidGlassRimPainter(
-                  radius: r,
-                  isLight: skin.isLight,
-                  accent: skin.accent,
-                  intensity: specMul,
-                  selected: selected,
+          decoration: isLiquid
+              ? BoxDecoration(
+                  borderRadius: radius,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: skin.isLight ? 0.08 : 0.28),
+                      blurRadius: 20,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
                 )
               : null,
-          child: ClipRRect(
-            borderRadius: radius,
-            child: useLiveBlur
-                ? BackdropFilter(
-                    filter: VedroLiquidGlassShader.buildBackdropFilter(
-                      context: context,
-                      isLight: skin.isLight,
-                      accent: skin.accent,
-                      blurSigma: isLiquid && VedroLiquidGlassShader.isAvailable ? 5.5 : effBlur,
-                      borderRadius: r,
-                      enableRefraction: isLiquid,
-                      liquidSpecular: skin.liquidSpecular,
-                      refractionHeightDp: 20.0,
-                      refractionAmountDp: 54.0,
-                      dispersion: 0.48,
-                      depthEffect: 0.26,
-                    ),
-                    child: surfaceBody,
+          foregroundDecoration: isLiquid
+              ? null
+              : BoxDecoration(
+                  borderRadius: radius,
+                  border: skin.cardBorder(hovered: hovered, selected: selected),
+                ),
+          child: CustomPaint(
+            foregroundPainter: isLiquid
+                ? LiquidGlassRimPainter(
+                    radius: r,
+                    isLight: skin.isLight,
+                    accent: skin.accent,
+                    intensity: specMul,
+                    selected: selected,
                   )
-                : surfaceBody,
+                : null,
+            child: VedroLiquidGlassBackdrop(
+              borderRadius: r,
+              blurSigma: useLiveBlur
+                  ? (isLiquid && VedroLiquidGlassShader.isAvailable
+                      ? VedroLiquidGlassShader.gpuBlurSigma(VedroGlassDensity.panel)
+                      : effBlur)
+                  : 0.0,
+              enableRefraction: useLiveBlur && isLiquid,
+              isLight: skin.isLight,
+              accent: skin.accent,
+              liquidSpecular: skin.liquidSpecular,
+              density: VedroGlassDensity.panel,
+              child: surfaceBody,
+            ),
           ),
-        ),
         ),
       );
     }

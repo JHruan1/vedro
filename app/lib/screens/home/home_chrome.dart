@@ -49,8 +49,8 @@ class _HomeMobileTopBar extends StatelessWidget {
         Widget pill({required Widget child, required EdgeInsets padding}) => GlassSurface(
               borderRadius: 19,
               blur: 18,
-              enableBlur: overArt,
-              color: pillBg,
+              enableBlur: skin.isLiquidGlass || overArt,
+              color: skin.isLiquidGlass ? null : pillBg,
               borderColor: skin.isLight && overArt ? skin.border : Colors.transparent,
               padding: padding,
               child: child,

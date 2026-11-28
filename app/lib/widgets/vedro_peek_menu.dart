@@ -253,17 +253,21 @@ class _VedroPeekMenuStage extends StatelessWidget {
         ? (isGlassTheme ? Colors.white : skin.surface)
         : Color.lerp(skin.surface2, skin.surface, 0.32)!;
     final menuBg = isLiquid
-        ? baseSurface.withValues(
-            alpha: VedroLiquidGlassShader.isAvailable
-                ? (skin.isLight ? 0.72 : 0.66)
-                : (skin.isLight ? 0.86 : 0.85),
+        ? VedroLiquidGlassShader.liquidFillColor(
+            isLight: skin.isLight,
+            canvas: skin.canvas,
+            surface: skin.surface,
+            surface2: skin.surface2,
+            density: VedroGlassDensity.menu,
           )
         : (isFrosted
             ? baseSurface.withValues(alpha: skin.isLight ? 0.88 : 0.86)
             : baseSurface.withValues(alpha: 0.98));
     final menuBlurSigma = isLiquid
-        ? (VedroLiquidGlassShader.isAvailable ? 0.0 : PlatformPerfProfile.clampLiveBlur(18.0))
-        : (isFrosted ? PlatformPerfProfile.clampLiveBlur(16.0) : 0.0);
+        ? (VedroLiquidGlassShader.isAvailable
+            ? VedroLiquidGlassShader.gpuBlurSigma(VedroGlassDensity.menu)
+            : PlatformPerfProfile.clampLiveBlur(20.0))
+        : (isFrosted ? PlatformPerfProfile.clampLiveBlur(18.0) : 0.0);
 
     final bgAnim = CurvedAnimation(parent: animation, curve: VedroTheme.easeOut, reverseCurve: Curves.easeInCubic);
     final cardSpring = CurvedAnimation(
@@ -279,100 +283,48 @@ class _VedroPeekMenuStage extends StatelessWidget {
     final menuFade = CurvedAnimation(parent: animation, curve: const Interval(0.04, 0.62, curve: Curves.easeOut), reverseCurve: Curves.easeIn);
 
     final divColor = skin.isLight ? Colors.black.withValues(alpha: 0.07) : Colors.white.withValues(alpha: 0.09);
-    final menuContent = DecoratedBox(
-      decoration: BoxDecoration(
-        color: menuBg,
-        gradient: isLiquid
-            ? LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                stops: const [0.0, 0.42, 1.0],
-                colors: [
-                  Colors.white.withValues(alpha: skin.isLight ? 0.50 : 0.16),
-                  Colors.transparent,
-                  skin.accent.withValues(alpha: skin.isLight ? 0.04 : 0.07),
-                ],
-              )
-            : null,
-      ),
-      child: Material(
-        type: MaterialType.transparency,
-        child: SingleChildScrollView(
-          padding: EdgeInsets.zero,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (hasHeader) ...[
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(title!, maxLines: 2, overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600, letterSpacing: -0.15)),
-                      if (subtitle != null && subtitle!.trim().isNotEmpty) ...[
-                        const SizedBox(height: 2),
-                        Text(subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
-                      ],
+    final menuListWidget = Material(
+      type: MaterialType.transparency,
+      child: SingleChildScrollView(
+        padding: EdgeInsets.zero,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (hasHeader) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title!, maxLines: 2, overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600, letterSpacing: -0.15)),
+                    if (subtitle != null && subtitle!.trim().isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
                     ],
-                  ),
+                  ],
                 ),
-                Divider(height: 1, thickness: 0.6, color: divColor),
-              ],
-              for (var i = 0; i < actions.length; i++) ...[
-                if (i > 0) Divider(height: 1, thickness: 0.55, indent: 14, endIndent: 14, color: divColor),
-                _PeekActionRow(
-                  action: actions[i],
-                  autofocus: i == 0,
-                  onExecute: () {
-                    HapticFeedback.selectionClick();
-                    Navigator.of(context).pop();
-                    actions[i].onTap();
-                  },
-                ),
-              ],
+              ),
+              Divider(height: 1, thickness: 0.6, color: divColor),
             ],
-          ),
+            for (var i = 0; i < actions.length; i++) ...[
+              if (i > 0) Divider(height: 1, thickness: 0.55, indent: 14, endIndent: 14, color: divColor),
+              _PeekActionRow(
+                action: actions[i],
+                autofocus: i == 0,
+                onExecute: () {
+                  HapticFeedback.selectionClick();
+                  Navigator.of(context).pop();
+                  actions[i].onTap();
+                },
+              ),
+            ],
+          ],
         ),
       ),
     );
-    final menuBody = DecoratedBox(
-      position: DecorationPosition.foreground,
-      decoration: isLiquid
-          ? const BoxDecoration()
-          : BoxDecoration(
-              borderRadius: BorderRadius.circular(menuRadius),
-              border: Border.all(
-                color: isFrosted
-                    ? (skin.isLight
-                        ? Colors.black.withValues(alpha: 0.09)
-                        : Colors.white.withValues(alpha: 0.22))
-                    : skin.borderStrong,
-                width: 0.85,
-              ),
-            ),
-      child: (isLiquid && VedroLiquidGlassShader.isAvailable)
-          ? BackdropFilter(
-              filter: VedroLiquidGlassShader.buildBackdropFilter(
-                context: context,
-                isLight: skin.isLight,
-                accent: skin.accent,
-                blurSigma: menuBlurSigma,
-                borderRadius: menuRadius,
-                enableRefraction: true,
-                liquidSpecular: skin.liquidSpecular,
-                refractionHeightDp: 20.0,
-                refractionAmountDp: 54.0,
-                dispersion: 0.50,
-                depthEffect: 0.26,
-                intensityOverride: 1.15,
-              ),
-              child: menuContent,
-            )
-          : menuContent,
-    );
-    final menuCard = Container(
+    Widget buildMenuCard(double tOpacity) => Container(
       key: const ValueKey('vedro-peek-context-menu'),
       width: menuW,
       constraints: BoxConstraints(maxHeight: maxMenuH),
@@ -380,9 +332,8 @@ class _VedroPeekMenuStage extends StatelessWidget {
         borderRadius: BorderRadius.circular(menuRadius),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: skin.isLight ? 0.16 : 0.54),
+            color: Colors.black.withValues(alpha: (skin.isLight ? 0.16 : 0.54) * tOpacity),
             blurRadius: 34,
-            spreadRadius: 0,
             offset: const Offset(0, 14),
           ),
         ],
@@ -393,12 +344,55 @@ class _VedroPeekMenuStage extends StatelessWidget {
                 radius: menuRadius,
                 isLight: skin.isLight,
                 accent: skin.accent,
-                intensity: 1.15,
+                intensity: 1.15 * tOpacity,
               )
             : null,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(menuRadius),
-          child: menuBody,
+        child: DecoratedBox(
+          position: DecorationPosition.foreground,
+          decoration: isLiquid
+              ? const BoxDecoration()
+              : BoxDecoration(
+                  borderRadius: BorderRadius.circular(menuRadius),
+                  border: Border.all(
+                    color: (isFrosted
+                            ? (skin.isLight
+                                ? Colors.black.withValues(alpha: 0.09)
+                                : Colors.white.withValues(alpha: 0.22))
+                            : skin.borderStrong)
+                        .withValues(
+                      alpha: ((isFrosted
+                                  ? (skin.isLight ? 0.09 : 0.22)
+                                  : skin.borderStrong.a) *
+                              tOpacity)
+                          .clamp(0.0, 1.0),
+                    ),
+                    width: 0.85,
+                  ),
+                ),
+          child: VedroLiquidGlassBackdrop(
+            borderRadius: menuRadius,
+            blurSigma: menuBlurSigma * (0.45 + 0.55 * tOpacity),
+            enableRefraction: isLiquid,
+            isLight: skin.isLight,
+            accent: skin.accent,
+            liquidSpecular: skin.liquidSpecular,
+            density: VedroGlassDensity.menu,
+            intensityOverride: isLiquid ? (1.15 * tOpacity).clamp(0.4, 1.35) : null,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: menuBg.withValues(alpha: (menuBg.a * tOpacity).clamp(0.0, 1.0)),
+                gradient: isLiquid
+                    ? VedroLiquidGlassShader.liquidSheenGradient(
+                        isLight: skin.isLight,
+                        accent: skin.accent,
+                        intensity: 1.1,
+                        opacityFactor: tOpacity,
+                      )
+                    : null,
+              ),
+              child: Opacity(opacity: tOpacity, child: menuListWidget),
+            ),
+          ),
         ),
       ),
     );
@@ -501,15 +495,12 @@ class _VedroPeekMenuStage extends StatelessWidget {
                   ? (screen.height - (liftedRect.top - (liftedRect.height * (targetScale - 1.0) / 2) - gap))
                       .clamp(screen.height - safeBottom, screen.height - safeTop - 60.0)
                   : null,
-              child: Opacity(
-                opacity: tMenuOpacity,
-                child: Transform.translate(
-                  offset: Offset(0, menuSlideY.roundToDouble()),
-                  child: Transform.scale(
-                    scale: menuScale,
-                    alignment: menuOrigin,
-                    child: menuCard,
-                  ),
+              child: Transform.translate(
+                offset: Offset(0, menuSlideY.roundToDouble()),
+                child: Transform.scale(
+                  scale: menuScale,
+                  alignment: menuOrigin,
+                  child: buildMenuCard(tMenuOpacity),
                 ),
               ),
             ),

@@ -334,9 +334,14 @@ void main() {
       );
       await tester.tap(find.text('打开菜单'));
       await tester.pump();
-      // Mid-morph (~80ms): BackdropFilter MUST already be mounted (simultaneous blur, never delayed!)
+      // Mid-morph (~80ms): VedroLiquidGlassBackdrop MUST already be mounted with live blur!
       await tester.pump(const Duration(milliseconds: 80));
-      expect(find.byType(BackdropFilter), findsAtLeastNWidgets(1));
+      final backdrops = tester.widgetList<VedroLiquidGlassBackdrop>(
+        find.byType(VedroLiquidGlassBackdrop),
+      );
+      expect(backdrops.isNotEmpty, isTrue);
+      expect(backdrops.any((b) => b.blurSigma > 0.4), isTrue);
+      expect(backdrops.any((b) => b.enableRefraction), equals(expectLiquidRim));
       final customPaints = tester.widgetList<CustomPaint>(find.byType(CustomPaint));
       final hasLiquidRim = customPaints.any((cp) => cp.foregroundPainter is LiquidGlassRimPainter);
       expect(hasLiquidRim, equals(expectLiquidRim));

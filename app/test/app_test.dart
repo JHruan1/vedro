@@ -14,6 +14,7 @@ import 'package:vedro/core/platform/native_playback_channel.dart';
 import 'package:vedro/core/platform/platform_perf.dart';
 import 'package:vedro/core/theme/display_profile.dart';
 import 'package:vedro/core/theme/dynamic_color_engine.dart';
+import 'package:vedro/core/theme/vedro_liquid_shader.dart';
 import 'package:vedro/core/theme/vedro_skin.dart';
 import 'package:vedro/core/theme/vedro_theme.dart';
 import 'package:vedro/main.dart';
@@ -2390,7 +2391,7 @@ void main() {
     // Simulate switching app to inactive/paused (e.g., Alt-Tab on Windows or backgrounding on mobile) -> ZERO blur shield!
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
     await tester.pump();
-    expect(find.byType(BackdropFilter), findsWidgets); // Only glass nav, no full-screen privacy shield
+    expect(find.byType(VedroLiquidGlassBackdrop), findsWidgets); // Only glass nav, no full-screen privacy shield
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
     await tester.pump();
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
@@ -2737,7 +2738,10 @@ void main() {
         ),
       ),
     );
-    expect(find.byType(BackdropFilter), findsNothing);
+    expect(
+      tester.widget<VedroLiquidGlassBackdrop>(find.byType(VedroLiquidGlassBackdrop)).blurSigma,
+      equals(0.0),
+    );
 
     await tester.pumpWidget(
       MaterialApp(
@@ -2751,7 +2755,10 @@ void main() {
         ),
       ),
     );
-    expect(find.byType(BackdropFilter), findsOneWidget);
+    expect(
+      tester.widget<VedroLiquidGlassBackdrop>(find.byType(VedroLiquidGlassBackdrop)).blurSigma,
+      greaterThan(0.15),
+    );
 
     // 3. Cached DanmakuLayer paints cleanly inside RepaintBoundary without Opacity saveLayer
     await tester.pumpWidget(

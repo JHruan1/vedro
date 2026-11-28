@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../core/models/models.dart';
 import '../core/platform/native_playback_channel.dart';
 import '../core/platform/platform_perf.dart';
+import '../core/theme/vedro_liquid_shader.dart';
 import '../core/theme/vedro_motion.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
@@ -827,39 +828,69 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
             !widget.appState.prefs.showNavLabels ||
             shrunkByScroll;
         if (fullTabBar) {
-          final barBlur = PlatformPerfProfile.clampLiveBlur(24);
+          final isLiquid = skin.isLiquidGlass;
+          final barBlur = isLiquid && VedroLiquidGlassShader.isAvailable
+              ? VedroLiquidGlassShader.gpuBlurSigma(VedroGlassDensity.chrome)
+              : PlatformPerfProfile.clampLiveBlur(24);
           return RepaintBoundary(
-            child: ClipRect(
+            child: VedroLiquidGlassBackdrop(
               key: const ValueKey('mobile-nav-full-tab-bar'),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: barBlur, sigmaY: barBlur),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: PlatformPerfProfile.adaptGlassFill(skin.glass),
-                    border: Border(top: BorderSide(color: skin.border, width: 0.7)),
+              borderRadius: 0,
+              blurSigma: barBlur,
+              enableRefraction: isLiquid,
+              isLight: skin.isLight,
+              accent: skin.accent,
+              liquidSpecular: skin.liquidSpecular,
+              density: VedroGlassDensity.chrome,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: isLiquid
+                      ? VedroLiquidGlassShader.liquidFillColor(
+                          isLight: skin.isLight,
+                          canvas: skin.canvas,
+                          surface: skin.surface,
+                          surface2: skin.surface2,
+                          density: VedroGlassDensity.chrome,
+                        )
+                      : PlatformPerfProfile.adaptGlassFill(skin.glass),
+                  gradient: isLiquid
+                      ? VedroLiquidGlassShader.liquidSheenGradient(
+                          isLight: skin.isLight,
+                          accent: skin.accent,
+                        )
+                      : null,
+                  border: Border(
+                    top: BorderSide(
+                      color: isLiquid
+                          ? (skin.isLight
+                              ? Colors.white.withValues(alpha: 0.78)
+                              : Colors.white.withValues(alpha: 0.24))
+                          : skin.border,
+                      width: isLiquid ? 0.85 : 0.7,
+                    ),
                   ),
-                  child: SafeArea(
-                    top: false,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                      child: VedroSlidingPillRow(
-                        expand: true,
-                        selectedIndex: _index,
-                        pillInsets: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                        pillDecoration: BoxDecoration(
-                          color: tabLensFill,
-                          borderRadius: BorderRadius.circular(skin.radiusForPill(46)),
-                        ),
-                        children: [
-                          for (var i = 0; i < _mobileTabs.length; i++)
-                            _BottomTabButton(
-                              tab: _mobileTabs[i],
-                              selected: i == _index,
-                              iconOnly: false,
-                              onTap: () => triggerMobileTabTap(i),
-                            ),
-                        ],
+                ),
+                child: SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                    child: VedroSlidingPillRow(
+                      expand: true,
+                      selectedIndex: _index,
+                      pillInsets: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                      pillDecoration: BoxDecoration(
+                        color: tabLensFill,
+                        borderRadius: BorderRadius.circular(skin.radiusForPill(46)),
                       ),
+                      children: [
+                        for (var i = 0; i < _mobileTabs.length; i++)
+                          _BottomTabButton(
+                            tab: _mobileTabs[i],
+                            selected: i == _index,
+                            iconOnly: false,
+                            onTap: () => triggerMobileTabTap(i),
+                          ),
+                      ],
                     ),
                   ),
                 ),

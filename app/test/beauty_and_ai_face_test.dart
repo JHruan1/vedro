@@ -19,7 +19,7 @@ class _StubCoreClient implements VedroCoreClient {
   final Future<dynamic> Function(String method, Map<String, dynamic> params)? handler;
 
   @override
-  String get coreVersion => '1.0.22';
+  String get coreVersion => '1.0.23';
 
   @override
   int get proxySpeedBps => 0;
@@ -98,9 +98,14 @@ void main() {
       expect(smoother.smoothed.length, equals(1));
       expect(smoother.smoothed.first.alpha, lessThan(0.5));
       for (var i = 0; i < 15; i++) {
-        smoother.step(0.016);
+        smoother.step(0.033);
       }
       expect(smoother.smoothed.first.alpha, greaterThan(0.85));
+      // Once converged on a static face, step() returns false so Impeller stops rebuilding shaders!
+      for (var i = 0; i < 40; i++) {
+        smoother.step(0.033);
+      }
+      expect(smoother.step(0.033), isFalse);
 
       // Scene cut clears old face immediately
       smoother.ingestDetection(const [], sceneCut: true);

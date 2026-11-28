@@ -399,44 +399,24 @@ extension _PlayerEngineExt on _PlayerScreenState {
     }
   }
 
-  /// Synchronize `libmpv` `glsl-shaders` stacking Plan B beauty + Plan A AI Face Morph
-  /// (when running on Windows D3D11/ANGLE, Linux OpenGL, or Skia fallback).
+  /// Synchronize `libmpv` `glsl-shaders` for Plan B Portrait Beauty (compiles ONCE -> locked 60fps).
   Future<void> _syncCombinedMpvShaders() async {
     if (_disposed) return;
-    final useMpvForAi =
-        !AiFaceBeautyShader.isAvailable && _aiFaceEnabled && _aiFaceMorph.isActive && _aiFaceMpvFaces.isNotEmpty;
-    if (!_beautyParams.isActive && !useMpvForAi) {
+    if (!_beautyParams.isActive) {
       await _applyMpvProperty('glsl-shaders', '');
       return;
     }
     try {
-      final path = await AiFaceMpvShaderBuilder.prepareCombinedShaderFile(
-        beautyParams: _beautyParams,
-        beautyLabel: _beautyPreset,
+      final path = await BeautyFilterEngine.prepareShaderFileForParams(
+        _beautyParams,
+        label: _beautyPreset,
         mobileLean: _isMobile,
-        useMpvForAiFace: useMpvForAi,
-        aiMorph: _aiFaceMorph,
-        aiFaces: _aiFaceMpvFaces,
-        pingPongSlot: _aiFaceMpvPingPong++,
       );
       if (!_disposed) {
         await _applyMpvProperty('glsl-shaders', path != null ? path.replaceAll('\\', '/') : '');
       }
     } catch (_) {
       if (!_disposed) await _applyMpvProperty('glsl-shaders', '');
-    }
-  }
-
-  void _onAiFaceMpvFacesChanged(List<AiTrackedFace> faces) {
-    if (_disposed) return;
-    _aiFaceMpvFaces = faces;
-    _aiFaceMpvDebounce?.cancel();
-    if (faces.isEmpty) {
-      unawaited(_syncCombinedMpvShaders());
-    } else {
-      _aiFaceMpvDebounce = Timer(const Duration(milliseconds: 20), () {
-        unawaited(_syncCombinedMpvShaders());
-      });
     }
   }
 

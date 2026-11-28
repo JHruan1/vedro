@@ -92,12 +92,15 @@ pub fn compute_file_sha256(path: &Path) -> Result<String, String> {
 }
 
 /// Aspect-ratio-preserving letterbox resize from raw RGBA/BGRA bytes into planar BGR f32 `[0..255]`
-/// buffer of shape `[3, infer_h, infer_w]`, plus a compact 16x10 luma signature for scene-cut detection.
-/// Returns `(bgr_nchw_data, active_w_px, active_h_px, scene_sig)`.
-pub fn preprocess_frame_to_yunet_bgr(
+/// Resize an RGBA or BGRA pixel buffer (with explicit byte `row_stride`) into a YuNet NCHW BGR
+/// float32 buffer `[3, infer_h, infer_w]` while preserving aspect ratio (top-left aligned),
+/// plus a compact 16x10 luma signature for scene-cut detection.
+/// Only samples the `new_w * new_h` output grid — zero full-frame copy even on 4K BGRA buffers!
+pub fn preprocess_frame_to_yunet_bgr_strided(
     raw_pixels: &[u8],
     src_w: usize,
     src_h: usize,
+    row_stride: usize,
     is_bgra: bool,
     infer_w: usize,
     infer_h: usize,
@@ -105,9 +108,22 @@ pub fn preprocess_frame_to_yunet_bgr(
     if src_w == 0 || src_h == 0 || infer_w == 0 || infer_h == 0 {
         return Err("invalid image dimensions".to_string());
     }
-    let expected_len = src_w
-        .checked_mul(src_h)
-        .and_then(|n| n.checked_mul(4))
+    let min_stride = src_w
+        .checked_mul(4)
+        .ok_or_else(|| "image width overflow".to_string())?;
+    let stride = if row_stride == 0 {
+        min_stride
+    } else {
+        row_stride
+    };
+    if stride < min_stride {
+        return Err(format!(
+            "row stride {stride} smaller than width*4 ({min_stride})"
+        ));
+    }
+    let expected_len = stride
+        .checked_mul(src_h - 1)
+        .and_then(|n| n.checked_add(min_stride))
         .ok_or_else(|| "image dimension overflow".to_string())?;
     if raw_pixels.len() < expected_len {
         return Err(format!(
@@ -135,8 +151,8 @@ pub fn preprocess_frame_to_yunet_bgr(
         let y1 = (y0 + 1).min(src_h - 1);
         let wy = sy_f - y0 as f32;
         let wy0 = 1.0 - wy;
-        let row0 = y0 * src_w * 4;
-        let row1 = y1 * src_w * 4;
+        let row0 = y0 * stride;
+        let row1 = y1 * stride;
         let dst_row = dy * infer_w;
 
         for dx in 0..new_w {
@@ -191,6 +207,27 @@ pub fn preprocess_frame_to_yunet_bgr(
     }
 
     Ok((bgr, new_w as f32, new_h as f32, sig))
+}
+
+/// Tightly-packed RGBA/BGRA convenience wrapper (`row_stride = src_w * 4`).
+#[cfg(test)]
+pub fn preprocess_frame_to_yunet_bgr(
+    raw_pixels: &[u8],
+    src_w: usize,
+    src_h: usize,
+    is_bgra: bool,
+    infer_w: usize,
+    infer_h: usize,
+) -> Result<(Vec<f32>, f32, f32, [f32; SCENE_SIG_LEN]), String> {
+    preprocess_frame_to_yunet_bgr_strided(
+        raw_pixels,
+        src_w,
+        src_h,
+        src_w.saturating_mul(4),
+        is_bgra,
+        infer_w,
+        infer_h,
+    )
 }
 
 /// Compare two 16x10 normalized luma signatures and report whether a hard scene cut occurred.
@@ -496,11 +533,40 @@ mod runtime_impl {
             score_threshold: f32,
             max_faces: usize,
         ) -> Result<FaceDetectOutput, String> {
-            let t0 = Instant::now();
-            self.load_model(model_path, infer_w, infer_h)?;
             let raw_bytes = base64::engine::general_purpose::STANDARD
                 .decode(data_b64)
                 .map_err(|e| format!("invalid base64 pixel payload: {e}"))?;
+            self.detect_raw(
+                model_path,
+                &raw_bytes,
+                width,
+                height,
+                width.saturating_mul(4),
+                is_bgra,
+                infer_w,
+                infer_h,
+                score_threshold,
+                max_faces,
+            )
+        }
+
+        /// Zero-copy raw pixel detection (accepts RGBA or strided BGRA straight from C/mpv).
+        #[allow(clippy::too_many_arguments)]
+        pub fn detect_raw(
+            &mut self,
+            model_path: &str,
+            raw_bytes: &[u8],
+            width: usize,
+            height: usize,
+            row_stride: usize,
+            is_bgra: bool,
+            infer_w: usize,
+            infer_h: usize,
+            score_threshold: f32,
+            max_faces: usize,
+        ) -> Result<FaceDetectOutput, String> {
+            let t0 = Instant::now();
+            self.load_model(model_path, infer_w, infer_h)?;
 
             let loaded = self
                 .loaded
@@ -509,8 +575,9 @@ mod runtime_impl {
             let iw = loaded.infer_w;
             let ih = loaded.infer_h;
 
-            let (bgr_data, active_w, active_h, curr_sig) =
-                preprocess_frame_to_yunet_bgr(&raw_bytes, width, height, is_bgra, iw, ih)?;
+            let (bgr_data, active_w, active_h, curr_sig) = preprocess_frame_to_yunet_bgr_strided(
+                raw_bytes, width, height, row_stride, is_bgra, iw, ih,
+            )?;
             let scene_cut = is_scene_cut(self.prev_scene_sig.as_ref(), &curr_sig);
             self.prev_scene_sig = Some(curr_sig);
 
@@ -615,6 +682,23 @@ mod runtime_impl {
             _width: usize,
             _height: usize,
             _data_b64: &str,
+            _is_bgra: bool,
+            _infer_w: usize,
+            _infer_h: usize,
+            _score_threshold: f32,
+            _max_faces: usize,
+        ) -> Result<FaceDetectOutput, String> {
+            Err("AI face beauty inference is not enabled on tvOS".to_string())
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        pub fn detect_raw(
+            &mut self,
+            _model_path: &str,
+            _raw_bytes: &[u8],
+            _width: usize,
+            _height: usize,
+            _row_stride: usize,
             _is_bgra: bool,
             _infer_w: usize,
             _infer_h: usize,

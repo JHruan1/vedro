@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
+import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
+import 'package:media_kit/generated/libmpv/bindings.dart' as mpv_gen;
 
 import 'vedro_bindings.dart';
 
@@ -23,6 +26,59 @@ abstract class VedroCoreClient {
   int get proxySpeedBps => 0;
   String get coreVersion;
   void dispose();
+}
+
+/// Zero-copy binary FFI extensions for real-time AI face detection (safe no-op on mock clients).
+extension VedroCoreFaceDetectExt on VedroCoreClient {
+  Future<Map<String, dynamic>?> detectFaceRaw({
+    required String modelPath,
+    required Uint8List bytes,
+    required int width,
+    required int height,
+    required bool isBgra,
+    required int inferW,
+    required int inferH,
+    double scoreThreshold = 0.62,
+    int maxFaces = 2,
+  }) {
+    final self = this;
+    if (self is VedroFfiBridge) {
+      return self._detectFaceRawNative(
+        modelPath: modelPath,
+        bytes: bytes,
+        width: width,
+        height: height,
+        isBgra: isBgra,
+        inferW: inferW,
+        inferH: inferH,
+        scoreThreshold: scoreThreshold,
+        maxFaces: maxFaces,
+      );
+    }
+    return Future<Map<String, dynamic>?>.value(null);
+  }
+
+  Future<Map<String, dynamic>?> detectFaceFromMpv({
+    required int mpvCtxAddr,
+    required String modelPath,
+    required int inferW,
+    required int inferH,
+    double scoreThreshold = 0.62,
+    int maxFaces = 2,
+  }) {
+    final self = this;
+    if (self is VedroFfiBridge) {
+      return self._detectFaceFromMpvNative(
+        mpvCtxAddr: mpvCtxAddr,
+        modelPath: modelPath,
+        inferW: inferW,
+        inferH: inferH,
+        scoreThreshold: scoreThreshold,
+        maxFaces: maxFaces,
+      );
+    }
+    return Future<Map<String, dynamic>?>.value(null);
+  }
 }
 
 /// Persistent background FFI worker isolate so `VedroNativeBindings` is loaded ONCE
@@ -145,7 +201,7 @@ class _FfiWorker {
     }
   }
 
-  Future<dynamic> call(int handleAddr, String method, Map<String, dynamic> params) {
+  Future<dynamic> callRaw(Map<String, dynamic> payload) {
     if (_closed) {
       return Future<dynamic>.error(VedroCoreException('FFI worker closed'));
     }
@@ -153,18 +209,21 @@ class _FfiWorker {
     final completer = Completer<dynamic>();
     _pending[id] = completer;
     try {
-      _sendPort.send(<String, dynamic>{
-        'cmd': 'invoke',
-        'id': id,
-        'handle': handleAddr,
-        'method': method,
-        'params': params,
-      });
+      _sendPort.send(<String, dynamic>{...payload, 'id': id});
     } catch (e) {
       _pending.remove(id);
       return Future<dynamic>.error(VedroCoreException('FFI worker send failed: $e'));
     }
     return completer.future;
+  }
+
+  Future<dynamic> call(int handleAddr, String method, Map<String, dynamic> params) {
+    return callRaw(<String, dynamic>{
+      'cmd': 'invoke',
+      'handle': handleAddr,
+      'method': method,
+      'params': params,
+    });
   }
 
   void close() {
@@ -187,6 +246,23 @@ class _FfiWorker {
   }
 }
 
+mpv_gen.MPV? _openCachedMpv() {
+  final candidates = <String>[
+    if (Platform.environment['LIBMPV_LIBRARY_PATH']?.isNotEmpty == true)
+      Platform.environment['LIBMPV_LIBRARY_PATH']!,
+    if (Platform.isIOS || Platform.isMacOS) 'Mpv.framework/Mpv',
+    if (Platform.isAndroid) 'libmpv.so',
+    if (Platform.isWindows) ...['libmpv-2.dll', 'mpv-2.dll', 'mpv-1.dll'],
+    if (Platform.isLinux) ...['libmpv.so', 'libmpv.so.2', 'libmpv.so.1'],
+  ];
+  for (final name in candidates) {
+    try {
+      return mpv_gen.MPV(DynamicLibrary.open(name));
+    } catch (_) {}
+  }
+  return null;
+}
+
 void _workerMain(Map<String, dynamic> initArgs) {
   final readyPort = initArgs['ready'] as SendPort;
   final replyPort = initArgs['reply'] as SendPort;
@@ -200,6 +276,12 @@ void _workerMain(Map<String, dynamic> initArgs) {
     return;
   }
 
+  // Persistent worker-local scratch buffer & cached libmpv bindings (zero per-frame malloc/dlopen!)
+  Pointer<Uint8> faceScratch = nullptr;
+  int faceScratchCap = 0;
+  mpv_gen.MPV? cachedMpv;
+  bool mpvProbeAttempted = false;
+
   final inbox = ReceivePort();
   readyPort.send(inbox.sendPort);
 
@@ -207,7 +289,178 @@ void _workerMain(Map<String, dynamic> initArgs) {
     if (msg is! Map) return;
     final cmd = msg['cmd'];
     if (cmd == 'shutdown') {
+      if (faceScratch != nullptr) {
+        calloc.free(faceScratch);
+        faceScratch = nullptr;
+        faceScratchCap = 0;
+      }
       inbox.close();
+      return;
+    }
+    if (cmd == 'face_detect_raw') {
+      final id = msg['id'] as int;
+      final fn = bindings.faceDetectRaw;
+      if (fn == null) {
+        replyPort.send(<String, dynamic>{
+          'id': id,
+          'resp': const <String, dynamic>{'ok': false, 'error': 'vedro_face_detect_raw unavailable'},
+        });
+        return;
+      }
+      Pointer<Utf8> modelPtr = nullptr;
+      Pointer<Utf8> resultPtr = nullptr;
+      try {
+        final handle = Pointer<VedroRuntime>.fromAddress(msg['handle'] as int);
+        final ttd = msg['pixels'] as TransferableTypedData;
+        final bytes = ttd.materialize().asUint8List();
+        final len = bytes.length;
+        if (len > faceScratchCap) {
+          if (faceScratch != nullptr) calloc.free(faceScratch);
+          faceScratch = calloc<Uint8>(len);
+          faceScratchCap = len;
+        }
+        faceScratch.asTypedList(len).setAll(0, bytes);
+        modelPtr = (msg['model_path'] as String).toNativeUtf8();
+        final w = msg['width'] as int;
+        final h = msg['height'] as int;
+        resultPtr = fn(
+          handle,
+          modelPtr,
+          faceScratch,
+          len,
+          w,
+          h,
+          w * 4,
+          (msg['is_bgra'] as bool) ? 1 : 0,
+          msg['infer_w'] as int,
+          msg['infer_h'] as int,
+          (msg['score_threshold'] as num).toDouble(),
+          msg['max_faces'] as int,
+        );
+        final decoded = resultPtr == nullptr
+            ? const <String, dynamic>{'ok': false, 'error': 'Null FFI response'}
+            : jsonDecode(resultPtr.toDartString());
+        replyPort.send(<String, dynamic>{'id': id, 'resp': decoded});
+      } catch (e) {
+        replyPort.send(<String, dynamic>{
+          'id': id,
+          'resp': <String, dynamic>{'ok': false, 'error': e.toString()},
+        });
+      } finally {
+        if (modelPtr != nullptr) calloc.free(modelPtr);
+        if (resultPtr != nullptr) bindings.freeString(resultPtr);
+      }
+      return;
+    }
+    if (cmd == 'face_detect_mpv') {
+      final id = msg['id'] as int;
+      final fn = bindings.faceDetectRaw;
+      if (fn == null) {
+        replyPort.send(<String, dynamic>{
+          'id': id,
+          'resp': const <String, dynamic>{'ok': false, 'error': 'vedro_face_detect_raw unavailable'},
+        });
+        return;
+      }
+      if (!mpvProbeAttempted) {
+        mpvProbeAttempted = true;
+        cachedMpv = _openCachedMpv();
+      }
+      final mpv = cachedMpv;
+      if (mpv == null) {
+        replyPort.send(<String, dynamic>{
+          'id': id,
+          'resp': const <String, dynamic>{'ok': false, 'error': 'libmpv unavailable in worker'},
+        });
+        return;
+      }
+      final sw = Stopwatch()..start();
+      final resultNode = calloc<mpv_gen.mpv_node>();
+      final arg0 = 'screenshot-raw'.toNativeUtf8();
+      final arg1 = 'video'.toNativeUtf8();
+      final argv = calloc<Pointer<Utf8>>(3);
+      argv[0] = arg0;
+      argv[1] = arg1;
+      argv[2] = nullptr;
+      Pointer<Utf8> modelPtr = nullptr;
+      Pointer<Utf8> resultPtr = nullptr;
+      try {
+        final mpvCtx = Pointer<mpv_gen.mpv_handle>.fromAddress(msg['mpv_ctx'] as int);
+        mpv.mpv_command_ret(mpvCtx, argv.cast(), resultNode.cast());
+        final captureMs = sw.elapsedMicroseconds / 1000.0;
+        if (resultNode.ref.format != mpv_gen.mpv_format.MPV_FORMAT_NODE_MAP) {
+          replyPort.send(<String, dynamic>{
+            'id': id,
+            'resp': <String, dynamic>{
+              'ok': true,
+              'data': <String, dynamic>{'empty_frame': true, 'capture_ms': captureMs},
+            },
+          });
+          return;
+        }
+        int? w, h, stride, dataSize;
+        Pointer<Uint8> dataPtr = nullptr;
+        final map = resultNode.ref.u.list;
+        for (var i = 0; i < map.ref.num; i++) {
+          final key = map.ref.keys[i].cast<Utf8>().toDartString();
+          final val = map.ref.values[i];
+          if (val.format == mpv_gen.mpv_format.MPV_FORMAT_INT64) {
+            if (key == 'w') w = val.u.int64;
+            if (key == 'h') h = val.u.int64;
+            if (key == 'stride') stride = val.u.int64;
+          } else if (val.format == mpv_gen.mpv_format.MPV_FORMAT_BYTE_ARRAY && key == 'data') {
+            dataPtr = val.u.ba.ref.data.cast<Uint8>();
+            dataSize = val.u.ba.ref.size;
+          }
+        }
+        if (w == null || h == null || stride == null || dataSize == null || dataPtr == nullptr || w <= 0 || h <= 0) {
+          replyPort.send(<String, dynamic>{
+            'id': id,
+            'resp': <String, dynamic>{
+              'ok': true,
+              'data': <String, dynamic>{'empty_frame': true, 'capture_ms': captureMs},
+            },
+          });
+          return;
+        }
+        // Pass mpv's raw C pixel pointer STRAIGHT into Rust YuNet (ZERO 33MB copy to Dart!)
+        final handle = Pointer<VedroRuntime>.fromAddress(msg['handle'] as int);
+        modelPtr = (msg['model_path'] as String).toNativeUtf8();
+        resultPtr = fn(
+          handle,
+          modelPtr,
+          dataPtr,
+          dataSize,
+          w,
+          h,
+          stride,
+          1, // mpv screenshot-raw is BGRA
+          msg['infer_w'] as int,
+          msg['infer_h'] as int,
+          (msg['score_threshold'] as num).toDouble(),
+          msg['max_faces'] as int,
+        );
+        final decoded = resultPtr == nullptr
+            ? const <String, dynamic>{'ok': false, 'error': 'Null FFI response'}
+            : jsonDecode(resultPtr.toDartString());
+        if (decoded is Map && decoded['data'] is Map) {
+          (decoded['data'] as Map)['capture_ms'] = captureMs;
+        }
+        replyPort.send(<String, dynamic>{'id': id, 'resp': decoded});
+      } catch (e) {
+        replyPort.send(<String, dynamic>{
+          'id': id,
+          'resp': <String, dynamic>{'ok': false, 'error': e.toString()},
+        });
+      } finally {
+        if (modelPtr != nullptr) calloc.free(modelPtr);
+        if (resultPtr != nullptr) bindings.freeString(resultPtr);
+        mpv.mpv_free_node_contents(resultNode.cast());
+        calloc.free(arg0);
+        calloc.free(arg1);
+        calloc.free(argv);
+        calloc.free(resultNode);
+      }
       return;
     }
     if (cmd == 'invoke') {
@@ -407,6 +660,74 @@ class VedroFfiBridge implements VedroCoreClient {
         throw VedroCoreException('VedroFfiBridge already disposed');
       }
       return await worker.call(_handle.address, method, params);
+    } finally {
+      _inFlight--;
+      _maybeFinalizeDestroy();
+    }
+  }
+
+  Future<Map<String, dynamic>?> _detectFaceRawNative({
+    required String modelPath,
+    required Uint8List bytes,
+    required int width,
+    required int height,
+    required bool isBgra,
+    required int inferW,
+    required int inferH,
+    double scoreThreshold = 0.62,
+    int maxFaces = 2,
+  }) async {
+    if (_disposed || _handle == nullptr || _bindings.faceDetectRaw == null) return null;
+    _inFlight++;
+    try {
+      final worker = await _acquireWorker();
+      if (_disposed || _handle == nullptr) return null;
+      final res = await worker.callRaw(<String, dynamic>{
+        'cmd': 'face_detect_raw',
+        'handle': _handle.address,
+        'model_path': modelPath,
+        'pixels': TransferableTypedData.fromList([bytes]),
+        'width': width,
+        'height': height,
+        'is_bgra': isBgra,
+        'infer_w': inferW,
+        'infer_h': inferH,
+        'score_threshold': scoreThreshold,
+        'max_faces': maxFaces,
+      });
+      return res is Map<String, dynamic> ? res : null;
+    } finally {
+      _inFlight--;
+      _maybeFinalizeDestroy();
+    }
+  }
+
+  Future<Map<String, dynamic>?> _detectFaceFromMpvNative({
+    required int mpvCtxAddr,
+    required String modelPath,
+    required int inferW,
+    required int inferH,
+    double scoreThreshold = 0.62,
+    int maxFaces = 2,
+  }) async {
+    if (_disposed || _handle == nullptr || mpvCtxAddr == 0 || _bindings.faceDetectRaw == null) {
+      return null;
+    }
+    _inFlight++;
+    try {
+      final worker = await _acquireWorker();
+      if (_disposed || _handle == nullptr) return null;
+      final res = await worker.callRaw(<String, dynamic>{
+        'cmd': 'face_detect_mpv',
+        'handle': _handle.address,
+        'mpv_ctx': mpvCtxAddr,
+        'model_path': modelPath,
+        'infer_w': inferW,
+        'infer_h': inferH,
+        'score_threshold': scoreThreshold,
+        'max_faces': maxFaces,
+      });
+      return res is Map<String, dynamic> ? res : null;
     } finally {
       _inFlight--;
       _maybeFinalizeDestroy();

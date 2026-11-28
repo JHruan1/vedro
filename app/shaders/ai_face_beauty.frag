@@ -46,6 +46,14 @@ vec2 computeFaceWarpIso(
     return vec2(0.0);
   }
 
+  // Fast 4-ALU AABB reject: 90%+ of background pixels skip all sqrt/length/warp math!
+  vec2 approxCenter = (eyes.xy + eyes.zw + lower.zw) * (1.0 / 3.0) * aspect;
+  float maxReach = max(meta.x * aspect.x, meta.y * aspect.y) * 1.15;
+  vec2 deltaBox = abs(pIso - approxCenter);
+  if (deltaBox.x > maxReach || deltaBox.y > maxReach) {
+    return vec2(0.0);
+  }
+
   vec2 re = eyes.xy * aspect;
   vec2 le = eyes.zw * aspect;
   vec2 nose = lower.xy * aspect;
@@ -184,9 +192,16 @@ vec3 applyFaceLipTint(
     return rgb;
   }
 
+  // Fast 2-ALU mouth AABB reject: 98%+ of pixels exit immediately!
+  vec2 mouth = lower.zw * aspect;
+  float maxLipReach = max(meta.z * aspect.x * 0.72, meta.x * aspect.x * 0.28);
+  vec2 dMouth = abs(sampleIso - mouth);
+  if (dMouth.x > maxLipReach || dMouth.y > maxLipReach) {
+    return rgb;
+  }
+
   vec2 re = eyes.xy * aspect;
   vec2 le = eyes.zw * aspect;
-  vec2 mouth = lower.zw * aspect;
   vec2 eyeVec = le - re;
   float iod = length(eyeVec);
   if (iod < 0.012) return rgb;

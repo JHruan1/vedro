@@ -23,7 +23,6 @@ import '../core/services/ai_face_beauty_manager.dart';
 import '../core/services/local_asr_engine.dart';
 import '../widgets/ai_bilingual_subtitle.dart';
 import '../widgets/ai_face_beauty_overlay.dart';
-import '../widgets/ai_face_mpv_shader.dart';
 import '../widgets/beauty_control_panel.dart';
 import '../widgets/beauty_filter.dart';
 import '../widgets/danmaku_engine.dart';
@@ -210,10 +209,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   BeautyFilterParams _beautyParams = BeautyFilterParams.off;
   bool _aiFaceEnabled = false;
   AiFaceMorphParams _aiFaceMorph = AiFaceMorphParams.off;
-  List<AiTrackedFace> _aiFaceMpvFaces = const [];
-  int _aiFaceMpvPingPong = 0;
   bool _aiFaceCopyBackForced = false;
-  Timer? _aiFaceMpvDebounce;
+  Future<void>? _aiFaceActiveMpvFuture;
   final ValueNotifier<AiFaceTrackTelemetry> _aiFaceTelemetryNotifier =
       ValueNotifier<AiFaceTrackTelemetry>(const AiFaceTrackTelemetry());
   double _audioDelaySecs = 0.0;
@@ -1565,7 +1562,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _enteringPipResetTimer?.cancel();
     _retryGraceTimer?.cancel();
     _beautyShaderDebounce?.cancel();
-    _aiFaceMpvDebounce?.cancel();
     _focusNode.dispose();
     _playPauseFocusNode.dispose();
     _unlockFocusNode.dispose();
@@ -1642,7 +1638,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       fgArgb: restoreSkin.fg.toARGB32(),
     );
     _reportStoppedAndCleanup();
-    _player.dispose();
+    final inflightMpv = _aiFaceActiveMpvFuture;
+    if (inflightMpv != null) {
+      unawaited(inflightMpv.catchError((_) {}).whenComplete(() => _player.dispose()));
+    } else {
+      _player.dispose();
+    }
     super.dispose();
   }
 

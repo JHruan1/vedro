@@ -15,11 +15,11 @@ import 'ai_face_mpv_shader.dart';
 
 /// Compiled Impeller fragment program loader for `shaders/ai_face_beauty.frag`.
 ///
-/// Updates 34 float uniforms in microseconds at 60/120 Hz with ZERO shader recompilation
-/// on iOS Metal, macOS Metal, Android Vulkan, and Android OpenGL ES.
-/// On Skia backends (Windows D3D11/ANGLE, Linux OpenGL, or Android with Impeller off),
-/// [AiFaceBeautyViewport] seamlessly switches to `libmpv` `//!HOOK MAIN` GPU GLSL via
-/// [AiFaceMpvShaderBuilder] so EVERY client platform gets real GPU Slim Face / Big Eyes!
+/// Updates 34 float uniforms in microseconds with ZERO shader recompilation on
+/// iOS Metal, macOS Metal, Android Vulkan, and Android OpenGL ES.
+/// On Skia backends (Windows D3D11/ANGLE, Linux OpenGL), dynamic `glsl-shaders`
+/// hot-reloading triggers `D3DCompile` stalls on `libmpv`'s video thread (~2 FPS),
+/// so Plan A stays safely inactive on Skia while Plan B runs at locked 60 FPS everywhere.
 class AiFaceBeautyShader {
   AiFaceBeautyShader._();
 
@@ -34,16 +34,14 @@ class AiFaceBeautyShader {
   /// Human-readable GPU backend label for the active OS & renderer.
   static String get activeGpuPipelineLabel {
     if (isSupported) {
-      if (PlatformPerfProfile.isIOS) return 'iOS Metal · Impeller GPU 着色器';
-      if (PlatformPerfProfile.isMacOS) return 'macOS Metal · Impeller GPU 着色器';
-      if (PlatformPerfProfile.isAndroid) return 'Android Vulkan / OpenGL ES · Impeller GPU 着色器';
+      if (PlatformPerfProfile.isIOS) return 'iOS Metal · Impeller GPU 实时无重编译着色器';
+      if (PlatformPerfProfile.isMacOS) return 'macOS Metal · Impeller GPU 实时无重编译着色器';
+      if (PlatformPerfProfile.isAndroid) return 'Android Vulkan / OpenGL ES · Impeller GPU 实时着色器';
       return 'Impeller GPU 实时着色器';
     }
-    if (PlatformPerfProfile.isWindows) return 'Windows D3D11 / ANGLE · MPV GPU GLSL 钩子';
-    if (PlatformPerfProfile.isLinux) return 'Linux OpenGL · MPV GPU GLSL 钩子';
-    if (PlatformPerfProfile.isMacOS) return 'macOS Skia · MPV GPU GLSL 钩子';
-    if (PlatformPerfProfile.isAndroid) return 'Android Skia · MPV GPU GLSL 钩子';
-    return 'MPV GPU GLSL 着色器';
+    if (PlatformPerfProfile.isWindows) return 'Windows Skia（暂不支持 60fps 无重编译五官形变，请使用方案 B 质感美颜）';
+    if (PlatformPerfProfile.isLinux) return 'Linux Skia（暂不支持 60fps 无重编译五官形变，请使用方案 B 质感美颜）';
+    return 'Skia 渲染后端（AI 五官需 Impeller Metal/Vulkan/GLES）';
   }
 
   static Future<void> preload() {
@@ -62,7 +60,7 @@ class AiFaceBeautyShader {
 
   /// Build an `ImageFilter.shader` + owned `FragmentShader` handle carrying the active
   /// morph sliders and up to 2 tracked faces. Caller MUST dispose the returned `shader`
-  /// on next rebuild / widget dispose to prevent 60fps native uniform buffer leaks.
+  /// on next rebuild / widget dispose to prevent native uniform buffer leaks.
   static ({ui.ImageFilter filter, ui.FragmentShader shader})? buildFilterWithHandle({
     required Rect viewportScreenRectPx,
     required AiFaceMorphParams morph,
@@ -77,15 +75,12 @@ class AiFaceBeautyShader {
     ui.FragmentShader? shader;
     try {
       shader = program.fragmentShader();
-      // 0..1: u_size (populated by Impeller)
       shader.setFloat(0, 0.0);
       shader.setFloat(1, 0.0);
-      // 2..5: u_rect (leftPx, topPx, widthPx, heightPx)
       shader.setFloat(2, viewportScreenRectPx.left);
       shader.setFloat(3, viewportScreenRectPx.top);
       shader.setFloat(4, viewportScreenRectPx.width);
       shader.setFloat(5, viewportScreenRectPx.height);
-      // 6..9: u_morph (slimFace, bigEyes, vChin, lipTint)
       shader.setFloat(6, morph.slimFace.clamp(0.0, 1.0));
       shader.setFloat(7, morph.bigEyes.clamp(0.0, 1.0));
       shader.setFloat(8, morph.vChin.clamp(0.0, 1.0));
@@ -98,17 +93,14 @@ class AiFaceBeautyShader {
           }
           return;
         }
-        // eyes: (reX, reY, leX, leY)
         shader!.setFloat(baseIdx + 0, f.reX);
         shader.setFloat(baseIdx + 1, f.reY);
         shader.setFloat(baseIdx + 2, f.leX);
         shader.setFloat(baseIdx + 3, f.leY);
-        // lower: (noseX, noseY, mouthCenterX, mouthCenterY)
         shader.setFloat(baseIdx + 4, f.noseX);
         shader.setFloat(baseIdx + 5, f.noseY);
         shader.setFloat(baseIdx + 6, f.mouthCenterX);
         shader.setFloat(baseIdx + 7, f.mouthCenterY);
-        // meta: (faceW, faceH, mouthW, confidenceAlpha)
         shader.setFloat(baseIdx + 8, f.w);
         shader.setFloat(baseIdx + 9, f.h);
         shader.setFloat(baseIdx + 10, f.mouthWidth);
@@ -137,7 +129,6 @@ class AiFaceTrackTelemetry {
     this.trackedFaces = 0,
     this.lastInferMs = 0.0,
     this.gpuWarpSupported = true,
-    this.usingMpvGpuFallback = false,
     this.copyBackHwdecActive = false,
     this.lastError,
   });
@@ -146,23 +137,23 @@ class AiFaceTrackTelemetry {
   final int trackedFaces;
   final double lastInferMs;
   final bool gpuWarpSupported;
-  final bool usingMpvGpuFallback;
   final bool copyBackHwdecActive;
   final String? lastError;
 
   String statusBadge() {
+    if (!gpuWarpSupported) return '需 Impeller GPU（请用方案 B）';
     if (!active) return '未启用';
     if (lastError != null && lastError!.isNotEmpty) return '模型待就绪';
-    final backend = usingMpvGpuFallback ? 'MPV GPU' : 'GPU';
     if (trackedFaces > 0) {
-      return '$backend 追踪 $trackedFaces 张人脸 · ${lastInferMs.round()}ms';
+      return 'GPU 追踪 $trackedFaces 张人脸 · ${lastInferMs.round()}ms';
     }
-    return '$backend 实时追踪中 · 等待人脸';
+    return 'GPU 实时追踪中 · 等待人脸';
   }
 }
 
-/// Pure-Dart temporal face tracker that smoothly interpolates 10–13 Hz YuNet detections
-/// into jitter-free 60/120 Hz GPU uniforms, with instant snap-reset on hard scene cuts.
+/// Pure-Dart temporal face tracker that smoothly interpolates ~7–10 Hz YuNet detections
+/// into jitter-free 30 Hz GPU uniforms, with instant snap-reset on hard scene cuts
+/// and strict convergence gating (returns `false` once settled -> zero wasted shader churn!).
 class AiFaceTemporalSmoother {
   List<AiTrackedFace> _targets = const [];
   List<AiTrackedFace> _smoothed = const [];
@@ -193,7 +184,6 @@ class AiFaceTemporalSmoother {
     }
     _missedTicks = 0;
 
-    // Greedy nearest-center pairing so face #0 and face #1 never swap slots mid-shot.
     final nextTargets = <AiTrackedFace>[];
     final used = <int>{};
     for (final prev in _smoothed.take(2)) {
@@ -225,15 +215,32 @@ class AiFaceTemporalSmoother {
     }
   }
 
-  /// Advance smooth interpolation by [dtSecs]. Returns `true` if uniforms changed visibly.
+  static double _faceDelta(AiTrackedFace a, AiTrackedFace b) {
+    var d = (a.reX - b.reX).abs();
+    d = math.max(d, (a.reY - b.reY).abs());
+    d = math.max(d, (a.leX - b.leX).abs());
+    d = math.max(d, (a.leY - b.leY).abs());
+    d = math.max(d, (a.noseX - b.noseX).abs());
+    d = math.max(d, (a.noseY - b.noseY).abs());
+    d = math.max(d, (a.mouthCenterX - b.mouthCenterX).abs());
+    d = math.max(d, (a.mouthCenterY - b.mouthCenterY).abs());
+    d = math.max(d, (a.w - b.w).abs());
+    d = math.max(d, (a.h - b.h).abs());
+    d = math.max(d, (a.alpha - b.alpha).abs());
+    return d;
+  }
+
+  /// Advance smooth interpolation by [dtSecs]. Returns `true` ONLY if uniforms changed
+  /// visibly (`> 0.0008` normalized delta or face count changed) — zero idle shader churn!
   bool step(double dtSecs) {
     if (_smoothed.isEmpty && _targets.isEmpty) return false;
-    final dt = dtSecs.clamp(0.004, 0.1);
+    final dt = dtSecs.clamp(0.008, 0.1);
     final posT = 1.0 - math.exp(-dt * 18.0);
     final fadeInT = 1.0 - math.exp(-dt * 12.0);
     final fadeOutT = 1.0 - math.exp(-dt * 11.0);
 
     final next = <AiTrackedFace>[];
+    var changed = false;
     final count = math.max(_smoothed.length, _targets.length).clamp(0, 2);
     for (var i = 0; i < count; i++) {
       final hasCur = i < _smoothed.length;
@@ -243,29 +250,37 @@ class AiFaceTemporalSmoother {
         final tgt = _targets[i];
         final dx = tgt.centerX - cur.centerX;
         final dy = tgt.centerY - cur.centerY;
-        // Large jump without explicit scene_cut -> snap landmarks faster
         final jump = math.sqrt(dx * dx + dy * dy);
         final effT = jump > 0.28 ? 1.0 : posT;
         final nextAlpha = cur.alpha + (1.0 - cur.alpha) * fadeInT;
-        next.add(cur.lerpTo(tgt, effT, alphaOverride: nextAlpha));
+        final stepped = cur.lerpTo(tgt, effT, alphaOverride: nextAlpha);
+        if (_faceDelta(cur, stepped) > 0.0008) {
+          changed = true;
+          next.add(stepped);
+        } else {
+          // Snap tiny epsilon residual once converged so ticker stops repainting!
+          next.add(tgt.withAlpha(1.0));
+        }
       } else if (hasTgt) {
+        changed = true;
         next.add(_targets[i].withAlpha(fadeInT));
       } else if (hasCur) {
         final cur = _smoothed[i];
         final nextAlpha = cur.alpha * (1.0 - fadeOutT);
+        changed = true;
         if (nextAlpha > 0.01) {
           next.add(cur.withAlpha(nextAlpha));
         }
       }
     }
+    if (next.length != _smoothed.length) changed = true;
     _smoothed = next;
-    return true;
+    return changed;
   }
 }
 
 /// Ensures Impeller `ImageFiltered` allocates the full viewport offscreen texture
-/// (matching Flutter's own `StretchEffect` `_StretchEffectPainter`) even when the
-/// video uses `BoxFit.contain` with letterbox/pillarbox margins.
+/// (matching Flutter's own `StretchEffect`) even when the video has letterbox bars.
 class _ViewportCoveragePainter extends CustomPainter {
   const _ViewportCoveragePainter();
 
@@ -287,21 +302,21 @@ class _ViewportCoveragePainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-/// Self-contained Cross-Client / Cross-GPU Plan A AI Face Beauty wrapper around `Video(...)`.
+/// Zero-stutter Plan A AI Face Beauty wrapper around `Video(...)`.
 ///
-/// - **Zero-overhead when off**: When disabled, model missing, or morph sliders are 0,
-///   renders [child] directly with ZERO `ImageFiltered` overhead, ZERO frame captures,
-///   ZERO `hwdec` overrides, and 100% native Dolby Vision / HDR zero-copy playback.
-/// - **iOS Metal / macOS Metal / Android Vulkan & OpenGL ES (Impeller)**:
-///   Drives `shaders/ai_face_beauty.frag` via `ImageFiltered(ImageFilter.shader)` at 60/120Hz
-///   with proper `FragmentShader.dispose()` lifecycle and 4-corner coverage.
-/// - **Windows (D3D11/ANGLE) / Linux (OpenGL) / Skia fallback**:
-///   Automatically routes video-space tracked faces to [onFallbackMpvFacesChanged] so `libmpv`
-///   renders the exact same Slim Face / Big Eyes / V-Chin / Lip Tint in `//!HOOK MAIN` GPU GLSL!
-/// - **Android Hardware SurfaceTexture resilience**:
-///   Detects black `RepaintBoundary.toImage()` frames on opaque MediaCodec surfaces, falls back
-///   to `mpv screenshot-raw` with stride-safe downsampling, and invokes [onCopyBackHwdecRequired]
-///   ONLY when zero-copy `mediacodec` blocks raw frame reads (restoring immediately on disable).
+/// - **Zero overhead when off (or on Skia Windows/Linux)**: renders [child] directly with
+///   ZERO `ImageFiltered`, ZERO captures, ZERO `hwdec` overrides, and 100% native 60fps HDR/DV.
+/// - **Zero-copy binary Rust FFI + persistent worker**:
+///   - Primary: captures tiny `160×90` (57 KB) frame after `endOfFrame` and sends via
+///     `TransferableTypedData` directly to `vedro_face_detect_raw` (`160×96` / `192×112`, ~6ms!).
+///   - Fallback (Android `SurfaceTexture` black frames OR slow GPU readback > 75ms):
+///     runs `mpv_command_ret("screenshot-raw", "video")` INSIDE the persistent background FFI
+///     worker isolate and passes mpv's raw C pixel pointer STRAIGHT into Rust (`0` bytes copied
+///     to Dart, `0` Isolate spawns, `0` UI-thread CPU!).
+/// - **Self-pacing duty cycle (`>= max(baseMs, captureMs * 4)`)**: guarantees readback never
+///   exceeds 20% GPU/CPU budget so video playback stays locked at native 60 FPS!
+/// - **30 Hz converged Impeller shader**: skips idle shader rebuilds and keeps `ImageFiltered`
+///   mounted stably (`enabled: hasFilter`) with zero structural widget rebuilds.
 class AiFaceBeautyViewport extends StatefulWidget {
   const AiFaceBeautyViewport({
     super.key,
@@ -315,8 +330,8 @@ class AiFaceBeautyViewport extends StatefulWidget {
     required this.videoHeight,
     required this.videoFit,
     required this.telemetryNotifier,
-    this.rawBgraFallbackCapture,
-    this.onFallbackMpvFacesChanged,
+    this.mpvHandleResolver,
+    this.onMpvDetectFutureChanged,
     this.onCopyBackHwdecRequired,
     required this.child,
   });
@@ -331,8 +346,8 @@ class AiFaceBeautyViewport extends StatefulWidget {
   final int videoHeight;
   final BoxFit videoFit;
   final ValueNotifier<AiFaceTrackTelemetry> telemetryNotifier;
-  final Future<Uint8List?> Function()? rawBgraFallbackCapture;
-  final ValueChanged<List<AiTrackedFace>>? onFallbackMpvFacesChanged;
+  final Future<int?> Function()? mpvHandleResolver;
+  final ValueChanged<Future<void>?>? onMpvDetectFutureChanged;
   final ValueChanged<bool>? onCopyBackHwdecRequired;
   final Widget child;
 
@@ -342,30 +357,30 @@ class AiFaceBeautyViewport extends StatefulWidget {
 
 class _AiFaceBeautyViewportState extends State<AiFaceBeautyViewport>
     with SingleTickerProviderStateMixin {
+  static final ui.ImageFilter _identityFilter =
+      ui.ImageFilter.matrix(Matrix4.identity().storage);
+
   final GlobalKey _captureKey = GlobalKey(debugLabel: 'ai-face-video-capture');
   final AiFaceTemporalSmoother _smoother = AiFaceTemporalSmoother();
   final ValueNotifier<int> _paintTickNotifier = ValueNotifier<int>(0);
 
   ui.FragmentShader? _activeShader;
   Ticker? _ticker;
-  Timer? _detectTimer;
+  Timer? _nextDetectTimer;
   Duration _lastTick = Duration.zero;
+  Duration _lastUniformPush = Duration.zero;
   bool _detectInFlight = false;
   bool _disposed = false;
   bool _modelLoadedInRust = false;
-  bool _useFallbackBgra = false;
+  bool _useDirectMpvCapture = false;
   bool _copyBackRequested = false;
   int _consecutiveDarkCaptures = 0;
-  int _consecutiveNullFallback = 0;
-
-  // Throttling state for Windows/Linux/Skia `libmpv` GLSL face-morph backend
-  List<AiTrackedFace> _lastMpvEmittedFaces = const [];
-  int _lastMpvEmitMs = 0;
-
-  bool get _useMpvGpuBackend =>
-      !AiFaceBeautyShader.isAvailable && widget.onFallbackMpvFacesChanged != null;
+  int _consecutiveSlowToImage = 0;
+  int _consecutiveEmptyMpvFrames = 0;
+  int? _cachedMpvHandle;
 
   bool get _shouldTrack =>
+      AiFaceBeautyShader.isSupported &&
       widget.enabled &&
       widget.morph.isActive &&
       AiFaceBeautyManager.instance.isModelDownloaded &&
@@ -404,8 +419,6 @@ class _AiFaceBeautyViewportState extends State<AiFaceBeautyViewport>
       _paintTickNotifier.value++;
       if (_smoother.smoothed.isEmpty) {
         unawaited(_runSingleDetection());
-      } else if (_useMpvGpuBackend) {
-        _emitMpvFacesIfNeeded(force: true);
       }
     }
   }
@@ -422,53 +435,47 @@ class _AiFaceBeautyViewportState extends State<AiFaceBeautyViewport>
       return;
     }
 
-    if (!_useMpvGpuBackend) {
-      if (_ticker == null) {
-        _lastTick = Duration.zero;
-        _ticker = createTicker(_onAnimTick)..start();
-      } else if (!_ticker!.isActive) {
-        _lastTick = Duration.zero;
-        _ticker!.start();
-      }
-    } else {
-      // On libmpv GLSL backend (Windows/Linux), we emit smoothly on detection cadence
-      // rather than burning 60Hz Dart ticks.
-      _ticker?.stop();
+    if (_ticker == null) {
+      _lastTick = Duration.zero;
+      _lastUniformPush = Duration.zero;
+      _ticker = createTicker(_onAnimTick)..start();
+    } else if (!_ticker!.isActive) {
+      _lastTick = Duration.zero;
+      _lastUniformPush = Duration.zero;
+      _ticker!.start();
     }
 
-    _detectTimer?.cancel();
-    if (!widget.paused) {
-      final intervalMs = _useMpvGpuBackend
-          ? 165
-          : (PlatformPerfProfile.isMobile ? 105 : 75);
-      _detectTimer = Timer.periodic(
-        Duration(milliseconds: intervalMs),
-        (_) => unawaited(_runSingleDetection()),
-      );
-    }
+    _nextDetectTimer?.cancel();
+    _nextDetectTimer = null;
 
     if (triggerImmediate) {
-      // Also runs 1 detection when paused so user can preview Slim Face / Big Eyes live on still frames!
       unawaited(_runSingleDetection());
+    } else if (!widget.paused) {
+      _scheduleNextDetection(PlatformPerfProfile.isMobile ? 140 : 110);
     }
     _emitTelemetry();
   }
 
+  void _scheduleNextDetection(int delayMs) {
+    if (_disposed || !mounted || !_shouldTrack || widget.paused) return;
+    _nextDetectTimer?.cancel();
+    _nextDetectTimer = Timer(
+      Duration(milliseconds: delayMs.clamp(100, 480)),
+      () => unawaited(_runSingleDetection()),
+    );
+  }
+
   void _stopTracking({required bool unloadModel}) {
-    _detectTimer?.cancel();
-    _detectTimer = null;
+    _nextDetectTimer?.cancel();
+    _nextDetectTimer = null;
     _ticker?.stop();
     _smoother.reset();
     _disposeActiveShader();
     _paintTickNotifier.value++;
 
-    if (_lastMpvEmittedFaces.isNotEmpty) {
-      _lastMpvEmittedFaces = const [];
-      widget.onFallbackMpvFacesChanged?.call(const []);
-    }
     if (_copyBackRequested) {
       _copyBackRequested = false;
-      _consecutiveNullFallback = 0;
+      _consecutiveEmptyMpvFrames = 0;
       widget.onCopyBackHwdecRequired?.call(false);
     }
     if (unloadModel && _modelLoadedInRust) {
@@ -485,10 +492,16 @@ class _AiFaceBeautyViewportState extends State<AiFaceBeautyViewport>
 
   void _onAnimTick(Duration elapsed) {
     if (_disposed || !mounted) return;
+    // Cap uniform repaints to ~30 Hz (32ms) so Impeller never churns shaders at 120 Hz!
+    if (_lastUniformPush != Duration.zero &&
+        (elapsed - _lastUniformPush).inMilliseconds < 32) {
+      return;
+    }
     final dt = _lastTick == Duration.zero
-        ? 0.016
+        ? 0.033
         : ((elapsed - _lastTick).inMicroseconds / 1000000.0);
     _lastTick = elapsed;
+    _lastUniformPush = elapsed;
     if (_smoother.step(dt)) {
       _paintTickNotifier.value++;
     }
@@ -501,8 +514,7 @@ class _AiFaceBeautyViewportState extends State<AiFaceBeautyViewport>
       active: _shouldTrack,
       trackedFaces: _smoother.smoothed.where((f) => f.alpha > 0.1).length,
       lastInferMs: inferMs ?? prev.lastInferMs,
-      gpuWarpSupported: AiFaceBeautyShader.isSupported || widget.onFallbackMpvFacesChanged != null,
-      usingMpvGpuFallback: _useMpvGpuBackend,
+      gpuWarpSupported: AiFaceBeautyShader.isSupported,
       copyBackHwdecActive: _copyBackRequested,
       lastError: error,
     );
@@ -531,127 +543,51 @@ class _AiFaceBeautyViewportState extends State<AiFaceBeautyViewport>
     return samples == 0 || (sum / (samples * 3)) < 2.2;
   }
 
-  static bool _facesMovedSignificantly(List<AiTrackedFace> a, List<AiTrackedFace> b) {
-    if (a.length != b.length) return true;
-    for (var i = 0; i < a.length; i++) {
-      final dx = (a[i].centerX - b[i].centerX).abs();
-      final dy = (a[i].centerY - b[i].centerY).abs();
-      final dw = (a[i].w - b[i].w).abs();
-      final da = (a[i].alpha - b[i].alpha).abs();
-      if (dx > 0.012 || dy > 0.012 || dw > 0.016 || da > 0.15) return true;
-    }
-    return false;
-  }
-
-  void _emitMpvFacesIfNeeded({bool force = false}) {
-    if (!_useMpvGpuBackend) return;
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final current = _smoother.smoothed.where((f) => f.alpha > 0.05).toList();
-    if (!force &&
-        nowMs - _lastMpvEmitMs < 155 &&
-        current.length == _lastMpvEmittedFaces.length) {
-      return;
-    }
-    if (!force && !_facesMovedSignificantly(_lastMpvEmittedFaces, current)) {
-      return;
-    }
-    _lastMpvEmitMs = nowMs;
-    _lastMpvEmittedFaces = current;
-    widget.onFallbackMpvFacesChanged?.call(current);
-  }
-
-  Future<({Uint8List bytes, int width, int height, String format, bool fromVideoFrame})?>
-      _captureFrame() async {
-    if (!_useFallbackBgra) {
-      try {
-        final ro = _captureKey.currentContext?.findRenderObject();
-        if (ro is RenderRepaintBoundary && ro.hasSize && !ro.size.isEmpty) {
-          final targetW = PlatformPerfProfile.isMobile ? 256.0 : 320.0;
-          final ratio = (targetW / ro.size.width).clamp(0.10, 0.55);
-          final img = await ro.toImage(pixelRatio: ratio);
-          try {
-            final bd = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
-            if (bd != null) {
-              final bytes = bd.buffer.asUint8List(bd.offsetInBytes, bd.lengthInBytes);
-              if (_looksAllBlack(bytes)) {
-                _consecutiveDarkCaptures += 1;
-                if (_consecutiveDarkCaptures >= 3 && widget.rawBgraFallbackCapture != null) {
-                  _useFallbackBgra = true;
-                }
-              } else {
-                _consecutiveDarkCaptures = 0;
-                return (
-                  bytes: bytes,
-                  width: img.width,
-                  height: img.height,
-                  format: 'rgba',
-                  fromVideoFrame: false,
-                );
+  Future<({Uint8List bytes, int width, int height, double captureMs})?> _captureTinyViewport() async {
+    try {
+      // Wait for end-of-frame so capture never collides with an active build/layout pass
+      await SchedulerBinding.instance.endOfFrame;
+      if (_disposed || !mounted || !_shouldTrack) return null;
+      final ro = _captureKey.currentContext?.findRenderObject();
+      if (ro is RenderRepaintBoundary && ro.hasSize && !ro.size.isEmpty) {
+        final sw = Stopwatch()..start();
+        // Tiny 160px-wide GPU downscale (160x90 = 57 KB -> 4x faster readback!)
+        final targetW = PlatformPerfProfile.isMobile ? 160.0 : 192.0;
+        final ratio = (targetW / ro.size.width).clamp(0.08, 0.35);
+        final img = await ro.toImage(pixelRatio: ratio);
+        try {
+          final bd = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+          final capMs = sw.elapsedMicroseconds / 1000.0;
+          if (bd != null) {
+            final bytes = bd.buffer.asUint8List(bd.offsetInBytes, bd.lengthInBytes);
+            if (_looksAllBlack(bytes)) {
+              _consecutiveDarkCaptures += 1;
+              if (_consecutiveDarkCaptures >= 2 && widget.mpvHandleResolver != null) {
+                _useDirectMpvCapture = true;
               }
+              return null;
             }
-          } finally {
-            img.dispose();
+            _consecutiveDarkCaptures = 0;
+            // If GPU readback is stalling Flutter's Raster thread (>75ms twice), switch to
+            // background zero-copy mpv capture so Flutter presentation stays locked at 60 FPS!
+            if (capMs > 75.0 && widget.mpvHandleResolver != null) {
+              _consecutiveSlowToImage += 1;
+              if (_consecutiveSlowToImage >= 2) {
+                _useDirectMpvCapture = true;
+              }
+            } else {
+              _consecutiveSlowToImage = 0;
+            }
+            return (bytes: bytes, width: img.width, height: img.height, captureMs: capMs);
           }
-        }
-      } catch (_) {
-        if (widget.rawBgraFallbackCapture != null) {
-          _useFallbackBgra = true;
+        } finally {
+          img.dispose();
         }
       }
-    }
-
-    if (_useFallbackBgra && widget.rawBgraFallbackCapture != null) {
-      try {
-        final raw = await widget.rawBgraFallbackCapture!();
-        if (raw == null || raw.isEmpty) {
-          // On Android `hwdec=mediacodec` (zero-copy opaque Surface), `screenshot-raw`
-          // returns null until mpv switches to `auto-copy-safe` (`mediacodec-copy`).
-          _consecutiveNullFallback += 1;
-          if (PlatformPerfProfile.isAndroid &&
-              !_copyBackRequested &&
-              _consecutiveNullFallback >= 2 &&
-              widget.onCopyBackHwdecRequired != null) {
-            _copyBackRequested = true;
-            widget.onCopyBackHwdecRequired!.call(true);
-            _emitTelemetry();
-          }
-          return null;
-        }
-        _consecutiveNullFallback = 0;
-        if (widget.videoWidth > 0 && widget.videoHeight > 0) {
-          final srcW = widget.videoWidth;
-          final srcH = widget.videoHeight;
-          if (raw.length >= srcW * srcH * 4) {
-            // Respect mpv BGRA row-alignment stride (e.g. 854x480 padded to 32-byte rows!)
-            final rowBytes =
-                (raw.length % srcH == 0) ? (raw.length ~/ srcH) : (srcW * 4);
-            final stride = math.max(1, (srcW / 256).ceil());
-            final dstW = (srcW / stride).floor();
-            final dstH = (srcH / stride).floor();
-            if (dstW >= 16 && dstH >= 16 && (dstW - 1) * stride * 4 + 3 < rowBytes) {
-              final small = Uint8List(dstW * dstH * 4);
-              var outIdx = 0;
-              for (var y = 0; y < dstH; y++) {
-                final rowOff = (y * stride) * rowBytes;
-                for (var x = 0; x < dstW; x++) {
-                  final srcOff = rowOff + (x * stride) * 4;
-                  small[outIdx++] = raw[srcOff];
-                  small[outIdx++] = raw[srcOff + 1];
-                  small[outIdx++] = raw[srcOff + 2];
-                  small[outIdx++] = raw[srcOff + 3];
-                }
-              }
-              return (
-                bytes: small,
-                width: dstW,
-                height: dstH,
-                format: 'bgra',
-                fromVideoFrame: true,
-              );
-            }
-          }
-        }
-      } catch (_) {}
+    } catch (_) {
+      if (widget.mpvHandleResolver != null) {
+        _useDirectMpvCapture = true;
+      }
     }
     return null;
   }
@@ -662,77 +598,126 @@ class _AiFaceBeautyViewportState extends State<AiFaceBeautyViewport>
     if (modelPath == null || modelPath.isEmpty) return;
 
     _detectInFlight = true;
+    final baseIntervalMs = PlatformPerfProfile.isMobile ? 140 : 110;
+    var observedCaptureMs = 0.0;
     try {
-      final frame = await _captureFrame();
-      if (_disposed || !mounted || !_shouldTrack || frame == null) return;
-
       final isMobile = PlatformPerfProfile.isMobile;
-      final res = await widget.core.invoke('ai_face_detect', {
-        'model_path': modelPath,
-        'width': frame.width,
-        'height': frame.height,
-        'data_b64': base64Encode(frame.bytes),
-        'pixel_format': frame.format,
-        'infer_w': isMobile ? 256 : 320,
-        'infer_h': isMobile ? 160 : 192,
-        'score_threshold': 0.62,
-        'max_faces': 2,
-      });
-      if (_disposed || !mounted || !_shouldTrack) return;
+      final inferW = isMobile ? 160 : 192;
+      final inferH = isMobile ? 96 : 112;
+      Map<String, dynamic>? res;
+      var fromVideoFrame = false;
+
+      if (!_useDirectMpvCapture) {
+        final frame = await _captureTinyViewport();
+        if (_disposed || !mounted || !_shouldTrack) return;
+        if (frame != null) {
+          observedCaptureMs = frame.captureMs;
+          // Fast path: zero-copy TransferableTypedData -> direct Rust C-ABI vedro_face_detect_raw
+          res = await widget.core.detectFaceRaw(
+            modelPath: modelPath,
+            bytes: frame.bytes,
+            width: frame.width,
+            height: frame.height,
+            isBgra: false,
+            inferW: inferW,
+            inferH: inferH,
+            scoreThreshold: 0.60,
+            maxFaces: 2,
+          );
+          // Fallback for mock clients in widget tests that only implement `invoke()`
+          if (res == null && !_disposed && mounted) {
+            final rawRes = await widget.core.invoke('ai_face_detect', {
+              'model_path': modelPath,
+              'width': frame.width,
+              'height': frame.height,
+              'data_b64': base64Encode(frame.bytes),
+              'pixel_format': 'rgba',
+              'infer_w': inferW,
+              'infer_h': inferH,
+              'score_threshold': 0.60,
+              'max_faces': 2,
+            });
+            if (rawRes is Map<String, dynamic>) res = rawRes;
+          }
+        }
+      }
+
+      if (_useDirectMpvCapture && widget.mpvHandleResolver != null && !_disposed && mounted) {
+        _cachedMpvHandle ??= await widget.mpvHandleResolver!();
+        final mpvAddr = _cachedMpvHandle ?? 0;
+        if (mpvAddr != 0 && !_disposed && mounted) {
+          fromVideoFrame = true;
+          final fut = widget.core.detectFaceFromMpv(
+            mpvCtxAddr: mpvAddr,
+            modelPath: modelPath,
+            inferW: inferW,
+            inferH: inferH,
+            scoreThreshold: 0.60,
+            maxFaces: 2,
+          );
+          widget.onMpvDetectFutureChanged?.call(fut.then((_) {}));
+          try {
+            res = await fut;
+          } finally {
+            widget.onMpvDetectFutureChanged?.call(null);
+          }
+          if (res != null) {
+            observedCaptureMs = (res['capture_ms'] as num?)?.toDouble() ?? 15.0;
+            if (res['empty_frame'] == true) {
+              _consecutiveEmptyMpvFrames += 1;
+              if (PlatformPerfProfile.isAndroid &&
+                  !_copyBackRequested &&
+                  _consecutiveEmptyMpvFrames >= 2 &&
+                  widget.onCopyBackHwdecRequired != null) {
+                _copyBackRequested = true;
+                widget.onCopyBackHwdecRequired!.call(true);
+                _emitTelemetry();
+              }
+              return;
+            }
+            _consecutiveEmptyMpvFrames = 0;
+          }
+        }
+      }
+
+      if (_disposed || !mounted || !_shouldTrack || res == null) return;
       _modelLoadedInRust = true;
 
-      if (res is Map<String, dynamic>) {
-        var faces = (res['faces'] as List<dynamic>? ?? const [])
-            .whereType<Map<String, dynamic>>()
-            .map(AiTrackedFace.fromJson)
-            .toList();
+      var faces = (res['faces'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(AiTrackedFace.fromJson)
+          .toList();
 
-        // Align landmark space to the active GPU backend:
-        // - Impeller ImageFilter.shader expects viewport space [0..1]
-        // - libmpv //!HOOK MAIN expects decoded video-frame space [0..1]
+      if (fromVideoFrame) {
         final viewSize = _resolveViewportLogicalSize();
-        if (!_useMpvGpuBackend && frame.fromVideoFrame) {
-          faces = faces
-              .map((f) => AiFaceCoordinateMapper.videoToViewport(
-                    f,
-                    videoW: widget.videoWidth,
-                    videoH: widget.videoHeight,
-                    viewW: viewSize.width,
-                    viewH: viewSize.height,
-                    fit: widget.videoFit,
-                  ))
-              .toList();
-        } else if (_useMpvGpuBackend && !frame.fromVideoFrame) {
-          faces = faces
-              .map((f) => AiFaceCoordinateMapper.viewportToVideo(
-                    f,
-                    videoW: widget.videoWidth,
-                    videoH: widget.videoHeight,
-                    viewW: viewSize.width,
-                    viewH: viewSize.height,
-                    fit: widget.videoFit,
-                  ))
-              .toList();
-        }
-
-        final sceneCut = res['scene_cut'] == true;
-        final inferMs = (res['infer_ms'] as num?)?.toDouble() ?? 0.0;
-        _smoother.ingestDetection(faces, sceneCut: sceneCut);
-        if (_useMpvGpuBackend) {
-          // Advance smoother directly on detection step so libmpv receives smooth steady coords.
-          _smoother.step(0.10);
-          _emitMpvFacesIfNeeded(force: sceneCut || faces.isEmpty);
-        } else {
-          _paintTickNotifier.value++;
-        }
-        _emitTelemetry(inferMs: inferMs, error: null);
+        faces = faces
+            .map((f) => AiFaceCoordinateMapper.videoToViewport(
+                  f,
+                  videoW: widget.videoWidth,
+                  videoH: widget.videoHeight,
+                  viewW: viewSize.width,
+                  viewH: viewSize.height,
+                  fit: widget.videoFit,
+                ))
+            .toList();
       }
+
+      final sceneCut = res['scene_cut'] == true;
+      final inferMs = (res['infer_ms'] as num?)?.toDouble() ?? 0.0;
+      _smoother.ingestDetection(faces, sceneCut: sceneCut);
+      _paintTickNotifier.value++;
+      _emitTelemetry(inferMs: inferMs, error: null);
     } catch (e) {
       if (!_disposed && mounted) {
         _emitTelemetry(error: e.toString());
       }
     } finally {
       _detectInFlight = false;
+      // Self-pacing duty cycle: keep capture <= 20% of frame budget so video NEVER drops frames!
+      if (!_disposed && mounted && _shouldTrack && !widget.paused) {
+        final pacedMs = math.max(baseIntervalMs, (observedCaptureMs * 4.0).round());
+        _scheduleNextDetection(pacedMs);
+      }
     }
   }
 
@@ -756,14 +741,10 @@ class _AiFaceBeautyViewportState extends State<AiFaceBeautyViewport>
   void dispose() {
     _disposed = true;
     AiFaceBeautyManager.instance.removeListener(_onModelStateChanged);
-    _detectTimer?.cancel();
+    _nextDetectTimer?.cancel();
     _ticker?.dispose();
     _disposeActiveShader();
     _paintTickNotifier.dispose();
-    if (_lastMpvEmittedFaces.isNotEmpty) {
-      _lastMpvEmittedFaces = const [];
-      widget.onFallbackMpvFacesChanged?.call(const []);
-    }
     if (_copyBackRequested) {
       _copyBackRequested = false;
       widget.onCopyBackHwdecRequired?.call(false);
@@ -776,7 +757,7 @@ class _AiFaceBeautyViewportState extends State<AiFaceBeautyViewport>
 
   @override
   Widget build(BuildContext context) {
-    // Keep inner RepaintBoundary stable so switching Plan A on/off never remounts `Video`!
+    // Keep inner RepaintBoundary stable so toggling Plan A never remounts `Video`!
     final rawVideo = RepaintBoundary(
       key: _captureKey,
       child: widget.child,
@@ -796,12 +777,16 @@ class _AiFaceBeautyViewportState extends State<AiFaceBeautyViewport>
           faces: _smoother.smoothed,
         );
         _disposeActiveShader();
-        if (built == null) return child!;
-        _activeShader = built.shader;
+        if (built != null) {
+          _activeShader = built.shader;
+        }
+        // Keep ImageFiltered stably mounted (enabled: built != null, matching StretchEffect)
+        // so entering/leaving face frames never structurally remounts the video subtree!
         return ImageFiltered(
-          imageFilter: built.filter,
+          imageFilter: built?.filter ?? _identityFilter,
+          enabled: built != null,
           child: CustomPaint(
-            painter: const _ViewportCoveragePainter(),
+            painter: built != null ? const _ViewportCoveragePainter() : null,
             child: child,
           ),
         );

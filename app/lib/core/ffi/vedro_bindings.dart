@@ -30,6 +30,35 @@ typedef VedroPollEventsDart = Pointer<Utf8> Function(Pointer<VedroRuntime> rt);
 typedef VedroProxySpeedBpsNative = Uint64 Function(Pointer<VedroRuntime> rt);
 typedef VedroProxySpeedBpsDart = int Function(Pointer<VedroRuntime> rt);
 
+typedef VedroFaceDetectRawNative = Pointer<Utf8> Function(
+  Pointer<VedroRuntime> rt,
+  Pointer<Utf8> modelPath,
+  Pointer<Uint8> pixelsPtr,
+  IntPtr pixelsLen,
+  IntPtr width,
+  IntPtr height,
+  IntPtr rowStride,
+  Uint8 isBgra,
+  IntPtr inferW,
+  IntPtr inferH,
+  Float scoreThreshold,
+  IntPtr maxFaces,
+);
+typedef VedroFaceDetectRawDart = Pointer<Utf8> Function(
+  Pointer<VedroRuntime> rt,
+  Pointer<Utf8> modelPath,
+  Pointer<Uint8> pixelsPtr,
+  int pixelsLen,
+  int width,
+  int height,
+  int rowStride,
+  int isBgra,
+  int inferW,
+  int inferH,
+  double scoreThreshold,
+  int maxFaces,
+);
+
 typedef VedroVersionNative = Pointer<Utf8> Function();
 typedef VedroVersionDart = Pointer<Utf8> Function();
 
@@ -49,6 +78,7 @@ class VedroNativeBindings {
           'vedro_poll_events',
         ),
         proxySpeedBps = _lookupSpeedOptional(lib),
+        faceDetectRaw = _lookupFaceDetectRawOptional(lib),
         version = lib.lookupFunction<VedroVersionNative, VedroVersionDart>('vedro_version'),
         freeString = lib.lookupFunction<VedroFreeStringNative, VedroFreeStringDart>(
           'vedro_free_string',
@@ -75,11 +105,22 @@ class VedroNativeBindings {
     }
   }
 
+  static VedroFaceDetectRawDart? _lookupFaceDetectRawOptional(DynamicLibrary lib) {
+    try {
+      return lib.lookupFunction<VedroFaceDetectRawNative, VedroFaceDetectRawDart>(
+        'vedro_face_detect_raw',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   final VedroInitDart init;
   final VedroLastInitErrorDart? lastInitError;
   final VedroInvokeDart invoke;
   final VedroPollEventsDart pollEvents;
   final VedroProxySpeedBpsDart? proxySpeedBps;
+  final VedroFaceDetectRawDart? faceDetectRaw;
   final VedroVersionDart version;
   final VedroFreeStringDart freeString;
   final VedroDestroyDart destroy;

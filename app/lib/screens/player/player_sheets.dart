@@ -764,23 +764,12 @@ extension _PlayerSheetsExt on _PlayerScreenState {
         ),
         onToggleAiEnabled: (enabled) async {
           _setPlayerState(() => _aiFaceEnabled = enabled);
-          if (!AiFaceBeautyShader.isAvailable) {
-            if (!enabled) _aiFaceMpvFaces = const [];
-            unawaited(_syncCombinedMpvShaders());
-          }
           await widget.appState.updatePrefs(
             widget.appState.prefs.copyWith(aiFaceBeautyEnabled: enabled),
           );
         },
         onChangeAiMorph: (next) async {
           _setPlayerState(() => _aiFaceMorph = next);
-          if (!AiFaceBeautyShader.isAvailable) {
-            if (!next.isActive) _aiFaceMpvFaces = const [];
-            _aiFaceMpvDebounce?.cancel();
-            _aiFaceMpvDebounce = Timer(const Duration(milliseconds: 90), () {
-              unawaited(_syncCombinedMpvShaders());
-            });
-          }
           await widget.appState.updatePrefs(
             widget.appState.prefs.copyWith(
               aiFaceSlim: next.slimFace,

@@ -174,6 +174,55 @@ pub extern "C" fn vedro_proxy_speed_bps(rt: *mut VedroRuntime) -> u64 {
     .unwrap_or(0)
 }
 
+/// Zero-copy raw RGBA/BGRA face detection C-ABI (skips Base64 & JSON pixel encoding completely).
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn vedro_face_detect_raw(
+    rt: *mut VedroRuntime,
+    model_path_utf8: *const c_char,
+    pixels_ptr: *const u8,
+    pixels_len: usize,
+    width: usize,
+    height: usize,
+    row_stride: usize,
+    is_bgra: u8,
+    infer_w: usize,
+    infer_h: usize,
+    score_threshold: f32,
+    max_faces: usize,
+) -> *mut c_char {
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if rt.is_null() || model_path_utf8.is_null() || pixels_ptr.is_null() || pixels_len == 0 {
+            return to_c_string(r#"{"ok":false,"error":"invalid null argument"}"#);
+        }
+        let Some(runtime) = lookup_runtime(rt) else {
+            return to_c_string(r#"{"ok":false,"error":"runtime disposed"}"#);
+        };
+        let Ok(model_path) = unsafe { CStr::from_ptr(model_path_utf8) }.to_str() else {
+            return to_c_string(r#"{"ok":false,"error":"invalid utf8 model_path"}"#);
+        };
+        let pixels = unsafe { std::slice::from_raw_parts(pixels_ptr, pixels_len) };
+        let out = runtime.face_detector.lock().detect_raw(
+            model_path,
+            pixels,
+            width,
+            height,
+            row_stride,
+            is_bgra != 0,
+            infer_w,
+            infer_h,
+            score_threshold,
+            max_faces,
+        );
+        let envelope = match out {
+            Ok(data) => json!({"ok": true, "data": data}),
+            Err(err) => json!({"ok": false, "error": err}),
+        };
+        to_c_string(&envelope.to_string())
+    }));
+    res.unwrap_or_else(|_| to_c_string(r#"{"ok":false,"error":"face detect panic recovered"}"#))
+}
+
 #[no_mangle]
 pub extern "C" fn vedro_version() -> *const c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char

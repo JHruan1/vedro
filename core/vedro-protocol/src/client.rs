@@ -72,10 +72,12 @@ impl EmbyClient {
         let build_client = |disable_native_certs: bool| {
             let mut builder = Client::builder()
                 .pool_max_idle_per_host(8)
-                .pool_idle_timeout(Duration::from_secs(60))
+                .pool_idle_timeout(Duration::from_secs(90))
                 .connect_timeout(Duration::from_secs(8))
                 .timeout(Duration::from_secs(30))
                 .tcp_nodelay(true)
+                .tcp_keepalive(Duration::from_secs(30))
+                .http2_adaptive_window(true)
                 // Follow redirects manually in send_raw so X-Emby-Token / X-Emby-Authorization
                 // are stripped on cross-origin redirects while preserving same-host http->https upgrades.
                 .redirect(reqwest::redirect::Policy::none())

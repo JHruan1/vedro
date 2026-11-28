@@ -801,8 +801,11 @@ impl VedroRuntime {
                     )
                 };
 
-                // Inspect the first 256 KiB via our proxy (reuses chunk 0 cache — 0 extra upstream requests!)
-                // to detect Dolby Vision / Atmos AND cache embedded track table naturally while playing!
+                // Fast-path startup (inspect_header: false): NEVER block first frame on downloading
+                // Chunk 0 over WAN/cloud-drive! StreamProxy::register_stream already pre-warms Chunk 0
+                // & tail chunk in parallel; infer HDR/Atmos in 0ms from PlaybackInfo metadata and learn
+                // embedded tracks asynchronously in the background once Chunk 0 arrives.
+                let badges = chosen.infer_badges();
                 let inspected = if inspect_header && !stream_id.is_empty() {
                     self.proxy
                         .read_range(&stream_id, 0, 256 * 1024)
@@ -849,6 +852,56 @@ impl VedroRuntime {
                             inspect_media_header(&bytes)
                         })
                 } else {
+                    if !stream_id.is_empty() {
+                        let has_av = chosen.media_streams.iter().any(|s| {
+                            s.stream_type.eq_ignore_ascii_case("Audio")
+                                || s.stream_type.eq_ignore_ascii_case("Video")
+                        });
+                        if !has_av {
+                            let proxy_bg = Arc::clone(&self.proxy);
+                            let store_bg = self.store.clone();
+                            let sid_bg = stream_id.clone();
+                            let item_bg = item_id.clone();
+                            let src_bg = if chosen.id.is_empty() {
+                                "default".to_string()
+                            } else {
+                                chosen.id.clone()
+                            };
+                            tokio::spawn(async move {
+                                if let Some(bytes) =
+                                    proxy_bg.read_range(&sid_bg, 0, 256 * 1024).await
+                                {
+                                    let tracks = vedro_stream::inspect_media_tracks(&bytes);
+                                    if !tracks.is_empty() {
+                                        let learned: Vec<MediaStream> = tracks
+                                            .into_iter()
+                                            .enumerate()
+                                            .map(|(idx, t)| MediaStream {
+                                                index: idx as i32,
+                                                stream_type: t.stream_type,
+                                                codec: Some(t.codec),
+                                                language: t.language,
+                                                title: t.title,
+                                                display_title: Some(t.display_title),
+                                                is_default: t.is_default,
+                                                is_forced: t.is_forced,
+                                                is_external: false,
+                                                is_text_subtitle_stream: t.is_text_subtitle,
+                                                width: t.width,
+                                                height: t.height,
+                                                channels: t.channels,
+                                                video_range: t.video_range,
+                                                ..Default::default()
+                                            })
+                                            .collect();
+                                        let learned_key =
+                                            format!("learned_streams_v1:{item_bg}:{src_bg}");
+                                        let _ = store_bg.set_setting(&learned_key, &learned);
+                                    }
+                                }
+                            });
+                        }
+                    }
                     None
                 };
 
@@ -856,8 +909,72 @@ impl VedroRuntime {
                 let hdr_fmt = inspected
                     .as_ref()
                     .and_then(|i| i.hdr_format.clone())
-                    .unwrap_or(vedro_stream::HdrFormat::Sdr);
-                let spatial = inspected.as_ref().and_then(|i| i.spatial_audio.clone());
+                    .unwrap_or_else(|| {
+                        let hdr_lc = badges
+                            .hdr_format
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+                        if badges.dolby_vision_profile.is_some()
+                            || hdr_lc.contains("dolby")
+                            || hdr_lc.contains("dovi")
+                            || hdr_lc == "dv"
+                        {
+                            let prof = badges.dolby_vision_profile.unwrap_or(8);
+                            vedro_stream::HdrFormat::DolbyVision(
+                                vedro_stream::inspector::DolbyVisionInfo {
+                                    dv_version_major: 1,
+                                    dv_version_minor: 0,
+                                    dv_profile: prof,
+                                    dv_level: 6,
+                                    rpu_present: true,
+                                    el_present: prof == 7,
+                                    bl_present: prof != 5,
+                                    bl_signal_compatibility_id: if prof == 5 { 0 } else { 1 },
+                                },
+                            )
+                        } else if hdr_lc.contains("hdr10+") || hdr_lc.contains("hdr10plus") {
+                            vedro_stream::HdrFormat::Hdr10Plus
+                        } else if hdr_lc.contains("hlg") {
+                            vedro_stream::HdrFormat::Hlg
+                        } else if hdr_lc.contains("hdr") {
+                            vedro_stream::HdrFormat::Hdr10
+                        } else {
+                            let is_hlg = chosen.media_streams.iter().any(|s| {
+                                s.video_range
+                                    .as_deref()
+                                    .map(|r| r.to_ascii_lowercase().contains("hlg"))
+                                    .unwrap_or(false)
+                            });
+                            if is_hlg {
+                                vedro_stream::HdrFormat::Hlg
+                            } else {
+                                vedro_stream::HdrFormat::Sdr
+                            }
+                        }
+                    });
+                let spatial = inspected
+                    .as_ref()
+                    .and_then(|i| i.spatial_audio.clone())
+                    .or_else(|| {
+                        if badges.is_dolby_atmos {
+                            let is_truehd = chosen.media_streams.iter().any(|s| {
+                                s.codec
+                                    .as_deref()
+                                    .map(|c| c.eq_ignore_ascii_case("truehd"))
+                                    .unwrap_or(false)
+                            });
+                            Some(if is_truehd {
+                                vedro_stream::SpatialAudioFormat::DolbyAtmosTrueHd
+                            } else {
+                                vedro_stream::SpatialAudioFormat::DolbyAtmosEac3Joc
+                            })
+                        } else if badges.is_dts_x {
+                            Some(vedro_stream::SpatialAudioFormat::DtsX)
+                        } else {
+                            None
+                        }
+                    });
 
                 let hdr_decision = vedro_playback::resolve_hdr_pipeline(
                     cfg.platform,
@@ -950,8 +1067,6 @@ impl VedroRuntime {
                         })
                     })
                     .collect();
-
-                let badges = chosen.infer_badges();
 
                 // Atomically commit active_session ONLY if playback_epoch still matches;
                 // otherwise unregister this superseded stream immediately so zero streams leak!

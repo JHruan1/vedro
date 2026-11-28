@@ -61,7 +61,9 @@ impl Default for StreamProxyConfig {
                 64 * 1024 * 1024
             },
             chunk_size: DEFAULT_CHUNK_SIZE,
-            max_upstream_conns_per_session: 2,
+            // 3 concurrent upstream conns per session stays safely under embygo's 4-conn cap
+            // while allowing Chunk 0 + Tail Chunk + Chunk 1 lookahead to pipeline smoothly!
+            max_upstream_conns_per_session: 3,
             prefetch_chunks: 4,
         }
     }
@@ -89,10 +91,16 @@ pub struct ImageCacheStats {
     pub cache_dir: Option<String>,
 }
 
+/// TTL for cached post-302 direct CDN URLs (re-resolved immediately on 401/403/404/410).
+const RESOLVED_REDIRECT_TTL: Duration = Duration::from_secs(300);
+
 struct RegisteredStream {
     cache_key: u64,
     upstream_url: RwLock<String>,
     headers: RwLock<HeaderMap>,
+    /// Cached final URL + auth-stripped headers after following 302 CDN redirects so
+    /// Chunks 1..N bypass redundant Emby/Alist redirect RTTs over warm keep-alive sockets!
+    resolved_url: RwLock<Option<(String, HeaderMap, Instant)>>,
     total_size: AtomicU64,
     content_type: RwLock<String>,
     /// Strict per-session connection semaphore to respect embygo's connection cap.
@@ -228,9 +236,12 @@ fn build_proxy_http_client(
     let build_once = |disable_native_certs: bool, disable_sys_proxy: bool| {
         let mut builder = reqwest::Client::builder()
             .pool_max_idle_per_host(12)
+            .pool_idle_timeout(Duration::from_secs(90))
             .connect_timeout(Duration::from_secs(12))
             .timeout(Duration::from_secs(30))
             .tcp_nodelay(true)
+            .tcp_keepalive(Duration::from_secs(30))
+            .http2_adaptive_window(true)
             // Manual redirect loop strips X-Emby-Token / X-Emby-Authorization across origins!
             .redirect(reqwest::redirect::Policy::none())
             .danger_accept_invalid_certs(accept_invalid_certs);
@@ -309,16 +320,18 @@ fn is_loopback_or_link_local(u: &url::Url) -> bool {
 
 /// Follow up to `MAX_REDIRECT_HOPS` redirects while stripping auth headers on any cross-origin jump
 /// and blocking public -> loopback/link-local SSRF pivots.
-async fn send_with_safe_redirects(
+/// Returns `(response, final_url, final_headers_without_range, did_redirect)`.
+async fn send_with_safe_redirects_tracked(
     client: &reqwest::Client,
     initial_url: &str,
     initial_headers: HeaderMap,
-) -> Result<reqwest::Response, reqwest::Error> {
+) -> Result<(reqwest::Response, String, HeaderMap, bool), reqwest::Error> {
     let initial_is_local = url::Url::parse(initial_url)
         .map(|u| is_loopback_or_link_local(&u))
         .unwrap_or(false);
     let mut current_url = initial_url.to_string();
     let mut current_headers = initial_headers;
+    let mut did_redirect = false;
     for _ in 0..=MAX_REDIRECT_HOPS {
         let resp = client
             .get(&current_url)
@@ -335,7 +348,7 @@ async fn send_with_safe_redirects(
                     if let Ok(next) = base.join(loc) {
                         if matches!(next.scheme(), "http" | "https") {
                             if !initial_is_local && is_loopback_or_link_local(&next) {
-                                return Ok(resp);
+                                return Ok((resp, current_url, current_headers, did_redirect));
                             }
                             let same_host = base
                                 .host_str()
@@ -350,19 +363,31 @@ async fn send_with_safe_redirects(
                                 strip_auth_headers(&mut current_headers);
                             }
                             current_url = next.to_string();
+                            did_redirect = true;
                             continue;
                         }
                     }
                 }
             }
         }
-        return Ok(resp);
+        return Ok((resp, current_url, current_headers, did_redirect));
     }
-    client
+    let resp = client
         .get(&current_url)
-        .headers(current_headers)
+        .headers(current_headers.clone())
         .send()
-        .await
+        .await?;
+    Ok((resp, current_url, current_headers, did_redirect))
+}
+
+async fn send_with_safe_redirects(
+    client: &reqwest::Client,
+    initial_url: &str,
+    initial_headers: HeaderMap,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let (resp, _, _, _) =
+        send_with_safe_redirects_tracked(client, initial_url, initial_headers).await?;
+    Ok(resp)
 }
 
 /// Read an upstream response body up to `max_bytes`, incrementing an optional live byte counter
@@ -747,6 +772,7 @@ impl StreamProxy {
             cache_key,
             upstream_url: RwLock::new(upstream_url),
             headers: RwLock::new(headers),
+            resolved_url: RwLock::new(None),
             total_size: AtomicU64::new(known_size.unwrap_or(0)),
             content_type: RwLock::new(
                 content_type.unwrap_or_else(|| "application/octet-stream".to_string()),
@@ -798,6 +824,7 @@ impl StreamProxy {
     ) -> bool {
         if let Some(entry) = self.streams.get(stream_id) {
             *entry.upstream_url.write() = new_url;
+            *entry.resolved_url.write() = None;
             if let Some(hdrs) = new_headers {
                 *entry.headers.write() = hdrs;
             }
@@ -1599,19 +1626,57 @@ impl StreamProxy {
         let max_chunk_bytes = cs as usize;
 
         for attempt in 0..3 {
-            let url = entry.upstream_url.read().clone();
-            let mut hdrs = entry.headers.read().clone();
+            // Reuse cached post-302 CDN URL when fresh (eliminates an extra Emby/Alist redirect
+            // RTT on every 1 MiB chunk!); falls back transparently on 401/403/404/410.
+            let cached_target = {
+                let guard = entry.resolved_url.read();
+                guard.as_ref().and_then(|(u, h, ts)| {
+                    if ts.elapsed() < RESOLVED_REDIRECT_TTL {
+                        Some((u.clone(), h.clone()))
+                    } else {
+                        None
+                    }
+                })
+            };
+            let (url, mut hdrs, used_cached_redirect) = match cached_target {
+                Some((u, h)) => (u, h, true),
+                None => (
+                    entry.upstream_url.read().clone(),
+                    entry.headers.read().clone(),
+                    false,
+                ),
+            };
             if let Ok(rv) = reqwest::header::HeaderValue::from_str(&range_val) {
                 hdrs.insert(reqwest::header::RANGE, rv);
             }
 
             let _conn_guard = ActiveConnGuard::new(&self.active_conns);
             let http_client = self.http.read().clone();
-            let resp_res = send_with_safe_redirects(&http_client, &url, hdrs).await;
+            let resp_res = send_with_safe_redirects_tracked(&http_client, &url, hdrs).await;
 
             match resp_res {
-                Ok(resp) => {
+                Ok((resp, final_url, mut final_headers, did_redirect)) => {
                     let status = resp.status();
+                    // If a cached signed CDN link expired (401/403/404/410), clear cache &
+                    // re-resolve immediately via the original upstream URL!
+                    if used_cached_redirect
+                        && matches!(
+                            status,
+                            reqwest::StatusCode::UNAUTHORIZED
+                                | reqwest::StatusCode::FORBIDDEN
+                                | reqwest::StatusCode::NOT_FOUND
+                                | reqwest::StatusCode::GONE
+                        )
+                    {
+                        *entry.resolved_url.write() = None;
+                        drop(_conn_guard);
+                        continue;
+                    }
+                    if did_redirect && status.is_success() {
+                        final_headers.remove(reqwest::header::RANGE);
+                        *entry.resolved_url.write() =
+                            Some((final_url, final_headers, Instant::now()));
+                    }
                     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                         self.rate_limit_retries.fetch_add(1, Ordering::Relaxed);
                         let wait_secs = resp
@@ -1709,6 +1774,9 @@ impl StreamProxy {
                     return Ok(data);
                 }
                 Err(e) => {
+                    if used_cached_redirect {
+                        *entry.resolved_url.write() = None;
+                    }
                     let msg = e.to_string();
                     let safe_msg = msg.split('?').next().unwrap_or(&msg);
                     warn!(error = %safe_msg, attempt, chunk_idx, "upstream network error");
@@ -1880,5 +1948,123 @@ mod tests {
         assert_eq!(after.disk_bytes, 0);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn caches_302_redirect_across_chunks_and_re_resolves_on_403() {
+        let redirect_hits = Arc::new(AtomicUsize::new(0));
+        let cdn_v1_hits = Arc::new(AtomicUsize::new(0));
+        let cdn_v2_hits = Arc::new(AtomicUsize::new(0));
+        let expire_v1 = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let payload = Arc::new(vec![0xABu8; (DEFAULT_CHUNK_SIZE as usize) * 3]);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let r_hits = Arc::clone(&redirect_hits);
+        let c1_hits = Arc::clone(&cdn_v1_hits);
+        let c2_hits = Arc::clone(&cdn_v2_hits);
+        let exp_v1 = Arc::clone(&expire_v1);
+        let data = Arc::clone(&payload);
+
+        let srv = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let r_hits = Arc::clone(&r_hits);
+                let c1_hits = Arc::clone(&c1_hits);
+                let c2_hits = Arc::clone(&c2_hits);
+                let exp_v1 = Arc::clone(&exp_v1);
+                let data = Arc::clone(&data);
+                tokio::spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let svc = service_fn(move |req: Request<Incoming>| {
+                        let r_hits = Arc::clone(&r_hits);
+                        let c1_hits = Arc::clone(&c1_hits);
+                        let c2_hits = Arc::clone(&c2_hits);
+                        let exp_v1 = Arc::clone(&exp_v1);
+                        let data = Arc::clone(&data);
+                        async move {
+                            let path = req.uri().path().to_string();
+                            if path == "/emby/stream" {
+                                let n = r_hits.fetch_add(1, Ordering::SeqCst);
+                                let target = if !exp_v1.load(Ordering::SeqCst) && n == 0 {
+                                    "/cdn/v1"
+                                } else {
+                                    "/cdn/v2"
+                                };
+                                return Ok::<_, hyper::Error>(
+                                    Response::builder()
+                                        .status(StatusCode::FOUND)
+                                        .header(header::LOCATION, format!("http://{addr}{target}"))
+                                        .body(full_body(Bytes::new()))
+                                        .unwrap(),
+                                );
+                            }
+                            if path == "/cdn/v1" && exp_v1.load(Ordering::SeqCst) {
+                                return Ok(simple_response(StatusCode::FORBIDDEN, "expired"));
+                            }
+                            if path == "/cdn/v1" {
+                                c1_hits.fetch_add(1, Ordering::SeqCst);
+                            } else {
+                                c2_hits.fetch_add(1, Ordering::SeqCst);
+                            }
+                            let rh = req
+                                .headers()
+                                .get(header::RANGE)
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("bytes=0-1048575");
+                            let (s, e) = parse_range_header(rh, data.len() as u64).unwrap();
+                            let slice = Bytes::copy_from_slice(&data[s as usize..=e as usize]);
+                            Ok(Response::builder()
+                                .status(StatusCode::PARTIAL_CONTENT)
+                                .header(
+                                    header::CONTENT_RANGE,
+                                    format!("bytes {s}-{e}/{}", data.len()),
+                                )
+                                .header(header::CONTENT_LENGTH, slice.len())
+                                .body(full_body(slice))
+                                .unwrap())
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .await;
+                });
+            }
+        });
+
+        let proxy = StreamProxy::start(StreamProxyConfig {
+            prefetch_chunks: 0,
+            ..StreamProxyConfig::default()
+        })
+        .await
+        .unwrap();
+        let (sid, _) = proxy.register_stream(
+            format!("http://{addr}/emby/stream"),
+            HeaderMap::new(),
+            Some(payload.len() as u64),
+            Some("video/mp4".into()),
+        );
+
+        let entry = proxy.streams.get(&sid).unwrap().clone();
+        // Fetch chunk 0 (follows 302 -> /cdn/v1 and caches it)
+        let c0 = proxy.fetch_chunk(&entry, 0).await.unwrap();
+        assert_eq!(c0.len(), DEFAULT_CHUNK_SIZE as usize);
+        let redirects_after_c0 = redirect_hits.load(Ordering::SeqCst);
+        // Fetch chunk 1 — must hit /cdn/v1 directly with ZERO additional /emby/stream redirects!
+        let c1 = proxy.fetch_chunk(&entry, 1).await.unwrap();
+        assert_eq!(c1.len(), DEFAULT_CHUNK_SIZE as usize);
+        assert_eq!(redirect_hits.load(Ordering::SeqCst), redirects_after_c0);
+        assert!(cdn_v1_hits.load(Ordering::SeqCst) >= 2);
+
+        // Expire /cdn/v1 (403) and fetch chunk 2 — proxy must automatically invalidate & re-resolve to /cdn/v2!
+        expire_v1.store(true, Ordering::SeqCst);
+        let c2 = proxy.fetch_chunk(&entry, 2).await.unwrap();
+        assert_eq!(c2.len(), DEFAULT_CHUNK_SIZE as usize);
+        assert!(cdn_v2_hits.load(Ordering::SeqCst) >= 1);
+
+        srv.abort();
     }
 }

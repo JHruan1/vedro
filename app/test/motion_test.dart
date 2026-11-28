@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vedro/core/models/media_models.dart';
 import 'package:vedro/core/theme/vedro_liquid_shader.dart';
@@ -353,5 +354,73 @@ void main() {
 
     await verifySkin(VedroSkin.iosFrosted, expectLiquidRim: false);
     await verifySkin(VedroSkin.iosLiquidGlass, expectLiquidRim: true);
+  });
+
+  testWidgets(
+      'VedroLiquidGlassBackdrop clips at exact single offset (never double-shifted 2*offset)',
+      (tester) async {
+    var tapped = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(VedroSkin.iosLiquidGlass),
+        home: Scaffold(
+          body: Stack(
+            children: [
+              Positioned(
+                left: 140,
+                top: 260,
+                width: 180,
+                height: 56,
+                child: VedroLiquidGlassBackdrop(
+                  borderRadius: 18,
+                  blurSigma: 8.0,
+                  enableRefraction: true,
+                  isLight: false,
+                  accent: const Color(0xFF0A84FF),
+                  child: GestureDetector(
+                    onTap: () => tapped = true,
+                    child: const ColoredBox(
+                      color: Color(0x6612141C),
+                      child: Center(child: Text('可见液态选项')),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Walk the real composited Layer tree and prove ClipRRectLayer matches (140, 260, 180, 56)
+    // and was NEVER double-shifted to (280, 520)!
+    final clipRects = <Rect>[];
+    void walk(Layer? layer) {
+      if (layer == null) return;
+      if (layer is ClipRRectLayer && layer.clipRRect != null) {
+        clipRects.add(layer.clipRRect!.outerRect);
+      }
+      if (layer is ContainerLayer) {
+        var child = layer.firstChild;
+        while (child != null) {
+          walk(child);
+          child = child.nextSibling;
+        }
+      }
+    }
+
+    walk(tester.binding.renderViews.first.debugLayer);
+    expect(
+      clipRects.any((r) =>
+          (r.left - 140.0).abs() < 1.0 &&
+          (r.top - 260.0).abs() < 1.0 &&
+          (r.width - 180.0).abs() < 1.0 &&
+          (r.height - 56.0).abs() < 1.0),
+      isTrue,
+      reason: 'Expected ClipRRectLayer at (140, 260, 180x56), got: $clipRects',
+    );
+    await tester.tap(find.text('可见液态选项'));
+    expect(tapped, isTrue);
   });
 }

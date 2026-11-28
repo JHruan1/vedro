@@ -115,17 +115,15 @@ extension _PlayerControlsExt on _PlayerScreenState {
   void _toggleMute() {
     if (_muted || _volume <= 0.1) {
       final restored = _preMuteVolume > 5 ? _preMuteVolume : 80.0;
-      _setPlayerState(() {
-        _muted = false;
-        _volume = restored;
-      });
+      _muted = false;
+      _volume = restored;
+      _volumeNotifier.value = restored;
       unawaited(_applyVolumeToEngine(restored));
     } else {
       _preMuteVolume = _volume;
-      _setPlayerState(() {
-        _muted = true;
-        _volume = 0;
-      });
+      _muted = true;
+      _volume = 0;
+      _volumeNotifier.value = 0.0;
       unawaited(_applyVolumeToEngine(0));
     }
     _schedulePersistPlayerPrefs();
@@ -134,10 +132,10 @@ extension _PlayerControlsExt on _PlayerScreenState {
 
   void _setVolume(double v) {
     final clamped = v.clamp(0.0, _maxVolume);
-    _setPlayerState(() {
-      _volume = clamped;
-      _muted = clamped <= 0.1;
-    });
+    _volume = clamped;
+    _muted = clamped <= 0.1;
+    // Isolated ValueNotifier: ZERO full-screen PlayerScreen setState during 120Hz volume swipes!
+    _volumeNotifier.value = _muted ? 0.0 : clamped;
     unawaited(_applyVolumeToEngine(clamped));
     _schedulePersistPlayerPrefs();
   }
@@ -503,6 +501,7 @@ extension _PlayerControlsExt on _PlayerScreenState {
       return KeyEventResult.handled;
     } else if (key == LogicalKeyboardKey.keyI) {
       _setPlayerState(() => _showStats = !_showStats);
+      _syncStatsTimer();
       return KeyEventResult.handled;
     } else if (key == LogicalKeyboardKey.keyS) {
       unawaited(_takeScreenshot());

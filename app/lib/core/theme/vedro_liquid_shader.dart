@@ -463,7 +463,10 @@ class _RenderVedroLiquidGlassBackdrop extends RenderProxyBox {
   void paint(PaintingContext context, Offset offset) {
     if (child == null || size.isEmpty) return;
     final safeR = _borderRadius.clamp(0.0, math.min(size.width, size.height) * 0.5);
-    final rrect = RRect.fromRectAndRadius(offset & size, Radius.circular(safeR));
+    // CRITICAL: `PaintingContext.pushClipRRect` internally shifts `clipRRect` by `offset`!
+    // Always pass `Offset.zero & size` (local coordinates) here — passing `offset & size`
+    // would double-shift the clip by `2 * offset` and clip away all child content!
+    final rrect = RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(safeR));
 
     if (!_needsBackdrop) {
       _backdropLayer.layer = null;

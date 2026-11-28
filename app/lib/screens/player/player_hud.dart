@@ -145,10 +145,11 @@ extension _PlayerHudExt on _PlayerScreenState {
                       if (_durationSecs <= 0) return;
                       _scaleAxis = 'h';
                       _hideControlsTimer?.cancel();
+                      _scrubStartSecs = _positionSecs;
+                      _scrubTargetSecs = _positionSecs;
+                      _scrubTargetNotifier.value = _positionSecs;
                       _setPlayerState(() {
                         _scrubbing = true;
-                        _scrubStartSecs = _positionSecs;
-                        _scrubTargetSecs = _positionSecs;
                       });
                     } else {
                       _scaleAxis = 'v';
@@ -156,9 +157,9 @@ extension _PlayerHudExt on _PlayerScreenState {
                   }
                   if (_scaleAxis == 'h' && _scrubbing && size.width > 0) {
                     final deltaSecs = (delta.dx / size.width) * 180.0;
-                    _setPlayerState(() {
-                      _scrubTargetSecs = (_scrubTargetSecs + deltaSecs).clamp(0.0, _durationSecs);
-                    });
+                    _scrubTargetSecs = (_scrubTargetSecs + deltaSecs).clamp(0.0, _durationSecs);
+                    // Zero full-screen PlayerScreen rebuild while dragging!
+                    _scrubTargetNotifier.value = _scrubTargetSecs;
                   } else if (_scaleAxis == 'v' && size.height > 0) {
                     final vDelta = -delta.dy / (size.height * 0.55);
                     if (_scaleAnchor.dx < size.width * 0.5) {
@@ -675,33 +676,36 @@ extension _PlayerHudExt on _PlayerScreenState {
 
                     if (_scrubbing && !_inPipMode)
                       Center(
-                        child: GlassSurface(
-                          borderRadius: 16,
-                          enableBlur: false,
-                          color: const Color(0xDC12141C),
-                          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                '${_fmtTime(_scrubTargetSecs)} / ${_fmtTime(_durationSecs)}',
-                                style: const TextStyle(
-                                  color: VedroTheme.fg,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w600,
-                                  fontFeatures: [FontFeature.tabularFigures()],
+                        child: ValueListenableBuilder<double>(
+                          valueListenable: _scrubTargetNotifier,
+                          builder: (_, targetSecs, __) => GlassSurface(
+                            borderRadius: 16,
+                            enableBlur: false,
+                            color: const Color(0xDC12141C),
+                            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  '${_fmtTime(targetSecs)} / ${_fmtTime(_durationSecs)}',
+                                  style: const TextStyle(
+                                    color: VedroTheme.fg,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w600,
+                                    fontFeatures: [FontFeature.tabularFigures()],
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                _fmtDelta(_scrubTargetSecs - _scrubStartSecs),
-                                style: const TextStyle(
-                                  color: VedroTheme.fg2,
-                                  fontSize: 12.5,
-                                  fontFeatures: [FontFeature.tabularFigures()],
+                                const SizedBox(height: 4),
+                                Text(
+                                  _fmtDelta(targetSecs - _scrubStartSecs),
+                                  style: const TextStyle(
+                                    color: VedroTheme.fg2,
+                                    fontSize: 12.5,
+                                    fontFeatures: [FontFeature.tabularFigures()],
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                       ),
@@ -998,7 +1002,10 @@ extension _PlayerHudExt on _PlayerScreenState {
                                               icon: Icons.info_outline_rounded,
                                               active: _showStats,
                                               tooltip: '硬件信息 (I)',
-                                              onTap: () => _setPlayerState(() => _showStats = !_showStats),
+                                              onTap: () {
+                                                _setPlayerState(() => _showStats = !_showStats);
+                                                _syncStatsTimer();
+                                              },
                                             ),
                                           ],
                                           if (_isDesktop && wide) ...[
@@ -1220,10 +1227,11 @@ extension _PlayerHudExt on _PlayerScreenState {
                                                           listenable: Listenable.merge([
                                                             _positionNotifier,
                                                             _bufferedNotifier,
+                                                            _scrubTargetNotifier,
                                                           ]),
                                                           builder: (_, __) => _CinemaScrubBar(
                                                             positionSecs: _scrubbing
-                                                                ? _scrubTargetSecs
+                                                                ? _scrubTargetNotifier.value
                                                                 : _positionNotifier.value,
                                                             bufferedSecs: _bufferedNotifier.value,
                                                             durationSecs: _durationSecs,
@@ -1256,22 +1264,30 @@ extension _PlayerHudExt on _PlayerScreenState {
                                               if (singleRowDeck)
                                                 Row(
                                                   children: [
-                                                    _DeckIconButton(
-                                                      icon: _muted || _volume <= 0.1
-                                                          ? Icons.volume_off_rounded
-                                                          : (_volume < 50
-                                                              ? Icons.volume_down_rounded
-                                                              : Icons.volume_up_rounded),
-                                                      tooltip: '静音 (M)',
-                                                      onTap: _toggleMute,
-                                                    ),
-                                                    const SizedBox(width: 4),
-                                                    SizedBox(
-                                                      width: 78,
-                                                      child: _MiniVolumeBar(
-                                                        value: (_volume / _maxVolume).clamp(0.0, 1.0),
-                                                        onChanged: (ratio) =>
-                                                            _setVolume(ratio * _maxVolume),
+                                                    ValueListenableBuilder<double>(
+                                                      valueListenable: _volumeNotifier,
+                                                      builder: (_, liveVol, __) => Row(
+                                                        mainAxisSize: MainAxisSize.min,
+                                                        children: [
+                                                          _DeckIconButton(
+                                                            icon: liveVol <= 0.1
+                                                                ? Icons.volume_off_rounded
+                                                                : (liveVol < 50
+                                                                    ? Icons.volume_down_rounded
+                                                                    : Icons.volume_up_rounded),
+                                                            tooltip: '静音 (M)',
+                                                            onTap: _toggleMute,
+                                                          ),
+                                                          const SizedBox(width: 4),
+                                                          SizedBox(
+                                                            width: 78,
+                                                            child: _MiniVolumeBar(
+                                                              value: (liveVol / _maxVolume).clamp(0.0, 1.0),
+                                                              onChanged: (ratio) =>
+                                                                  _setVolume(ratio * _maxVolume),
+                                                            ),
+                                                          ),
+                                                        ],
                                                       ),
                                                     ),
                                                     const SizedBox(width: 10),
@@ -1424,7 +1440,10 @@ extension _PlayerHudExt on _PlayerScreenState {
                                                         _DeckPillButton(
                                                           label: '参数',
                                                           active: _showStats,
-                                                          onTap: () => _setPlayerState(() => _showStats = !_showStats),
+                                                          onTap: () {
+                                                            _setPlayerState(() => _showStats = !_showStats);
+                                                            _syncStatsTimer();
+                                                          },
                                                         ),
                                                       ],
                                                     ),

@@ -117,13 +117,134 @@ extension _PlayerEngineExt on _PlayerScreenState {
     await _applyMpvProperty('vf', filters.join(','));
   }
 
+  Future<void> _ensureStaticMpvConfigured({bool force = false}) async {
+    if (_disposed) return;
+    if (_staticMpvConfigured && !force) return;
+    _staticMpvConfigured = true;
+    final p = widget.appState.prefs;
+    final props = <String, String>{};
+
+    // Battle-tested fast-start & low-power mpv tuning (aligned with Rust StreamProxy 1 MiB Chunk 0,
+    // plus Kazumi/Fladder Android production best practices).
+    props['cache'] = 'yes';
+    props['cache-pause-initial'] = 'no';
+    props['cache-pause-wait'] = '1.0';
+    props['force-seekable'] = 'yes';
+    props['network-timeout'] = '25';
+    props['demuxer-lavf-probesize'] = '1048576';
+    props['demuxer-lavf-analyzeduration'] = '1.5';
+    props['demuxer-readahead-secs'] = _isMobile ? '15' : '30';
+    props['stream-buffer-size'] = _isMobile ? '512KiB' : '1MiB';
+    final effBufMb = _isMobile ? p.bufferSizeMb.clamp(24, 64) : p.bufferSizeMb.clamp(32, 192);
+    props['demuxer-max-bytes'] = '${effBufMb}MiB';
+    props['demuxer-max-back-bytes'] = _isMobile ? '16MiB' : '32MiB';
+    props['framedrop'] = 'vo';
+    props['gpu-shader-cache'] = 'yes';
+    props['hwdec-codecs'] = 'all';
+    props['volume-max'] = '${_maxVolume.round()}';
+    if (!kIsWeb) {
+      final tmpPath = Directory.systemTemp.path.trim();
+      if (tmpPath.isNotEmpty) {
+        props['demuxer-cache-dir'] = tmpPath;
+      }
+      if (Platform.isAndroid) {
+        props['ao'] = 'audiotrack';
+      }
+    }
+    if (_isMobile) {
+      props['vd-lavc-threads'] = '4';
+    }
+    // Mobile thermal protection: avoid per-frame 4K compute-shader peak detection
+    // and heavy display-resample / dithering on battery-powered phone SoCs.
+    final effComputePeak = !_isMobile && p.hdrComputePeak;
+    props['hdr-compute-peak'] = effComputePeak ? 'yes' : 'no';
+    props['video-sync'] = _isMobile ? 'audio' : p.videoSync;
+    if (_isMobile && !_anime4kActive) {
+      props['scale'] = 'bilinear';
+      props['cscale'] = 'bilinear';
+      props['dscale'] = 'bilinear';
+      props['dither-depth'] = 'no';
+    }
+    if (_audioDelaySecs.abs() > 0.001) {
+      props['audio-delay'] = _audioDelaySecs.toStringAsFixed(3);
+    }
+    props['loop-file'] = _loopFile ? 'inf' : 'no';
+    if (_eqBrightness != 0) props['brightness'] = '$_eqBrightness';
+    if (_eqContrast != 0) props['contrast'] = '$_eqContrast';
+    if (_eqSaturation != 0) props['saturation'] = '$_eqSaturation';
+    if (_eqGamma != 0) props['gamma'] = '$_eqGamma';
+    props['sub-fonts-dir'] = widget.appState.fontsDirectoryPath;
+    if (_subFontFamily.trim().isNotEmpty) {
+      props['sub-font'] = _subFontFamily.trim();
+    }
+    props['sub-ass-override'] = _forceAssOverride ? 'force' : 'no';
+    props['sub-scale'] = _subScale.toStringAsFixed(2);
+    props['sub-pos'] = '$_subPos';
+    props['sub-color'] = p.subtitleColorHex;
+    props['sub-border-size'] = p.subtitleOutlineWidth.toStringAsFixed(1);
+    if (p.subtitleBgOpacity > 0.01) {
+      props['sub-back-color'] = '0.0/0.0/0.0/${p.subtitleBgOpacity.toStringAsFixed(2)}';
+    }
+    if (_subDelaySecs != 0) {
+      props['sub-delay'] = _subDelaySecs.toStringAsFixed(2);
+    }
+    props['video-autorotate'] = 'yes';
+    if (_videoRotate != 0) {
+      props['video-rotate'] = '$_videoRotate';
+    }
+    props['video-zoom'] = _videoZoom.toStringAsFixed(3);
+
+    await Future.wait(
+      props.entries.map((e) => _applyMpvProperty(e.key, e.value)),
+    );
+    if (_disposed) return;
+    await Future.wait([
+      _applyAspectMode(_aspectMode),
+      _applyAudioMode(),
+      _applyVideoFilterChain(),
+      if (_anime4kActive) _applyAnime4k(true),
+      if (_beautyParams.isActive)
+        _applyBeautyParams(_beautyPreset, _beautyParams, persist: false, showHud: false),
+      _applyCustomMpvConf(p.customMpvConf),
+      _applyVolumeToEngine(_muted ? 0.0 : _volume),
+      if ((_speed - 1.0).abs() > 0.01) _player.setRate(_speed),
+    ]);
+  }
+
   Future<void> _applyInitialPreferencesToMpv({
     Map<String, String> prepOptions = const {},
     bool applyInitialOverrides = false,
   }) async {
     if (_disposed) return;
+    await _ensureStaticMpvConfigured();
+    if (_disposed) return;
     final p = widget.appState.prefs;
-    const skipKeys = {'vo', 'ao', 'gpu-api', 'gpu-context'};
+    // Skip static keys already tuned once in `_ensureStaticMpvConfigured` so episode
+    // switches and server stream starts only apply the tiny per-stream delta!
+    const skipKeys = {
+      'vo',
+      'ao',
+      'gpu-api',
+      'gpu-context',
+      'cache',
+      'demuxer-max-bytes',
+      'demuxer-max-back-bytes',
+      'demuxer-readahead-secs',
+      'network-timeout',
+      'scale',
+      'cscale',
+      'dscale',
+      'dither-depth',
+      'video-sync',
+      'hdr-compute-peak',
+      'framedrop',
+      'gpu-shader-cache',
+      'vd-lavc-threads',
+      'volume-max',
+      'hwdec-codecs',
+      'sub-scale',
+      'sub-ass-override',
+    };
     final props = <String, String>{};
     for (final entry in prepOptions.entries) {
       if (!skipKeys.contains(entry.key)) {
@@ -136,24 +257,9 @@ extension _PlayerEngineExt on _PlayerScreenState {
         ? 'no'
         : (hwPref == 'auto_copy' ? 'auto-copy-safe' : 'auto-safe');
     props['hwdec'] = hwVal;
-    props['hwdec-codecs'] = 'all';
     final preferNativeDv = widget.appState.settings['prefer_native_dolby_vision'] != false;
     props['target-colorspace-hint'] = preferNativeDv ? 'yes' : 'no';
-    props['volume-max'] = '${_maxVolume.round()}';
-    // Mobile thermal protection: avoid per-frame 4K compute-shader peak detection
-    // and heavy display-resample / dithering on battery-powered phone SoCs.
-    final effComputePeak = !_isMobile && p.hdrComputePeak;
-    props['hdr-compute-peak'] = effComputePeak ? 'yes' : 'no';
     props['tone-mapping'] = _PlayerScreenState._normalizeToneMapping(_toneMapping);
-    props['video-sync'] = _isMobile ? 'audio' : p.videoSync;
-    final effBufMb = _isMobile ? p.bufferSizeMb.clamp(32, 96) : p.bufferSizeMb;
-    props['demuxer-max-bytes'] = '${effBufMb}MiB';
-    if (_isMobile && !_anime4kActive) {
-      props['scale'] = 'bilinear';
-      props['cscale'] = 'bilinear';
-      props['dscale'] = 'bilinear';
-      props['dither-depth'] = 'no';
-    }
 
     // Apply preferred audio & subtitle language priorities:
     // Priority: Explicit initial override > per-series saved pref (`prepOptions`) > global preference.
@@ -195,61 +301,9 @@ extension _PlayerEngineExt on _PlayerScreenState {
       }
     }
 
-    if (_audioDelaySecs.abs() > 0.001) {
-      props['audio-delay'] = _audioDelaySecs.toStringAsFixed(3);
-    }
-    props['loop-file'] = _loopFile ? 'inf' : 'no';
-    if (_eqBrightness != 0) props['brightness'] = '$_eqBrightness';
-    if (_eqContrast != 0) props['contrast'] = '$_eqContrast';
-    if (_eqSaturation != 0) props['saturation'] = '$_eqSaturation';
-    if (_eqGamma != 0) props['gamma'] = '$_eqGamma';
-    props['sub-fonts-dir'] = widget.appState.fontsDirectoryPath;
-    if (_subFontFamily.trim().isNotEmpty) {
-      props['sub-font'] = _subFontFamily.trim();
-    }
-    props['sub-ass-override'] = _forceAssOverride ? 'force' : 'no';
-    props['sub-scale'] = _subScale.toStringAsFixed(2);
-    props['sub-pos'] = '$_subPos';
-    props['sub-color'] = p.subtitleColorHex;
-    props['sub-border-size'] = p.subtitleOutlineWidth.toStringAsFixed(1);
-    if (p.subtitleBgOpacity > 0.01) {
-      props['sub-back-color'] = '0.0/0.0/0.0/${p.subtitleBgOpacity.toStringAsFixed(2)}';
-    }
-    if (_subDelaySecs != 0) {
-      props['sub-delay'] = _subDelaySecs.toStringAsFixed(2);
-    }
-    props['video-autorotate'] = 'yes';
-    if (_videoRotate != 0) {
-      props['video-rotate'] = '$_videoRotate';
-    }
-    props['video-zoom'] = _videoZoom.toStringAsFixed(3);
-
-    // Apply all deduplicated MPV properties in parallel to minimize startup latency
     await Future.wait(
       props.entries.map((e) => _applyMpvProperty(e.key, e.value)),
     );
-    if (_disposed) return;
-    await _applyAspectMode(_aspectMode);
-    if (_disposed) return;
-    await _applyAudioMode();
-    if (_disposed) return;
-    await _applyVideoFilterChain();
-    if (_disposed) return;
-    if (_anime4kActive) {
-      await _applyAnime4k(true);
-    }
-    if (_disposed) return;
-    if (_beautyParams.isActive) {
-      await _applyBeautyParams(_beautyPreset, _beautyParams, persist: false, showHud: false);
-    }
-    if (_disposed) return;
-    await _applyCustomMpvConf(p.customMpvConf);
-    if (_disposed) return;
-    await _applyVolumeToEngine(_muted ? 0.0 : _volume);
-    if (_disposed) return;
-    if ((_speed - 1.0).abs() > 0.01) {
-      await _player.setRate(_speed);
-    }
   }
 
   Future<void> _applyVolumeToEngine(double vol) async {
@@ -823,30 +877,44 @@ extension _PlayerEngineExt on _PlayerScreenState {
       }
 
       // 3. Emby / Jellyfin / EmbyGo server stream
+      // Run static mpv setup, saved track-pref lookup, and zero-wait `prepare_playback`
+      // IN PARALLEL so we open the stream the exact millisecond PlaybackInfo returns!
       if (_segments.isEmpty) {
         unawaited(_fetchItemSegments(_currentItem.id));
       }
-      ({String? audioLang, String? subtitleLang, int? audioIndex, int? subtitleIndex})? savedTrackPref;
       final scopeId = _trackPrefScopeId;
-      if (scopeId != null &&
+      final needTrackPref = scopeId != null &&
           !isReconnectOrSwitch &&
           (!applyInitialOverrides ||
               (widget.initialAudioStreamIndex == null &&
-                  widget.initialSubtitleStreamIndex == null))) {
-        savedTrackPref = await widget.appState.getTrackPreference(scopeId);
-        if (!mounted || _disposed || gen != _playbackGen) return;
-      }
+                  widget.initialSubtitleStreamIndex == null));
 
-      final prepRaw = await widget.appState.core.invoke('prepare_playback', {
+      final staticPrepFuture = _ensureStaticMpvConfigured();
+      final trackPrefFuture = needTrackPref
+          ? widget.appState.getTrackPreference(scopeId)
+          : Future<({String? audioLang, String? subtitleLang, int? audioIndex, int? subtitleIndex})?>.value(null);
+      final prepFuture = widget.appState.core.invoke('prepare_playback', {
         'item_id': _currentItem.id,
         if (sourceId != null) 'media_source_id': sourceId,
         if (applyInitialOverrides && widget.initialAudioStreamIndex != null)
           'audio_stream_index': widget.initialAudioStreamIndex,
         if (applyInitialOverrides && widget.initialSubtitleStreamIndex != null)
           'subtitle_stream_index': widget.initialSubtitleStreamIndex,
-        'inspect_header': true,
-      }) as Map<String, dynamic>;
+        // Instant non-blocking startup: Rust infers HDR/Atmos in 0ms from PlaybackInfo
+        // while StreamProxy pre-warms Chunk 0 + Tail Chunk concurrently in the background!
+        'inspect_header': false,
+      });
+
+      final results = await Future.wait<dynamic>([
+        staticPrepFuture,
+        trackPrefFuture,
+        prepFuture,
+      ]);
       if (!mounted || _disposed || gen != _playbackGen) return;
+
+      final savedTrackPref = results[1]
+          as ({String? audioLang, String? subtitleLang, int? audioIndex, int? subtitleIndex})?;
+      final prepRaw = results[2] as Map<String, dynamic>;
 
       final prep = PreparedPlaybackModel.fromJson(prepRaw);
       final prepOptions = Map<String, String>.from(prep.mpvOptions);
@@ -1020,11 +1088,11 @@ extension _PlayerEngineExt on _PlayerScreenState {
     }
   }
 
-  void _startTimers() {
-    if (!mounted || _disposed) return;
-
+  void _syncStatsTimer() {
     _statsTimer?.cancel();
-    _statsTimer = Timer.periodic(const Duration(milliseconds: 900), (_) async {
+    _statsTimer = null;
+    if (!mounted || _disposed || !_showStats) return;
+    Future<void> pollStats() async {
       if (!mounted || _disposed || !_showStats) return;
       try {
         final rustStats = await widget.appState.core.invoke('player_stats') as Map<String, dynamic>;
@@ -1055,7 +1123,17 @@ extension _PlayerEngineExt on _PlayerScreenState {
           },
         };
       } catch (_) {}
-    });
+    }
+
+    unawaited(pollStats());
+    _statsTimer = Timer.periodic(const Duration(milliseconds: 900), (_) => unawaited(pollStats()));
+  }
+
+  void _startTimers() {
+    if (!mounted || _disposed) return;
+
+    // On-demand NerdStats polling: ZERO background timer wakeups when stats HUD is closed!
+    _syncStatsTimer();
 
     _progressTimer?.cancel();
     _progressTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
@@ -1156,6 +1234,10 @@ extension _PlayerEngineExt on _PlayerScreenState {
       }
       if (_loudnessNorm) {
         filters.add('lavfi=[dynaudnorm=f=150:g=15:p=0.95]');
+      }
+      // Pitch-preserving crisp speed boost (e.g. 2x long-press) when no custom audio filter is active.
+      if (filters.isEmpty) {
+        filters.add('scaletempo2=max-speed=8');
       }
       await _applyMpvProperty('af', filters.join(','));
     }

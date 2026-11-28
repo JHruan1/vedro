@@ -168,8 +168,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   double _durationSecs = 0;
   final ValueNotifier<double> _positionNotifier = ValueNotifier<double>(0);
   final ValueNotifier<double> _bufferedNotifier = ValueNotifier<double>(0);
+  final ValueNotifier<double> _volumeNotifier = ValueNotifier<double>(100.0);
+  final ValueNotifier<double> _scrubTargetNotifier = ValueNotifier<double>(0);
   final ValueNotifier<MediaSegmentModel?> _activeSegmentNotifier =
       ValueNotifier<MediaSegmentModel?>(null);
+  bool _staticMpvConfigured = false;
+  bool _androidPrefetchSuspended = false;
   final ValueNotifier<int> _networkSpeedBpsNotifier = ValueNotifier<int>(0);
   final ValueNotifier<int> _sleepRemainingNotifier = ValueNotifier<int>(0);
   int _lastPosNotifyMs = 0;
@@ -402,6 +406,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _muted = _volume <= 0.1;
       if (_volume > 5) _preMuteVolume = _volume;
     }
+    _volumeNotifier.value = _muted ? 0.0 : _volume;
     _hwDecodeEnabled = (widget.appState.settings['hwdec'] ?? 'auto_zero_copy') != 'software';
     _anime4kActive = p.anime4kEnabled && (!p.anime4kOnlyAnime || _isLikelyAnime(_currentItem));
     _toneMapping = _normalizeToneMapping((widget.appState.settings['tone_mapping'] ?? 'bt.2446a').toString());
@@ -453,10 +458,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       }));
     }
 
+    final effectiveBufMb = _isMobile
+        ? p.bufferSizeMb.clamp(24, 64)
+        : p.bufferSizeMb.clamp(32, 192);
     _player = Player(
       configuration: PlayerConfiguration(
-        bufferSize: p.bufferSizeMb * 1024 * 1024,
-        vo: 'gpu',
+        bufferSize: effectiveBufMb * 1024 * 1024,
+        // On mobile (Android/iOS), let media_kit_video manage the native zero-copy
+        // SurfaceTexture/Metal texture bridge instead of forcing desktop `vo=gpu`.
+        vo: _isMobile ? null : 'gpu',
       ),
     );
     _videoController = VideoController(
@@ -810,11 +820,25 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (!mounted) return;
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       unawaited(_flushCurrentProgress());
-      if (!widget.appState.prefs.backgroundAudio && !_inPipMode && !_enteringPip && !_paused) {
-        unawaited(_player.pause());
+      if (!widget.appState.prefs.backgroundAudio && !_inPipMode && !_enteringPip) {
+        if (!_paused) {
+          unawaited(_player.pause());
+        }
+        // Android blocks sockets for backgrounded apps; suspending demuxer readahead
+        // prevents mpv from burning retries & marking the stream EOF on resume!
+        if (!kIsWeb && Platform.isAndroid && !_androidPrefetchSuspended) {
+          _androidPrefetchSuspended = true;
+          unawaited(_applyMpvProperty('cache-secs', '0'));
+          unawaited(_applyMpvProperty('demuxer-readahead-secs', '0'));
+        }
       }
     } else if (state == AppLifecycleState.resumed) {
       _enteringPip = false;
+      if (_androidPrefetchSuspended) {
+        _androidPrefetchSuspended = false;
+        unawaited(_applyMpvProperty('cache-secs', '60'));
+        unawaited(_applyMpvProperty('demuxer-readahead-secs', '15'));
+      }
       if (!_paused) {
         NativePlaybackChannel.setKeepScreenOn(true);
       }
@@ -1334,6 +1358,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         break;
       case 'stats':
         setState(() => _showStats = !_showStats);
+        _syncStatsTimer();
         break;
       case 'tools':
         _openMoreToolsSheet();
@@ -1591,6 +1616,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _skipIntroFocusNode.dispose();
     _positionNotifier.dispose();
     _bufferedNotifier.dispose();
+    _volumeNotifier.dispose();
+    _scrubTargetNotifier.dispose();
     _activeSegmentNotifier.dispose();
     _quickSkipEligibleNotifier.dispose();
     _networkSpeedBpsNotifier.dispose();

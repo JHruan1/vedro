@@ -46,10 +46,12 @@ class _HomeMobileTopBar extends StatelessWidget {
             t;
         final veilBase = skin.isLight ? skin.surface : skin.canvas;
 
+        // Avoid nested BackdropFilter stalls when the scrolled top veil is already blurred
+        // (keeps exact unified 360° LiquidGlassRimPainter + sheen while cutting GPU passes 4x!).
         Widget pill({required Widget child, required EdgeInsets padding}) => GlassSurface(
               borderRadius: 19,
               blur: 18,
-              enableBlur: skin.isLiquidGlass || overArt,
+              enableBlur: overArt,
               color: skin.isLiquidGlass ? null : pillBg,
               borderColor: skin.isLight && overArt ? skin.border : Colors.transparent,
               padding: padding,

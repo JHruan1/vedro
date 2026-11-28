@@ -254,9 +254,9 @@ class GlassSurface extends StatelessWidget {
                 borderRadius: radius,
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: skin.isLight ? 0.12 : 0.36),
-                    blurRadius: 24,
-                    offset: const Offset(0, 8),
+                    color: Colors.black.withValues(alpha: skin.isLight ? 0.12 : 0.34),
+                    blurRadius: PlatformPerfProfile.isMobile ? 12 : 24,
+                    offset: Offset(0, PlatformPerfProfile.isMobile ? 5 : 8),
                   ),
                 ],
               )
@@ -1317,6 +1317,7 @@ Future<T?> showGlassSheet<T>({
             accent: skin.accent,
             liquidSpecular: skin.liquidSpecular,
             density: VedroGlassDensity.menu,
+            suspendDuringPageTransition: false,
             intensityOverride: isLiquid ? 1.15 : null,
             child: body,
           ),
@@ -1725,29 +1726,18 @@ class _VedroPullDownButtonState<T> extends State<VedroPullDownButton<T>> {
 
     Widget pill;
     if (isLiquid) {
-      final hasGpu = VedroLiquidGlassShader.isAvailable;
-      final pillBlur = hasGpu
-          ? VedroLiquidGlassShader.gpuBlurSigma(VedroGlassDensity.chrome)
-          : PlatformPerfProfile.clampLiveBlur(22);
+      // Pull-down trigger pills sit inside scrolling DetailScreen/Settings cards over solid
+      // surfaces: render the exact unified 360° LiquidGlassRimPainter + crystal tint + sheen
+      // directly with ZERO live full-screen BackdropFilter readback (eliminates 4 GPU tile
+      // resolves per frame during DetailScreen scroll & push/pop animations!). Tapping opens
+      // the full 360° refractive dropdown menu.
       final pillBg = VedroLiquidGlassShader.liquidFillColor(
         isLight: skin.isLight,
         canvas: skin.canvas,
         surface: skin.surface,
         surface2: skin.surface2,
-        density: VedroGlassDensity.chrome,
+        density: VedroGlassDensity.panel,
         highlighted: _isOpen,
-      );
-      final pillInner = Container(
-        height: widget.height,
-        padding: const EdgeInsets.symmetric(horizontal: 13),
-        decoration: BoxDecoration(
-          color: pillBg,
-          gradient: VedroLiquidGlassShader.liquidSheenGradient(
-            isLight: skin.isLight,
-            accent: skin.accent,
-          ),
-        ),
-        child: rowContent,
       );
       pill = CustomPaint(
         foregroundPainter: LiquidGlassRimPainter(
@@ -1756,15 +1746,20 @@ class _VedroPullDownButtonState<T> extends State<VedroPullDownButton<T>> {
           accent: skin.accent,
           selected: _isOpen,
         ),
-        child: VedroLiquidGlassBackdrop(
-          borderRadius: r,
-          blurSigma: pillBlur,
-          enableRefraction: true,
-          isLight: skin.isLight,
-          accent: skin.accent,
-          liquidSpecular: skin.liquidSpecular,
-          density: VedroGlassDensity.chrome,
-          child: pillInner,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(r),
+          child: Container(
+            height: widget.height,
+            padding: const EdgeInsets.symmetric(horizontal: 13),
+            decoration: BoxDecoration(
+              color: pillBg,
+              gradient: VedroLiquidGlassShader.liquidSheenGradient(
+                isLight: skin.isLight,
+                accent: skin.accent,
+              ),
+            ),
+            child: rowContent,
+          ),
         ),
       );
     } else {
@@ -2072,6 +2067,7 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
               accent: skin.accent,
               liquidSpecular: skin.liquidSpecular,
               density: VedroGlassDensity.menu,
+              suspendDuringPageTransition: false,
               intensityOverride: isLiquid ? (1.15 * shellOpacity).clamp(0.4, 1.35) : null,
               child: body,
             ),

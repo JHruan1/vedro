@@ -377,6 +377,7 @@ class _VedroPeekMenuStage extends StatelessWidget {
             accent: skin.accent,
             liquidSpecular: skin.liquidSpecular,
             density: VedroGlassDensity.menu,
+            suspendDuringPageTransition: false,
             intensityOverride: isLiquid ? (1.15 * tOpacity).clamp(0.4, 1.35) : null,
             child: DecoratedBox(
               decoration: BoxDecoration(

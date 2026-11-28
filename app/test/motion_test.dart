@@ -434,4 +434,84 @@ void main() {
     expect(roundtrip.autoPipOnBackground, isFalse);
     expect(roundtrip.enablePip, isTrue);
   });
+
+  testWidgets(
+      'VedroLiquidGlassBackdrop auto-suspends live BackdropFilterLayer during PageRoute push/pop & restores when settled',
+      (tester) async {
+    int countBackdropLayers() {
+      var count = 0;
+      void walk(Layer? layer) {
+        if (layer == null) return;
+        if (layer is BackdropFilterLayer) count++;
+        if (layer is ContainerLayer) {
+          var child = layer.firstChild;
+          while (child != null) {
+            walk(child);
+            child = child.nextSibling;
+          }
+        }
+      }
+
+      walk(tester.binding.renderViews.first.debugLayer);
+      return count;
+    }
+
+    Widget glassPill(String label) => Center(
+          child: SizedBox(
+            width: 160,
+            height: 48,
+            child: VedroLiquidGlassBackdrop(
+              borderRadius: 18,
+              blurSigma: 8.0,
+              enableRefraction: true,
+              isLight: false,
+              accent: const Color(0xFF0A84FF),
+              child: Center(child: Text(label)),
+            ),
+          ),
+        );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(VedroSkin.iosLiquidGlass),
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: GestureDetector(
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => Scaffold(body: glassPill('详情页玻璃')),
+                ),
+              ),
+              child: glassPill('首页玻璃'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    // Settled on Home: 1 live BackdropFilterLayer
+    expect(countBackdropLayers(), equals(1));
+
+    // Mid-push transition: BOTH Home & Detail suspend live BackdropFilter readbacks (0 GPU passes!)
+    await tester.tap(find.text('首页玻璃'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(countBackdropLayers(), equals(0),
+        reason: 'Live BackdropFilterLayer must pause during PageRoute push transition');
+
+    // Settled on Detail: 1 live BackdropFilterLayer restored
+    await tester.pumpAndSettle();
+    expect(countBackdropLayers(), equals(1));
+
+    // Mid-pop transition: suspended again (0 GPU passes!)
+    tester.state<NavigatorState>(find.byType(Navigator)).pop();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(countBackdropLayers(), equals(0),
+        reason: 'Live BackdropFilterLayer must pause during PageRoute pop transition');
+
+    // Settled back on Home: 1 live BackdropFilterLayer restored
+    await tester.pumpAndSettle();
+    expect(countBackdropLayers(), equals(1));
+  });
 }

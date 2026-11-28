@@ -106,7 +106,7 @@ class _DetailScreenState extends State<DetailScreen> {
   final GlobalKey _deckMoreBtnKey = GlobalKey();
 
   void _refreshDetailMonetSeed() {
-    if (_item.type == 'Person') return;
+    if (_item.type == 'Person' || !widget.appState.prefs.dynamicMonet) return;
     final artUrl = widget.appState.backdropArt(_item, width: 320)?.url ??
         widget.appState.posterArtUrl(_item, width: 320);
     final cached = DynamicColorEngine.cachedForUrl(artUrl);

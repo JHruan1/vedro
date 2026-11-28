@@ -452,6 +452,7 @@ class _CinemaHeroBannerState extends State<_CinemaHeroBanner> {
                       ? GlassSurface(
                           borderRadius: 999,
                           blur: 24,
+                          enableBlur: !PlatformPerfProfile.isMobile,
                           color: const Color(0x40FFFFFF),
                           borderColor: Colors.transparent,
                           child: SizedBox(

@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'core/ffi/vedro_bridge.dart';
 import 'core/platform/native_playback_channel.dart';
 import 'core/platform/platform_perf.dart';
+import 'core/theme/vedro_liquid_shader.dart';
 import 'core/theme/vedro_skin.dart';
 import 'core/theme/vedro_theme.dart';
 import 'screens/shell_screen.dart';
@@ -23,6 +24,7 @@ Future<void> main(List<String> args) async {
   runZonedGuarded<void>(
     () async {
       WidgetsFlutterBinding.ensureInitialized();
+      unawaited(VedroLiquidGlassShader.preload());
       PlatformPerfProfile.configureImageCache();
       if (args.isNotEmpty) {
         final startupPaths = args

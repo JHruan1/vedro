@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vedro/core/models/media_models.dart';
+import 'package:vedro/core/theme/vedro_liquid_shader.dart';
 import 'package:vedro/core/theme/vedro_motion.dart';
+import 'package:vedro/core/theme/vedro_skin.dart';
 import 'package:vedro/core/theme/vedro_theme.dart';
 import 'package:vedro/widgets/vedro_ui.dart';
 
@@ -252,5 +254,52 @@ void main() {
     final popClips = tester.widgetList<ClipRRect>(find.byType(ClipRRect)).toList();
     expect(popClips.any((c) => c.borderRadius == BorderRadius.circular(r)), isTrue);
     await tester.pumpAndSettle();
+  });
+
+  testWidgets('VedroLiquidGlassShader & ios_liquid_glass surfaces render cleanly with graceful fallback',
+      (tester) async {
+    await VedroLiquidGlassShader.preload();
+    final liquidSkin = VedroSkin.iosLiquidGlass;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: VedroTheme.fromSkin(liquidSkin),
+        home: Scaffold(
+          body: Builder(
+            builder: (context) {
+              final filter = VedroLiquidGlassShader.buildBackdropFilter(
+                context: context,
+                isLight: liquidSkin.isLight,
+                accent: liquidSkin.accent,
+                blurSigma: 18,
+                borderRadius: 18,
+                enableRefraction: true,
+                liquidSpecular: 'vivid',
+              );
+              return Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    GlassSurface(
+                      borderRadius: 20,
+                      padding: const EdgeInsets.all(12),
+                      child: Text('Liquid Glass (${filter.runtimeType})'),
+                    ),
+                    const SizedBox(height: 12),
+                    VedroAdaptiveSurface(
+                      borderRadius: 16,
+                      padding: const EdgeInsets.all(10),
+                      child: const Text('Adaptive Glass Card'),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Liquid Glass'), findsOneWidget);
+    expect(find.text('Adaptive Glass Card'), findsOneWidget);
   });
 }

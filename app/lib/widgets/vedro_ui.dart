@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/platform/platform_perf.dart';
+import '../core/theme/vedro_liquid_shader.dart';
 import '../core/theme/vedro_motion.dart';
 import '../core/theme/vedro_skin.dart';
 import '../core/theme/vedro_theme.dart';
@@ -273,7 +273,17 @@ class GlassSurface extends StatelessWidget {
             borderRadius: radius,
             child: effBlur > 0.1
                 ? BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: effBlur, sigmaY: effBlur),
+                    filter: VedroLiquidGlassShader.buildBackdropFilter(
+                      context: context,
+                      isLight: skin.isLight,
+                      accent: skin.accent,
+                      blurSigma: effBlur,
+                      borderRadius: borderRadius,
+                      enableRefraction: isLiquid,
+                      liquidSpecular: skin.liquidSpecular,
+                      refractionDp: 14.0,
+                      dispersionDp: 2.6,
+                    ),
                     child: inner,
                   )
                 : inner,
@@ -1291,7 +1301,18 @@ Future<T?> showGlassSheet<T>({
                   ),
             child: liveSigma > 0.5
                 ? BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: liveSigma, sigmaY: liveSigma),
+                    filter: VedroLiquidGlassShader.buildBackdropFilter(
+                      context: context,
+                      isLight: skin.isLight,
+                      accent: skin.accent,
+                      blurSigma: liveSigma,
+                      borderRadius: radius,
+                      enableRefraction: isLiquid,
+                      liquidSpecular: skin.liquidSpecular,
+                      refractionDp: 12.0,
+                      dispersionDp: 2.2,
+                      intensityOverride: isLiquid ? 1.15 : null,
+                    ),
                     child: body,
                   )
                 : body,
@@ -1725,7 +1746,17 @@ class _VedroPullDownButtonState<T> extends State<VedroPullDownButton<T>> {
           borderRadius: BorderRadius.circular(r),
           child: pillBlur > 0.1
               ? BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: pillBlur, sigmaY: pillBlur),
+                  filter: VedroLiquidGlassShader.buildBackdropFilter(
+                    context: context,
+                    isLight: skin.isLight,
+                    accent: skin.accent,
+                    blurSigma: pillBlur,
+                    borderRadius: r,
+                    enableRefraction: true,
+                    liquidSpecular: skin.liquidSpecular,
+                    refractionDp: 13.5,
+                    dispersionDp: 2.5,
+                  ),
                   child: pillInner,
                 )
               : pillInner,
@@ -2020,7 +2051,18 @@ class _VedroPullDownRoute<T> extends PopupRoute<T> {
                     ),
               child: enableLiveBlur && liveSigma > 0.5
                   ? BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: liveSigma, sigmaY: liveSigma),
+                      filter: VedroLiquidGlassShader.buildBackdropFilter(
+                        context: context,
+                        isLight: skin.isLight,
+                        accent: skin.accent,
+                        blurSigma: liveSigma,
+                        borderRadius: r,
+                        enableRefraction: isLiquid,
+                        liquidSpecular: skin.liquidSpecular,
+                        refractionDp: 12.0,
+                        dispersionDp: 2.2,
+                        intensityOverride: rimIntensity,
+                      ),
                       child: body,
                     )
                   : body,

@@ -5,6 +5,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import '../platform/platform_perf.dart';
+import 'vedro_liquid_shader.dart';
 
 /// Choose high-contrast ink (near-black or pure white) against any background color.
 Color highContrastOn(Color bg) =>
@@ -2042,7 +2043,17 @@ class VedroAdaptiveSurface extends StatelessWidget {
             borderRadius: radius,
             child: useLiveBlur
                 ? BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: effBlur, sigmaY: effBlur),
+                    filter: VedroLiquidGlassShader.buildBackdropFilter(
+                      context: context,
+                      isLight: skin.isLight,
+                      accent: skin.accent,
+                      blurSigma: effBlur,
+                      borderRadius: r,
+                      enableRefraction: isLiquid,
+                      liquidSpecular: skin.liquidSpecular,
+                      refractionDp: 10.5,
+                      dispersionDp: 1.8,
+                    ),
                     child: surfaceBody,
                   )
                 : surfaceBody,

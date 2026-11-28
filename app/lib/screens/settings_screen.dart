@@ -214,7 +214,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       tintTop: Color(0xFF60A5FA),
       tintBottom: Color(0xFF2563EB),
       group: '播放与视听',
-      keywords: 'buffer pip speed intro outro 外部播放器 iina infuse',
+      keywords: 'buffer pip speed intro outro 小窗 缓存 跳过片头片尾',
     ),
     _NavItemMeta(
       section: _SettingsSection.video,

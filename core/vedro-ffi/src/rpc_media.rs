@@ -9,7 +9,7 @@ use vedro_protocol::{
 };
 use vedro_stream::{inspect_media_header, InspectedMedia};
 
-use crate::security::{container_mime_type, same_origin_as_client, str_param, validate_http_url};
+use crate::security::{container_mime_type, same_origin_as_client, str_param};
 use crate::types::{
     ActivePlaybackSession, CombinedPlayerStats, ExternalSubtitle, PreparedPlayback,
 };
@@ -1496,54 +1496,10 @@ impl VedroRuntime {
             }
 
             "external_play_url" => {
-                let client = self.require_client()?;
-                let item_id = str_param(params, "item_id")?;
-                let media_source_id = params.get("media_source_id").and_then(Value::as_str);
-                let player_id = params.get("player_id").and_then(Value::as_str);
-                let pb = client
-                    .external_play_info(&item_id, media_source_id, player_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let chosen = media_source_id
-                    .and_then(|sid| pb.media_sources.iter().find(|s| s.id == sid))
-                    .or_else(|| pb.media_sources.first())
-                    .ok_or_else(|| "no playable media source".to_string())?;
-                let prefer_proxy = params
-                    .get("use_local_proxy")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let url = if let Some(ds) = chosen.direct_stream_url.as_deref() {
-                    let resolved = client.resolve_media_url(ds).map_err(|e| e.to_string())?;
-                    validate_http_url(resolved.as_str())?;
-                    resolved
-                } else {
-                    let mut fallback = client
-                        .build_fallback_video_url(
-                            &item_id,
-                            &chosen.id,
-                            chosen.container.as_deref(),
-                            &pb.play_session_id,
-                        )
-                        .map_err(|e| e.to_string())?;
-                    if prefer_proxy {
-                        let (_sid, proxy_url) = self.proxy.register_stream(
-                            fallback.to_string(),
-                            client.auth_headers(),
-                            chosen.size,
-                            chosen.container.as_deref().map(container_mime_type),
-                        );
-                        url::Url::parse(&proxy_url).map_err(|e| e.to_string())?
-                    } else {
-                        if let Some(tok) = client.access_token() {
-                            fallback.query_pairs_mut().append_pair("api_key", &tok);
-                        }
-                        fallback
-                    }
-                };
-                Ok(json!({
-                    "url": url.to_string(),
-                    "media_source_id": chosen.id,
-                }))
+                // Disabled to prevent direct media stream URLs from leaking to external downloaders.
+                Err(crate::RpcErr::Err(
+                    "external player is disabled to protect media stream URLs".to_string(),
+                ))
             }
 
             "get_settings" => {

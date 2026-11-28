@@ -595,14 +595,8 @@ class VedroHardwarePlugin(
                 }
             }
             "launchExternalPlayer" -> {
-                val url = call.argument<String>("url")?.trim() ?: ""
-                val player = (call.argument<String>("player") ?: "").lowercase()
-                val title = call.argument<String>("title") ?: ""
-                if (!isAllowedHttpUrl(url)) {
-                    result.success(false)
-                    return
-                }
-                result.success(launchAndroidExternalPlayer(url, player, title))
+                // Disabled to prevent direct media stream URLs from leaking to external apps/downloaders.
+                result.success(false)
             }
             "createVideoSurface" -> result.success(null)
             else -> result.notImplemented()
@@ -789,41 +783,6 @@ class VedroHardwarePlugin(
             }
         } catch (_: Throwable) {}
         return uri.lastPathSegment?.substringAfterLast('/')
-    }
-
-    private fun launchAndroidExternalPlayer(url: String, player: String, title: String): Boolean {
-        val uri = Uri.parse(url)
-        val packages = when (player) {
-            "mxplayer" -> listOf("com.mxtech.videoplayer.pro", "com.mxtech.videoplayer.ad")
-            "vlc" -> listOf("org.videolan.vlc")
-            "mpv" -> listOf("is.xyz.mpv")
-            else -> emptyList()
-        }
-        for (pkg in packages) {
-            try {
-                val direct = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, "video/*")
-                    setPackage(pkg)
-                    if (title.isNotBlank()) putExtra("title", title)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                activity.startActivity(direct)
-                return true
-            } catch (_: Throwable) {}
-        }
-        return try {
-            val base = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "video/*")
-                if (title.isNotBlank()) putExtra("title", title)
-            }
-            val chooser = Intent.createChooser(base, "选择外部播放器").apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            activity.startActivity(chooser)
-            true
-        } catch (_: Throwable) {
-            false
-        }
     }
 
     private fun isAndroidTvDevice(): Boolean {

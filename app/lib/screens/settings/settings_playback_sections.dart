@@ -6,35 +6,6 @@ extension _SettingsPlaybackSectionsExt on _SettingsDetailPaneState {
   Widget _buildPlayback(VedroPreferences p) {
     final isMobileOs = PlatformPerfProfile.isMobile;
     final supportsPip = NativePlaybackChannel.supportsNativePip;
-    final playerChoices = <String, String>{
-      'builtin': !kIsWeb && Platform.isIOS ? '内置播放核心（推荐）' : '内置 Rust + MPV（推荐）',
-      if (!kIsWeb && Platform.isAndroid) ...{
-        'mxplayer': 'MX Player',
-        'vlc': 'VLC',
-        'mpv': 'MPV-Android',
-        'system': '系统外部播放器',
-      } else if (!kIsWeb && Platform.isIOS) ...{
-        'infuse': 'Infuse',
-        'vlc': 'VLC',
-        'outplayer': 'Outplayer',
-        'nplayer': 'nPlayer',
-      } else if (!kIsWeb && Platform.isMacOS) ...{
-        'iina': 'IINA',
-        'infuse': 'Infuse',
-        'mpv': 'MPV',
-        'vlc': 'VLC',
-      } else if (!kIsWeb && Platform.isWindows) ...{
-        'potplayer': 'PotPlayer',
-        'vlc': 'VLC',
-        'mpv': 'MPV',
-      } else ...{
-        'mpv': '外部 MPV',
-        'vlc': 'VLC',
-      },
-    };
-    if (!playerChoices.containsKey(p.externalPlayer)) {
-      playerChoices[p.externalPlayer] = p.externalPlayer;
-    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -76,12 +47,6 @@ extension _SettingsPlaybackSectionsExt on _SettingsDetailPaneState {
         const _GroupHeader('播放器与交互控制'),
         _GroupedCard(
           children: [
-            _AppleMenuPickerRow<String>(
-              title: '默认播放器引擎',
-              value: p.externalPlayer,
-              items: playerChoices,
-              onChanged: (v) => _updatePrefs(p.copyWith(externalPlayer: v)),
-            ),
             _AppleMenuPickerRow<int>(
               title: '播放器内存缓存大小',
               value: p.bufferSizeMb,

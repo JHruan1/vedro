@@ -261,77 +261,14 @@ extension VedroAppStateMedia on VedroAppState {
     await refreshPlaylists();
   }
 
-  /// Launch an item in an external player (IINA / Infuse / MPV / VLC / PotPlayer / MX Player / Outplayer) across all 5 OSes.
+  /// External players are disabled to prevent direct media stream URLs from leaking
+  /// to external downloaders or third-party apps.
   Future<String> launchExternalPlayer(
     MediaItemModel item, {
     String? mediaSourceId,
     String? playerOverride,
   }) async {
-    final targetPlayer = (playerOverride ?? prefs.externalPlayer).toLowerCase();
-    final isDesktop = PlatformPerfProfile.isDesktop;
-    final res = await core.invoke('external_play_url', {
-      'item_id': item.id,
-      if (mediaSourceId != null) 'media_source_id': mediaSourceId,
-      if (targetPlayer != 'builtin') 'player_id': targetPlayer,
-      // Keep upstream server tokens off OS process argv on desktop by routing through local loopback proxy!
-      'use_local_proxy': isDesktop,
-    }) as Map<String, dynamic>;
-    final streamUrl = (res['url'] ?? '').toString().trim();
-    if (!NativePlaybackChannel.isAllowedHttpUrl(streamUrl)) {
-      throw Exception('无法获取有效的外部播放直链');
-    }
-
-    if (PlatformPerfProfile.isMobileOs) {
-      final ok = await NativePlaybackChannel.launchExternalPlayer(
-        streamUrl,
-        player: targetPlayer,
-        title: item.name,
-      );
-      if (!ok) {
-        throw Exception('未检测到可用的外部播放器应用');
-      }
-      return '已调用外部播放器';
-    }
-
-    if (!kIsWeb && Platform.isMacOS) {
-      switch (targetPlayer) {
-        case 'iina':
-          await Process.start('open', ['iina://weblink?url=${Uri.encodeComponent(streamUrl)}']);
-          return '已通过 IINA 打开';
-        case 'infuse':
-          await Process.start('open', ['infuse://x-callback-url/play?url=${Uri.encodeComponent(streamUrl)}']);
-          return '已通过 Infuse 打开';
-        case 'vlc':
-          await Process.start('open', ['-a', 'VLC', '--', streamUrl]);
-          return '已通过 VLC 打开';
-        case 'mpv':
-          await Process.start('open', ['-a', 'mpv', '--', streamUrl]);
-          return '已通过 MPV 打开';
-        default:
-          await Process.start('open', ['--', streamUrl]);
-          return '已交由系统播放器打开';
-      }
-    } else if (!kIsWeb && Platform.isWindows) {
-      final ok = await NativePlaybackChannel.launchExternalPlayer(
-        streamUrl,
-        player: targetPlayer,
-        title: item.name,
-      );
-      if (!ok) {
-        await NativePlaybackChannel.openUrl(streamUrl);
-      }
-      return '已调用外部播放器';
-    } else if (!kIsWeb && Platform.isLinux) {
-      if (targetPlayer == 'mpv') {
-        await Process.start('mpv', ['--', streamUrl]);
-      } else if (targetPlayer == 'vlc') {
-        await Process.start('vlc', ['--', streamUrl]);
-      } else {
-        await Process.start('xdg-open', ['--', streamUrl]);
-      }
-      return '已调用外部播放器';
-    }
-    return streamUrl;
+    throw UnsupportedError('已禁用外部播放器，以保护媒体直链安全');
   }
 
   /// Fetch real danmaku comments from multi-source engine (DandanPlay + Bilibili PGC/Video + custom XML).

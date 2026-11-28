@@ -671,10 +671,6 @@ class _DetailScreenState extends State<DetailScreen> {
     int? startPositionTicks,
     String? localPath,
   }) async {
-    if (localPath == null && widget.appState.prefs.externalPlayer != 'builtin') {
-      await _launchExternal(target, sourceId: sourceId);
-      return;
-    }
     final overrideTicks = startPositionTicks ?? (fromBeginning ? 0 : null);
     final playTarget = overrideTicks != null
         ? MediaItemModel(
@@ -740,23 +736,6 @@ class _DetailScreenState extends State<DetailScreen> {
         standalone: true,
       )),
     );
-  }
-
-  Future<void> _launchExternal(MediaItemModel target, {String? sourceId, String? player}) async {
-    try {
-      final msg = await widget.appState.launchExternalPlayer(
-        target,
-        mediaSourceId: sourceId,
-        playerOverride: player,
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('外部播放器失败：$e')));
-      }
-    }
   }
 
   Future<void> _translateOverview() async {
@@ -1047,15 +1026,6 @@ class _DetailScreenState extends State<DetailScreen> {
           subtitle: _localExternalSubPath?.split(Platform.pathSeparator).last,
           icon: Icons.subtitles_outlined,
           onTapOverride: _pickExternalSubtitleForDetail,
-        ),
-        VedroDropdownItem<String>(
-          value: 'ext_player',
-          label: '外部播放器打开',
-          icon: Icons.open_in_new_rounded,
-          onTapOverride: () => _launchExternal(
-            playable,
-            sourceId: _resolveDownloadSource(playable)?.id ?? _activeSource?.id,
-          ),
         ),
         if (canDownload)
           VedroDropdownItem<String>(

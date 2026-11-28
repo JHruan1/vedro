@@ -425,18 +425,6 @@ class _ShellScreenState extends State<ShellScreen> with SingleTickerProviderStat
 
   void _quickPlay(MediaItemModel item) {
     if (item.isPlayable) {
-      if (widget.appState.prefs.externalPlayer != 'builtin') {
-        widget.appState.launchExternalPlayer(item).then((msg) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-          }
-        }).catchError((Object e) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('外部播放器打开失败：$e')));
-          }
-        });
-        return;
-      }
       Navigator.of(context).push(
         vedroRoute(PlayerScreen(item: item, appState: widget.appState)),
       );

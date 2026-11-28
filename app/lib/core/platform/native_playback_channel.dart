@@ -521,22 +521,12 @@ class NativePlaybackChannel {
     return false;
   }
 
+  /// External players are disabled to prevent media stream URLs from leaking to external downloaders.
   static Future<bool> launchExternalPlayer(
     String url, {
     String player = '',
     String title = '',
   }) async {
-    if (!isAllowedHttpUrl(url)) return false;
-    try {
-      final ok = await _channel.invokeMethod<bool>('launchExternalPlayer', {
-        'url': url.trim(),
-        'player': player,
-        'title': title,
-      });
-      if (ok != null) return ok;
-    } on MissingPluginException {
-      return false;
-    } catch (_) {}
     return false;
   }
 

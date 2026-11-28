@@ -390,51 +390,8 @@ final class VedroHardwarePlugin: NSObject, UIDocumentPickerDelegate {
         }
       }
     case "launchExternalPlayer":
-      let args = call.arguments as? [String: Any]
-      let streamUrl = (args?["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      let player = ((args?["player"] as? String) ?? "").lowercased()
-      guard let validStreamUrl = isAllowedHttpUrl(streamUrl) else {
-        result(false)
-        return
-      }
-      var targetUrl: URL?
-      switch player {
-      case "infuse":
-        var comps = URLComponents(string: "infuse://x-callback-url/play")
-        comps?.queryItems = [URLQueryItem(name: "url", value: validStreamUrl.absoluteString)]
-        targetUrl = comps?.url
-      case "vlc":
-        var comps = URLComponents(string: "vlc-x-callback://x-callback-url/stream")
-        comps?.queryItems = [URLQueryItem(name: "url", value: validStreamUrl.absoluteString)]
-        targetUrl = comps?.url
-      case "outplayer":
-        targetUrl = URL(string: "outplayer://\(validStreamUrl.absoluteString)")
-      case "nplayer":
-        let rawStr = validStreamUrl.absoluteString
-        let replaced: String
-        if rawStr.lowercased().hasPrefix("https://") {
-          replaced = "nplayer-https://" + rawStr.dropFirst(8)
-        } else if rawStr.lowercased().hasPrefix("http://") {
-          replaced = "nplayer-http://" + rawStr.dropFirst(7)
-        } else {
-          replaced = rawStr
-        }
-        targetUrl = URL(string: replaced)
-      default:
-        targetUrl = validStreamUrl
-      }
-      let finalTarget = targetUrl ?? validStreamUrl
-      DispatchQueue.main.async {
-        UIApplication.shared.open(finalTarget, options: [:]) { ok in
-          if !ok, finalTarget.absoluteString != validStreamUrl.absoluteString {
-            UIApplication.shared.open(validStreamUrl, options: [:]) { ok2 in
-              result(ok2)
-            }
-          } else {
-            result(ok)
-          }
-        }
-      }
+      // Disabled to prevent direct media stream URLs from leaking to external apps/downloaders.
+      result(false)
     case "enterPiP":
       result(false)
     case "createVideoSurface":

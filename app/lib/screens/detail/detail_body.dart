@@ -247,7 +247,7 @@ extension _DetailBodyExt on _DetailScreenState {
               key: _deckMoreBtnKey,
               icon: Icons.more_horiz_rounded,
               label: '更多',
-              tooltip: '更多（字幕挂载 / 外部播放器 / 片单 / AI 翻译）',
+              tooltip: '更多（字幕挂载 / 片单 / AI 翻译）',
               active: false,
               color: skin.fg,
               onTap: () => _openMoreSheet(_deckMoreBtnKey),

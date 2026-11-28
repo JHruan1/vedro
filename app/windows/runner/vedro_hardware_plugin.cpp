@@ -576,43 +576,23 @@ void RegisterVedroHardwarePlugin(flutter::BinaryMessenger* messenger, HWND hwnd)
           } else {
             result->Success(flutter::EncodableValue(saved));
           }
-        } else if (method == "openUrl" || method == "launchExternalPlayer") {
+        } else if (method == "launchExternalPlayer") {
+          // Disabled to prevent direct media stream URLs from leaking to external apps/downloaders.
+          result->Success(flutter::EncodableValue(false));
+        } else if (method == "openUrl") {
           std::string url;
-          std::string player;
           if (const auto* args = std::get_if<flutter::EncodableMap>(call.arguments())) {
             auto uit = args->find(flutter::EncodableValue("url"));
             if (uit != args->end()) {
               if (const auto* s = std::get_if<std::string>(&uit->second)) url = *s;
             }
-            auto pit = args->find(flutter::EncodableValue("player"));
-            if (pit != args->end()) {
-              if (const auto* s = std::get_if<std::string>(&pit->second)) player = *s;
-            }
           }
           if (!IsAllowedHttpUrl(url)) {
             result->Success(flutter::EncodableValue(false));
           } else {
-            bool ok = false;
-            if (method == "launchExternalPlayer" && (player == "mpv" || player == "vlc")) {
-              std::wstring exe = player == "mpv" ? L"mpv.exe" : L"vlc.exe";
-              std::wstring params = L"\"" + Utf8ToWide(url) + L"\"";
-              HINSTANCE inst = ShellExecuteW(hwnd, L"open", exe.c_str(), params.c_str(), nullptr, SW_SHOWNORMAL);
-              ok = reinterpret_cast<INT_PTR>(inst) > 32;
-            }
-            if (!ok) {
-              std::string target_uri = url;
-              if (method == "launchExternalPlayer" && player == "potplayer") {
-                target_uri = "potplayer://" + url;
-              }
-              std::wstring wurl = Utf8ToWide(target_uri);
-              HINSTANCE inst = ShellExecuteW(hwnd, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-              ok = reinterpret_cast<INT_PTR>(inst) > 32;
-              if (!ok && target_uri != url) {
-                std::wstring wfallback = Utf8ToWide(url);
-                inst = ShellExecuteW(hwnd, L"open", wfallback.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                ok = reinterpret_cast<INT_PTR>(inst) > 32;
-              }
-            }
+            std::wstring wurl = Utf8ToWide(url);
+            HINSTANCE inst = ShellExecuteW(hwnd, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            bool ok = reinterpret_cast<INT_PTR>(inst) > 32;
             result->Success(flutter::EncodableValue(ok));
           }
         } else if (method == "installUpdatePackage") {

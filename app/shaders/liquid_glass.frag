@@ -117,15 +117,15 @@ void main() {
   float distFromEdge = max(0.0, -sd);
 
   // Full-surface C2-continuous 3D liquid-glass lens (ZERO interior/bezel branch or seam!):
-  // On capsules/pills (height <= ~64dp), refrSpan spans 98% of minHalf so the ENTIRE bar
-  // acts as one continuous curved liquid-glass dome from center spine to 360° outer rim.
-  // On larger panels/menus, quintic C2 falloff blends invisibly into the convex crystal body.
+  // Impeller's lean separable Gaussian pre-blur delivers creamy, Nyquist-clean blur with ZERO
+  // 4-tap box ghosting, while this single-pass lens shader applies smooth continuous convex
+  // refraction across the entire pill from center spine to 360° outer rim.
   float refrSpan = clamp(u_refractionHeightPx, 10.0 * dpr, minHalf * 0.98);
-  float safeRefrAmount = clamp(u_refractionAmountPx, 0.0, minHalf * 1.42);
+  float safeRefrAmount = clamp(u_refractionAmountPx, 0.0, minHalf * 0.85);
   float t = clamp(1.0 - (distFromEdge / max(refrSpan, 1.0)), 0.0, 1.0);
   // C2 quintic smoothstep: value, 1st derivative, AND 2nd derivative all vanish smoothly at t=0.
   float q = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-  float lensProfile = mix(q, circleMap(t) * q, 0.52);
+  float lensProfile = mix(q, circleMap(t) * q, 0.45);
 
   // Continuous outward surface normal across the entire glass (zero spine crease at p.y = 0).
   float smoothRadius = max(r * 1.15, 14.0 * dpr);
@@ -136,34 +136,32 @@ void main() {
   // Blend smoothly from radial dome near center to exact rounded-rect SDF normal near rim.
   float rimAlign = smoothstep(0.0, 0.55, t);
   vec2 grad = safeNormalize(
-    mix(radialGrad, shapeGrad, rimAlign) + (u_depthEffect * 0.42) * radialGrad,
+    mix(radialGrad, shapeGrad, rimAlign) + (u_depthEffect * 0.35) * radialGrad,
     shapeGrad
   );
 
-  // Continuous whole-body convex magnification + seamless curved bevel refraction.
-  vec2 domeDisp = -normP * (minHalf * 0.11 * (0.55 + 0.45 * u_depthEffect));
+  // Continuous whole-body subtle convex magnification + smooth curved bevel refraction.
+  vec2 domeDisp = -normP * (minHalf * 0.065 * (0.55 + 0.45 * u_depthEffect));
   vec2 bevelDisp = -grad * (lensProfile * safeRefrAmount);
   vec2 totalDisp = domeDisp + bevelDisp;
   vec2 refractedPos = posPx + totalDisp;
 
-  // Unified single-pass 4-tap diagonal crystal frost everywhere (ZERO sharp-vs-blurry cliff!).
-  // Softly frosted through the body, slightly glossier toward the outer curved lip.
-  float frostOff = mix(2.35, 1.45, lensProfile) * dpr;
-  vec4 s0 = texture(u_texture, toSampleUV(refractedPos + vec2(-frostOff, -frostOff), invSize));
-  vec4 s1 = texture(u_texture, toSampleUV(refractedPos + vec2( frostOff, -frostOff), invSize));
-  vec4 s2 = texture(u_texture, toSampleUV(refractedPos + vec2(-frostOff,  frostOff), invSize));
-  vec4 s3 = texture(u_texture, toSampleUV(refractedPos + vec2( frostOff,  frostOff), invSize));
-  vec4 base = (s0 + s1 + s2 + s3) * 0.25;
+  // Single clean hardware-bilinear fetch over Impeller's Nyquist-safe Gaussian backdrop
+  // -> ZERO multi-tap box ghosting and ultra-fast 120Hz shading!
+  vec4 base = texture(u_texture, toSampleUV(refractedPos, invSize));
   float alpha = base.a;
   vec3 rgb = unpremul(base);
 
-  // Continuous prismatic RGB chromatic dispersion blended smoothly into the crystal frost.
-  vec2 dispVec = totalDisp * (u_dispersion * 0.26);
-  float dispLen = length(dispVec);
-  if (dispLen > 0.35) {
+  // Micro-prismatic glass lip glint STRICTLY on the outer curved bevel (<= 1.25 dp)
+  // so scrolling posters in the interior NEVER split into red/blue color ghosting!
+  float edgeLip = smoothstep(7.5 * dpr, 0.0, distFromEdge);
+  float maxDispPx = 1.25 * dpr;
+  float dispMag = min(length(bevelDisp) * (u_dispersion * 0.14), maxDispPx) * edgeLip;
+  if (dispMag > 0.28) {
+    vec2 dispVec = -grad * dispMag;
     vec3 rSample = unpremul(texture(u_texture, toSampleUV(refractedPos + dispVec, invSize)));
     vec3 bSample = unpremul(texture(u_texture, toSampleUV(refractedPos - dispVec, invSize)));
-    float dispMix = clamp(dispLen / (4.2 * dpr), 0.0, 0.68) * (0.28 + 0.72 * q);
+    float dispMix = 0.45 * edgeLip;
     rgb.r = mix(rgb.r, rSample.r, dispMix);
     rgb.b = mix(rgb.b, bSample.b, dispMix);
   }

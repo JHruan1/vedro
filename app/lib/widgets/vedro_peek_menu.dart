@@ -285,42 +285,50 @@ class _VedroPeekMenuStage extends StatelessWidget {
     final divColor = skin.isLight ? Colors.black.withValues(alpha: 0.07) : Colors.white.withValues(alpha: 0.09);
     final menuListWidget = Material(
       type: MaterialType.transparency,
-      child: SingleChildScrollView(
-        padding: EdgeInsets.zero,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (hasHeader) ...[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title!, maxLines: 2, overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600, letterSpacing: -0.15)),
-                    if (subtitle != null && subtitle!.trim().isNotEmpty) ...[
-                      const SizedBox(height: 2),
-                      Text(subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
-                    ],
-                  ],
-                ),
-              ),
-              Divider(height: 1, thickness: 0.6, color: divColor),
-            ],
-            for (var i = 0; i < actions.length; i++) ...[
-              if (i > 0) Divider(height: 1, thickness: 0.55, indent: 14, endIndent: 14, color: divColor),
-              _PeekActionRow(
-                action: actions[i],
-                autofocus: i == 0,
-                onExecute: () {
-                  HapticFeedback.selectionClick();
-                  Navigator.of(context).pop();
-                  actions[i].onTap();
-                },
-              ),
-            ],
-          ],
+      child: MediaQuery.removePadding(
+        context: context,
+        removeTop: true,
+        removeBottom: true,
+        child: ScrollConfiguration(
+          behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+          child: SingleChildScrollView(
+            padding: EdgeInsets.zero,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (hasHeader) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(title!, maxLines: 2, overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: skin.fg, fontSize: 13.5, fontWeight: FontWeight.w600, letterSpacing: -0.15)),
+                        if (subtitle != null && subtitle!.trim().isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: skin.fg3, fontSize: 11.5)),
+                        ],
+                      ],
+                    ),
+                  ),
+                  Divider(height: 1, thickness: 0.6, color: divColor),
+                ],
+                for (var i = 0; i < actions.length; i++) ...[
+                  if (i > 0) Divider(height: 1, thickness: 0.55, indent: 14, endIndent: 14, color: divColor),
+                  _PeekActionRow(
+                    action: actions[i],
+                    autofocus: i == 0,
+                    onExecute: () {
+                      HapticFeedback.selectionClick();
+                      Navigator.of(context).pop();
+                      actions[i].onTap();
+                    },
+                  ),
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -411,7 +419,7 @@ class _VedroPeekMenuStage extends StatelessWidget {
             ? Rect.lerp(startRect, liftedRect, tCard.clamp(0.0, 1.0))!
             : Rect.zero;
         final curCardScale = 1.0 + (targetScale - 1.0) * tCard;
-        final menuScale = (0.76 + 0.24 * tMenu).clamp(0.5, 1.08);
+        final menuScale = (0.76 + 0.24 * tMenu).clamp(0.76, 1.0);
         final menuSlideY = (menuAbove ? 10.0 : -10.0) * (1.0 - tBg);
 
         return Stack(

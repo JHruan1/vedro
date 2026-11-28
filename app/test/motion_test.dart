@@ -514,4 +514,75 @@ void main() {
     await tester.pumpAndSettle();
     expect(countBackdropLayers(), equals(1));
   });
+
+  testWidgets(
+      'VedroPullDownButton options sit flush with backdrop mask (zero top/bottom leak on macOS & Mobile)',
+      (tester) async {
+    for (final (viewport, skin) in [
+      (const Size(1280, 820), VedroSkin.iosLiquidGlass),
+      (const Size(1280, 820), VedroSkin.iosFrosted),
+      (const Size(390, 844), VedroSkin.iosLiquidGlass),
+    ]) {
+      tester.view.physicalSize = viewport;
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          key: ValueKey('pulldown-flush-${viewport.width}-${skin.id}'),
+          theme: VedroTheme.fromSkin(skin),
+          home: Scaffold(
+            body: Padding(
+              padding: const EdgeInsets.only(left: 160, top: 140),
+              child: VedroPullDownButton<String>(
+                key: const ValueKey('test-pulldown-trigger'),
+                value: 'a',
+                items: const [
+                  VedroDropdownItem(
+                    value: 'a',
+                    label: '深色模式',
+                    itemKey: ValueKey('row-first'),
+                  ),
+                  VedroDropdownItem(
+                    value: 'b',
+                    label: '浅色模式',
+                    itemKey: ValueKey('row-mid'),
+                  ),
+                  VedroDropdownItem(
+                    value: 'c',
+                    label: '跟随系统',
+                    itemKey: ValueKey('row-last'),
+                  ),
+                ],
+                onChanged: (_) {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('test-pulldown-trigger')));
+      await tester.pumpAndSettle();
+
+      final backdropRect = tester.getRect(find.byType(VedroLiquidGlassBackdrop));
+      final firstRowRect = tester.getRect(find.byKey(const ValueKey('row-first')));
+      final lastRowRect = tester.getRect(find.byKey(const ValueKey('row-last')));
+
+      // First row MUST sit flush with top of backdrop mask (zero exposed top strip!)
+      expect((firstRowRect.top - backdropRect.top).abs(), lessThan(0.5),
+          reason: 'Top gap leaked on ${viewport.width}x${viewport.height} ${skin.id}: '
+              'firstRow=$firstRowRect backdrop=$backdropRect');
+      // Last row MUST sit flush with bottom of backdrop mask (zero exposed bottom strip!)
+      expect((lastRowRect.bottom - backdropRect.bottom).abs(), lessThan(0.5),
+          reason: 'Bottom gap leaked on ${viewport.width}x${viewport.height} ${skin.id}: '
+              'lastRow=$lastRowRect backdrop=$backdropRect');
+      // Full width coverage
+      expect((firstRowRect.width - backdropRect.width).abs(), lessThan(0.5));
+
+      // Dismiss cleanly
+      await tester.tap(find.byKey(const ValueKey('row-mid')));
+      await tester.pumpAndSettle();
+    }
+  });
 }

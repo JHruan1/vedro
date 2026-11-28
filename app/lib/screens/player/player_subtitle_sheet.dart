@@ -143,15 +143,23 @@ extension _PlayerSubtitleSheetExt on _PlayerScreenState {
                       Row(
                         children: [
                           Expanded(
-                            child: PopupMenuButton<String>(
+                            child: VedroPullDownButton<String>(
                               key: const ValueKey('player-ai-lang-dropdown'),
-                              tooltip: '选择翻译目标语言',
-                              color: const Color(0xF01C1E26),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
-                              ),
-                              onSelected: (langId) async {
+                              prefixLabel: '目标',
+                              value: _aiSubCtrl.targetLang,
+                              expanded: true,
+                              height: 34,
+                              menuMinWidth: 180,
+                              menuMaxWidth: 260,
+                              items: AiSubtitleTargetLanguage.all
+                                  .map(
+                                    (lang) => VedroDropdownItem<String>(
+                                      value: lang.id,
+                                      label: lang.id,
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: (langId) async {
                                 unawaited(widget.appState.updatePrefs(
                                   widget.appState.prefs.copyWith(aiTargetLang: langId),
                                 ));
@@ -162,153 +170,44 @@ extension _PlayerSubtitleSheetExt on _PlayerScreenState {
                                 }
                                 if (ctx.mounted) setModal(() {});
                               },
-                              itemBuilder: (_) => AiSubtitleTargetLanguage.all.map((lang) {
-                                final isCur = _aiSubCtrl.targetLang == lang.id;
-                                return PopupMenuItem<String>(
-                                  value: lang.id,
-                                  height: 36,
-                                  child: Row(
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          lang.id,
-                                          style: TextStyle(
-                                            color: isCur ? accent : VedroTheme.fg,
-                                            fontSize: 13,
-                                            fontWeight: isCur ? FontWeight.w600 : FontWeight.w400,
-                                          ),
-                                        ),
-                                      ),
-                                      if (isCur)
-                                        Icon(Icons.check_rounded, size: 16, color: accent),
-                                    ],
-                                  ),
-                                );
-                              }).toList(),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: 0.07),
-                                  borderRadius: BorderRadius.circular(9),
-                                  border: Border.all(
-                                    color: Colors.white.withValues(alpha: 0.14),
-                                    width: 0.7,
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    const Text(
-                                      '目标',
-                                      style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Expanded(
-                                      child: Text(
-                                        _aiSubCtrl.targetLang,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          color: VedroTheme.fg,
-                                          fontSize: 12.5,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ),
-                                    const Icon(
-                                      Icons.keyboard_arrow_down_rounded,
-                                      size: 16,
-                                      color: VedroTheme.fg2,
-                                    ),
-                                  ],
-                                ),
-                              ),
                             ),
                           ),
                           const SizedBox(width: 8),
                           Expanded(
-                            child: PopupMenuButton<String>(
+                            child: VedroPullDownButton<String>(
                               key: const ValueKey('player-ai-mode-dropdown'),
-                              tooltip: '选择双语字幕排版',
-                              color: const Color(0xF01C1E26),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                side: BorderSide(color: Colors.white.withValues(alpha: 0.14)),
-                              ),
-                              onSelected: (modeId) {
+                              prefixLabel: '排版',
+                              displayLabelOverride: switch (_aiSubCtrl.displayMode) {
+                                'bilingual_orig_top' => '原文在上',
+                                'translated_only' => '仅译文',
+                                _ => '译文在上',
+                              },
+                              value: _aiSubCtrl.displayMode,
+                              expanded: true,
+                              height: 34,
+                              menuMinWidth: 180,
+                              menuMaxWidth: 260,
+                              items: const [
+                                VedroDropdownItem<String>(
+                                  value: 'bilingual_trans_top',
+                                  label: '双语 · 译文在上',
+                                ),
+                                VedroDropdownItem<String>(
+                                  value: 'bilingual_orig_top',
+                                  label: '双语 · 原文在上',
+                                ),
+                                VedroDropdownItem<String>(
+                                  value: 'translated_only',
+                                  label: '仅显示译文',
+                                ),
+                              ],
+                              onChanged: (modeId) {
                                 _aiSubCtrl.setDisplayMode(modeId);
                                 unawaited(widget.appState.updatePrefs(
                                   widget.appState.prefs.copyWith(aiSubtitleMode: modeId),
                                 ));
                                 if (ctx.mounted) setModal(() {});
                               },
-                              itemBuilder: (_) => const [
-                                ('bilingual_trans_top', '双语 · 译文在上'),
-                                ('bilingual_orig_top', '双语 · 原文在上'),
-                                ('translated_only', '仅显示译文'),
-                              ].map((item) {
-                                final isCur = _aiSubCtrl.displayMode == item.$1;
-                                return PopupMenuItem<String>(
-                                  value: item.$1,
-                                  height: 36,
-                                  child: Row(
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          item.$2,
-                                          style: TextStyle(
-                                            color: isCur ? accent : VedroTheme.fg,
-                                            fontSize: 13,
-                                            fontWeight: isCur ? FontWeight.w600 : FontWeight.w400,
-                                          ),
-                                        ),
-                                      ),
-                                      if (isCur)
-                                        Icon(Icons.check_rounded, size: 16, color: accent),
-                                    ],
-                                  ),
-                                );
-                              }).toList(),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withValues(alpha: 0.07),
-                                  borderRadius: BorderRadius.circular(9),
-                                  border: Border.all(
-                                    color: Colors.white.withValues(alpha: 0.14),
-                                    width: 0.7,
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    const Text(
-                                      '排版',
-                                      style: TextStyle(color: VedroTheme.fg3, fontSize: 11.5),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Expanded(
-                                      child: Text(
-                                        switch (_aiSubCtrl.displayMode) {
-                                          'bilingual_orig_top' => '原文在上',
-                                          'translated_only' => '仅译文',
-                                          _ => '译文在上',
-                                        },
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          color: VedroTheme.fg,
-                                          fontSize: 12.5,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ),
-                                    const Icon(
-                                      Icons.keyboard_arrow_down_rounded,
-                                      size: 16,
-                                      color: VedroTheme.fg2,
-                                    ),
-                                  ],
-                                ),
-                              ),
                             ),
                           ),
                         ],

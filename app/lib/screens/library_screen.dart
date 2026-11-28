@@ -739,21 +739,41 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ),
           onPressed: () => setState(() => _listViewMode = !_listViewMode),
         ),
-        PopupMenuButton<String>(
-          tooltip: '排序',
-          color: skin.surface2,
-          icon: Icon(Icons.sort_rounded, size: 20, color: skin.fg2),
-          onSelected: (v) {
-            setState(() => _sortBy = v);
-            _resetAndLoad();
-          },
-          itemBuilder: (_) => const [
-            PopupMenuItem(value: 'DateCreated', child: Text('添加时间')),
-            PopupMenuItem(value: 'PremiereDate', child: Text('发行年份')),
-            PopupMenuItem(value: 'CommunityRating', child: Text('评分')),
-            PopupMenuItem(value: 'SortName', child: Text('名称')),
-            PopupMenuItem(value: 'Random', child: Text('随机')),
-          ],
+        Builder(
+          builder: (btnCtx) => IconButton(
+            tooltip: '排序',
+            icon: Icon(Icons.sort_rounded, size: 20, color: skin.fg2),
+            onPressed: () {
+              final box = btnCtx.findRenderObject() as RenderBox?;
+              final overlay = Overlay.maybeOf(btnCtx)?.context.findRenderObject() as RenderBox?;
+              if (box == null || !box.hasSize) return;
+              final rect = box.localToGlobal(Offset.zero, ancestor: overlay) & box.size;
+              showVedroActionMenu(
+                context: btnCtx,
+                anchorRect: rect,
+                selectedValue: _sortBy,
+                minWidth: 164,
+                maxWidth: 210,
+                items: [
+                  for (final entry in const [
+                    ('DateCreated', '添加时间'),
+                    ('PremiereDate', '发行年份'),
+                    ('CommunityRating', '评分'),
+                    ('SortName', '名称'),
+                    ('Random', '随机'),
+                  ])
+                    VedroDropdownItem<String>(
+                      value: entry.$1,
+                      label: entry.$2,
+                      onTapOverride: () {
+                        setState(() => _sortBy = entry.$1);
+                        _resetAndLoad();
+                      },
+                    ),
+                ],
+              );
+            },
+          ),
         ),
         IconButton(
           tooltip: '升降序',
@@ -908,81 +928,74 @@ class _MiniDropdownState<T> extends State<_MiniDropdown<T>> {
     final active = widget.value != null;
     final radius = skin.radiusForPill(32);
 
-    return Focus(
-      canRequestFocus: false,
-      onFocusChange: (f) {
-        if (_focused != f) setState(() => _focused = f);
-      },
-      child: PopupMenuButton<int>(
-        color: skin.surface2,
-        elevation: 16,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: BorderSide(color: skin.borderStrong, width: 0.8),
-        ),
-        onSelected: (idx) {
-          if (idx >= 0 && idx < widget.items.length) {
-            widget.onChanged(widget.items[idx].value);
-          }
+    return Builder(
+      builder: (btnCtx) => Focus(
+        canRequestFocus: false,
+        onFocusChange: (f) {
+          if (_focused != f) setState(() => _focused = f);
         },
-        itemBuilder: (_) => List.generate(widget.items.length, (i) {
-          final it = widget.items[i];
-          final sel = it.value == widget.value;
-          final text = it.child is Text ? ((it.child as Text).data ?? '') : '';
-          return PopupMenuItem<int>(
-            value: i,
-            height: 36,
+        child: PressableScale(
+          hoverScale: 1.02,
+          pressScale: 0.96,
+          borderRadius: BorderRadius.circular(radius),
+          onTap: () {
+            final box = btnCtx.findRenderObject() as RenderBox?;
+            final overlay = Overlay.maybeOf(btnCtx)?.context.findRenderObject() as RenderBox?;
+            if (box == null || !box.hasSize) return;
+            final rect = box.localToGlobal(Offset.zero, ancestor: overlay) & box.size;
+            final selectedIdx = widget.items.indexWhere((it) => it.value == widget.value);
+            showVedroActionMenu(
+              context: btnCtx,
+              anchorRect: rect,
+              selectedValue: selectedIdx >= 0 ? '$selectedIdx' : null,
+              minWidth: 168,
+              maxWidth: 260,
+              items: List.generate(widget.items.length, (i) {
+                final it = widget.items[i];
+                final text = it.child is Text ? ((it.child as Text).data ?? '') : '';
+                return VedroDropdownItem<String>(
+                  value: '$i',
+                  label: text,
+                  onTapOverride: () => widget.onChanged(it.value),
+                );
+              }),
+            );
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 140),
+            height: 32,
+            padding: const EdgeInsets.symmetric(horizontal: 13),
+            decoration: BoxDecoration(
+              color: active ? skin.activePillBg : skin.surface2,
+              borderRadius: BorderRadius.circular(radius),
+              border: _focused
+                  ? Border.all(color: skin.accent, width: 2.0)
+                  : ((!active && skin.frameStyle != 'borderless')
+                      ? Border.all(color: skin.border, width: 0.7)
+                      : null),
+              boxShadow: _focused
+                  ? [BoxShadow(color: skin.accent.withValues(alpha: 0.35), blurRadius: 8)]
+                  : null,
+            ),
             child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: Text(
-                    text,
-                    style: TextStyle(
-                      color: sel ? skin.fg : skin.fg2,
-                      fontSize: 13,
-                      fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
-                    ),
+                Text(
+                  currentLabel,
+                  style: TextStyle(
+                    color: active ? skin.activePillFg : skin.fg2,
+                    fontSize: 12.5,
+                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
                   ),
                 ),
-                if (sel) Icon(Icons.check_rounded, size: 15, color: skin.accent),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.keyboard_arrow_down_rounded,
+                  size: 15,
+                  color: active ? skin.activePillFg : skin.fg3,
+                ),
               ],
             ),
-          );
-        }),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          height: 32,
-          padding: const EdgeInsets.symmetric(horizontal: 13),
-          decoration: BoxDecoration(
-            color: active ? skin.activePillBg : skin.surface2,
-            borderRadius: BorderRadius.circular(radius),
-            border: _focused
-                ? Border.all(color: skin.accent, width: 2.0)
-                : ((!active && skin.frameStyle != 'borderless')
-                    ? Border.all(color: skin.border, width: 0.7)
-                    : null),
-            boxShadow: _focused
-                ? [BoxShadow(color: skin.accent.withValues(alpha: 0.35), blurRadius: 8)]
-                : null,
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                currentLabel,
-                style: TextStyle(
-                  color: active ? skin.activePillFg : skin.fg2,
-                  fontSize: 12.5,
-                  fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-                ),
-              ),
-              const SizedBox(width: 4),
-              Icon(
-                Icons.keyboard_arrow_down_rounded,
-                size: 15,
-                color: active ? skin.activePillFg : skin.fg3,
-              ),
-            ],
           ),
         ),
       ),

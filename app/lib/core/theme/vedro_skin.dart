@@ -2090,15 +2090,18 @@ class VedroAdaptiveSurface extends StatelessWidget {
       );
     }
 
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 160),
-      padding: padding,
-      decoration: BoxDecoration(
-        color: fill,
-        borderRadius: radius,
-        border: skin.cardBorder(hovered: hovered, selected: selected),
+    return ClipRRect(
+      borderRadius: radius,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        padding: padding,
+        decoration: BoxDecoration(
+          color: fill,
+          borderRadius: radius,
+          border: skin.cardBorder(hovered: hovered, selected: selected),
+        ),
+        child: child,
       ),
-      child: child,
     );
   }
 }

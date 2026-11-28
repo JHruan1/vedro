@@ -120,47 +120,53 @@ class _VedroSlidingPillRowState extends State<VedroSlidingPillRow> with TickerPr
 
   @override
   Widget build(BuildContext context) {
-    _scheduleMeasure();
-    final row = <Widget>[];
-    for (var i = 0; i < widget.children.length; i++) {
-      if (i > 0 && widget.spacing > 0 && !widget.expand) row.add(SizedBox(width: widget.spacing));
-      final keyed = KeyedSubtree(key: _keys[i], child: widget.children[i]);
-      row.add(widget.expand ? Expanded(child: keyed) : keyed);
-    }
+    return LayoutBuilder(
+      builder: (context, _) {
+        _scheduleMeasure();
+        final row = <Widget>[];
+        for (var i = 0; i < widget.children.length; i++) {
+          if (i > 0 && widget.spacing > 0 && !widget.expand) {
+            row.add(SizedBox(width: widget.spacing));
+          }
+          final keyed = KeyedSubtree(key: _keys[i], child: widget.children[i]);
+          row.add(widget.expand ? Expanded(child: keyed) : keyed);
+        }
 
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        if (_measured)
-          AnimatedBuilder(
-            animation: Listenable.merge([
-              _left.animation,
-              _width.animation,
-              _top.animation,
-              _height.animation,
-            ]),
-            builder: (context, child) => Positioned(
-              left: _left.value,
-              top: _top.value,
-              width: _width.value.clamp(0.0, double.infinity),
-              height: _height.value.clamp(0.0, double.infinity),
-              child: child!,
-            ),
-            child: IgnorePointer(
-              child: AnimatedOpacity(
-                opacity: _hasSelection ? 1.0 : 0.0,
-                duration: const Duration(milliseconds: 180),
-                curve: VedroSpringCurve.smooth,
-                child: DecoratedBox(decoration: widget.pillDecoration),
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            if (_measured)
+              AnimatedBuilder(
+                animation: Listenable.merge([
+                  _left.animation,
+                  _width.animation,
+                  _top.animation,
+                  _height.animation,
+                ]),
+                builder: (context, child) => Positioned(
+                  left: _left.value,
+                  top: _top.value,
+                  width: _width.value.clamp(0.0, double.infinity),
+                  height: _height.value.clamp(0.0, double.infinity),
+                  child: child!,
+                ),
+                child: IgnorePointer(
+                  child: AnimatedOpacity(
+                    opacity: _hasSelection ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 180),
+                    curve: VedroSpringCurve.smooth,
+                    child: DecoratedBox(decoration: widget.pillDecoration),
+                  ),
+                ),
               ),
+            Row(
+              mainAxisSize: widget.expand ? MainAxisSize.max : MainAxisSize.min,
+              crossAxisAlignment: widget.crossAxisAlignment,
+              children: row,
             ),
-          ),
-        Row(
-          mainAxisSize: widget.expand ? MainAxisSize.max : MainAxisSize.min,
-          crossAxisAlignment: widget.crossAxisAlignment,
-          children: row,
-        ),
-      ],
+          ],
+        );
+      },
     );
   }
 }

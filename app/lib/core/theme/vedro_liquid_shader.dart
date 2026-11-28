@@ -58,14 +58,17 @@ class VedroLiquidGlassShader {
 
   /// Unified GPU backdrop Gaussian blur sigma for Liquid Glass on Impeller.
   ///
-  /// Uses a lean Nyquist-clean separable Gaussian blur so scrolling high-contrast
-  /// posters through floating glass NEVER suffer 4-tap box ghosting or color fringes,
-  /// while keeping frame time < 0.5ms on the single stationary bottom capsule (and 0ms
-  /// during PageRoute transitions via [suspendDuringPageTransition]).
+  /// - `chrome` & `panel` return `0.0`: crystal-clear single-pass optical lens
+  ///   (matching Apple iOS 26 Clear Liquid Glass & QmDeve — 1 GPU pass, locked 120Hz,
+  ///   ZERO `ImageFilter.compose` subpass cropping or blur washout!).
+  /// - `menu` uses a lean `7.0` sigma applied in a **separate sequential**
+  ///   `BackdropFilterLayer` BEFORE the bare `ImageFilter.shader` layer (NEVER
+  ///   via `ImageFilter.compose`, which corrupts `u_size`/`u_rect` on Impeller
+  ///   Metal & Vulkan/GLES!).
   static double gpuBlurSigma(VedroGlassDensity density) => switch (density) {
-        VedroGlassDensity.chrome => 4.8,
-        VedroGlassDensity.menu => 7.5,
-        VedroGlassDensity.panel => 5.5,
+        VedroGlassDensity.chrome => 0.0,
+        VedroGlassDensity.menu => 7.0,
+        VedroGlassDensity.panel => 0.0,
       };
 
   /// Unified Liquid Glass translucent body tint color for dark & light themes.
@@ -79,9 +82,9 @@ class VedroLiquidGlassShader {
   }) {
     if (isLight) {
       final alpha = switch (density) {
-        VedroGlassDensity.chrome => highlighted ? 0.54 : 0.44,
-        VedroGlassDensity.menu => 0.72,
-        VedroGlassDensity.panel => highlighted ? 0.62 : 0.54,
+        VedroGlassDensity.chrome => highlighted ? 0.48 : 0.38,
+        VedroGlassDensity.menu => 0.70,
+        VedroGlassDensity.panel => highlighted ? 0.60 : 0.52,
       };
       return Colors.white.withValues(alpha: alpha);
     }
@@ -91,9 +94,9 @@ class VedroLiquidGlassShader {
       VedroGlassDensity.panel => Color.lerp(surface, canvas, 0.25)!,
     };
     final alpha = switch (density) {
-      VedroGlassDensity.chrome => highlighted ? 0.48 : 0.38,
-      VedroGlassDensity.menu => 0.65,
-      VedroGlassDensity.panel => highlighted ? 0.56 : 0.48,
+      VedroGlassDensity.chrome => highlighted ? 0.42 : 0.32,
+      VedroGlassDensity.menu => 0.62,
+      VedroGlassDensity.panel => highlighted ? 0.54 : 0.46,
     };
     return base.withValues(alpha: alpha);
   }
@@ -122,35 +125,26 @@ class VedroLiquidGlassShader {
     );
   }
 
-  /// Build the optimal backdrop [ui.ImageFilter] for a glass surface.
-  static ui.ImageFilter buildBackdropFilter({
+  /// Build a bare pixel-locked Impeller Liquid Glass [ui.ImageFilter.shader]
+  /// (NEVER wrapped in `ImageFilter.compose`, which breaks `u_size`/`u_rect` on
+  /// Impeller Metal & Vulkan/GLES!). Returns `null` when unavailable.
+  static ui.ImageFilter? buildShaderFilter({
     BuildContext? context,
     double? devicePixelRatio,
     Rect? screenRect,
     required bool isLight,
     required Color accent,
-    required double blurSigma,
     required double borderRadius,
-    required bool enableRefraction,
     String liquidSpecular = 'standard',
     double refractionHeightDp = 32.0,
-    double refractionAmountDp = 18.0,
-    double dispersion = 0.24,
-    double depthEffect = 0.26,
+    double refractionAmountDp = 36.0,
+    double dispersion = 0.56,
+    double depthEffect = 0.34,
     double? intensityOverride,
   }) {
-    final hasBlur = blurSigma > 0.15;
-    final blurFilter = ui.ImageFilter.blur(
-      sigmaX: hasBlur ? blurSigma : 0.0,
-      sigmaY: hasBlur ? blurSigma : 0.0,
-      tileMode: ui.TileMode.clamp,
-    );
-    if (!enableRefraction || !isAvailable) {
-      return blurFilter;
-    }
-
+    if (!isAvailable) return null;
     final program = _program;
-    if (program == null) return blurFilter;
+    if (program == null) return null;
 
     try {
       final dpr = (devicePixelRatio ??
@@ -208,18 +202,56 @@ class VedroLiquidGlassShader {
 
       // FilterQuality.low uses pure hardware bilinear sampling with ZERO per-frame
       // mipmap pyramid generation on Impeller — critical for locked 120Hz scrolling.
-      final shaderFilter = ui.ImageFilter.shader(
+      return ui.ImageFilter.shader(
         shader,
         filterQuality: FilterQuality.low,
       );
-      if (!hasBlur) return shaderFilter;
-      return ui.ImageFilter.compose(
-        outer: shaderFilter,
-        inner: blurFilter,
-      );
     } catch (_) {
-      return blurFilter;
+      return null;
     }
+  }
+
+  /// Build the optimal backdrop [ui.ImageFilter] for a glass surface (returns bare
+  /// shader when refraction is active, or Gaussian blur fallback — never `compose`).
+  static ui.ImageFilter buildBackdropFilter({
+    BuildContext? context,
+    double? devicePixelRatio,
+    Rect? screenRect,
+    required bool isLight,
+    required Color accent,
+    required double blurSigma,
+    required double borderRadius,
+    required bool enableRefraction,
+    String liquidSpecular = 'standard',
+    double refractionHeightDp = 32.0,
+    double refractionAmountDp = 36.0,
+    double dispersion = 0.56,
+    double depthEffect = 0.34,
+    double? intensityOverride,
+  }) {
+    if (enableRefraction && isAvailable) {
+      final shaderFilter = buildShaderFilter(
+        context: context,
+        devicePixelRatio: devicePixelRatio,
+        screenRect: screenRect,
+        isLight: isLight,
+        accent: accent,
+        borderRadius: borderRadius,
+        liquidSpecular: liquidSpecular,
+        refractionHeightDp: refractionHeightDp,
+        refractionAmountDp: refractionAmountDp,
+        dispersion: dispersion,
+        depthEffect: depthEffect,
+        intensityOverride: intensityOverride,
+      );
+      if (shaderFilter != null) return shaderFilter;
+    }
+    final hasBlur = blurSigma > 0.15;
+    return ui.ImageFilter.blur(
+      sigmaX: hasBlur ? blurSigma : 0.0,
+      sigmaY: hasBlur ? blurSigma : 0.0,
+      tileMode: ui.TileMode.clamp,
+    );
   }
 }
 
@@ -276,32 +308,32 @@ class VedroLiquidGlassBackdrop extends StatefulWidget {
       refractionHeightDp ??
       switch (density) {
         VedroGlassDensity.chrome => 32.0,
-        VedroGlassDensity.menu => 34.0,
-        VedroGlassDensity.panel => 32.0,
+        VedroGlassDensity.menu => 30.0,
+        VedroGlassDensity.panel => 30.0,
       };
 
   double get _effRefractionAmount =>
       refractionAmountDp ??
       switch (density) {
-        VedroGlassDensity.chrome => 18.0,
-        VedroGlassDensity.menu => 22.0,
-        VedroGlassDensity.panel => 19.0,
+        VedroGlassDensity.chrome => 36.0,
+        VedroGlassDensity.menu => 28.0,
+        VedroGlassDensity.panel => 30.0,
       };
 
   double get _effDispersion =>
       dispersion ??
       switch (density) {
-        VedroGlassDensity.chrome => 0.24,
-        VedroGlassDensity.menu => 0.26,
-        VedroGlassDensity.panel => 0.22,
+        VedroGlassDensity.chrome => 0.56,
+        VedroGlassDensity.menu => 0.44,
+        VedroGlassDensity.panel => 0.46,
       };
 
   double get _effDepthEffect =>
       depthEffect ??
       switch (density) {
-        VedroGlassDensity.chrome => 0.26,
-        VedroGlassDensity.menu => 0.24,
-        VedroGlassDensity.panel => 0.24,
+        VedroGlassDensity.chrome => 0.34,
+        VedroGlassDensity.menu => 0.28,
+        VedroGlassDensity.panel => 0.28,
       };
 
   @override
@@ -495,16 +527,20 @@ class _RenderVedroLiquidGlassBackdrop extends RenderProxyBox {
   double _devicePixelRatio;
 
   final LayerHandle<ClipRRectLayer> _clipLayer = LayerHandle<ClipRRectLayer>();
+  final LayerHandle<BackdropFilterLayer> _blurBackdropLayer =
+      LayerHandle<BackdropFilterLayer>();
   final LayerHandle<BackdropFilterLayer> _backdropLayer =
       LayerHandle<BackdropFilterLayer>();
   final LayerHandle<_LiquidGlassTransformLayer> _trackingLayer =
       LayerHandle<_LiquidGlassTransformLayer>();
 
-  ui.ImageFilter? _cachedFilter;
+  ui.ImageFilter? _cachedBlurFilter;
+  ui.ImageFilter? _cachedShaderFilter;
   Rect? _cachedScreenRect;
 
+  bool get _hasBlur => _blurSigma > 0.15;
   bool get _hasShader => _enableRefraction && VedroLiquidGlassShader.isAvailable;
-  bool get _needsBackdrop => _blurSigma > 0.15 || _hasShader;
+  bool get _needsBackdrop => _hasBlur || _hasShader;
 
   @override
   bool get alwaysNeedsCompositing => _needsBackdrop;
@@ -524,8 +560,8 @@ class _RenderVedroLiquidGlassBackdrop extends RenderProxyBox {
     required double devicePixelRatio,
   }) {
     final wasCompositing = alwaysNeedsCompositing;
-    final changed = _borderRadius != borderRadius ||
-        _blurSigma != blurSigma ||
+    final blurChanged = _blurSigma != blurSigma;
+    final shaderChanged = _borderRadius != borderRadius ||
         _enableRefraction != enableRefraction ||
         _isLight != isLight ||
         _accent != accent ||
@@ -536,7 +572,7 @@ class _RenderVedroLiquidGlassBackdrop extends RenderProxyBox {
         _depthEffect != depthEffect ||
         _intensityOverride != intensityOverride ||
         _devicePixelRatio != devicePixelRatio;
-    if (!changed) return;
+    if (!blurChanged && !shaderChanged) return;
     _borderRadius = borderRadius;
     _blurSigma = blurSigma;
     _enableRefraction = enableRefraction;
@@ -549,8 +585,11 @@ class _RenderVedroLiquidGlassBackdrop extends RenderProxyBox {
     _depthEffect = depthEffect;
     _intensityOverride = intensityOverride;
     _devicePixelRatio = devicePixelRatio;
-    _cachedFilter = null;
-    _cachedScreenRect = null;
+    if (blurChanged) _cachedBlurFilter = null;
+    if (shaderChanged) {
+      _cachedShaderFilter = null;
+      _cachedScreenRect = null;
+    }
     if (wasCompositing != alwaysNeedsCompositing) {
       markNeedsCompositingBitsUpdate();
     }
@@ -558,26 +597,32 @@ class _RenderVedroLiquidGlassBackdrop extends RenderProxyBox {
   }
 
   static bool _rectApproxEqual(Rect a, Rect b) =>
-      (a.left - b.left).abs() < 1.0 &&
-      (a.top - b.top).abs() < 1.0 &&
-      (a.width - b.width).abs() < 1.0 &&
-      (a.height - b.height).abs() < 1.0;
+      (a.left - b.left).abs() < 0.25 &&
+      (a.top - b.top).abs() < 0.25 &&
+      (a.width - b.width).abs() < 0.25 &&
+      (a.height - b.height).abs() < 0.25;
 
-  ui.ImageFilter _buildFilter(Matrix4 screenTransform) {
+  ui.ImageFilter _buildBlurFilter() {
+    return _cachedBlurFilter ??= ui.ImageFilter.blur(
+      sigmaX: _blurSigma,
+      sigmaY: _blurSigma,
+      tileMode: ui.TileMode.clamp,
+    );
+  }
+
+  ui.ImageFilter? _buildShaderFilter(Matrix4 screenTransform) {
     final screenRect = MatrixUtils.transformRect(screenTransform, Offset.zero & size);
-    final cached = _cachedFilter;
+    final cached = _cachedShaderFilter;
     final prevRect = _cachedScreenRect;
-    if (cached != null && prevRect != null && (!_hasShader || _rectApproxEqual(screenRect, prevRect))) {
+    if (cached != null && prevRect != null && _rectApproxEqual(screenRect, prevRect)) {
       return cached;
     }
-    final next = VedroLiquidGlassShader.buildBackdropFilter(
+    final next = VedroLiquidGlassShader.buildShaderFilter(
       devicePixelRatio: _devicePixelRatio,
       screenRect: screenRect,
       isLight: _isLight,
       accent: _accent,
-      blurSigma: _blurSigma,
       borderRadius: _borderRadius,
-      enableRefraction: _enableRefraction,
       liquidSpecular: _liquidSpecular,
       refractionHeightDp: _refractionHeightDp,
       refractionAmountDp: _refractionAmountDp,
@@ -585,7 +630,7 @@ class _RenderVedroLiquidGlassBackdrop extends RenderProxyBox {
       depthEffect: _depthEffect,
       intensityOverride: _intensityOverride,
     );
-    _cachedFilter = next;
+    _cachedShaderFilter = next;
     _cachedScreenRect = screenRect;
     return next;
   }
@@ -598,7 +643,8 @@ class _RenderVedroLiquidGlassBackdrop extends RenderProxyBox {
     final screenRect = MatrixUtils.transformRect(screenTransform, Offset.zero & size);
     final prevRect = _cachedScreenRect;
     if (prevRect != null && _rectApproxEqual(screenRect, prevRect)) return;
-    backdrop.filter = _buildFilter(screenTransform);
+    final next = _buildShaderFilter(screenTransform);
+    if (next != null) backdrop.filter = next;
   }
 
   @override
@@ -611,6 +657,7 @@ class _RenderVedroLiquidGlassBackdrop extends RenderProxyBox {
     final rrect = RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(safeR));
 
     if (!_needsBackdrop) {
+      _blurBackdropLayer.layer = null;
       _backdropLayer.layer = null;
       _trackingLayer.layer?.targetRenderObject = null;
       _trackingLayer.layer = null;
@@ -632,29 +679,64 @@ class _RenderVedroLiquidGlassBackdrop extends RenderProxyBox {
     }
 
     final screenTransform = getTransformTo(null);
-    final filter = _buildFilter(screenTransform);
-    final backdrop = BackdropFilterLayer(
-      filter: filter,
-      blendMode: BlendMode.srcOver,
-    );
-    _backdropLayer.layer = backdrop;
+    final ui.ImageFilter? shaderFilter =
+        _hasShader ? _buildShaderFilter(screenTransform) : null;
+    final bool useBlurLayer = _hasBlur;
+    final bool useShaderLayer = shaderFilter != null;
 
-    void paintBackdrop(PaintingContext ctx, Offset off) {
-      ctx.pushLayer(backdrop, super.paint, off);
+    if (!useBlurLayer && !useShaderLayer) {
+      _blurBackdropLayer.layer = null;
+      _backdropLayer.layer = null;
+      _trackingLayer.layer?.targetRenderObject = null;
+      _trackingLayer.layer = null;
+      _clipLayer.layer = context.pushClipRRect(
+        needsCompositing,
+        offset,
+        Offset.zero & size,
+        rrect,
+        super.paint,
+        clipBehavior: Clip.antiAlias,
+        oldLayer: _clipLayer.layer,
+      );
+      return;
+    }
+
+    void paintShaderStep(PaintingContext ctx, Offset off) {
+      if (!useShaderLayer) {
+        _backdropLayer.layer = null;
+        _trackingLayer.layer?.targetRenderObject = null;
+        _trackingLayer.layer = null;
+        super.paint(ctx, off);
+        return;
+      }
+      final shaderLayer = (_backdropLayer.layer ?? BackdropFilterLayer())
+        ..remove()
+        ..filter = shaderFilter
+        ..blendMode = BlendMode.srcOver;
+      _backdropLayer.layer = shaderLayer;
+
+      final tracker = (_trackingLayer.layer ?? _LiquidGlassTransformLayer())
+        ..remove()
+        ..targetRenderObject = this
+        ..lastTransform = screenTransform;
+      _trackingLayer.layer = tracker;
+      ctx.pushLayer(tracker, (c, o) => c.pushLayer(shaderLayer, super.paint, o), off);
     }
 
     void paintInsideClip(PaintingContext ctx, Offset off) {
-      if (_hasShader) {
-        _trackingLayer.layer?.targetRenderObject = null;
-        final tracker = _LiquidGlassTransformLayer()
-          ..targetRenderObject = this
-          ..lastTransform = screenTransform;
-        _trackingLayer.layer = tracker;
-        ctx.pushLayer(tracker, paintBackdrop, off);
+      if (useBlurLayer) {
+        // Sequential root-pass Gaussian blur BEFORE bare ImageFilter.shader (NEVER
+        // ImageFilter.compose!) so u_size & FlutterFragCoord() stay 1:1 with u_rect
+        // across macOS Metal, iOS Metal, Android Vulkan/GLES, Windows, and Linux!
+        final blurLayer = (_blurBackdropLayer.layer ?? BackdropFilterLayer())
+          ..remove()
+          ..filter = _buildBlurFilter()
+          ..blendMode = BlendMode.srcOver;
+        _blurBackdropLayer.layer = blurLayer;
+        ctx.pushLayer(blurLayer, paintShaderStep, off);
       } else {
-        _trackingLayer.layer?.targetRenderObject = null;
-        _trackingLayer.layer = null;
-        paintBackdrop(ctx, off);
+        _blurBackdropLayer.layer = null;
+        paintShaderStep(ctx, off);
       }
     }
 
@@ -674,6 +756,7 @@ class _RenderVedroLiquidGlassBackdrop extends RenderProxyBox {
     _trackingLayer.layer?.targetRenderObject = null;
     _trackingLayer.layer = null;
     _backdropLayer.layer = null;
+    _blurBackdropLayer.layer = null;
     _clipLayer.layer = null;
     super.dispose();
   }
